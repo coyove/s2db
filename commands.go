@@ -1,111 +1,111 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
-
-	"github.com/cockroachdb/pebble"
+	"go.etcd.io/bbolt"
 )
 
-func (z *DB) incrZSetCard(b *pebble.Batch, name string, v int64) error {
-	k := []byte("zset.card." + name)
-	old, c, err := z.db.Get(k)
-	if err != nil {
-		if err != pebble.ErrNotFound {
+func (z *DB) ZCard(name string) (int64, error) {
+	count := 0
+	err := z.db.View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset." + name))
+		if bk == nil {
+			return nil
+		}
+		count = bk.Stats().KeyN
+		return nil
+	})
+	return int64(count), err
+}
+
+func (z *DB) ZAdd(name string, key string, score float64) error {
+	return z.db.Update(func(tx *bbolt.Tx) error {
+		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
+		if err != nil {
 			return err
 		}
-		b.Set(k, intToBytes(v), pebble.NoSync)
-	} else {
-		defer c.Close()
-		b.Set(k, intToBytes(bytesToInt(old)+v), pebble.NoSync)
+		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
+		if err != nil {
+			return err
+		}
+		scoreBuf := bkName.Get([]byte(key))
+		if len(scoreBuf) != 0 {
+			if err := bkScore.Delete([]byte(string(scoreBuf) + key)); err != nil {
+				return err
+			}
+		}
+		scoreBuf = floatToBytes(score)
+		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
+			return err
+		}
+		if err := bkScore.Put([]byte(string(scoreBuf)+key), []byte(key)); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func (z *DB) ZRem(name string, key string) error {
+	return z.db.Update(func(tx *bbolt.Tx) error {
+		bkName := tx.Bucket([]byte("zset." + name))
+		if bkName == nil {
+			return nil
+		}
+		scoreBuf := bkName.Get([]byte(key))
+		if len(scoreBuf) == 0 {
+			return nil
+		}
+		return z.deletePair(tx, name, Pair{key, bytesToFloat(scoreBuf)})
+	})
+}
+
+func (z *DB) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
+	bkName := tx.Bucket([]byte("zset." + name))
+	if bkName == nil {
+		return nil
+	}
+	bkScore := tx.Bucket([]byte("zset.score." + name))
+	if bkScore == nil {
+		return nil
+	}
+	for _, p := range pairs {
+		if err := bkName.Delete([]byte(p.Key)); err != nil {
+			return err
+		}
+		if err := bkScore.Delete([]byte(string(floatToBytes(p.Score)) + p.Key)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (z *DB) ZCard(name string) (int64, error) {
-	k := []byte("zset.card." + name)
-	old, c, err := z.db.Get(k)
-	if err != nil {
-		if err != pebble.ErrNotFound {
-			return 0, err
-		}
-		return 0, nil
+func (z *DB) ZIncrBy(name string, key string, by float64) error {
+	if by == 0 {
+		return nil
 	}
-	defer c.Close()
-	return bytesToInt(old), nil
-}
-
-func (z *DB) ZAdd(name string, key string, score float64) error {
-	z.Lock(name)
-	defer z.Unlock(name)
-
-	nameKey := makeZSetNameKey(name, key)
-	scoreKey := makeZSetScoreKey(name, key, score)
-
-	var b *pebble.Batch
-	oldScoreKey, c, err := z.db.Get(nameKey)
-	if err != nil {
-		if err != pebble.ErrNotFound {
-			return fmt.Errorf("get old score key: %v", err)
-		}
-		b = z.db.NewBatch()
-		if err := z.incrZSetCard(b, name, 1); err != nil {
+	return z.db.Update(func(tx *bbolt.Tx) error {
+		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
+		if err != nil {
 			return err
 		}
-	} else {
-		defer c.Close()
-		if bytes.Equal(oldScoreKey, scoreKey) {
-			return nil
+		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
+		if err != nil {
+			return err
 		}
-		b = z.db.NewBatch()
-		b.Delete(oldScoreKey, pebble.NoSync)
-	}
-	b.Set(nameKey, floatToBytes(score), pebble.NoSync)
-	b.Set(scoreKey, nameKey, pebble.NoSync)
-	return b.Commit(pebble.NoSync)
-}
-
-func (z *DB) ZRem(name string, key string) error {
-	z.Lock(name)
-	defer z.Unlock(name)
-
-	nameKey := makeZSetNameKey(name, key)
-	oldScore, c, err := z.db.Get(nameKey)
-	if err != nil {
-		if err != pebble.ErrNotFound {
+		scoreBuf := bkName.Get([]byte(key))
+		score := 0.0
+		if len(scoreBuf) != 0 {
+			if err := bkScore.Delete([]byte(string(scoreBuf) + key)); err != nil {
+				return err
+			}
+			score = bytesToFloat(scoreBuf)
+		}
+		scoreBuf = floatToBytes(score + by)
+		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
+			return err
+		}
+		if err := bkScore.Put([]byte(string(scoreBuf)+key), []byte(key)); err != nil {
 			return err
 		}
 		return nil
-	}
-	defer c.Close()
-	scoreKey := makeZSetScoreKey(name, key, bytesToFloat(oldScore))
-
-	b := z.db.NewBatch()
-	b.Delete(nameKey, pebble.NoSync)
-	b.Delete(scoreKey, pebble.NoSync)
-	z.incrZSetCard(b, name, -1)
-	return b.Commit(pebble.NoSync)
-}
-
-func (z *DB) ZIncrBy(name string, key string, by float64) error {
-	z.Lock(name)
-	defer z.Unlock(name)
-
-	nameKey := makeZSetNameKey(name, key)
-
-	oldScoreBuf, c, err := z.db.Get(nameKey)
-	oldScore := bytesToFloat(oldScoreBuf)
-	if err != nil {
-		if err != pebble.ErrNotFound {
-			return fmt.Errorf("get old score key: %v", err)
-		}
-		oldScore = 0
-	}
-	defer c.Close()
-
-	b := z.db.NewBatch()
-	b.Delete(makeZSetScoreKey(name, key, oldScore), pebble.NoSync)
-	b.Set(nameKey, floatToBytes(oldScore+by), pebble.NoSync)
-	b.Set(makeZSetScoreKey(name, key, oldScore+by), nameKey, pebble.NoSync)
-	return b.Commit(pebble.NoSync)
+	})
 }

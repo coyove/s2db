@@ -1,7 +1,9 @@
 package main
 
 import (
-	"github.com/cockroachdb/pebble"
+	"bytes"
+
+	"go.etcd.io/bbolt"
 )
 
 type RangeLimit struct {
@@ -9,128 +11,87 @@ type RangeLimit struct {
 	Inclusive bool
 }
 
-func (z *DB) rangeLex(name string, start, end RangeLimit) ([]Pair, error) {
-	s := z.db.NewSnapshot()
-	defer s.Close()
-
-	startNameKey := makeZSetNameKey(name, start.Value)
-	if !start.Inclusive {
-		startNameKey = append(startNameKey, 1)
-	}
-
-	endNameKey := makeZSetNameKey(name, end.Value)
-	if end.Inclusive {
-		endNameKey = append(endNameKey, 1)
-	}
-
-	i := s.NewIter(&pebble.IterOptions{
-		LowerBound: startNameKey,
-		UpperBound: endNameKey,
-	})
-
-	var pairs []Pair
-
-	if !i.First() {
-		return pairs, nil
-	}
-	for {
-		_, key := parseZSetNameKey(i.Key())
-		score := bytesToFloat(i.Value())
-		pairs = append(pairs, Pair{key, score})
-		if !i.Next() {
-			break
+func (z *DB) rangeLex(name string, start, end RangeLimit, delete bool) (pairs []Pair, err error) {
+	f := func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset." + name))
+		if bk == nil {
+			return nil
 		}
+
+		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
+
+		if !start.Inclusive {
+			startBuf = append(startBuf, 0)
+		}
+
+		endFlag := 0
+		if !end.Inclusive {
+			endFlag = -1
+		}
+
+		c := bk.Cursor()
+		k, s := c.Seek(startBuf)
+
+		for {
+			if len(s) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
+				pairs = append(pairs, Pair{string(k), bytesToFloat(s)})
+			} else {
+				break
+			}
+			k, s = c.Next()
+
+		}
+
+		if delete {
+			return z.deletePair(tx, name, pairs...)
+		}
+		return nil
 	}
-	return pairs, nil
+	if delete {
+		err = z.db.Update(f)
+	} else {
+		err = z.db.View(f)
+	}
+	return
 }
 
-func (z *DB) rangeLexIndex(name string, start, end int) ([]Pair, error) {
-	s := z.db.NewSnapshot()
-	defer s.Close()
-
-	i := s.NewIter(&pebble.IterOptions{
-		LowerBound: makeZSetNameKey(name, ""),
-		UpperBound: makeZSetNameKey(name, "\xff"),
-	})
-
-	var pairs []Pair
-	if !i.First() {
-		return pairs, nil
-	}
-
-	for idx := 0; ; idx++ {
-		if idx >= start && idx < end {
-			_, key := parseZSetNameKey(i.Key())
-			score := bytesToFloat(i.Value())
-			pairs = append(pairs, Pair{key, score})
+func (z *DB) rangeScore(name string, start, end RangeLimit, delete bool) (pairs []Pair, err error) {
+	f := func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset.score." + name))
+		if bk == nil {
+			return nil
 		}
-		if !i.Next() {
-			break
+
+		startBuf, endBuf := floatToBytes(atof(start.Value)), append(floatToBytes(atof(end.Value)), 0xff)
+
+		if !start.Inclusive {
+			startBuf = floatBytesStep(startBuf, 1)
 		}
-	}
-	return pairs, nil
-}
-
-func (z *DB) rangeScore(name string, start, end RangeLimit) ([]Pair, error) {
-	s := z.db.NewSnapshot()
-	defer s.Close()
-
-	buf := floatToBytes(atof(start.Value))
-	if !start.Inclusive {
-		buf[len(buf)-1]++
-	}
-	startScoreKey := makeZSetScoreKey2(name, "", buf)
-
-	buf = floatToBytes(atof(end.Value))
-	if end.Inclusive {
-		buf[len(buf)-1]++
-	}
-	endScoreKey := makeZSetScoreKey2(name, "", buf)
-
-	i := s.NewIter(&pebble.IterOptions{
-		LowerBound: startScoreKey,
-		UpperBound: endScoreKey,
-	})
-
-	var pairs []Pair
-
-	if !i.First() {
-		return pairs, nil
-	}
-
-	for {
-		_, key, score := parseZSetScoreKey(i.Key())
-		pairs = append(pairs, Pair{key, score})
-		if !i.Next() {
-			break
+		if !end.Inclusive {
+			endBuf = floatBytesStep(endBuf, -1)
 		}
-	}
-	return pairs, nil
-}
 
-func (z *DB) rangeScoreIndex(name string, start, end int) ([]Pair, error) {
-	s := z.db.NewSnapshot()
-	defer s.Close()
+		c := bk.Cursor()
+		k, s := c.Seek(startBuf)
 
-	i := s.NewIter(&pebble.IterOptions{
-		LowerBound: makeZSetScoreKey(name, "", 0),
-		UpperBound: makeZSetScoreKey2(name, "", []byte{255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}),
-	})
+		for {
+			if len(s) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
+				pairs = append(pairs, Pair{string(s), bytesToFloat(k[:16])})
+			} else {
+				break
+			}
+			k, s = c.Next()
 
-	var pairs []Pair
-
-	if !i.First() {
-		return pairs, nil
-	}
-
-	for idx := 0; ; idx++ {
-		if idx >= start && idx < end {
-			_, key, score := parseZSetScoreKey(i.Key())
-			pairs = append(pairs, Pair{key, score})
 		}
-		if !i.Next() {
-			break
+		if delete {
+			return z.deletePair(tx, name, pairs...)
 		}
+		return nil
 	}
-	return pairs, nil
+	if delete {
+		err = z.db.Update(f)
+	} else {
+		err = z.db.View(f)
+	}
+	return
 }

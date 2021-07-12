@@ -1,19 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
 const (
-	MaxScore    = 1 << 53
-	MinScore    = -MaxScore
-	MaxScoreStr = "9007199254740992"
-	MinScoreStr = "-9007199254740992"
+	MaxScore = 1 << 53
+	MinScore = -MaxScore
 )
 
 func checkScore(s float64) error {
@@ -82,39 +80,66 @@ func hashStr(s string) (h uint64) {
 	return h
 }
 
-func makeZSetNameKey(name, key string) []byte {
-	return []byte("zset.ns." + name + "." + key)
-}
-
-func parseZSetNameKey(in []byte) (name, key string) {
-	idx := bytes.LastIndexByte(in, '.')
-	key = string(in[idx+1:])
-	in = in[:idx]
-	idx = bytes.LastIndexByte(in, '.')
-	name = string(in[idx+1:])
-	return
-}
-
-func makeZSetScoreKey(name, key string, score float64) []byte {
-	return makeZSetScoreKey2(name, key, floatToBytes(score))
-}
-
-func makeZSetScoreKey2(name, key string, score []byte) []byte {
-	return []byte("zset.rev." + name + "." + *(*string)(unsafe.Pointer(&score)) + "." + key)
-}
-
-func parseZSetScoreKey(in []byte) (name, key string, score float64) {
-	idx := bytes.LastIndexByte(in, '.')
-	key = string(in[idx+1:])
-	in = in[:idx]
-	score = bytesToFloat(in[len(in)-16:])
-	in = in[:len(in)-16-1]
-	idx = bytes.LastIndexByte(in, '.')
-	name = string(in[idx+1:])
-	return
-}
-
 func atof(a string) float64 {
 	i, _ := strconv.ParseFloat(a, 64)
 	return i
 }
+
+func reversePairs(in []Pair) []Pair {
+	for i := 0; i < len(in)/2; i++ {
+		j := len(in) - 1 - i
+		in[i], in[j] = in[j], in[i]
+	}
+	return in
+}
+
+type RangeLimit struct {
+	Value     string
+	Float     float64
+	Inclusive bool
+}
+
+type RangeOptions struct {
+	OffsetStart int
+	OffsetEnd   int
+	Delete      bool
+	CountOnly   bool
+}
+
+func (r RangeLimit) fromString(v string) RangeLimit {
+	r.Value = v
+	if strings.HasPrefix(v, "[") {
+		r.Value = r.Value[1:]
+		r.Inclusive = true
+	} else if strings.HasPrefix(v, "(") {
+		r.Value = r.Value[1:]
+		r.Inclusive = false
+	} else if v == "+" {
+		r.Value = "\xff"
+	} else if v == "-" {
+		r.Value = ""
+	}
+	return r
+}
+
+func (r RangeLimit) fromFloatString(v string) RangeLimit {
+	if strings.HasPrefix(v, "[") {
+		r.Float = atof(v[1:])
+		r.Inclusive = true
+	} else if strings.HasPrefix(v, "(") {
+		r.Float = atof(v[1:])
+		r.Inclusive = false
+	} else if v == "+inf" {
+		r.Float = MaxScore
+	} else if v == "-inf" {
+		r.Float = MinScore
+	} else {
+		r.Float = atof(v)
+	}
+	return r
+}
+
+var (
+	MinScoreRange = RangeLimit{Float: MinScore, Inclusive: true}
+	MaxScoreRange = RangeLimit{Float: MaxScore, Inclusive: true}
+)

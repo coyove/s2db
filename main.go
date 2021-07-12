@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"go.etcd.io/bbolt"
@@ -54,13 +55,21 @@ func main() {
 	rand.Seed(time.Now().Unix())
 	start := time.Now()
 	db, _ := Open("test")
-	for i := 0; i < 1000; i += 1 {
-		// fmt.Println(i)
-		db.ZAdd("test", strconv.Itoa(i), rand.Float64()*2)
+	if false {
+		wg := sync.WaitGroup{}
+		for i := 0; i < 1000; i += 1 {
+			wg.Add(1)
+			go func(i int) {
+				fmt.Println(i)
+				db.ZAdd("test", strconv.Itoa(i), rand.Float64()*2)
+				wg.Done()
+			}(i)
+		}
+		wg.Wait()
 	}
+
 	fmt.Println(db.ZCard("test"))
-	fmt.Println(db.rangeLex("test", RangeLimit{Value: "11", Inclusive: false}, RangeLimit{Value: "20"}, RangeOptions{OffsetStart: 0, OffsetEnd: 10}))
-	fmt.Println(db.rangeScore("test", RangeLimit{Value: MinScoreStr}, RangeLimit{Value: MaxScoreStr}, RangeOptions{OffsetEnd: -1, CountOnly: true}))
+	fmt.Println(db.ZRemRangeByScore("test", "[1.5", "+inf"))
 	// fmt.Println(db.rangeScore("test", RangeLimit{Value: "0.1"}, RangeLimit{Value: "0.3"}, 0, 9, true))
 	// fmt.Println(db.rangeScoreIndex("test", 0, 20))
 	fmt.Println(time.Since(start).Seconds())

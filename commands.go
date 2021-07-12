@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+
 	"go.etcd.io/bbolt"
 )
 
@@ -64,6 +66,25 @@ func (z *DB) ZRem(name string, key string) error {
 		}
 		return z.deletePair(tx, name, Pair{key, bytesToFloat(scoreBuf)})
 	})
+}
+
+func (z *DB) ZMScore(name string, keys ...string) (scores []float64, err error) {
+	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
+		bkName := tx.Bucket([]byte("zset." + name))
+		if bkName == nil {
+			return nil
+		}
+		for _, key := range keys {
+			scoreBuf := bkName.Get([]byte(key))
+			if len(scoreBuf) != 0 {
+				scores = append(scores, bytesToFloat(scoreBuf))
+			} else {
+				scores = append(scores, math.NaN())
+			}
+		}
+		return nil
+	})
+	return
 }
 
 func (z *DB) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {

@@ -6,16 +6,66 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-type RangeLimit struct {
-	Value     string
-	Inclusive bool
+func (z *DB) ZRange(name string, start, end int) ([]Pair, error) {
+	return z.doZRange(name, start, end, false)
 }
 
-type RangeOptions struct {
-	OffsetStart int
-	OffsetEnd   int
-	Delete      bool
-	CountOnly   bool
+func (z *DB) ZRemRangeByRank(name string, start, end int) ([]Pair, error) {
+	return z.doZRange(name, start, end, true)
+}
+
+func (z *DB) doZRange(name string, start, end int, delete bool) ([]Pair, error) {
+	p, _, err := z.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{OffsetStart: start, OffsetEnd: end, Delete: delete})
+	return p, err
+}
+
+func (z *DB) ZRevRange(name string, start, end int) ([]Pair, error) {
+	p, _, err := z.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{OffsetStart: -end - 1, OffsetEnd: -start - 1})
+	return reversePairs(p), err
+}
+
+func (z *DB) ZRangeByLex(name string, start, end string) ([]Pair, error) {
+	return z.doZRangeByLex(name, start, end, false)
+}
+
+func (z *DB) ZRemRangeByLex(name string, start, end string) ([]Pair, error) {
+	return z.doZRangeByLex(name, start, end, true)
+}
+
+func (z *DB) doZRangeByLex(name string, start, end string, delete bool) ([]Pair, error) {
+	rangeStart := (RangeLimit{}).fromString(start)
+	rangeEnd := (RangeLimit{}).fromString(end)
+	p, _, err := z.rangeLex(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Delete: delete})
+	return p, err
+}
+
+func (z *DB) ZRevRangeByLex(name string, start, end string) ([]Pair, error) {
+	rangeStart := (RangeLimit{}).fromString(end)
+	rangeEnd := (RangeLimit{}).fromString(start)
+	p, _, err := z.rangeLex(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1})
+	return reversePairs(p), err
+}
+
+func (z *DB) ZRangeByScore(name string, start, end string) ([]Pair, error) {
+	return z.doZRangeByScore(name, start, end, false)
+}
+
+func (z *DB) ZRemRangeByScore(name string, start, end string) ([]Pair, error) {
+	return z.doZRangeByScore(name, start, end, true)
+}
+
+func (z *DB) doZRangeByScore(name string, start, end string, delete bool) ([]Pair, error) {
+	rangeStart := (RangeLimit{}).fromFloatString(start)
+	rangeEnd := (RangeLimit{}).fromFloatString(end)
+	p, _, err := z.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Delete: delete})
+	return p, err
+}
+
+func (z *DB) ZRevRangeByScore(name string, start, end string) ([]Pair, error) {
+	rangeStart := (RangeLimit{}).fromFloatString(end)
+	rangeEnd := (RangeLimit{}).fromFloatString(start)
+	p, _, err := z.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1})
+	return reversePairs(p), err
 }
 
 func (z *DB) rangeLex(name string, start, end RangeLimit, opt RangeOptions) (pairs []Pair, count int, err error) {
@@ -79,7 +129,7 @@ func (z *DB) rangeScore(name string, start, end RangeLimit, opt RangeOptions) (p
 			return nil
 		}
 
-		startBuf, endBuf := floatToBytes(atof(start.Value)), floatToBytes(atof(end.Value))
+		startBuf, endBuf := floatToBytes(start.Float), floatToBytes(end.Float)
 		opt.translateOffset(bk)
 
 		if !start.Inclusive {

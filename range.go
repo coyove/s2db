@@ -6,6 +6,11 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+func (z *DB) ZCount(name string, start, end string) (int, error) {
+	_, c, err := z.doZRangeByScore(name, start, end, false, true)
+	return c, err
+}
+
 func (z *DB) ZRange(name string, start, end int) ([]Pair, error) {
 	return z.doZRange(name, start, end, false)
 }
@@ -47,18 +52,20 @@ func (z *DB) ZRevRangeByLex(name string, start, end string) ([]Pair, error) {
 }
 
 func (z *DB) ZRangeByScore(name string, start, end string) ([]Pair, error) {
-	return z.doZRangeByScore(name, start, end, false)
+	p, _, err := z.doZRangeByScore(name, start, end, false, false)
+	return p, err
 }
 
 func (z *DB) ZRemRangeByScore(name string, start, end string) ([]Pair, error) {
-	return z.doZRangeByScore(name, start, end, true)
+	p, _, err := z.doZRangeByScore(name, start, end, true, false)
+	return p, err
 }
 
-func (z *DB) doZRangeByScore(name string, start, end string, delete bool) ([]Pair, error) {
+func (z *DB) doZRangeByScore(name string, start, end string, delete, countOnly bool) ([]Pair, int, error) {
 	rangeStart := (RangeLimit{}).fromFloatString(start)
 	rangeEnd := (RangeLimit{}).fromFloatString(end)
-	p, _, err := z.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Delete: delete})
-	return p, err
+	p, c, err := z.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Delete: delete, CountOnly: countOnly})
+	return p, c, err
 }
 
 func (z *DB) ZRevRangeByScore(name string, start, end string) ([]Pair, error) {

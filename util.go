@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
 	"strings"
 	"unsafe"
+
+	"github.com/secmask/go-redisproto"
 )
 
 const (
@@ -85,12 +88,41 @@ func atof(a string) float64 {
 	return i
 }
 
+func ftoa(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+func atoi(a string) int {
+	i, _ := strconv.Atoi(a)
+	return i
+}
+
+func restCommandsToKeys(i int, command *redisproto.Command) []string {
+	keys := []string{}
+	for ; i < command.ArgCount(); i++ {
+		keys = append(keys, string(command.Get(i)))
+	}
+	return keys
+}
+
 func reversePairs(in []Pair) []Pair {
 	for i := 0; i < len(in)/2; i++ {
 		j := len(in) - 1 - i
 		in[i], in[j] = in[j], in[i]
 	}
 	return in
+}
+
+func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
+	withScores := bytes.Equal(bytes.ToUpper(command.Get(command.ArgCount()-1)), []byte("WITHSCORES"))
+	data := make([]string, 0, len(in))
+	for _, p := range in {
+		data = append(data, p.Key)
+		if withScores {
+			data = append(data, strconv.FormatFloat(p.Score, 'f', -1, 64))
+		}
+	}
+	return w.WriteBulkStrings(data)
 }
 
 type RangeLimit struct {

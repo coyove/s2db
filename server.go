@@ -1,0 +1,198 @@
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"math"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/secmask/go-redisproto"
+	log "github.com/sirupsen/logrus"
+	"go.etcd.io/bbolt"
+)
+
+type DB struct {
+	db [32]*bbolt.DB
+}
+
+type Pair struct {
+	Key   string
+	Score float64
+}
+
+func Open(path string) (*DB, error) {
+	if err := os.MkdirAll(path, 0777); err != nil {
+		return nil, err
+	}
+	x := &DB{}
+	for i := range x.db {
+		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
+			FreelistType: bbolt.FreelistMapType,
+		})
+		if err != nil {
+			return nil, err
+		}
+		x.db[i] = db
+	}
+	return x, nil
+}
+
+func (z *DB) Close() error {
+	var errs []error
+	for _, db := range z.db {
+		if err := db.Close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("close: %v", errs)
+	}
+	return nil
+}
+
+type Server struct {
+	DB *DB
+}
+
+func (s *Server) Serve(addr string) error {
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
+	}
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			log.Error("Error on accept: ", err)
+			continue
+		}
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *Server) handleConnection(conn net.Conn) {
+	defer conn.Close()
+	parser := redisproto.NewParser(conn)
+	writer := redisproto.NewWriter(bufio.NewWriter(conn))
+	var ew error
+	for {
+		command, err := parser.ReadCommand()
+		if err != nil {
+			_, ok := err.(*redisproto.ProtocolError)
+			if ok {
+				ew = writer.WriteError(err.Error())
+			} else {
+				log.Println(err, " closed connection to ", conn.RemoteAddr())
+				break
+			}
+		} else {
+			cmd := strings.ToUpper(string(command.Get(0)))
+			name := string(command.Get(1))
+			if name == "" {
+				ew = writer.WriteError("Empty zset name")
+			} else {
+				ew = s.runCommand(writer, cmd, name, command)
+			}
+		}
+		if command.IsLast() {
+			writer.Flush()
+		}
+		if ew != nil {
+			log.Println("Connection closed", ew)
+			break
+		}
+	}
+}
+
+func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *redisproto.Command) error {
+	switch cmd {
+	case "ZADD":
+		xx, nx, ch, idx := false, false, false, 2
+		for ; ; idx++ {
+			switch strings.ToUpper(string(command.Get(idx))) {
+			case "XX":
+				xx = true
+				continue
+			case "NX":
+				nx = true
+				continue
+			case "CH":
+				ch = true
+				continue
+			}
+			break
+		}
+
+		pairs := []Pair{}
+		for i := idx; i < command.ArgCount(); i += 2 {
+			pairs = append(pairs, Pair{string(command.Get(i + 1)), atof(string(command.Get(i)))})
+		}
+
+		added, updated, err := s.DB.ZAdd(name, pairs, nx, xx)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if ch {
+			return w.WriteInt(int64(added + updated))
+		}
+		return w.WriteInt(int64(added))
+	case "ZSCORE":
+		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if math.IsNaN(s[0]) {
+			return w.WriteBulk(nil)
+		}
+		return w.WriteBulkString(ftoa(s[0]))
+	case "ZMSCORE":
+		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		data := [][]byte{}
+		for _, s := range s {
+			if math.IsNaN(s) {
+				data = append(data, nil)
+			} else {
+				data = append(data, []byte(ftoa(s)))
+			}
+		}
+		return w.WriteBulks(data...)
+	case "ZREM":
+		c, err := s.DB.ZRem(name, restCommandsToKeys(2, command)...)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(c))
+	case "ZCARD":
+		c, err := s.DB.ZCard(name)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(c)
+	case "ZCOUNT":
+		c, err := s.DB.ZCount(name, string(command.Get(2)), string(command.Get(3)))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(c))
+	case "ZRANGE":
+		p, err := s.DB.ZRange(name, atoi(string(command.Get(2))), atoi(string(command.Get(3))))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return writePairs(p, w, command)
+	case "ZREVRANGE":
+		p, err := s.DB.ZRevRange(name, atoi(string(command.Get(2))), atoi(string(command.Get(3))))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return writePairs(p, w, command)
+	default:
+		return w.WriteError("Command not support: " + cmd)
+	}
+}

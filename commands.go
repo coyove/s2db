@@ -23,12 +23,8 @@ func (z *DB) ZCard(name string) (int64, error) {
 	return int64(count), err
 }
 
-func (z *DB) ZAdd(name string, key string, score float64) error {
-	if err := checkScore(score); err != nil {
-		return err
-	}
-
-	return z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (z *DB) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, err error) {
+	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err
@@ -37,35 +33,64 @@ func (z *DB) ZAdd(name string, key string, score float64) error {
 		if err != nil {
 			return err
 		}
-		scoreBuf := bkName.Get([]byte(key))
-		if len(scoreBuf) != 0 {
-			if err := bkScore.Delete([]byte(string(scoreBuf) + key)); err != nil {
+		for _, p := range pairs {
+			if err := checkScore(p.Score); err != nil {
+				return err
+			}
+			scoreBuf := bkName.Get([]byte(p.Key))
+			if len(scoreBuf) != 0 {
+				// old key exists
+				if nx {
+					continue
+				}
+				if bytesToFloat(scoreBuf) == p.Score {
+					continue
+				}
+				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
+					return err
+				}
+				updated++
+			} else {
+				// we are adding a new key
+				if xx {
+					continue
+				}
+				added++
+			}
+			scoreBuf = floatToBytes(p.Score)
+			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
+				return err
+			}
+			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), []byte(p.Key)); err != nil {
 				return err
 			}
 		}
-		scoreBuf = floatToBytes(score)
-		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
-			return err
-		}
-		if err := bkScore.Put([]byte(string(scoreBuf)+key), []byte(key)); err != nil {
-			return err
-		}
 		return nil
 	})
+	return
 }
 
-func (z *DB) ZRem(name string, key string) error {
-	return z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (z *DB) ZRem(name string, keys ...string) (count int, err error) {
+	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
 		}
-		scoreBuf := bkName.Get([]byte(key))
-		if len(scoreBuf) == 0 {
+		pairs := []Pair{}
+		for _, key := range keys {
+			scoreBuf := bkName.Get([]byte(key))
+			if len(scoreBuf) == 0 {
+				continue
+			}
+			pairs = append(pairs, Pair{key, bytesToFloat(scoreBuf)})
+			count++
+		}
+		if len(pairs) == 0 {
 			return nil
 		}
-		return z.deletePair(tx, name, Pair{key, bytesToFloat(scoreBuf)})
+		return z.deletePair(tx, name, pairs...)
 	})
+	return
 }
 
 func (z *DB) ZMScore(name string, keys ...string) (scores []float64, err error) {

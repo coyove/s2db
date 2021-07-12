@@ -65,6 +65,7 @@ func (z *DB) doZRangeByScore(name string, start, end string, delete, countOnly b
 	rangeStart := (RangeLimit{}).fromFloatString(start)
 	rangeEnd := (RangeLimit{}).fromFloatString(end)
 	p, c, err := z.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Delete: delete, CountOnly: countOnly})
+	// fmt.Println(start, end, rangeStart, rangeEnd, p)
 	return p, c, err
 }
 

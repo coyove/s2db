@@ -51,7 +51,16 @@ func floatToBytes(v float64) []byte {
 
 func floatBytesStep(buf []byte, s int64) []byte {
 	v := binary.BigEndian.Uint64(buf[8:])
-	binary.BigEndian.PutUint64(buf[8:], uint64(int64(v)+s))
+	h := binary.BigEndian.Uint64(buf[:8])
+	if s == -1 && v == 0 {
+		binary.BigEndian.PutUint64(buf[:8], uint64(int64(h)-1))
+		binary.BigEndian.PutUint64(buf[8:], math.MaxUint64)
+	} else if s == 1 && v == math.MaxUint64 {
+		binary.BigEndian.PutUint64(buf[:8], uint64(int64(h)+1))
+		binary.BigEndian.PutUint64(buf[8:], 0)
+	} else {
+		binary.BigEndian.PutUint64(buf[8:], uint64(int64(v)+s))
+	}
 	return buf
 }
 
@@ -84,6 +93,12 @@ func hashStr(s string) (h uint64) {
 }
 
 func atof(a string) float64 {
+	if a == "+inf" {
+		return MaxScore
+	}
+	if a == "-inf" {
+		return MinScore
+	}
 	i, _ := strconv.ParseFloat(a, 64)
 	return i
 }
@@ -140,9 +155,9 @@ type RangeOptions struct {
 
 func (r RangeLimit) fromString(v string) RangeLimit {
 	r.Value = v
+	r.Inclusive = true
 	if strings.HasPrefix(v, "[") {
 		r.Value = r.Value[1:]
-		r.Inclusive = true
 	} else if strings.HasPrefix(v, "(") {
 		r.Value = r.Value[1:]
 		r.Inclusive = false
@@ -155,9 +170,15 @@ func (r RangeLimit) fromString(v string) RangeLimit {
 }
 
 func (r RangeLimit) fromFloatString(v string) RangeLimit {
+	r.Inclusive = true
 	if strings.HasPrefix(v, "[") {
 		r.Float = atof(v[1:])
-		r.Inclusive = true
+	} else if v == "(+inf" {
+		r.Float = MaxScore
+		r.Inclusive = false
+	} else if v == "(-inf" {
+		r.Float = MinScore
+		r.Inclusive = false
 	} else if strings.HasPrefix(v, "(") {
 		r.Float = atof(v[1:])
 		r.Inclusive = false

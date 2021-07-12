@@ -145,5 +145,72 @@ func TestZSet(t *testing.T) {
 	// # withscores
 	assertEqual([]redis.Z{*z(4, "d"), *z(3, "c"), *z(2, "b"), *z(1, "a")}, rdb.ZRevRangeWithScores(ctx, "ztmp", 0, -1).Val())
 
+	rdb.Del(ctx, "zset")
+	rdb.ZIncrBy(ctx, "zset", 1, "foo")
+	assertEqual([]string{"foo"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	assertEqual(1, rdb.ZScore(ctx, "zset", "foo").Val())
+
+	rdb.ZIncrBy(ctx, "zset", 2, "foo")
+	rdb.ZIncrBy(ctx, "zset", 1, "bar")
+	assertEqual([]string{"bar", "foo"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+
+	rdb.ZIncrBy(ctx, "zset", 10, "bar")
+	rdb.ZIncrBy(ctx, "zset", -5, "foo")
+	rdb.ZIncrBy(ctx, "zset", -5, "bar")
+	assertEqual([]string{"foo", "bar"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+
+	assertEqual(-2, rdb.ZScore(ctx, "zset", "foo").Val())
+	assertEqual(6, rdb.ZScore(ctx, "zset", "bar").Val())
+
+	rdb.Del(ctx, "zset")
+	fmt.Println(rdb.ZAdd(ctx, "zset", z(MinScore, "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(MaxScore, "g")).Err())
+
+	// # inclusive range
+	assertEqual([]string{"a", "b", "c"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "-inf", Max: "2"}).Val())
+	assertEqual([]string{"b", "c", "d"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "0", Max: "3"}).Val())
+	assertEqual([]string{"d", "e", "f"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "3", Max: "6"}).Val())
+	assertEqual([]string{"e", "f", "g"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "4", Max: "+inf"}).Val())
+	assertEqual([]string{"c", "b", "a"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "2", Min: "-inf"}).Val())
+	assertEqual([]string{"d", "c", "b"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "3", Min: "0"}).Val())
+	assertEqual([]string{"f", "e", "d"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "6", Min: "3"}).Val())
+	assertEqual([]string{"g", "f", "e"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "4"}).Val())
+	assertEqual(3, rdb.ZCount(ctx, "zset", "0", "3").Val())
+
+	// # exclusive range
+	assertEqual([]string{"b"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(-inf", Max: "(2"}).Val())
+	assertEqual([]string{"b", "c"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(0", Max: "(3"}).Val())
+	assertEqual([]string{"e", "f"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(3", Max: "(6"}).Val())
+	assertEqual([]string{"f"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(4", Max: "(+inf"}).Val())
+	assertEqual([]string{"b"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(2", Min: "(-inf"}).Val())
+	assertEqual([]string{"c", "b"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(3", Min: "(0"}).Val())
+	assertEqual([]string{"f", "e"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(6", Min: "(3"}).Val())
+	assertEqual([]string{"f"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(+inf", Min: "(4"}).Val())
+	assertEqual(2, rdb.ZCount(ctx, "zset", "(0", "(3").Val())
+
+	// # test empty ranges
+	rdb.ZRem(ctx, "zset", "a", "g")
+
+	// # inclusive
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "4", Max: "2"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "6", Max: "+inf"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "-inf", Max: "-6"}).Val())
+	assertEqual([]string{}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "+inf", Min: "6"}).Val())
+	assertEqual([]string{}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "-6", Min: "-inf"}).Val())
+
+	// # exclusive([]string
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(4", Max: "(2"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "2", Max: "(2"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(2", Max: "2"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(6", Max: "(+inf"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(-inf", Max: "(-6"}).Val())
+	assertEqual([]string{}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(+inf", Min: "(6"}).Val())
+	assertEqual([]string{}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "(-6", Min: "(-inf"}).Val())
+
+	// # empty inn([]stringr , nge
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "2.4", Max: "2.6"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(2.4", Max: "2.6"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "2.4", Max: "(2.6"}).Val())
+	assertEqual([]string{}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "(2.4", Max: "(2.6"}).Val())
+
 	time.Sleep(time.Second)
 }

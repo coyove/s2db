@@ -206,7 +206,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			p, err = s.DB.ZRangeByLex(name, start, end)
 		case "ZREVRANGEBYLEX":
 			p, err = s.DB.ZRevRangeByLex(name, start, end)
-		case "ZRANEGBYSCORE":
+		case "ZRANGEBYSCORE":
 			p, err = s.DB.ZRangeByScore(name, start, end)
 		case "ZREVRANGEBYSCORE":
 			p, err = s.DB.ZRevRangeByScore(name, start, end)

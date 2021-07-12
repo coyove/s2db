@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 
 	"go.etcd.io/bbolt"
@@ -21,6 +22,34 @@ func (z *DB) ZCard(name string) (int64, error) {
 		return nil
 	})
 	return int64(count), err
+}
+
+func (z *DB) Del(names ...string) (count int, err error) {
+	nameShards := make([][]string, len(z.db))
+	for _, name := range names {
+		x := &nameShards[hashStr(name)%uint64(len(nameShards))]
+		*x = append(*x, name)
+	}
+	for i := range nameShards {
+		err = z.db[i].Update(func(tx *bbolt.Tx) error {
+			for _, name := range nameShards[i] {
+				bkName := tx.Bucket([]byte("zset." + name))
+				bkScore := tx.Bucket([]byte("zset.score." + name))
+				if bkName == nil || bkScore == nil {
+					continue
+				}
+				if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
+					return err
+				}
+				if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
+					return err
+				}
+				count++
+			}
+			return nil
+		})
+	}
+	return
 }
 
 func (z *DB) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, err error) {
@@ -94,6 +123,9 @@ func (z *DB) ZRem(name string, keys ...string) (count int, err error) {
 }
 
 func (z *DB) ZMScore(name string, keys ...string) (scores []float64, err error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("missing keys")
+	}
 	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
@@ -132,11 +164,8 @@ func (z *DB) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
 	return nil
 }
 
-func (z *DB) ZIncrBy(name string, key string, by float64) error {
-	if by == 0 {
-		return nil
-	}
-	return z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (z *DB) ZIncrBy(name string, key string, by float64) (newValue float64, err error) {
+	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err
@@ -153,6 +182,10 @@ func (z *DB) ZIncrBy(name string, key string, by float64) error {
 			}
 			score = bytesToFloat(scoreBuf)
 		}
+		if by == 0 {
+			newValue = score
+			return nil
+		}
 		if err := checkScore(score + by); err != nil {
 			return err
 		}
@@ -163,6 +196,8 @@ func (z *DB) ZIncrBy(name string, key string, by float64) error {
 		if err := bkScore.Put([]byte(string(scoreBuf)+key), []byte(key)); err != nil {
 			return err
 		}
+		newValue = score + by
 		return nil
 	})
+	return
 }

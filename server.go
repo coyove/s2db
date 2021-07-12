@@ -90,12 +90,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		} else {
 			cmd := strings.ToUpper(string(command.Get(0)))
-			name := string(command.Get(1))
-			if name == "" {
-				ew = writer.WriteError("Empty zset name")
-			} else {
-				ew = s.runCommand(writer, cmd, name, command)
-			}
+			ew = s.runCommand(writer, cmd, string(command.Get(1)), command)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -108,7 +103,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *redisproto.Command) error {
+	if strings.HasPrefix(cmd, "Z") && name == "" {
+		return fmt.Errorf("ZSet: empty name")
+	}
+
+	var p []Pair
+	var err error
 	switch cmd {
+	case "PING":
+		return w.WriteSimpleString("PONG")
+	case "DEL":
+		c, err := s.DB.Del(restCommandsToKeys(1, command)...)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(c))
 	case "ZADD":
 		xx, nx, ch, idx := false, false, false, 2
 		for ; ; idx++ {
@@ -139,6 +148,12 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteInt(int64(added + updated))
 		}
 		return w.WriteInt(int64(added))
+	case "ZINCRBY":
+		v, err := s.DB.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulkString(ftoa(v))
 	case "ZSCORE":
 		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -180,19 +195,42 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(int64(c))
-	case "ZRANGE":
-		p, err := s.DB.ZRange(name, atoi(string(command.Get(2))), atoi(string(command.Get(3))))
+	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+		start, end := string(command.Get(2)), string(command.Get(3))
+		switch cmd {
+		case "ZRANGE":
+			p, err = s.DB.ZRange(name, atoi(start), atoi(end))
+		case "ZREVRANGE":
+			p, err = s.DB.ZRevRange(name, atoi(start), atoi(end))
+		case "ZRANGEBYLEX":
+			p, err = s.DB.ZRangeByLex(name, start, end)
+		case "ZREVRANGEBYLEX":
+			p, err = s.DB.ZRevRangeByLex(name, start, end)
+		case "ZRANEGBYSCORE":
+			p, err = s.DB.ZRangeByScore(name, start, end)
+		case "ZREVRANGEBYSCORE":
+			p, err = s.DB.ZRevRangeByScore(name, start, end)
+		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return writePairs(p, w, command)
-	case "ZREVRANGE":
-		p, err := s.DB.ZRevRange(name, atoi(string(command.Get(2))), atoi(string(command.Get(3))))
+	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+		start, end := string(command.Get(2)), string(command.Get(3))
+		switch cmd {
+		case "ZREMRANGEBYLEX":
+			p, err = s.DB.ZRemRangeByLex(name, start, end)
+		case "ZREMRANGEBYSCORE":
+			p, err = s.DB.ZRemRangeByScore(name, start, end)
+		case "ZREMRANGEBYRANK":
+			p, err = s.DB.ZRemRangeByRank(name, atoi(start), atoi(end))
+		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return writePairs(p, w, command)
+		return w.WriteInt(int64(len(p)))
 	default:
+		log.Error("command not support: ", cmd)
 		return w.WriteError("Command not support: " + cmd)
 	}
 }

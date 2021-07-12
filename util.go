@@ -140,6 +140,14 @@ func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) er
 	return w.WriteBulkStrings(data)
 }
 
+func sizePairs(in []Pair) int {
+	sz := 0
+	for _, p := range in {
+		sz += len(p.Key) + 8
+	}
+	return sz
+}
+
 type RangeLimit struct {
 	Value     string
 	Float     float64

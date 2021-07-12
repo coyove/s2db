@@ -92,6 +92,20 @@ func hashStr(s string) (h uint64) {
 	return h
 }
 
+func hashCommands(in *redisproto.Command) (h [2]uint64) {
+	h = [2]uint64{0, 5381}
+	for _, buf := range *(*[][]byte)(unsafe.Pointer(in)) {
+		for _, b := range buf {
+			old := h[1]
+			h[1] = h[1]*33 + uint64(b)
+			if h[1] < old {
+				h[0]++
+			}
+		}
+	}
+	return h
+}
+
 func atof(a string) float64 {
 	if a == "+inf" {
 		return MaxScore

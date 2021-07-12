@@ -9,14 +9,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
+	"github.com/coyove/common/lru"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
 type DB struct {
-	db [32]*bbolt.DB
+	cache    *lru.Cache
+	cacheMap sync.Map
+	db       [32]*bbolt.DB
 }
 
 type Pair struct {
@@ -28,7 +32,16 @@ func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(path, 0777); err != nil {
 		return nil, err
 	}
-	x := &DB{}
+	x := &DB{
+		cache: lru.NewCache(2 * 1024 * 1024 * 1024),
+	}
+	x.cache.OnEvicted = func(k lru.Key, v interface{}) {
+		m, ok := x.cacheMap.Load(v.(*CacheState).Key)
+		if !ok {
+			return
+		}
+		delete(m.(map[[2]uint64]*CacheState), v.(*CacheState).CmdHash)
+	}
 	for i := range x.db {
 		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
 			FreelistType: bbolt.FreelistMapType,
@@ -39,6 +52,12 @@ func Open(path string) (*DB, error) {
 		x.db[i] = db
 	}
 	return x, nil
+}
+
+func (z *DB) addCache(cs *CacheState) {
+	z.cache.AddWeight(cs.CmdHash, cs, int64(sizePairs(cs.Data)))
+	m, _ := z.cacheMap.LoadOrStore(cs.Key, map[[2]uint64]*CacheState{})
+	m.(map[[2]uint64]*CacheState)[cs.CmdHash] = cs
 }
 
 func (z *DB) Close() error {
@@ -196,6 +215,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+		h := hashCommands(command)
+		if v, ok := s.DB.cache.Get(h); ok {
+			return writePairs(v.(*CacheState).Data, w, command)
+		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
 		case "ZRANGE":
@@ -213,6 +236,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
+		}
+		if len(p) > 0 {
+			s.DB.cache.AddWeight(h, NewCacheState(cmd, p), int64(sizePairs(p)))
 		}
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":

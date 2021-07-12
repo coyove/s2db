@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coyove/common/lru"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -214,6 +215,10 @@ func TestZSet(t *testing.T) {
 
 	assertEqual([]redis.Z{*z(1, "b"), *z(2, "c"), *z(3, "d")}, rdb.ZRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Min: "0", Max: "3"}).Val())
 	assertEqual([]redis.Z{*z(3, "d"), *z(2, "c"), *z(1, "b")}, rdb.ZRevRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Max: "3", Min: "0"}).Val())
+
+	db.cache.Info(func(k lru.Key, v interface{}, hits, weight int64) {
+		fmt.Println(k, v)
+	})
 
 	time.Sleep(time.Second)
 }

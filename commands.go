@@ -4,9 +4,13 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+func (z *DB) pick(name string) *bbolt.DB {
+	return z.db[hashStr(name)%uint64(len(z.db))]
+}
+
 func (z *DB) ZCard(name string) (int64, error) {
 	count := 0
-	err := z.db.View(func(tx *bbolt.Tx) error {
+	err := z.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("zset." + name))
 		if bk == nil {
 			return nil
@@ -18,7 +22,11 @@ func (z *DB) ZCard(name string) (int64, error) {
 }
 
 func (z *DB) ZAdd(name string, key string, score float64) error {
-	return z.db.Update(func(tx *bbolt.Tx) error {
+	if err := checkScore(score); err != nil {
+		return err
+	}
+
+	return z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err
@@ -45,7 +53,7 @@ func (z *DB) ZAdd(name string, key string, score float64) error {
 }
 
 func (z *DB) ZRem(name string, key string) error {
-	return z.db.Update(func(tx *bbolt.Tx) error {
+	return z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
@@ -82,7 +90,7 @@ func (z *DB) ZIncrBy(name string, key string, by float64) error {
 	if by == 0 {
 		return nil
 	}
-	return z.db.Update(func(tx *bbolt.Tx) error {
+	return z.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err
@@ -98,6 +106,9 @@ func (z *DB) ZIncrBy(name string, key string, by float64) error {
 				return err
 			}
 			score = bytesToFloat(scoreBuf)
+		}
+		if err := checkScore(score + by); err != nil {
+			return err
 		}
 		scoreBuf = floatToBytes(score + by)
 		if err := bkName.Put([]byte(key), scoreBuf); err != nil {

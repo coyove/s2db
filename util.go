@@ -3,10 +3,25 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"strconv"
 	"unsafe"
 )
+
+const (
+	MaxScore    = 1 << 53
+	MinScore    = -MaxScore
+	MaxScoreStr = "9007199254740992"
+	MinScoreStr = "-9007199254740992"
+)
+
+func checkScore(s float64) error {
+	if s > (MaxScore) || s < (MinScore) {
+		return fmt.Errorf("score out of range: %d - %d", MinScore, MaxScore)
+	}
+	return nil
+}
 
 func intToBytes(v int64) []byte {
 	tmp := [8]byte{}

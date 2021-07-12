@@ -11,7 +11,14 @@ type RangeLimit struct {
 	Inclusive bool
 }
 
-func (z *DB) rangeLex(name string, start, end RangeLimit, delete bool) (pairs []Pair, err error) {
+type RangeOptions struct {
+	OffsetStart int
+	OffsetEnd   int
+	Delete      bool
+	CountOnly   bool
+}
+
+func (z *DB) rangeLex(name string, start, end RangeLimit, opt RangeOptions) (pairs []Pair, count int, err error) {
 	f := func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("zset." + name))
 		if bk == nil {
@@ -19,6 +26,7 @@ func (z *DB) rangeLex(name string, start, end RangeLimit, delete bool) (pairs []
 		}
 
 		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
+		opt.translateOffset(bk)
 
 		if !start.Inclusive {
 			startBuf = append(startBuf, 0)
@@ -32,9 +40,18 @@ func (z *DB) rangeLex(name string, start, end RangeLimit, delete bool) (pairs []
 		c := bk.Cursor()
 		k, s := c.Seek(startBuf)
 
-		for {
+		for i := 0; ; i++ {
 			if len(s) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
-				pairs = append(pairs, Pair{string(k), bytesToFloat(s)})
+				if i >= opt.OffsetStart {
+					if i <= opt.OffsetEnd {
+						if !opt.CountOnly {
+							pairs = append(pairs, Pair{string(k), bytesToFloat(s)})
+						}
+						count++
+					} else {
+						break
+					}
+				}
 			} else {
 				break
 			}
@@ -42,27 +59,28 @@ func (z *DB) rangeLex(name string, start, end RangeLimit, delete bool) (pairs []
 
 		}
 
-		if delete {
+		if opt.Delete {
 			return z.deletePair(tx, name, pairs...)
 		}
 		return nil
 	}
-	if delete {
-		err = z.db.Update(f)
+	if opt.Delete {
+		err = z.pick(name).Update(f)
 	} else {
-		err = z.db.View(f)
+		err = z.pick(name).View(f)
 	}
 	return
 }
 
-func (z *DB) rangeScore(name string, start, end RangeLimit, delete bool) (pairs []Pair, err error) {
+func (z *DB) rangeScore(name string, start, end RangeLimit, opt RangeOptions) (pairs []Pair, count int, err error) {
 	f := func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("zset.score." + name))
 		if bk == nil {
 			return nil
 		}
 
-		startBuf, endBuf := floatToBytes(atof(start.Value)), append(floatToBytes(atof(end.Value)), 0xff)
+		startBuf, endBuf := floatToBytes(atof(start.Value)), floatToBytes(atof(end.Value))
+		opt.translateOffset(bk)
 
 		if !start.Inclusive {
 			startBuf = floatBytesStep(startBuf, 1)
@@ -70,28 +88,48 @@ func (z *DB) rangeScore(name string, start, end RangeLimit, delete bool) (pairs 
 		if !end.Inclusive {
 			endBuf = floatBytesStep(endBuf, -1)
 		}
+		endBuf = append(endBuf, 0xff)
 
 		c := bk.Cursor()
 		k, s := c.Seek(startBuf)
 
-		for {
+		for i := 0; ; i++ {
 			if len(s) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
-				pairs = append(pairs, Pair{string(s), bytesToFloat(k[:16])})
+				if i >= opt.OffsetStart {
+					if i <= opt.OffsetEnd {
+						if !opt.CountOnly {
+							pairs = append(pairs, Pair{string(s), bytesToFloat(k[:16])})
+						}
+						count++
+					} else {
+						break
+					}
+				}
 			} else {
 				break
 			}
 			k, s = c.Next()
 
 		}
-		if delete {
+		if opt.Delete {
 			return z.deletePair(tx, name, pairs...)
 		}
 		return nil
 	}
-	if delete {
-		err = z.db.Update(f)
+	if opt.Delete {
+		err = z.pick(name).Update(f)
 	} else {
-		err = z.db.View(f)
+		err = z.pick(name).View(f)
 	}
 	return
+}
+
+func (o *RangeOptions) translateOffset(bk *bbolt.Bucket) {
+	n := bk.Stats().KeyN
+	if o.OffsetStart < 0 {
+		o.OffsetStart += n
+	}
+	if o.OffsetEnd < 0 {
+		o.OffsetEnd += n
+	}
 }

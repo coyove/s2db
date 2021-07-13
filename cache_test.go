@@ -1,9 +1,37 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
+	"math/rand"
 	"testing"
+	"time"
+	"unsafe"
+
+	"github.com/secmask/go-redisproto"
 )
+
+func TestCommandJoinSplit(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+
+	for c := 0; c < 1e4; c++ {
+		b := [][]byte{}
+		for i := 0; i < 10; i++ {
+			x := make([]byte, rand.Intn(200)+200)
+			for i := range x {
+				x[i] = byte(rand.Int())
+			}
+			b = append(b, x)
+		}
+		cmd := (*redisproto.Command)(unsafe.Pointer(&b))
+		cmd2, _ := splitCommand((joinCommand(cmd)))
+		for i := 0; i < cmd2.ArgCount(); i++ {
+			if !bytes.Equal(cmd2.Get(i), b[i]) {
+				t.FailNow()
+			}
+		}
+	}
+}
 
 func TestCache(t *testing.T) {
 	c := NewCache(100)

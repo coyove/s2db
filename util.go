@@ -17,6 +17,11 @@ const (
 	MinScore = -MaxScore
 )
 
+var (
+	MinScoreRange = RangeLimit{Float: MinScore, Inclusive: true}
+	MaxScoreRange = RangeLimit{Float: MaxScore, Inclusive: true}
+)
+
 func checkScore(s float64) error {
 	if s > (MaxScore) || s < (MinScore) {
 		return fmt.Errorf("score out of range: %d - %d", MinScore, MaxScore)
@@ -162,6 +167,16 @@ func sizePairs(in []Pair) int {
 	return sz
 }
 
+func splitCommand(in []byte) (*redisproto.Command, error) {
+	return redisproto.NewParser(bytes.NewReader(in)).ReadCommand()
+}
+
+func joinCommand(command *redisproto.Command) []byte {
+	p := &bytes.Buffer{}
+	redisproto.NewWriter(p).WriteBulksSlice(*(*[][]byte)(unsafe.Pointer(command)))
+	return p.Bytes()
+}
+
 type RangeLimit struct {
 	Value     string
 	Float     float64
@@ -213,8 +228,3 @@ func (r RangeLimit) fromFloatString(v string) RangeLimit {
 	}
 	return r
 }
-
-var (
-	MinScoreRange = RangeLimit{Float: MinScore, Inclusive: true}
-	MaxScoreRange = RangeLimit{Float: MaxScore, Inclusive: true}
-)

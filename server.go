@@ -12,11 +12,13 @@ import (
 
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/wal"
 	"go.etcd.io/bbolt"
 )
 
 type DB struct {
 	cache *Cache
+	wal   *wal.Log
 	db    [32]*bbolt.DB
 }
 
@@ -29,8 +31,13 @@ func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(path, 0777); err != nil {
 		return nil, err
 	}
+	w, err := wal.Open(filepath.Join(path, "wal"), wal.DefaultOptions)
+	if err != nil {
+		return nil, err
+	}
 	x := &DB{
 		cache: NewCache(2 * 1024 * 1024 * 1024),
+		wal:   w,
 	}
 	for i := range x.db {
 		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
@@ -59,10 +66,13 @@ func (z *DB) Close() error {
 
 type Server struct {
 	DB *DB
-	ln net.Listener
+
+	ln    net.Listener
+	walIn chan *redisproto.Command
 }
 
 func (s *Server) Close() error {
+	close(s.walIn)
 	return s.ln.Close()
 }
 
@@ -72,6 +82,9 @@ func (s *Server) Serve(addr string) error {
 		return err
 	}
 	s.ln = listener
+	s.walIn = make(chan *redisproto.Command, 1e3)
+	go s.writeWalCommand()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -123,12 +136,25 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 	switch cmd {
 	case "PING":
 		return w.WriteSimpleString("PONG")
+	case "WALLAST":
+		idx, err := s.DB.wal.LastIndex()
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(idx))
+	case "WALTRUNCHEAD":
+		index, _ := strconv.ParseUint(name, 10, 64)
+		if err := s.DB.wal.TruncateFront(index); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(index))
 	case "DEL":
 		c, err := s.DB.Del(restCommandsToKeys(1, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.DB.cache.Remove(name)
+		s.walIn <- command
 		return w.WriteInt(int64(c))
 	case "ZADD":
 		xx, nx, ch, idx := false, false, false, 2
@@ -157,6 +183,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteError(err.Error())
 		}
 		s.DB.cache.Remove(name)
+		s.walIn <- command
 		if ch {
 			return w.WriteInt(int64(added + updated))
 		}
@@ -167,6 +194,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteError(err.Error())
 		}
 		s.DB.cache.Remove(name)
+		s.walIn <- command
 		return w.WriteBulkString(ftoa(v))
 	case "ZSCORE":
 		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
@@ -197,6 +225,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteError(err.Error())
 		}
 		s.DB.cache.Remove(name)
+		s.walIn <- command
 		return w.WriteInt(int64(c))
 	case "ZCARD":
 		c, err := s.DB.ZCard(name)
@@ -249,9 +278,27 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 			return w.WriteError(err.Error())
 		}
 		s.DB.cache.Remove(name)
+		s.walIn <- command
 		return w.WriteInt(int64(len(p)))
 	default:
 		log.Error("command not support: ", cmd)
 		return w.WriteError("Command not support: " + cmd)
 	}
+}
+
+func (s *Server) writeWalCommand() {
+	for cmd := range s.walIn {
+		last, err := s.DB.wal.LastIndex()
+		if err != nil {
+			log.Error("wal: ", err)
+			continue
+		}
+		ctr := last + 1
+		if err := s.DB.wal.Write(ctr, joinCommand(cmd)); err != nil {
+			// Basically we won't reach here as long as the filesystem is okay
+			// otherwise we are totally screwed up
+			log.Error("wal fatal: ", err)
+		}
+	}
+	log.Info("wal worker exited")
 }

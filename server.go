@@ -2,14 +2,20 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/wal"
@@ -52,6 +58,9 @@ func Open(path string) (*DB, error) {
 }
 
 func (z *DB) Close() error {
+	if err := z.wal.Close(); err != nil {
+		return err
+	}
 	var errs []error
 	for _, db := range z.db {
 		if err := db.Close(); err != nil {
@@ -65,14 +74,17 @@ func (z *DB) Close() error {
 }
 
 type Server struct {
-	DB *DB
+	DB        *DB
+	SlaveAddr string
 
-	ln    net.Listener
-	walIn chan *redisproto.Command
+	ln      net.Listener
+	walIn   chan *redisproto.Command
+	bulking int64
 }
 
 func (s *Server) Close() error {
 	close(s.walIn)
+	s.DB.Close()
 	return s.ln.Close()
 }
 
@@ -84,6 +96,10 @@ func (s *Server) Serve(addr string) error {
 	s.ln = listener
 	s.walIn = make(chan *redisproto.Command, 1e3)
 	go s.writeWalCommand()
+
+	if s.SlaveAddr != "" {
+		go s.readWalCommand(s.SlaveAddr)
+	}
 
 	for {
 		conn, err := listener.Accept()
@@ -109,12 +125,54 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if ok {
 				ew = writer.WriteError(err.Error())
 			} else {
-				log.Println(err, " closed connection to ", conn.RemoteAddr())
+				if err != io.EOF {
+					log.Println(err, " closed connection to ", conn.RemoteAddr())
+				}
 				break
 			}
 		} else {
 			cmd := strings.ToUpper(string(command.Get(0)))
-			ew = s.runCommand(writer, cmd, string(command.Get(1)), command)
+			if cmd == "BULK" {
+				buf := &bytes.Buffer{}
+				dummy := redisproto.NewWriter(buf)
+				ew = func() error {
+					if atomic.LoadInt64(&s.bulking) == 1 || !atomic.CompareAndSwapInt64(&s.bulking, 0, 1) {
+						return writer.WriteError("concurrent bulk write")
+					}
+					defer func() { atomic.StoreInt64(&s.bulking, 0) }()
+
+					walIndex := atoi(string(command.Get(1)))
+					if walIndex == 0 {
+						return writer.WriteError("missing wal index")
+					}
+
+					if myIndex, _ := s.DB.wal.LastIndex(); walIndex != int(myIndex)+1 {
+						return writer.WriteError(fmt.Sprintf("invalid wal index, want %d, gave %d", myIndex+1, walIndex))
+					}
+
+					for i := 2; i < command.ArgCount(); i++ {
+						cmd, err := splitCommand(command.Get(i))
+						if err != nil {
+							log.Error("BULK: invalid payload")
+							break
+						}
+						buf.Reset()
+						s.runCommand(dummy, "", cmd)
+						if buf.Len() > 0 && buf.Bytes()[0] == '-' {
+							log.Error("BULK: ", strings.TrimSpace(buf.String()[1:]))
+							break
+						}
+					}
+
+					last, err := s.DB.wal.LastIndex()
+					if err != nil {
+						return writer.WriteError(err.Error())
+					}
+					return writer.WriteInt(int64(last))
+				}()
+			} else {
+				ew = s.runCommand(writer, cmd, command)
+			}
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -126,9 +184,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *redisproto.Command) error {
+func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisproto.Command) error {
+	if cmd == "" {
+		cmd = strings.ToUpper(string(command.Get(0)))
+	}
+	name := string(command.Get(1))
 	if strings.HasPrefix(cmd, "Z") && name == "" {
-		return fmt.Errorf("ZSet: empty name")
+		return w.WriteError("ZSet: empty name")
 	}
 
 	var p []Pair
@@ -281,7 +343,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		s.walIn <- command
 		return w.WriteInt(int64(len(p)))
 	default:
-		log.Error("command not support: ", cmd)
+		// log.Error("command not support: ", cmd)
 		return w.WriteError("Command not support: " + cmd)
 	}
 }
@@ -301,4 +363,69 @@ func (s *Server) writeWalCommand() {
 		}
 	}
 	log.Info("wal worker exited")
+}
+
+func (s *Server) readWalCommand(slaveAddr string) {
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{
+		Addr: slaveAddr,
+	})
+
+	for {
+		cmd := redis.NewIntCmd(ctx, "WALLAST")
+		err := rdb.Process(ctx, cmd)
+		if err != nil && cmd.Err() != nil {
+			log.Error("getting wal index from slave: ", slaveAddr, " err=", err, " err=", cmd.Err())
+			time.Sleep(time.Second * 5)
+			continue
+		}
+
+		slaveWalIndex := uint64(cmd.Val())
+		masterWalIndex, err := s.DB.wal.LastIndex()
+		if err != nil {
+			if err != wal.ErrClosed {
+				log.Error("read wal: ", err)
+			}
+			goto EXIT
+		}
+
+		if slaveWalIndex == masterWalIndex {
+			time.Sleep(time.Second)
+			continue
+		}
+
+		if slaveWalIndex > masterWalIndex {
+			log.Error("fatal: slave index surpass master index: ", slaveWalIndex, masterWalIndex)
+			goto EXIT
+		}
+
+		cmds := []interface{}{"BULK", slaveWalIndex + 1}
+		for i := slaveWalIndex + 1; i <= masterWalIndex; i++ {
+			data, err := s.DB.wal.Read(i)
+			if err != nil {
+				log.Error("wal read #", i, ":", err)
+				goto EXIT
+			}
+			cmd, err := splitCommand(data)
+			if err != nil {
+				log.Error("wal read #", i, ":", err)
+				goto EXIT
+			}
+			cmds = append(cmds, joinCommand(cmd))
+			if len(cmds) == redisproto.MaxNumArg-2 {
+				break
+			}
+		}
+
+		cmd = redis.NewIntCmd(ctx, cmds...)
+		if err := rdb.Process(ctx, cmd); err != nil || cmd.Err() != nil {
+			log.Error("slave bulk returned: ", err)
+			time.Sleep(time.Second)
+			continue
+		}
+		slaveWalIndex = uint64(cmd.Val())
+	}
+
+EXIT:
+	log.Info("wal replayer exited")
 }

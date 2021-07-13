@@ -222,6 +222,28 @@ func TestZSet(t *testing.T) {
 	s.Close()
 }
 
+func TestBatch(t *testing.T) {
+	db, _ := Open("test")
+	s := Server{DB: db}
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "bulk")
+	index, _ := db.wal.LastIndex()
+	cmd := redis.NewIntCmd(ctx, "BULK",
+		index+1,
+		joinCommandString("zadd", "bulk", "1", "a", "2", "b"),
+		joinCommandString("zadd", "bulk", "3", "c", "4", "d"),
+		joinCommandString("zremrangebyrank", "bulk", "1", "1"),
+		joinCommandString("bad command"),
+		joinCommandString("zadd", "bulk", "999", "bad"),
+	)
+	rdb.Process(ctx, cmd)
+	fmt.Println(cmd.Result())
+	assertEqual([]string{"a", "c", "d"}, rdb.ZRange(ctx, "bulk", 0, -1).Val())
+}
+
 func TestZSetCache(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 	ctx := context.TODO()

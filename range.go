@@ -167,7 +167,6 @@ func (z *DB) rangeScore(name string, start, end RangeLimit, opt RangeOptions) (p
 				break
 			}
 			k, s = c.Next()
-
 		}
 		if opt.Delete {
 			return z.deletePair(tx, name, pairs...)

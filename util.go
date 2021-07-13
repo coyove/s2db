@@ -177,6 +177,12 @@ func joinCommand(command *redisproto.Command) []byte {
 	return p.Bytes()
 }
 
+func joinCommandString(cmd ...string) []byte {
+	p := &bytes.Buffer{}
+	redisproto.NewWriter(p).WriteBulkStrings(cmd)
+	return p.Bytes()
+}
+
 type RangeLimit struct {
 	Value     string
 	Float     float64

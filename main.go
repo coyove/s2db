@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"io"
 	"math/rand"
@@ -9,11 +10,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+var slaveAddr = flag.String("slave", "", "")
+var listenAddr = flag.String("l", ":6379", "")
+
 func main() {
+	flag.Parse()
 	rand.Seed(time.Now().Unix())
 
 	log.SetReportCaller(true)
@@ -24,11 +30,12 @@ func main() {
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
 	}))
+	redisproto.MaxNumArg = 200
 
 	start := time.Now()
 	db, _ := Open("test")
-	s := &Server{DB: db}
-	s.Serve(":6666")
+	s := &Server{DB: db, SlaveAddr: *slaveAddr}
+	s.Serve(*listenAddr)
 
 	if false {
 		wg := sync.WaitGroup{}

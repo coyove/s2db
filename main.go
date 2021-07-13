@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -30,7 +29,6 @@ func main() {
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
 	}))
-	redisproto.MaxNumArg = 200
 
 	start := time.Now()
 	db, _ := Open("test")

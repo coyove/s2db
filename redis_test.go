@@ -34,7 +34,7 @@ func z(s float64, m string) *redis.Z {
 
 func TestZSet(t *testing.T) {
 	db, _ := Open("test")
-	s := Server{DB: db}
+	s := Server{DB: db, SlaveAddr: ":6667"}
 	go s.Serve(":6666")
 
 	ctx := context.Background()
@@ -230,6 +230,7 @@ func TestBatch(t *testing.T) {
 	ctx := context.TODO()
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 	rdb.Del(ctx, "bulk")
+	time.Sleep(time.Second)
 	index, _ := db.wal.LastIndex()
 	cmd := redis.NewIntCmd(ctx, "BULK",
 		index+1,
@@ -249,7 +250,7 @@ func TestZSetCache(t *testing.T) {
 	ctx := context.TODO()
 
 	db, _ := Open("test")
-	s := Server{DB: db}
+	s := Server{DB: db, SlaveAddr: ":6667"}
 	go s.Serve(":6666")
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
@@ -257,21 +258,22 @@ func TestZSetCache(t *testing.T) {
 	assert(rdb.Ping(ctx).Err())
 
 	data := []*redis.Z{}
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 50; i++ {
 		data = append(data, &redis.Z{Score: rand.Float64(), Member: strconv.Itoa(i)})
 	}
 	rdb.ZAdd(ctx, "test", data...)
 
 	start := time.Now()
 	wg := sync.WaitGroup{}
-	for c := 0; c < 100; c++ {
+	for c := 0; c < 10; c++ {
 		wg.Add(1)
-		go func() {
+		go func(c int) {
+			fmt.Println(c)
 			for i := 0; i < 1e4; i++ {
 				rdb.ZRangeByScore(ctx, "test", &redis.ZRangeBy{Min: "(0.2", Max: "(0.4"})
 			}
 			wg.Done()
-		}()
+		}(c)
 	}
 	wg.Wait()
 	fmt.Println(time.Since(start).Seconds() / 1e6)

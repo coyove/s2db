@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/gob"
 	"fmt"
 	"math"
 	"strconv"
@@ -167,20 +169,39 @@ func sizePairs(in []Pair) int {
 	return sz
 }
 
-func splitCommand(in []byte) (*redisproto.Command, error) {
-	return redisproto.NewParser(bytes.NewReader(in)).ReadCommand()
+func dupCommand(cmd *redisproto.Command) [][]byte {
+	x := *(*[][]byte)(unsafe.Pointer(cmd))
+	for i := range x {
+		x[i] = append([]byte{}, x[i]...)
+	}
+	return x
 }
 
-func joinCommand(command *redisproto.Command) []byte {
-	p := &bytes.Buffer{}
-	redisproto.NewWriter(p).WriteBulksSlice(*(*[][]byte)(unsafe.Pointer(command)))
-	return p.Bytes()
+func splitCommand(in []byte) (*redisproto.Command, error) {
+	var command struct {
+		data [][]byte
+		a    bool
+	}
+	command.a = true
+	rd := base64.NewDecoder(base64.URLEncoding, bytes.NewReader(in))
+	err := gob.NewDecoder(rd).Decode(&command.data)
+	return (*redisproto.Command)(unsafe.Pointer(&command)), err
+}
+
+func joinCommand(cmd ...[]byte) []byte {
+	buf := &bytes.Buffer{}
+	enc := base64.NewEncoder(base64.URLEncoding, buf)
+	gob.NewEncoder(enc).Encode(cmd)
+	enc.Close()
+	return buf.Bytes()
 }
 
 func joinCommandString(cmd ...string) []byte {
-	p := &bytes.Buffer{}
-	redisproto.NewWriter(p).WriteBulkStrings(cmd)
-	return p.Bytes()
+	tmp := make([][]byte, len(cmd))
+	for i := range cmd {
+		tmp[i] = []byte(cmd[i])
+	}
+	return joinCommand(tmp...)
 }
 
 type RangeLimit struct {

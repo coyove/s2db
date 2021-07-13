@@ -6,9 +6,6 @@ import (
 	"math/rand"
 	"testing"
 	"time"
-	"unsafe"
-
-	"github.com/secmask/go-redisproto"
 )
 
 func TestCommandJoinSplit(t *testing.T) {
@@ -23,8 +20,7 @@ func TestCommandJoinSplit(t *testing.T) {
 			}
 			b = append(b, x)
 		}
-		cmd := (*redisproto.Command)(unsafe.Pointer(&b))
-		cmd2, _ := splitCommand((joinCommand(cmd)))
+		cmd2, _ := splitCommand((joinCommand(b...)))
 		for i := 0; i < cmd2.ArgCount(); i++ {
 			if !bytes.Equal(cmd2.Get(i), b[i]) {
 				t.FailNow()

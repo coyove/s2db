@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/coyove/common/lru"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -32,7 +34,7 @@ func z(s float64, m string) *redis.Z {
 
 func TestZSet(t *testing.T) {
 	db, _ := Open("test")
-	s := Server{db}
+	s := Server{DB: db}
 	go s.Serve(":6666")
 
 	ctx := context.Background()
@@ -216,9 +218,41 @@ func TestZSet(t *testing.T) {
 	assertEqual([]redis.Z{*z(1, "b"), *z(2, "c"), *z(3, "d")}, rdb.ZRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Min: "0", Max: "3"}).Val())
 	assertEqual([]redis.Z{*z(3, "d"), *z(2, "c"), *z(1, "b")}, rdb.ZRevRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Max: "3", Min: "0"}).Val())
 
-	db.cache.Info(func(k lru.Key, v interface{}, hits, weight int64) {
-		fmt.Println(k, v)
-	})
-
 	time.Sleep(time.Second)
+	s.Close()
+}
+
+func TestZSetCache(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+	ctx := context.TODO()
+
+	db, _ := Open("test")
+	s := Server{DB: db}
+	go s.Serve(":6666")
+
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+
+	assert(rdb.Ping(ctx).Err())
+
+	data := []*redis.Z{}
+	for i := 0; i < 1000; i++ {
+		data = append(data, &redis.Z{Score: rand.Float64(), Member: strconv.Itoa(i)})
+	}
+	rdb.ZAdd(ctx, "test", data...)
+
+	start := time.Now()
+	wg := sync.WaitGroup{}
+	for c := 0; c < 100; c++ {
+		wg.Add(1)
+		go func() {
+			for i := 0; i < 1e4; i++ {
+				rdb.ZRangeByScore(ctx, "test", &redis.ZRangeBy{Min: "(0.2", Max: "(0.4"})
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+	fmt.Println(time.Since(start).Seconds() / 1e6)
+
+	s.Close()
 }

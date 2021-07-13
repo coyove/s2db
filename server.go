@@ -9,18 +9,15 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
-	"github.com/coyove/common/lru"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
 type DB struct {
-	cache    *lru.Cache
-	cacheMap sync.Map
-	db       [32]*bbolt.DB
+	cache *Cache
+	db    [32]*bbolt.DB
 }
 
 type Pair struct {
@@ -33,14 +30,7 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	x := &DB{
-		cache: lru.NewCache(2 * 1024 * 1024 * 1024),
-	}
-	x.cache.OnEvicted = func(k lru.Key, v interface{}) {
-		m, ok := x.cacheMap.Load(v.(*CacheState).Key)
-		if !ok {
-			return
-		}
-		delete(m.(map[[2]uint64]*CacheState), v.(*CacheState).CmdHash)
+		cache: NewCache(2 * 1024 * 1024 * 1024),
 	}
 	for i := range x.db {
 		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
@@ -52,12 +42,6 @@ func Open(path string) (*DB, error) {
 		x.db[i] = db
 	}
 	return x, nil
-}
-
-func (z *DB) addCache(cs *CacheState) {
-	z.cache.AddWeight(cs.CmdHash, cs, int64(sizePairs(cs.Data)))
-	m, _ := z.cacheMap.LoadOrStore(cs.Key, map[[2]uint64]*CacheState{})
-	m.(map[[2]uint64]*CacheState)[cs.CmdHash] = cs
 }
 
 func (z *DB) Close() error {
@@ -75,6 +59,11 @@ func (z *DB) Close() error {
 
 type Server struct {
 	DB *DB
+	ln net.Listener
+}
+
+func (s *Server) Close() error {
+	return s.ln.Close()
 }
 
 func (s *Server) Serve(addr string) error {
@@ -82,11 +71,14 @@ func (s *Server) Serve(addr string) error {
 	if err != nil {
 		return err
 	}
+	s.ln = listener
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Error("Error on accept: ", err)
-			continue
+			if !strings.Contains(err.Error(), "use of closed") {
+				log.Error("Error on accept: ", err)
+			}
+			return err
 		}
 		go s.handleConnection(conn)
 	}
@@ -136,6 +128,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.DB.cache.Remove(name)
 		return w.WriteInt(int64(c))
 	case "ZADD":
 		xx, nx, ch, idx := false, false, false, 2
@@ -163,6 +156,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.DB.cache.Remove(name)
 		if ch {
 			return w.WriteInt(int64(added + updated))
 		}
@@ -172,6 +166,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.DB.cache.Remove(name)
 		return w.WriteBulkString(ftoa(v))
 	case "ZSCORE":
 		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
@@ -201,6 +196,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.DB.cache.Remove(name)
 		return w.WriteInt(int64(c))
 	case "ZCARD":
 		c, err := s.DB.ZCard(name)
@@ -217,7 +213,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		h := hashCommands(command)
 		if v, ok := s.DB.cache.Get(h); ok {
-			return writePairs(v.(*CacheState).Data, w, command)
+			return writePairs(v.Data, w, command)
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
@@ -237,9 +233,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if len(p) > 0 {
-			s.DB.cache.AddWeight(h, NewCacheState(cmd, p), int64(sizePairs(p)))
-		}
+		s.DB.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		start, end := string(command.Get(2)), string(command.Get(3))
@@ -254,6 +248,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd, name string, command *red
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.DB.cache.Remove(name)
 		return w.WriteInt(int64(len(p)))
 	default:
 		log.Error("command not support: ", cmd)

@@ -1,65 +1,149 @@
 package main
 
-type CacheState struct {
-	Command string
-	CmdHash [2]uint64
+import (
+	"container/list"
+	"fmt"
+	"sync"
+)
+
+type CacheItem struct {
 	Key     string
-	Lower   RangeLimit
-	Upper   RangeLimit
+	CmdHash [2]uint64
 	Data    []Pair
 }
 
-func NewCacheState(cmd, key string, h [2]uint64, pairs []Pair) *CacheState {
-	cs := &CacheState{
-		Command: cmd,
-		CmdHash: h,
-		Key:     key,
-		Data:    pairs,
-	}
-	switch cmd {
-	case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-		cs.Lower.Value = pairs[0].Key
-		cs.Upper.Value = pairs[len(pairs)-1].Key
-		if cs.Lower.Value > cs.Upper.Value {
-			cs.Lower, cs.Upper = cs.Upper, cs.Lower
-		}
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		cs.Lower.Float = pairs[0].Score
-		cs.Upper.Float = pairs[len(pairs)-1].Score
-		if cs.Lower.Float > cs.Upper.Float {
-			cs.Lower, cs.Upper = cs.Upper, cs.Lower
-		}
-	}
-	return cs
+type Cache struct {
+	maxWeight int64
+	curWeight int64
+
+	ll    *list.List
+	cache map[[2]uint64]*list.Element
+	keyed map[string][]*list.Element
+
+	sync.RWMutex
 }
 
-func (cs *CacheState) Intersect(p []Pair) bool {
-	if len(p) == 0 {
-		return false
+type entry struct {
+	value  *CacheItem
+	hits   int64
+	weight int64
+}
+
+var ErrWeightTooBig = fmt.Errorf("weight can't be held by the cache")
+
+// NewCache creates a new Cache.
+func NewCache(maxWeight int64) *Cache {
+	c := &Cache{maxWeight: maxWeight}
+	c.Clear()
+	return c
+}
+
+// Clear clears the cache
+func (c *Cache) Clear() {
+	c.Lock()
+	c.ll = list.New()
+	c.cache = make(map[[2]uint64]*list.Element)
+	c.keyed = make(map[string][]*list.Element)
+	c.Unlock()
+}
+
+func (c *Cache) Add(value *CacheItem) error {
+	weight := int64(sizePairs(value.Data))
+
+	if weight > c.maxWeight || weight < 1 {
+		return ErrWeightTooBig
 	}
-	switch cs.Command {
-	case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-		lo, hi := p[0].Key, p[len(p)-1].Key
-		if lo > hi {
-			lo, hi = hi, lo
+
+	c.Lock()
+	defer c.Unlock()
+
+	controlWeight := func() {
+		if c.maxWeight == 0 {
+			return
 		}
-		if (lo >= cs.Lower.Value && lo <= cs.Upper.Value) || (hi >= cs.Lower.Value && hi <= cs.Upper.Value) {
-			return true
+
+		for c.curWeight > c.maxWeight {
+			if ele := c.ll.Back(); ele != nil {
+				c.remove(ele, true)
+			} else {
+				panic("shouldn't happen")
+			}
 		}
-		if lo < cs.Lower.Value && hi > cs.Upper.Value {
-			return true
-		}
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		lo, hi := p[0].Score, p[len(p)-1].Score
-		if lo > hi {
-			lo, hi = hi, lo
-		}
-		if (lo >= cs.Lower.Float && lo <= cs.Upper.Float) || (hi >= cs.Lower.Float && hi <= cs.Upper.Float) {
-			return true
-		}
-		if lo < cs.Lower.Float && hi > cs.Upper.Float {
-			return true
+		// Since weight <= c.maxWeight, we will always reach here without problems
+	}
+
+	if ee, ok := c.cache[value.CmdHash]; ok {
+		e := ee.Value.(*entry)
+		c.ll.MoveToFront(ee)
+		diff := weight - e.weight
+		e.weight = weight
+		e.value = value
+		e.hits++
+
+		c.curWeight += diff
+		controlWeight()
+		return nil
+	}
+
+	c.curWeight += weight
+	ele := c.ll.PushFront(&entry{value, 1, weight})
+	c.cache[value.CmdHash] = ele
+	c.keyed[value.Key] = append(c.keyed[value.Key], ele)
+	controlWeight()
+
+	if c.curWeight < 0 {
+		panic("too many entries, really?")
+	}
+
+	return nil
+}
+
+// Get gets a key
+func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
+	c.RLock()
+	defer c.RUnlock()
+
+	if ele, hit := c.cache[h]; hit {
+		e := ele.Value.(*entry)
+		e.hits++
+		c.ll.MoveToFront(ele)
+		return e.value, true
+	}
+
+	return
+}
+
+// Remove removes the given key from the cache.
+func (c *Cache) Remove(key string) {
+	c.Lock()
+	for _, e := range c.keyed[key] {
+		c.remove(e, false)
+	}
+	delete(c.keyed, key)
+	c.Unlock()
+}
+
+func (c *Cache) remove(e *list.Element, clearKeyed bool) {
+	kv := e.Value.(*entry)
+	c.ll.Remove(e)
+	c.curWeight -= kv.weight
+
+	v := kv.value
+	delete(c.cache, v.CmdHash)
+
+	if !clearKeyed {
+		return
+	}
+
+	for i, k := range c.keyed[v.Key] {
+		if k == e {
+			tmp := c.keyed[v.Key]
+			if len(tmp) == 1 {
+				delete(c.keyed, v.Key)
+			} else {
+				c.keyed[v.Key] = append(tmp[:i], tmp[i+1:]...)
+			}
+			break
 		}
 	}
-	return false
 }

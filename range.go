@@ -156,7 +156,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						if !opt.CountOnly {
-							pairs = append(pairs, Pair{string(sc), bytesToFloat(k[:16])})
+							pairs = append(pairs, Pair{string(sc), bytesToFloat(k[:8])})
 						}
 						count++
 					} else {

@@ -92,5 +92,15 @@ func TestFloatBytesComparison(t *testing.T) {
 
 	do(1)
 	do(2)
-	do(MaxScore)
+	do(math.Float64frombits(0x7FEFFFFFFFFFFFFF)) // max float64 below +inf
+
+	fmt.Println(floatToBytes(math.Inf(1)))
+	fmt.Println(floatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
+	fmt.Println(floatToBytes(math.Inf(-1)))
+	fmt.Println(floatToBytes(math.Float64frombits(1 << 63)))
+	fmt.Println(floatToBytes(0))
+
+	if !bytes.Equal(floatToBytes(0), floatToBytes(math.Float64frombits(1<<63))) {
+		t.FailNow()
+	}
 }

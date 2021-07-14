@@ -14,83 +14,44 @@ import (
 	"github.com/secmask/go-redisproto"
 )
 
-const (
-	MaxScore = 1 << 53
-	MinScore = -MaxScore
-)
-
 var (
-	MinScoreRange = RangeLimit{Float: MinScore, Inclusive: true}
-	MaxScoreRange = RangeLimit{Float: MaxScore, Inclusive: true}
+	MinScoreRange = RangeLimit{Float: math.Inf(-1), Inclusive: true}
+	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
 )
 
 func checkScore(s float64) error {
-	if s > (MaxScore) || s < (MinScore) {
-		return fmt.Errorf("score out of range: %d - %d", MinScore, MaxScore)
+	if math.IsNaN(s) {
+		return fmt.Errorf("score is NaN")
 	}
 	return nil
 }
 
-func intToBytes(v int64) []byte {
-	tmp := [8]byte{}
-	binary.BigEndian.PutUint64(tmp[:], uint64(v))
-	return tmp[:]
-}
-
-func bytesToInt(b []byte) int64 {
-	return int64(binary.BigEndian.Uint64(b))
-}
-
 func bytesToFloat(b []byte) float64 {
-	f := math.Float64frombits(binary.BigEndian.Uint64(b[8:]))
-	i := int64(binary.BigEndian.Uint64(b[:8])) - 1 - math.MaxInt64
-	f--
-	return float64(i) + f
+	x := binary.BigEndian.Uint64(b)
+	if x>>63 == 1 {
+		x = x << 1 >> 1
+	} else {
+		x = ^x
+	}
+	return math.Float64frombits(x)
 }
 
 func floatToBytes(v float64) []byte {
-	i, f := math.Modf(v)
-	f++
-	x := math.Float64bits(f)
-	tmp := [16]byte{}
-	binary.BigEndian.PutUint64(tmp[:8], uint64(int64(i)+math.MaxInt64+1))
-	binary.BigEndian.PutUint64(tmp[8:], x)
+	x := math.Float64bits(v)
+	if v >= 0 {
+		x |= 1 << 63
+	} else {
+		x = ^x
+	}
+	tmp := [8]byte{}
+	binary.BigEndian.PutUint64(tmp[:8], x)
 	return tmp[:]
 }
 
 func floatBytesStep(buf []byte, s int64) []byte {
-	v := binary.BigEndian.Uint64(buf[8:])
-	h := binary.BigEndian.Uint64(buf[:8])
-	if s == -1 && v == 0 {
-		binary.BigEndian.PutUint64(buf[:8], uint64(int64(h)-1))
-		binary.BigEndian.PutUint64(buf[8:], math.MaxUint64)
-	} else if s == 1 && v == math.MaxUint64 {
-		binary.BigEndian.PutUint64(buf[:8], uint64(int64(h)+1))
-		binary.BigEndian.PutUint64(buf[8:], 0)
-	} else {
-		binary.BigEndian.PutUint64(buf[8:], uint64(int64(v)+s))
-	}
+	v := binary.BigEndian.Uint64(buf)
+	binary.BigEndian.PutUint64(buf, uint64(int64(v)+s))
 	return buf
-}
-
-func bytesStep(buf []byte, s int64) []byte {
-	for i := len(buf) - 1; i >= 0; i-- {
-		b := buf[i]
-		if b == 255 && s == 1 {
-			buf[i] = 0
-		} else if b == 0 && s == -1 {
-			buf[i] = 255
-		} else {
-			buf[i] = byte(int64(b) + s)
-			return buf
-		}
-	}
-	panic("no more step for buffer")
-}
-
-func intToBytesString(v int64) string {
-	x := intToBytes(v)
-	return *(*string)(unsafe.Pointer(&x))
 }
 
 func hashStr(s string) (h uint64) {
@@ -117,10 +78,10 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 
 func atof(a string) float64 {
 	if a == "+inf" {
-		return MaxScore
+		return math.Inf(1)
 	}
 	if a == "-inf" {
-		return MinScore
+		return math.Inf(-1)
 	}
 	i, _ := strconv.ParseFloat(a, 64)
 	return i
@@ -240,18 +201,18 @@ func (r RangeLimit) fromFloatString(v string) RangeLimit {
 	if strings.HasPrefix(v, "[") {
 		r.Float = atof(v[1:])
 	} else if v == "(+inf" {
-		r.Float = MaxScore
+		r.Float = math.Inf(1)
 		r.Inclusive = false
 	} else if v == "(-inf" {
-		r.Float = MinScore
+		r.Float = math.Inf(-1)
 		r.Inclusive = false
 	} else if strings.HasPrefix(v, "(") {
 		r.Float = atof(v[1:])
 		r.Inclusive = false
 	} else if v == "+inf" {
-		r.Float = MaxScore
+		r.Float = math.Inf(1)
 	} else if v == "-inf" {
-		r.Float = MinScore
+		r.Float = math.Inf(-1)
 	} else {
 		r.Float = atof(v)
 	}

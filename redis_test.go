@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -166,7 +167,7 @@ func TestZSet(t *testing.T) {
 	assertEqual(6, rdb.ZScore(ctx, "zset", "bar").Val())
 
 	rdb.Del(ctx, "zset")
-	fmt.Println(rdb.ZAdd(ctx, "zset", z(MinScore, "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(MaxScore, "g")).Err())
+	fmt.Println(rdb.ZAdd(ctx, "zset", z(math.Inf(-1), "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(math.Inf(1), "g")).Err())
 
 	// # inclusive range
 	assertEqual([]string{"a", "b", "c"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "-inf", Max: "2"}).Val())

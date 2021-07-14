@@ -231,8 +231,10 @@ func TestBatch(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 	rdb.Del(ctx, "bulk")
 	time.Sleep(time.Second)
-	index, _ := s.wal.LastIndex()
+	shard := hashStr("bulk") % uint64(len(s.db))
+	index, _ := s.db[shard].wal.LastIndex()
 	cmd := redis.NewIntCmd(ctx, "BULK",
+		shard,
 		index+1,
 		joinCommandString("zadd", "bulk", "1", "a", "2", "b"),
 		joinCommandString("zadd", "bulk", "3", "c", "4", "d"),

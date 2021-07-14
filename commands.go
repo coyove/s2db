@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Server) pick(name string) *bbolt.DB {
-	return s.db[hashStr(name)%uint64(len(s.db))]
+	return s.db[hashStr(name)%uint64(len(s.db))].DB
 }
 
 func (s *Server) ZCard(name string) (int64, error) {

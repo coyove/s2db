@@ -14,8 +14,10 @@ import (
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var slaveAddr = flag.String("slave", "", "")
-var listenAddr = flag.String("l", ":6379", "")
+var (
+	slaveAddr  = flag.String("slave", "", "")
+	listenAddr = flag.String("l", ":6379", "")
+)
 
 func main() {
 	flag.Parse()

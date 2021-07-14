@@ -61,10 +61,15 @@ func Open(path string) (*Server, error) {
 	//	fmt.Printf("%q\n", c.Get(0))
 	//}
 	//os.Exit(0)
+	sz, _ := strconv.ParseInt(os.Getenv("CACHE"), 10, 64)
+	if sz == 0 {
+		sz = 1024 // 1G
+	}
 	x := &Server{
-		cache: NewCache(2 * 1024 * 1024 * 1024),
+		cache: NewCache(sz * 1024 * 1024),
 		wal:   w,
 	}
+
 	for i := range x.db {
 		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
 			FreelistType: bbolt.FreelistMapType,
@@ -91,6 +96,8 @@ func (s *Server) Close() error {
 	if len(errs) > 0 {
 		return fmt.Errorf("close: %v", errs)
 	}
+
+	log.Info("server closed")
 	return s.ln.Close()
 }
 
@@ -99,6 +106,7 @@ func (s *Server) Serve(addr string) error {
 	if err != nil {
 		return err
 	}
+
 	s.ln = listener
 	s.walIn = make(chan [][]byte, 1e3)
 	go s.writeWalCommand()
@@ -107,6 +115,7 @@ func (s *Server) Serve(addr string) error {
 		go s.readWalCommand(s.SlaveAddr)
 	}
 
+	log.Info("listening on ", addr, " slave=", s.SlaveAddr)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -221,8 +230,13 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(int64(index))
-	case "KEYCACHELEN":
+	case "CACHELEN":
+		if name == "" {
+			return w.WriteInt(int64(s.cache.CacheLen()))
+		}
 		return w.WriteInt(int64(s.cache.KeyCacheLen(name)))
+	case "CACHESIZE":
+		return w.WriteInt(int64(s.cache.curWeight))
 	case "DEL":
 		if s.ReadOnly {
 			w.WriteError("readonly")

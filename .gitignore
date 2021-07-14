@@ -4,3 +4,5 @@ test
 redis
 slave_dir
 zset
+zset_darwin
+zset.7z

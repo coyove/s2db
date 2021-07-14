@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"math/rand"
 	"testing"
 	"time"
@@ -44,4 +45,52 @@ func TestCache(t *testing.T) {
 	for i := c.ll.Front(); i != nil; i = i.Next() {
 		fmt.Println(i.Value.(*entry).value)
 	}
+}
+
+func TestFloatBytesComparison(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+
+	do := func(k float64) {
+		for i := 0; i < 1e6; i++ {
+			a := rand.Float64() * k
+			b := rand.Float64() * k
+			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			if a > b && s == 1 {
+			} else if a < b && s == -1 {
+			} else {
+				t.Fatal(a, b, s)
+			}
+		}
+
+		for i := 0; i < 1e6; i++ {
+			a := rand.Float64() * k
+			b := -rand.Float64() * k
+			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			if s != 1 {
+				t.Fatal(a, b, floatToBytes(a), floatToBytes(b))
+			}
+		}
+
+		for i := 0; i < 1e6; i++ {
+			a := -rand.Float64() * k
+			b := -rand.Float64() * k
+			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			if a > b && s == 1 {
+			} else if a < b && s == -1 {
+			} else {
+				t.Fatal(a, b, s)
+			}
+		}
+
+		for i := 0; i < 1e6; i++ {
+			a := -rand.Float64() * k
+			if x := bytesToFloat(floatToBytes(a)); math.Abs((x-a)/a) > 1e-6 {
+				t.Fatal(a, x)
+			}
+		}
+	}
+
+	do(1)
+	do(2)
+	do(MaxScore)
 }

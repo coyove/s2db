@@ -5,6 +5,7 @@ go 1.16
 require (
 	github.com/BurntSushi/toml v0.3.1 // indirect
 	github.com/go-redis/redis/v8 v8.11.0
+	github.com/mitchellh/go-ps v1.0.0
 	github.com/secmask/go-redisproto v0.1.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/tidwall/wal v0.1.4
@@ -15,3 +16,4 @@ require (
 )
 
 // replace github.com/go-redis/redis/v8 v8.11.0 => ./redis/
+replace github.com/secmask/go-redisproto v0.1.0 => ./redisproto/

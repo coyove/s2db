@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,6 +25,7 @@ import (
 func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
+	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 }
 
 type Server struct {
@@ -131,7 +132,7 @@ func (s *Server) Serve(addr string) error {
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 	parser := redisproto.NewParser(conn)
-	writer := redisproto.NewWriter(bufio.NewWriter(conn))
+	writer := redisproto.NewWriter(conn)
 	var ew error
 	for {
 		command, err := parser.ReadCommand()
@@ -214,7 +215,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	var err error
 	switch cmd {
 	case "PING":
-		return w.WriteSimpleString("PONG")
+		if name == "" {
+			return w.WriteSimpleString("PONG")
+		}
+		return w.WriteSimpleString(name)
 	case "WALLAST":
 		idx, err := s.wal.LastIndex()
 		if err != nil {

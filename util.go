@@ -44,11 +44,13 @@ func bytesToInt(b []byte) int64 {
 func bytesToFloat(b []byte) float64 {
 	f := math.Float64frombits(binary.BigEndian.Uint64(b[8:]))
 	i := int64(binary.BigEndian.Uint64(b[:8])) - 1 - math.MaxInt64
+	f--
 	return float64(i) + f
 }
 
 func floatToBytes(v float64) []byte {
 	i, f := math.Modf(v)
+	f++
 	x := math.Float64bits(f)
 	tmp := [16]byte{}
 	binary.BigEndian.PutUint64(tmp[:8], uint64(int64(i)+math.MaxInt64+1))

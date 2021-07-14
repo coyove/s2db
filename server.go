@@ -27,10 +27,17 @@ func init() {
 	redisproto.MaxNumArg = 10000
 }
 
-type DB struct {
-	cache *Cache
-	wal   *wal.Log
-	db    [32]*bbolt.DB
+type Server struct {
+	SlaveAddr string
+	ReadOnly  bool
+
+	ln      net.Listener
+	walIn   chan [][]byte
+	wal     *wal.Log
+	cache   *Cache
+	bulking int64
+
+	db [32]*bbolt.DB
 }
 
 type Pair struct {
@@ -38,7 +45,7 @@ type Pair struct {
 	Score float64
 }
 
-func Open(path string) (*DB, error) {
+func Open(path string) (*Server, error) {
 	if err := os.MkdirAll(path, 0777); err != nil {
 		return nil, err
 	}
@@ -54,7 +61,7 @@ func Open(path string) (*DB, error) {
 	//	fmt.Printf("%q\n", c.Get(0))
 	//}
 	//os.Exit(0)
-	x := &DB{
+	x := &Server{
 		cache: NewCache(2 * 1024 * 1024 * 1024),
 		wal:   w,
 	}
@@ -70,12 +77,13 @@ func Open(path string) (*DB, error) {
 	return x, nil
 }
 
-func (z *DB) Close() error {
-	if err := z.wal.Close(); err != nil {
+func (s *Server) Close() error {
+	close(s.walIn)
+	if err := s.wal.Close(); err != nil {
 		return err
 	}
 	var errs []error
-	for _, db := range z.db {
+	for _, db := range s.db {
 		if err := db.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -83,22 +91,6 @@ func (z *DB) Close() error {
 	if len(errs) > 0 {
 		return fmt.Errorf("close: %v", errs)
 	}
-	return nil
-}
-
-type Server struct {
-	DB        *DB
-	SlaveAddr string
-	ReadOnly  bool
-
-	ln      net.Listener
-	walIn   chan [][]byte
-	bulking int64
-}
-
-func (s *Server) Close() error {
-	close(s.walIn)
-	s.DB.Close()
 	return s.ln.Close()
 }
 
@@ -175,7 +167,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 		return w.WriteError("missing wal index")
 	}
 
-	if myIndex, _ := s.DB.wal.LastIndex(); walIndex != int(myIndex)+1 {
+	if myIndex, _ := s.wal.LastIndex(); walIndex != int(myIndex)+1 {
 		return w.WriteError(fmt.Sprintf("invalid wal index, want %d, gave %d", myIndex+1, walIndex))
 	}
 
@@ -193,7 +185,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 		}
 	}
 
-	last, err := s.DB.wal.LastIndex()
+	last, err := s.wal.LastIndex()
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -215,7 +207,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	case "PING":
 		return w.WriteSimpleString("PONG")
 	case "WALLAST":
-		idx, err := s.DB.wal.LastIndex()
+		idx, err := s.wal.LastIndex()
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -225,19 +217,21 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			w.WriteError("readonly")
 		}
 		index, _ := strconv.ParseUint(name, 10, 64)
-		if err := s.DB.wal.TruncateFront(index); err != nil {
+		if err := s.wal.TruncateFront(index); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(int64(index))
+	case "KEYCACHELEN":
+		return w.WriteInt(int64(s.cache.KeyCacheLen(name)))
 	case "DEL":
 		if s.ReadOnly {
 			w.WriteError("readonly")
 		}
-		c, err := s.DB.Del(restCommandsToKeys(1, command)...)
+		c, err := s.Del(restCommandsToKeys(1, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Remove(name)
+		s.cache.Remove(name)
 		s.walIn <- dupCommand(command)
 		return w.WriteInt(int64(c))
 	case "ZADD":
@@ -265,11 +259,11 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			pairs = append(pairs, Pair{string(command.Get(i + 1)), atof(string(command.Get(i)))})
 		}
 
-		added, updated, err := s.DB.ZAdd(name, pairs, nx, xx)
+		added, updated, err := s.ZAdd(name, pairs, nx, xx)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Remove(name)
+		s.cache.Remove(name)
 		s.walIn <- dupCommand(command)
 		if ch {
 			return w.WriteInt(int64(added + updated))
@@ -279,15 +273,15 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if s.ReadOnly {
 			w.WriteError("readonly")
 		}
-		v, err := s.DB.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))))
+		v, err := s.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Remove(name)
+		s.cache.Remove(name)
 		s.walIn <- dupCommand(command)
 		return w.WriteBulkString(ftoa(v))
 	case "ZSCORE":
-		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
+		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -296,7 +290,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteBulkString(ftoa(s[0]))
 	case "ZMSCORE":
-		s, err := s.DB.ZMScore(name, restCommandsToKeys(2, command)...)
+		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -313,49 +307,49 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if s.ReadOnly {
 			w.WriteError("readonly")
 		}
-		c, err := s.DB.ZRem(name, restCommandsToKeys(2, command)...)
+		c, err := s.ZRem(name, restCommandsToKeys(2, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Remove(name)
+		s.cache.Remove(name)
 		s.walIn <- dupCommand(command)
 		return w.WriteInt(int64(c))
 	case "ZCARD":
-		c, err := s.DB.ZCard(name)
+		c, err := s.ZCard(name)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(c)
 	case "ZCOUNT":
-		c, err := s.DB.ZCount(name, string(command.Get(2)), string(command.Get(3)))
+		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		h := hashCommands(command)
-		if v, ok := s.DB.cache.Get(h); ok {
+		if v, ok := s.cache.Get(h); ok {
 			return writePairs(v.Data, w, command)
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
 		case "ZRANGE":
-			p, err = s.DB.ZRange(name, atoi(start), atoi(end))
+			p, err = s.ZRange(name, atoi(start), atoi(end))
 		case "ZREVRANGE":
-			p, err = s.DB.ZRevRange(name, atoi(start), atoi(end))
+			p, err = s.ZRevRange(name, atoi(start), atoi(end))
 		case "ZRANGEBYLEX":
-			p, err = s.DB.ZRangeByLex(name, start, end)
+			p, err = s.ZRangeByLex(name, start, end)
 		case "ZREVRANGEBYLEX":
-			p, err = s.DB.ZRevRangeByLex(name, start, end)
+			p, err = s.ZRevRangeByLex(name, start, end)
 		case "ZRANGEBYSCORE":
-			p, err = s.DB.ZRangeByScore(name, start, end)
+			p, err = s.ZRangeByScore(name, start, end)
 		case "ZREVRANGEBYSCORE":
-			p, err = s.DB.ZRevRangeByScore(name, start, end)
+			p, err = s.ZRevRangeByScore(name, start, end)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
+		s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		if s.ReadOnly {
@@ -364,16 +358,16 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
 		case "ZREMRANGEBYLEX":
-			p, err = s.DB.ZRemRangeByLex(name, start, end)
+			p, err = s.ZRemRangeByLex(name, start, end)
 		case "ZREMRANGEBYSCORE":
-			p, err = s.DB.ZRemRangeByScore(name, start, end)
+			p, err = s.ZRemRangeByScore(name, start, end)
 		case "ZREMRANGEBYRANK":
-			p, err = s.DB.ZRemRangeByRank(name, atoi(start), atoi(end))
+			p, err = s.ZRemRangeByRank(name, atoi(start), atoi(end))
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.DB.cache.Remove(name)
+		s.cache.Remove(name)
 		s.walIn <- dupCommand(command)
 		return w.WriteInt(int64(len(p)))
 	default:
@@ -387,13 +381,13 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 
 func (s *Server) writeWalCommand() {
 	for cmd := range s.walIn {
-		last, err := s.DB.wal.LastIndex()
+		last, err := s.wal.LastIndex()
 		if err != nil {
 			log.Error("wal: ", err)
 			continue
 		}
 		ctr := last + 1
-		if err := s.DB.wal.Write(ctr, joinCommand(cmd...)); err != nil {
+		if err := s.wal.Write(ctr, joinCommand(cmd...)); err != nil {
 			// Basically we won't reach here as long as the filesystem is okay
 			// otherwise we are totally screwed up
 			log.Error("wal fatal: ", err)
@@ -412,13 +406,15 @@ func (s *Server) readWalCommand(slaveAddr string) {
 		cmd := redis.NewIntCmd(ctx, "WALLAST")
 		err := rdb.Process(ctx, cmd)
 		if err != nil && cmd.Err() != nil {
-			log.Error("getting wal index from slave: ", slaveAddr, " err=", err, " err=", cmd.Err())
+			log.Error("getting wal index from slave: ", slaveAddr, " err=", err)
 			time.Sleep(time.Second * 5)
 			continue
 		}
 
 		slaveWalIndex := uint64(cmd.Val())
-		masterWalIndex, err := s.DB.wal.LastIndex()
+
+	FAST:
+		masterWalIndex, err := s.wal.LastIndex()
 		if err != nil {
 			if err != wal.ErrClosed {
 				log.Error("read local wal index: ", err)
@@ -439,7 +435,7 @@ func (s *Server) readWalCommand(slaveAddr string) {
 		cmds := []interface{}{"BULK", slaveWalIndex + 1}
 		sz := 0
 		for i := slaveWalIndex + 1; i <= masterWalIndex; i++ {
-			data, err := s.DB.wal.Read(i)
+			data, err := s.wal.Read(i)
 			if err != nil {
 				log.Error("wal read #", i, ":", err)
 				goto EXIT
@@ -453,11 +449,14 @@ func (s *Server) readWalCommand(slaveAddr string) {
 
 		cmd = redis.NewIntCmd(ctx, cmds...)
 		if err := rdb.Process(ctx, cmd); err != nil || cmd.Err() != nil {
-			log.Error("slave bulk returned: ", err)
+			if !strings.Contains(fmt.Sprint(err), "concurrent bulk write") {
+				log.Error("slave bulk returned: ", err, " current master index: ", masterWalIndex)
+			}
 			time.Sleep(time.Second)
 			continue
 		}
 		slaveWalIndex = uint64(cmd.Val())
+		goto FAST
 	}
 
 EXIT:

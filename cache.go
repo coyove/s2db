@@ -113,6 +113,13 @@ func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
 	return
 }
 
+func (c *Cache) KeyCacheLen(key string) int {
+	c.RLock()
+	ln := len(c.keyed[key])
+	c.RUnlock()
+	return ln
+}
+
 // Remove removes the given key from the cache.
 func (c *Cache) Remove(key string) {
 	c.Lock()

@@ -7,13 +7,13 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (z *DB) pick(name string) *bbolt.DB {
-	return z.db[hashStr(name)%uint64(len(z.db))]
+func (s *Server) pick(name string) *bbolt.DB {
+	return s.db[hashStr(name)%uint64(len(s.db))]
 }
 
-func (z *DB) ZCard(name string) (int64, error) {
+func (s *Server) ZCard(name string) (int64, error) {
 	count := 0
-	err := z.pick(name).View(func(tx *bbolt.Tx) error {
+	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("zset." + name))
 		if bk == nil {
 			return nil
@@ -24,14 +24,14 @@ func (z *DB) ZCard(name string) (int64, error) {
 	return int64(count), err
 }
 
-func (z *DB) Del(names ...string) (count int, err error) {
-	nameShards := make([][]string, len(z.db))
+func (s *Server) Del(names ...string) (count int, err error) {
+	nameShards := make([][]string, len(s.db))
 	for _, name := range names {
 		x := &nameShards[hashStr(name)%uint64(len(nameShards))]
 		*x = append(*x, name)
 	}
 	for i := range nameShards {
-		err = z.db[i].Update(func(tx *bbolt.Tx) error {
+		err = s.db[i].Update(func(tx *bbolt.Tx) error {
 			for _, name := range nameShards[i] {
 				bkName := tx.Bucket([]byte("zset." + name))
 				bkScore := tx.Bucket([]byte("zset.score." + name))
@@ -52,8 +52,8 @@ func (z *DB) Del(names ...string) (count int, err error) {
 	return
 }
 
-func (z *DB) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, err error) {
-	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, err error) {
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err
@@ -99,8 +99,8 @@ func (z *DB) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, e
 	return
 }
 
-func (z *DB) ZRem(name string, keys ...string) (count int, err error) {
-	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) ZRem(name string, keys ...string) (count int, err error) {
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
@@ -117,16 +117,16 @@ func (z *DB) ZRem(name string, keys ...string) (count int, err error) {
 		if len(pairs) == 0 {
 			return nil
 		}
-		return z.deletePair(tx, name, pairs...)
+		return s.deletePair(tx, name, pairs...)
 	})
 	return
 }
 
-func (z *DB) ZMScore(name string, keys ...string) (scores []float64, err error) {
+func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
-	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
@@ -144,7 +144,7 @@ func (z *DB) ZMScore(name string, keys ...string) (scores []float64, err error) 
 	return
 }
 
-func (z *DB) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
+func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
 	bkName := tx.Bucket([]byte("zset." + name))
 	if bkName == nil {
 		return nil
@@ -164,8 +164,8 @@ func (z *DB) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
 	return nil
 }
 
-func (z *DB) ZIncrBy(name string, key string, by float64) (newValue float64, err error) {
-	err = z.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64, err error) {
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
 			return err

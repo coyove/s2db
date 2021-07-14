@@ -50,8 +50,12 @@ func main() {
 			go func(i int) {
 				fmt.Println("client #", i)
 				p := rdb.Pipeline()
-				for c := 0; c < 100; c++ {
-					p.ZAdd(ctx, "bench"+strconv.Itoa(i), &redis.Z{Member: strconv.Itoa(c), Score: rand.Float64()*10 - 5})
+				for c := 0; c < 100; c += 10 {
+					data := []*redis.Z{}
+					for cc := c; cc < c+10; cc++ {
+						data = append(data, &redis.Z{Member: strconv.Itoa(c), Score: rand.Float64()*10 - 5})
+					}
+					p.ZAdd(ctx, "bench"+strconv.Itoa(i), data...)
 					// p.ZAdd("bench"+strconv.Itoa(i), []Pair{{strconv.Itoa(c), rand.Float64() * 2}}, false, false)
 				}
 				_, err := p.Exec(ctx)

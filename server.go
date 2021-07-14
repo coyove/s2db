@@ -31,6 +31,7 @@ func init() {
 type Server struct {
 	SlaveAddr string
 	ReadOnly  bool
+	HardLimit int
 
 	ln      net.Listener
 	walIn   chan [][]byte
@@ -114,6 +115,10 @@ func (s *Server) Serve(addr string) error {
 
 	if s.SlaveAddr != "" {
 		go s.readWalCommand(s.SlaveAddr)
+	}
+
+	if s.HardLimit <= 0 {
+		s.HardLimit = 1000
 	}
 
 	log.Info("listening on ", addr, " slave=", s.SlaveAddr)
@@ -430,8 +435,6 @@ func (s *Server) readWalCommand(slaveAddr string) {
 		}
 
 		slaveWalIndex := uint64(cmd.Val())
-
-	FAST:
 		masterWalIndex, err := s.wal.LastIndex()
 		if err != nil {
 			if err != wal.ErrClosed {
@@ -473,8 +476,7 @@ func (s *Server) readWalCommand(slaveAddr string) {
 			time.Sleep(time.Second)
 			continue
 		}
-		slaveWalIndex = uint64(cmd.Val())
-		goto FAST
+		time.Sleep(time.Second / 2)
 	}
 
 EXIT:

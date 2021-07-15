@@ -11,6 +11,14 @@ func (s *Server) ZCount(name string, start, end string) (int, error) {
 	return c, err
 }
 
+func (s *Server) ZRank(name, key string, limit int) (int, error) {
+	return s.zRank(name, key, limit, false)
+}
+
+func (s *Server) ZRevRank(name, key string, limit int) (int, error) {
+	return s.zRank(name, key, limit, true)
+}
+
 func (s *Server) ZRange(name string, start, end int) ([]Pair, error) {
 	return s.doZRange(name, start, end, false)
 }
@@ -189,4 +197,40 @@ func (o *RangeOptions) translateOffset(bk *bbolt.Bucket) {
 	if o.OffsetEnd < 0 {
 		o.OffsetEnd += n
 	}
+}
+
+func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err error) {
+	rank = -1
+	keybuf := []byte(key)
+	err = s.pick(name).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset.score." + name))
+		if bk == nil {
+			return nil
+		}
+		if limit <= 0 {
+			limit = s.HardLimit * 2
+		}
+		c := bk.Cursor()
+		if rev {
+			for k, _ := c.Last(); len(k) > 8; k, _ = c.Prev() {
+				rank++
+				if bytes.Equal(k[8:], keybuf) || rank == limit+1 {
+					return nil
+				}
+			}
+		} else {
+			for k, _ := c.First(); len(k) > 8; k, _ = c.Next() {
+				rank++
+				if bytes.Equal(k[8:], keybuf) || rank == limit+1 {
+					return nil
+				}
+			}
+		}
+		rank = -1
+		return nil
+	})
+	if rank == limit+1 {
+		rank = -1
+	}
+	return
 }

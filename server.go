@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
@@ -40,6 +41,7 @@ type Server struct {
 
 	db [32]struct {
 		*bbolt.DB
+		mu             *sync.RWMutex
 		bulking        int64
 		walIn          chan [][]byte
 		wal            *wal.Log
@@ -90,6 +92,7 @@ func Open(path string) (*Server, error) {
 		x.db[i].walIn = make(chan [][]byte, 1e3)
 		x.db[i].walCloseSignal = make(chan bool)
 		x.db[i].rdCloseSignal = make(chan bool)
+		x.db[i].mu = new(sync.RWMutex)
 	}
 	return x, nil
 }
@@ -173,7 +176,7 @@ func (s *Server) Serve(addr string) error {
 	}
 
 	if s.HardLimit <= 0 {
-		s.HardLimit = 1000
+		s.HardLimit = 10000
 	}
 
 	log.Info("listening on ", addr, " slave=", s.SlaveAddr)
@@ -274,8 +277,19 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		cmd = strings.ToUpper(string(command.Get(0)))
 	}
 	name := string(command.Get(1))
-	if strings.HasPrefix(cmd, "Z") && name == "" {
-		return w.WriteError("ZSet: empty name")
+	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
+		if name == "" {
+			return w.WriteError("command: empty name")
+		}
+		x := &s.db[hashStr(name)%uint64(len(s.db))]
+
+		if cmd == "DEL" || strings.HasPrefix(cmd, "ZREM") || cmd == "ZADD" || cmd == "ZINCRBY" {
+			x.mu.Lock()
+			defer x.mu.Unlock()
+		} else {
+			x.mu.RLock()
+			defer x.mu.RUnlock()
+		}
 	}
 
 	var p []Pair
@@ -344,6 +358,25 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
+	case "LOCKSTATE":
+		type RWMutex struct {
+			w struct {
+				state int32
+				sema  uint32
+			} // held if there are pending writers
+			writerSem   uint32 // semaphore for writers to wait for completing readers
+			readerSem   uint32 // semaphore for readers to wait for completing writers
+			readerCount int32  // number of pending readers
+			readerWait  int32  // number of departing readers
+		}
+		data := []string{}
+		for _, x := range s.db {
+			lock := (*RWMutex)(unsafe.Pointer(&x.mu))
+			data = append(data, fmt.Sprintf("%d-%d-%d-%d-%d", lock.w.state&1, lock.writerSem, lock.readerSem, lock.readerCount, lock.readerWait))
+		}
+		return w.WriteBulkStrings(data)
+
+		// Client space commands
 	case "DEL":
 		keys := restCommandsToKeys(1, command)
 		if len(keys) != 1 {
@@ -450,6 +483,27 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
 		if err != nil {
 			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(c))
+	case "ZRANK", "ZREVRANK":
+		var c int
+		h := hashCommands(command)
+		if v, ok := s.cache.Get(h); ok {
+			c = v.DataRank
+		} else {
+			limit := atoi(string(command.Get(3)))
+			if cmd == "ZRANK" {
+				c, err = s.ZRank(name, string(command.Get(2)), limit)
+			} else {
+				c, err = s.ZRevRank(name, string(command.Get(2)), limit)
+			}
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			s.cache.Add(&CacheItem{Key: name, CmdHash: h, DataRank: c})
+		}
+		if c == -1 {
+			return w.WriteBulk(nil)
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":

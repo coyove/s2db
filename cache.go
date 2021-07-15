@@ -7,9 +7,11 @@ import (
 )
 
 type CacheItem struct {
-	Key     string
-	CmdHash [2]uint64
-	Data    []Pair
+	Locked   bool
+	Key      string
+	CmdHash  [2]uint64
+	Data     []Pair
+	DataRank int
 }
 
 type Cache struct {

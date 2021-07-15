@@ -291,7 +291,12 @@ func TestZSetCache(t *testing.T) {
 		go func(c int) {
 			fmt.Println(c)
 			for i := 0; i < 1e4; i++ {
-				rdb.ZRangeByScore(ctx, NAME, &redis.ZRangeBy{Min: "(0.2", Max: "(0.4"})
+				if rand.Intn(1000) == 0 {
+					rdb.ZAdd(ctx, NAME, &redis.Z{Score: 1, Member: 0})
+					fmt.Println("clear cache")
+				} else {
+					rdb.ZRangeByScore(ctx, NAME, &redis.ZRangeBy{Min: "(0.2", Max: "(0.4"})
+				}
 			}
 			wg.Done()
 		}(c)

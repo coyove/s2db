@@ -8,18 +8,15 @@ import (
 )
 
 type CacheItem struct {
-	Locked   bool
-	Key      string
-	CmdHash  [2]uint64
-	Data     []Pair
-	DataRank int
+	Key     string
+	CmdHash [2]uint64
+	Data    interface{}
 }
 
 type Cache struct {
-	ctr int64
-
 	maxWeight int64
 	curWeight int64
+	watermark int64
 
 	ll    *list.List
 	cache map[[2]uint64]*list.Element
@@ -53,12 +50,13 @@ func (c *Cache) Clear() {
 	c.Unlock()
 }
 
-func (c *Cache) Token() int64 {
-	return atomic.AddInt64(&c.ctr, 1)
-}
+func (c *Cache) nextWatermark() int64 { return atomic.AddInt64(&c.watermark, 1) }
 
 func (c *Cache) Add(value *CacheItem) error {
-	weight := int64(sizePairs(value.Data))
+	weight := int64(1)
+	if p, ok := value.Data.([]Pair); ok {
+		weight = int64(sizePairs(p))
+	}
 
 	if weight > c.maxWeight || weight < 1 {
 		return ErrWeightTooBig
@@ -117,6 +115,7 @@ func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
 		e := ele.Value.(*entry)
 		e.hits++
 		c.ll.MoveToFront(ele)
+		// fmt.Println("in cache")
 		return e.value, true
 	}
 
@@ -138,12 +137,13 @@ func (c *Cache) KeyCacheLen(key string) int {
 }
 
 // Remove removes the given key from the cache.
-func (c *Cache) Remove(key string) {
+func (c *Cache) Remove(key string, s *Server) {
 	c.Lock()
 	for _, e := range c.keyed[key] {
 		c.remove(e, false)
 	}
 	delete(c.keyed, key)
+	s.db[s.shardIndex(key)].writeWatermark = c.nextWatermark()
 	c.Unlock()
 }
 

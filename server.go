@@ -15,7 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
@@ -41,7 +40,7 @@ type Server struct {
 
 	db [32]struct {
 		*bbolt.DB
-		mu             *sync.RWMutex
+		writeWatermark int64
 		bulking        int64
 		walIn          chan [][]byte
 		wal            *wal.Log
@@ -92,7 +91,6 @@ func Open(path string) (*Server, error) {
 		x.db[i].walIn = make(chan [][]byte, 1e3)
 		x.db[i].walCloseSignal = make(chan bool)
 		x.db[i].rdCloseSignal = make(chan bool)
-		x.db[i].mu = new(sync.RWMutex)
 	}
 	return x, nil
 }
@@ -103,9 +101,12 @@ func (s *Server) SetReadOnly(v bool) {
 	}
 }
 
-func (s *Server) isReadOnly(key string) bool {
-	idx := hashStr(key) % uint64(len(s.db))
-	return s.db[idx].readOnly
+func (s *Server) isReadOnly(key string) bool { return s.db[hashStr(key)%uint64(len(s.db))].readOnly }
+
+func (s *Server) shardIndex(key string) int { return int(hashStr(key) % uint64(len(s.db))) }
+
+func (s *Server) canUpdateCache(key string, wm int64) bool {
+	return wm >= s.db[s.shardIndex(key)].writeWatermark
 }
 
 func (s *Server) Close() error {
@@ -150,10 +151,7 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) pickWal(name string) chan [][]byte {
-	h := hashStr(name) % uint64(len(s.db))
-	return s.db[h].walIn
-}
+func (s *Server) pickWal(name string) chan [][]byte { return s.db[s.shardIndex(name)].walIn }
 
 func (s *Server) Serve(addr string) error {
 	listener, err := net.Listen("tcp", addr)
@@ -276,19 +274,13 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	if cmd == "" {
 		cmd = strings.ToUpper(string(command.Get(0)))
 	}
+
+	h := hashCommands(command)
+	wm := s.cache.nextWatermark()
 	name := string(command.Get(1))
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
 		if name == "" {
 			return w.WriteError("command: empty name")
-		}
-		x := &s.db[hashStr(name)%uint64(len(s.db))]
-
-		if cmd == "DEL" || strings.HasPrefix(cmd, "ZREM") || cmd == "ZADD" || cmd == "ZINCRBY" {
-			x.mu.Lock()
-			defer x.mu.Unlock()
-		} else {
-			x.mu.RLock()
-			defer x.mu.RUnlock()
 		}
 	}
 
@@ -338,7 +330,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		s.cache.Clear()
 		return w.WriteInt(int64(weight))
 	case "SHARDCALC":
-		return w.WriteInt(int64(hashStr(name) % uint64(len(s.db))))
+		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":
 		if name == "" {
 			a := []string{}
@@ -358,25 +350,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
-	case "LOCKSTATE":
-		type RWMutex struct {
-			w struct {
-				state int32
-				sema  uint32
-			} // held if there are pending writers
-			writerSem   uint32 // semaphore for writers to wait for completing readers
-			readerSem   uint32 // semaphore for readers to wait for completing writers
-			readerCount int32  // number of pending readers
-			readerWait  int32  // number of departing readers
-		}
-		data := []string{}
-		for _, x := range s.db {
-			lock := (*RWMutex)(unsafe.Pointer(&x.mu))
-			data = append(data, fmt.Sprintf("%d-%d-%d-%d-%d", lock.w.state&1, lock.writerSem, lock.readerSem, lock.readerCount, lock.readerWait))
-		}
-		return w.WriteBulkStrings(data)
 
-		// Client space commands
+		// -----------------------
+		//  Client space commands
+		// -----------------------
 	case "DEL":
 		keys := restCommandsToKeys(1, command)
 		if len(keys) != 1 {
@@ -390,7 +367,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Remove(key)
+		s.cache.Remove(key, s)
 		s.pickWal(key) <- [][]byte{[]byte("DEL"), []byte(key)}
 		return w.WriteInt(int64(c))
 	case "ZADD":
@@ -422,7 +399,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Remove(name)
+		s.cache.Remove(name, s)
 		s.pickWal(name) <- dupCommand(command)
 		if ch {
 			return w.WriteInt(int64(added + updated))
@@ -436,7 +413,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Remove(name)
+		s.cache.Remove(name, s)
 		s.pickWal(name) <- dupCommand(command)
 		return w.WriteBulkString(ftoa(v))
 	case "ZSCORE":
@@ -470,7 +447,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Remove(name)
+		s.cache.Remove(name, s)
 		s.pickWal(name) <- dupCommand(command)
 		return w.WriteInt(int64(c))
 	case "ZCARD":
@@ -480,16 +457,23 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteInt(c)
 	case "ZCOUNT":
-		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
-		if err != nil {
-			return w.WriteError(err.Error())
+		var c int
+		if v, ok := s.cache.Get(h); ok {
+			c = v.Data.(int)
+		} else {
+			c, err = s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			if s.canUpdateCache(name, wm) {
+				s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
+			}
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK":
 		var c int
-		h := hashCommands(command)
 		if v, ok := s.cache.Get(h); ok {
-			c = v.DataRank
+			c = v.Data.(int)
 		} else {
 			limit := atoi(string(command.Get(3)))
 			if cmd == "ZRANK" {
@@ -500,16 +484,17 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.cache.Add(&CacheItem{Key: name, CmdHash: h, DataRank: c})
+			if s.canUpdateCache(name, wm) {
+				s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
+			}
 		}
 		if c == -1 {
 			return w.WriteBulk(nil)
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		h := hashCommands(command)
 		if v, ok := s.cache.Get(h); ok {
-			return writePairs(v.Data, w, command)
+			return writePairs(v.Data.([]Pair), w, command)
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
@@ -529,7 +514,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
+		if s.canUpdateCache(name, wm) {
+			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
+		}
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		if !isBulk && s.isReadOnly(name) {
@@ -547,11 +534,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.cache.Remove(name)
+		s.cache.Remove(name, s)
 		s.pickWal(name) <- dupCommand(command)
 		return w.WriteInt(int64(len(p)))
 	default:
-		// log.Error("command not support: ", cmd)
 		//for i := 0; i < command.ArgCount(); i++ {
 		//	fmt.Println(string(command.Get(i)))
 		//}

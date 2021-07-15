@@ -35,6 +35,7 @@ type Server struct {
 
 	ln    net.Listener
 	cache *Cache
+	rdb   *redis.Client
 
 	db [32]struct {
 		*bbolt.DB
@@ -98,12 +99,17 @@ func (s *Server) Close() error {
 		}
 		close(db.walIn)
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("close: %v", errs)
+	if err := s.rdb.Close(); err != nil {
+		errs = append(errs, err)
 	}
-
+	if err := s.ln.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to close: %v", errs)
+	}
 	log.Info("server closed")
-	return s.ln.Close()
+	return nil
 }
 
 func (s *Server) pickWal(name string) chan [][]byte {
@@ -118,6 +124,12 @@ func (s *Server) Serve(addr string) error {
 	}
 
 	s.ln = listener
+	if s.SlaveAddr != "" {
+		s.rdb = redis.NewClient(&redis.Options{
+			Addr: s.SlaveAddr,
+		})
+	}
+
 	for i := range s.db {
 		go s.writeWalCommand(i)
 		if s.SlaveAddr != "" {
@@ -164,7 +176,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if cmd == "BULK" {
 				ew = s.runBulk(writer, command)
 			} else {
-				ew = s.runCommand(writer, cmd, command)
+				ew = s.runCommand(writer, cmd, command, s.ReadOnly)
 			}
 		}
 		if command.IsLast() {
@@ -208,7 +220,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 			break
 		}
 		buf.Reset()
-		s.runCommand(dummy, "", cmd)
+		s.runCommand(dummy, "", cmd, false)
 		if buf.Len() > 0 && buf.Bytes()[0] == '-' {
 			log.Error("BULK: ", strings.TrimSpace(buf.String()[1:]))
 			break
@@ -222,7 +234,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 	return w.WriteInt(int64(last))
 }
 
-func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisproto.Command) error {
+func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisproto.Command, readOnly bool) error {
 	if cmd == "" {
 		cmd = strings.ToUpper(string(command.Get(0)))
 	}
@@ -240,14 +252,25 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteSimpleString(name)
 	case "WALLAST":
-		idx, err := s.db[atoi(name)].wal.LastIndex()
-		if err != nil {
-			return w.WriteError(err.Error())
+		if name != "" {
+			idx, err := s.db[atoi(name)].wal.LastIndex()
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			return w.WriteInt(int64(idx))
 		}
-		return w.WriteInt(int64(idx))
+		total := uint64(0)
+		for i := range s.db {
+			idx, err := s.db[i].wal.LastIndex()
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			total += idx
+		}
+		return w.WriteInt(int64(total))
 	case "WALTRUNCHEAD":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		index, _ := strconv.ParseUint(name, 10, 64)
 		if err := s.db[atoi(name)].wal.TruncateFront(index); err != nil {
@@ -262,8 +285,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	case "CACHESIZE":
 		return w.WriteInt(int64(s.cache.curWeight))
 	case "DEL":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		keys := restCommandsToKeys(1, command)
 		c, err := s.Del(keys...)
@@ -276,8 +299,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteInt(int64(c))
 	case "ZADD":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		xx, nx, ch, idx := false, false, false, 2
 		for ; ; idx++ {
@@ -311,8 +334,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteInt(int64(added))
 	case "ZINCRBY":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		v, err := s.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))))
 		if err != nil {
@@ -345,8 +368,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteBulks(data...)
 	case "ZREM":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		c, err := s.ZRem(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -393,8 +416,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		if s.ReadOnly {
-			w.WriteError("readonly")
+		if readOnly {
+			return w.WriteError("readonly")
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
@@ -439,13 +462,10 @@ func (s *Server) writeWalCommand(i int) {
 
 func (s *Server) readWalCommand(shard int, slaveAddr string) {
 	ctx := context.TODO()
-	rdb := redis.NewClient(&redis.Options{
-		Addr: slaveAddr,
-	})
 
 	for {
 		cmd := redis.NewIntCmd(ctx, "WALLAST", shard)
-		err := rdb.Process(ctx, cmd)
+		err := s.rdb.Process(ctx, cmd)
 		if err != nil && cmd.Err() != nil {
 			log.Error("#", shard, " getting wal index from slave: ", slaveAddr, " err=", err)
 			time.Sleep(time.Second * 5)
@@ -487,7 +507,7 @@ func (s *Server) readWalCommand(shard int, slaveAddr string) {
 		}
 
 		cmd = redis.NewIntCmd(ctx, cmds...)
-		if err := rdb.Process(ctx, cmd); err != nil || cmd.Err() != nil {
+		if err := s.rdb.Process(ctx, cmd); err != nil || cmd.Err() != nil {
 			if !strings.Contains(fmt.Sprint(err), "concurrent bulk write") {
 				log.Error("#", shard, " slave bulk returned: ", err, " current master index: ", masterWalIndex)
 			}

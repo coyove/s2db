@@ -1,10 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
 func TestMetrics(t *testing.T) {
+	fmt.Println(hashStr("feed_square:th") % 32)
+	return
+
 	s := &Survey{max: 100}
 	s.data = [][2]float64{
 		{10, 0},

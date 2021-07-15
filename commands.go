@@ -194,8 +194,12 @@ func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64,
 			score = bytesToFloat(scoreBuf)
 		}
 		if by == 0 {
-			newValue = score
-			return nil
+			if len(scoreBuf) == 0 {
+				// special case: zincrby name 0 non_existed_key
+			} else {
+				newValue = score
+				return nil
+			}
 		}
 		if err := checkScore(score + by); err != nil {
 			return err

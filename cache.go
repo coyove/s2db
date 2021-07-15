@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 type CacheItem struct {
@@ -15,6 +16,8 @@ type CacheItem struct {
 }
 
 type Cache struct {
+	ctr int64
+
 	maxWeight int64
 	curWeight int64
 
@@ -48,6 +51,10 @@ func (c *Cache) Clear() {
 	c.keyed = make(map[string][]*list.Element)
 	c.curWeight = 0
 	c.Unlock()
+}
+
+func (c *Cache) Token() int64 {
+	return atomic.AddInt64(&c.ctr, 1)
 }
 
 func (c *Cache) Add(value *CacheItem) error {

@@ -44,6 +44,7 @@ func (c *Cache) Clear() {
 	c.ll = list.New()
 	c.cache = make(map[[2]uint64]*list.Element)
 	c.keyed = make(map[string][]*list.Element)
+	c.curWeight = 0
 	c.Unlock()
 }
 

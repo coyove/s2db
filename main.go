@@ -84,7 +84,7 @@ func main() {
 
 	s, _ := Open("test")
 	s.SlaveAddr = *slaveAddr
-	s.ReadOnly = *readOnly
+	s.SetReadOnly(*readOnly)
 	s.Serve(*listenAddr)
 
 	if false {

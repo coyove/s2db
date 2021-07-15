@@ -24,31 +24,42 @@ func (s *Server) ZCard(name string) (int64, error) {
 	return int64(count), err
 }
 
-func (s *Server) Del(names ...string) (count int, err error) {
+func (s *Server) GroupKeys(names ...string) [][]string {
 	nameShards := make([][]string, len(s.db))
 	for _, name := range names {
-		x := &nameShards[hashStr(name)%uint64(len(nameShards))]
+		x := &nameShards[hashStr(name)%uint64(len(s.db))]
 		*x = append(*x, name)
 	}
-	for i := range nameShards {
-		err = s.db[i].Update(func(tx *bbolt.Tx) error {
-			for _, name := range nameShards[i] {
-				bkName := tx.Bucket([]byte("zset." + name))
-				bkScore := tx.Bucket([]byte("zset.score." + name))
-				if bkName == nil || bkScore == nil {
-					continue
-				}
-				if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
-					return err
-				}
-				if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
-					return err
-				}
-				count++
-			}
-			return nil
-		})
+	return nameShards
+}
+
+func (s *Server) DelGroupedKeys(names ...string) (count int, err error) {
+	if len(names) == 0 {
+		return
 	}
+	db := s.pick(names[0])
+	for i := 1; i < len(names); i++ {
+		if s.pick(names[i]) != db {
+			return 0, fmt.Errorf("keys not grouped")
+		}
+	}
+	err = db.Update(func(tx *bbolt.Tx) error {
+		for _, name := range names {
+			bkName := tx.Bucket([]byte("zset." + name))
+			bkScore := tx.Bucket([]byte("zset.score." + name))
+			if bkName == nil || bkScore == nil {
+				continue
+			}
+			if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
+				return err
+			}
+			if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
+				return err
+			}
+			count++
+		}
+		return nil
+	})
 	return
 }
 

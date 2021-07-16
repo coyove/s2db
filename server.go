@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/coyove/common/lru"
 	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
@@ -32,11 +33,13 @@ func init() {
 type Server struct {
 	SlaveAddr string
 	HardLimit int
+	WeakTTL   time.Duration
 
-	ln     net.Listener
-	cache  *Cache
-	rdb    *redis.Client
-	closed bool
+	ln        net.Listener
+	cache     *Cache
+	weakCache *lru.Cache
+	rdb       *redis.Client
+	closed    bool
 
 	db [32]struct {
 		*bbolt.DB
@@ -72,7 +75,8 @@ func Open(path string) (*Server, error) {
 		sz = 1024 // 1G
 	}
 	x := &Server{
-		cache: NewCache(sz * 1024 * 1024),
+		cache:     NewCache(sz * 1024 * 1024),
+		weakCache: lru.NewCache(sz * 1024 * 1024),
 	}
 
 	for i := range x.db {
@@ -107,6 +111,17 @@ func (s *Server) shardIndex(key string) int { return int(hashStr(key) % uint64(l
 
 func (s *Server) canUpdateCache(key string, wm int64) bool {
 	return wm >= s.db[s.shardIndex(key)].writeWatermark
+}
+
+func (s *Server) getWeakCache(h [2]uint64) interface{} {
+	v, ok := s.weakCache.Get(h)
+	if !ok {
+		return nil
+	}
+	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= s.WeakTTL {
+		return i.Data
+	}
+	return nil
 }
 
 func (s *Server) Close() error {
@@ -175,6 +190,10 @@ func (s *Server) Serve(addr string) error {
 
 	if s.HardLimit <= 0 {
 		s.HardLimit = 10000
+	}
+
+	if s.WeakTTL <= 0 {
+		s.WeakTTL = time.Minute * 5
 	}
 
 	log.Info("listening on ", addr, " slave=", s.SlaveAddr)
@@ -457,24 +476,34 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteInt(c)
 	case "ZCOUNT":
-		var c int
 		if v, ok := s.cache.Get(h); ok {
-			c = v.Data.(int)
-		} else {
-			c, err = s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			if s.canUpdateCache(name, wm) {
-				s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
+			return w.WriteInt(int64(v.Data.(int)))
+		}
+		if cmd == "ZCOUNTWEAK" {
+			if v := s.getWeakCache(h); v != nil {
+				return w.WriteInt(int64(v.(int)))
 			}
 		}
+		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if s.canUpdateCache(name, wm) {
+			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
+		}
+		s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
 		return w.WriteInt(int64(c))
-	case "ZRANK", "ZREVRANK":
+	case "ZRANK", "ZREVRANK", "ZRANKWEAK", "ZREVRANKWEAK":
 		var c int
 		if v, ok := s.cache.Get(h); ok {
 			c = v.Data.(int)
 		} else {
+			if strings.HasSuffix(cmd, "WEAK") {
+				if v := s.getWeakCache(h); v != nil {
+					c = v.(int)
+					goto RANK_RES
+				}
+			}
 			limit := atoi(string(command.Get(3)))
 			if cmd == "ZRANK" {
 				c, err = s.ZRank(name, string(command.Get(2)), limit)
@@ -487,14 +516,22 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			if s.canUpdateCache(name, wm) {
 				s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
 			}
+			s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
 		}
+	RANK_RES:
 		if c == -1 {
 			return w.WriteBulk(nil)
 		}
 		return w.WriteInt(int64(c))
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE",
+		"ZRANGEWEAK", "ZREVRANGEWEAK", "ZRANGEBYLEXWEAK", "ZREVRANGEBYLEXWEAK", "ZRANGEBYSCOREWEAK", "ZREVRANGEBYSCOREWEAK":
 		if v, ok := s.cache.Get(h); ok {
 			return writePairs(v.Data.([]Pair), w, command)
+		}
+		if strings.HasSuffix(cmd, "WEAK") {
+			if v := s.getWeakCache(h); v != nil {
+				return writePairs(v.([]Pair), w, command)
+			}
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {
@@ -517,6 +554,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if s.canUpdateCache(name, wm) {
 			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
 		}
+		s.weakCache.Add(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()})
 		return writePairs(p, w, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		if !isBulk && s.isReadOnly(name) {

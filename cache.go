@@ -7,6 +7,11 @@ import (
 	"sync/atomic"
 )
 
+type WeakCacheItem struct {
+	Time int64
+	Data interface{}
+}
+
 type CacheItem struct {
 	Key     string
 	CmdHash [2]uint64

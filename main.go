@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/exec"
 	"strconv"
@@ -82,6 +84,11 @@ func main() {
 			time.Sleep(time.Second)
 		}
 	}
+
+	go func() {
+		log.Info("serving pprof at :16379")
+		log.Error("pprof: ", http.ListenAndServe(":16379", nil))
+	}()
 
 	s, _ := Open("test")
 	s.SlaveAddr = *slaveAddr

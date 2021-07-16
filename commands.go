@@ -101,7 +101,7 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated in
 			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
 				return err
 			}
-			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), []byte(p.Key)); err != nil {
+			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
 				return err
 			}
 		}
@@ -122,7 +122,7 @@ func (s *Server) ZRem(name string, keys ...string) (count int, err error) {
 			if len(scoreBuf) == 0 {
 				continue
 			}
-			pairs = append(pairs, Pair{key, bytesToFloat(scoreBuf)})
+			pairs = append(pairs, Pair{Key: key, Score: bytesToFloat(scoreBuf)})
 			count++
 		}
 		if len(pairs) == 0 {
@@ -148,6 +148,41 @@ func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err err
 				scores = append(scores, bytesToFloat(scoreBuf))
 			} else {
 				scores = append(scores, math.NaN())
+			}
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("missing keys")
+	}
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+		bkName := tx.Bucket([]byte("zset." + name))
+		if bkName == nil {
+			return nil
+		}
+		bkScore := tx.Bucket([]byte("zset.score." + name))
+		if bkScore == nil {
+			return nil
+		}
+		scores := make([]float64, len(keys))
+		for i, key := range keys {
+			scoreBuf := bkName.Get([]byte(key))
+			if len(scoreBuf) != 0 {
+				scores[i] = bytesToFloat(scoreBuf)
+			} else {
+				scores[i] = math.NaN()
+			}
+		}
+		for i, s := range scores {
+			if !math.IsNaN(s) {
+				d := bkScore.Get(append(floatToBytes(s), keys[i]...))
+				data = append(data, append([]byte{}, d...))
+			} else {
+				data = append(data, nil)
 			}
 		}
 		return nil
@@ -187,12 +222,19 @@ func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64,
 		}
 		scoreBuf := bkName.Get([]byte(key))
 		score := 0.0
+
+		var dataBuf []byte
 		if len(scoreBuf) != 0 {
-			if err := bkScore.Delete([]byte(string(scoreBuf) + key)); err != nil {
+			oldKey := []byte(string(scoreBuf) + key)
+			dataBuf = bkScore.Get(oldKey)
+			if err := bkScore.Delete(oldKey); err != nil {
 				return err
 			}
 			score = bytesToFloat(scoreBuf)
+		} else {
+			dataBuf = []byte("")
 		}
+
 		if by == 0 {
 			if len(scoreBuf) == 0 {
 				// special case: zincrby name 0 non_existed_key
@@ -208,7 +250,7 @@ func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64,
 		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
 			return err
 		}
-		if err := bkScore.Put([]byte(string(scoreBuf)+key), []byte(key)); err != nil {
+		if err := bkScore.Put([]byte(string(scoreBuf)+key), dataBuf); err != nil {
 			return err
 		}
 		newValue = score + by

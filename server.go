@@ -56,6 +56,7 @@ type Server struct {
 type Pair struct {
 	Key   string
 	Score float64
+	Data  []byte
 }
 
 func Open(path string) (*Server, error) {
@@ -393,7 +394,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if !isBulk && s.isReadOnly(name) {
 			return w.WriteError("readonly")
 		}
-		xx, nx, ch, idx := false, false, false, 2
+		xx, nx, ch, data, idx := false, false, false, false, 2
 		for ; ; idx++ {
 			switch strings.ToUpper(string(command.Get(idx))) {
 			case "XX":
@@ -405,13 +406,22 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			case "CH":
 				ch = true
 				continue
+			case "DATA":
+				data = true
+				continue
 			}
 			break
 		}
 
 		pairs := []Pair{}
-		for i := idx; i < command.ArgCount(); i += 2 {
-			pairs = append(pairs, Pair{string(command.Get(i + 1)), atof(string(command.Get(i)))})
+		if !data {
+			for i := idx; i < command.ArgCount(); i += 2 {
+				pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: atof(string(command.Get(i)))})
+			}
+		} else {
+			for i := idx; i < command.ArgCount(); i += 3 {
+				pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: atof(string(command.Get(i))), Data: command.Get(i + 2)})
+			}
 		}
 
 		added, updated, err := s.ZAdd(name, pairs, nx, xx)
@@ -458,6 +468,24 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			}
 		}
 		return w.WriteBulks(data...)
+	case "ZMDATA", "ZMDATAWEAK":
+		if v, ok := s.cache.Get(h); ok {
+			return w.WriteBulks(v.Data.([][]byte)...)
+		}
+		if cmd == "ZMDATAWEAK" {
+			if v := s.getWeakCache(h); v != nil {
+				return w.WriteBulks(v.([][]byte)...)
+			}
+		}
+		data, err := s.ZMData(name, restCommandsToKeys(2, command)...)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if s.canUpdateCache(name, wm) {
+			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: data})
+		}
+		s.weakCache.Add(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()})
+		return w.WriteBulks(data...)
 	case "ZREM":
 		if !isBulk && s.isReadOnly(name) {
 			return w.WriteError("readonly")
@@ -503,6 +531,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 					c = v.(int)
 					goto RANK_RES
 				}
+				cmd = cmd[:len(cmd)-4]
 			}
 			limit := atoi(string(command.Get(3)))
 			if cmd == "ZRANK" {
@@ -532,6 +561,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			if v := s.getWeakCache(h); v != nil {
 				return writePairs(v.([]Pair), w, command)
 			}
+			cmd = cmd[:len(cmd)-4]
 		}
 		start, end := string(command.Get(2)), string(command.Get(3))
 		switch cmd {

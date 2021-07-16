@@ -111,7 +111,7 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						if !opt.CountOnly {
-							pairs = append(pairs, Pair{string(k), bytesToFloat(sc)})
+							pairs = append(pairs, Pair{Key: string(k), Score: bytesToFloat(sc)})
 						}
 						count++
 					} else {
@@ -157,14 +157,15 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		endBuf = append(endBuf, 0xff)
 
 		c := bk.Cursor()
-		k, sc := c.Seek(startBuf)
+		k, _ := c.Seek(startBuf)
 
 		for i := 0; len(pairs) < s.HardLimit; i++ {
-			if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
+			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						if !opt.CountOnly {
-							pairs = append(pairs, Pair{string(sc), bytesToFloat(k[:8])})
+							p := Pair{Key: string(k[8:]), Score: bytesToFloat(k[:8])}
+							pairs = append(pairs, p)
 						}
 						count++
 					} else {
@@ -174,7 +175,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 			} else {
 				break
 			}
-			k, sc = c.Next()
+			k, _ = c.Next()
 		}
 		if opt.Delete {
 			return s.deletePair(tx, name, pairs...)

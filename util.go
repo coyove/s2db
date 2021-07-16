@@ -127,7 +127,7 @@ func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) er
 func sizePairs(in []Pair) int {
 	sz := 1
 	for _, p := range in {
-		sz += len(p.Key) + 8
+		sz += len(p.Key) + 8 + len(p.Data)
 	}
 	return sz
 }

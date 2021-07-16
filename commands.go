@@ -226,7 +226,7 @@ func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64,
 		var dataBuf []byte
 		if len(scoreBuf) != 0 {
 			oldKey := []byte(string(scoreBuf) + key)
-			dataBuf = bkScore.Get(oldKey)
+			dataBuf = append([]byte{}, bkScore.Get(oldKey)...)
 			if err := bkScore.Delete(oldKey); err != nil {
 				return err
 			}

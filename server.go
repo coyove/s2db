@@ -302,6 +302,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if name == "" {
 			return w.WriteError("command: empty name")
 		}
+		if strings.HasPrefix(name, "score") {
+			return w.WriteError("command: invalid name starts with 'score'")
+		}
 	}
 
 	var p []Pair
@@ -349,6 +352,12 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		weight := s.cache.curWeight
 		s.cache.Clear()
 		return w.WriteInt(int64(weight))
+	case "BIGKEYS":
+		v, err := s.BigKeys(atoi(name))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return writePairs(v, w, command)
 	case "SHARDCALC":
 		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":

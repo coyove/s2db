@@ -3,9 +3,10 @@ package main
 import (
 	"bytes"
 	"container/heap"
-	"sync"
-	"time"
+	"math"
+	"sync/atomic"
 
+	"gitlab.litatom.com/zhangzezhong/zset/nanotime"
 	"go.etcd.io/bbolt"
 )
 
@@ -35,7 +36,7 @@ func (s *Server) BigKeys(n int) (keys []Pair, err error) {
 	heap.Init(h)
 	for _, db := range s.db {
 		err = db.View(func(tx *bbolt.Tx) error {
-			tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
+			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
 				if bytes.HasPrefix(name, []byte("zset.score.")) {
 					return nil
 				}
@@ -44,11 +45,9 @@ func (s *Server) BigKeys(n int) (keys []Pair, err error) {
 					if h.Len() > n {
 						heap.Pop(h)
 					}
-					return nil
 				}
 				return nil
 			})
-			return nil
 		})
 		if err != nil {
 			return
@@ -61,67 +60,45 @@ func (s *Server) BigKeys(n int) (keys []Pair, err error) {
 	return
 }
 
+type ShardSurvey struct {
+	Read, Write Survey
+}
+
 type Survey struct {
-	mu   sync.Mutex
-	max  int
-	data [][2]float64
+	data [900]int32
 }
 
-func (s *Survey) Append(v float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.data = append(s.data, [2]float64{v, float64(time.Now().Unix())})
-	if len(s.data) > s.max {
-		s.data = s.data[len(s.data)-s.max:]
-	}
+func (s *Survey) _i() uint64 {
+	return (nanotime.Now() / 1e9) % uint64(len(s.data))
 }
 
-func (s *Survey) QPS() (data [][2]float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.data) < 2 {
-		return
-	}
+func (s *Survey) Incr(c int32) {
+	atomic.AddInt32(&s.data[s._i()], c)
+}
 
-	x := s.data
-
-	t := x[0][1]
-	sum := x[0][0]
-
-	for x = x[1:]; len(x) > 0; x = x[1:] {
-		if x[0][1]-t >= 1 || len(x) == 1 {
-			data = append(data, [2]float64{sum / (x[0][1] - t), t})
-			t = x[0][1]
-			sum = x[0][0]
-		} else {
-			sum += x[0][0]
+func (s *Survey) QPS() (q1, q5, q15 float64) {
+	idx := s._i()
+	sec := []int32{}
+	for {
+		sec = append(sec, s.data[idx])
+		idx--
+		if idx == math.MaxUint64 {
+			idx = uint64(len(s.data) - 1)
+		}
+		if idx == s._i() {
+			break
 		}
 	}
-	return
-}
 
-func (s *Survey) MinuteAvg() (data [][2]float64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if len(s.data) < 1 {
-		return
-	}
-
-	x := s.data
-
-	t := x[0][1]
-	sum := x[0][0]
-	count := 1.0
-
-	for x = x[1:]; len(x) > 0; x = x[1:] {
-		if x[0][1]-t >= 60 || len(x) == 1 {
-			data = append(data, [2]float64{sum / count, t})
-			t = x[0][1]
-			count = 1
-			sum = x[0][0]
-		} else {
-			sum += x[0][0]
+	sum := 0.0
+	for i := 0; i < len(sec); i++ {
+		sum += float64(sec[i])
+		if i == 59 {
+			q1 = sum / 60
+		} else if i == 299 {
+			q5 = sum / 300
+		} else if i == len(sec)-1 {
+			q15 = sum / 900
 		}
 	}
 	return

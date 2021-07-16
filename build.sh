@@ -1,4 +1,4 @@
-SRC='main.go util.go server.go cache.go commands.go range.go internal_metrics.go'
+SRC='main.go util.go server.go cache.go commands.go range.go metrics.go'
 
 rm -rf zset.7z
 env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o zset $SRC && 7z a zset.7z zset

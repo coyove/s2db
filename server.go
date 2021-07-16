@@ -40,6 +40,7 @@ type Server struct {
 	weakCache *lru.Cache
 	rdb       *redis.Client
 	closed    bool
+	survey    ShardSurvey
 
 	db [32]struct {
 		*bbolt.DB
@@ -305,6 +306,11 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if strings.HasPrefix(name, "score") {
 			return w.WriteError("command: invalid name starts with 'score'")
 		}
+		if cmd == "DEL" || cmd == "ZADD" || strings.HasPrefix(cmd, "ZREM") {
+			s.survey.Write.Incr(1)
+		} else {
+			s.survey.Read.Incr(1)
+		}
 	}
 
 	var p []Pair
@@ -358,6 +364,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError(err.Error())
 		}
 		return writePairs(v, w, command)
+	case "LOAD":
 	case "SHARDCALC":
 		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":

@@ -27,6 +27,7 @@ var (
 	readOnly   = flag.Bool("ro", false, "")
 	benchmark  = flag.Bool("bench", false, "")
 	coward     = flag.Bool("c", false, "")
+	sparta     = flag.Bool("sparta", false, "")
 	serverName = flag.String("n", "sszz", "")
 )
 
@@ -73,15 +74,17 @@ func main() {
 		return
 	}
 
-	p, _ := ps.Processes()
-	for _, p := range p {
-		if strings.Contains(p.Executable(), "zset") && os.Getpid() != p.Pid() {
-			if *coward {
-				log.Info("coward mode, existing server: ", p.Pid(), ", exit quietly")
-				return
+	if !*sparta {
+		p, _ := ps.Processes()
+		for _, p := range p {
+			if strings.Contains(p.Executable(), "zset") && os.Getpid() != p.Pid() {
+				if *coward {
+					log.Info("coward mode, existing server: ", p.Pid(), ", exit quietly")
+					return
+				}
+				log.Info("terminate old server: ", p.Pid(), exec.Command("kill", "-9", strconv.Itoa(p.Pid())).Run())
+				time.Sleep(time.Second)
 			}
-			log.Info("terminate old server: ", p.Pid(), exec.Command("kill", "-9", strconv.Itoa(p.Pid())).Run())
-			time.Sleep(time.Second)
 		}
 	}
 

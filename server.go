@@ -365,6 +365,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return writePairs(v, w, command)
 	case "LOAD":
+		a, b, c := s.survey.Read.QPS()
+		d, e, f := s.survey.Write.QPS()
+		return w.WriteSimpleString(fmt.Sprintf("r: %.3f %.3f %.3f, w: %.3f %.3f %.3f", a, b, c, d, e, f))
 	case "SHARDCALC":
 		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":

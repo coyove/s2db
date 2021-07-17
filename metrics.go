@@ -64,28 +64,45 @@ type ShardSurvey struct {
 	Read, Write Survey
 }
 
+const SurveyRange = 900
+
 type Survey struct {
-	data [900]int32
+	data [SurveyRange]int32
+	ts   [SurveyRange]uint32
 }
 
-func (s *Survey) _i() uint64 {
-	return (nanotime.Now() / 1e9) % uint64(len(s.data))
+func (s *Survey) _i() (uint64, uint32) {
+	ts := (nanotime.Now() / 1e9)
+	return ts % SurveyRange, uint32(ts)
+}
+
+func (s *Survey) _decr(x uint64) uint64 {
+	x--
+	if x == math.MaxUint64 {
+		return SurveyRange - 1
+	}
+	return x
 }
 
 func (s *Survey) Incr(c int32) {
-	atomic.AddInt32(&s.data[s._i()], c)
+	idx, ts := s._i()
+	s.data[(idx+1)%SurveyRange] = 0
+	atomic.AddInt32(&s.data[idx], c)
+	s.ts[idx] = ts
 }
 
 func (s *Survey) QPS() (q1, q5, q15 float64) {
-	idx := s._i()
+	idx, ts := s._i()
 	sec := []int32{}
-	for {
-		sec = append(sec, s.data[idx])
-		idx--
-		if idx == math.MaxUint64 {
-			idx = uint64(len(s.data) - 1)
+
+	for startIdx := idx; ; {
+		if s.ts[idx] >= ts-SurveyRange {
+			sec = append(sec, s.data[idx])
+		} else {
+			sec = append(sec, 0)
 		}
-		if idx == s._i() {
+		idx = s._decr(idx)
+		if idx == startIdx+1 {
 			break
 		}
 	}

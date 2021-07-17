@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"runtime/debug"
 	"strings"
@@ -76,18 +77,30 @@ func (s *Server) requestLogWorker(shard int) {
 
 func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {
 	sz := 0
+	masterWalIndex, err := s.walProgress(shard)
+	if err != nil {
+		return nil, err
+	}
+	if start == masterWalIndex+1 {
+		return nil, nil
+	}
+	if start > masterWalIndex {
+		return nil, fmt.Errorf("slave log (%d) surpass master log (%d)", start, masterWalIndex)
+	}
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
 			return nil
 		}
-		masterWalIndex := uint64(bk.Stats().KeyN)
-		if start == masterWalIndex+1 {
-			return nil
+
+		k, _ := bk.Cursor().First()
+		if len(k) == 8 {
+			first := binary.BigEndian.Uint64(k)
+			if first > start {
+				return fmt.Errorf("master log (%d) truncated as slave request older log (%d)", first, start)
+			}
 		}
-		if start > masterWalIndex {
-			return fmt.Errorf("slave log (%d) surpass master log (%d)", start, masterWalIndex)
-		}
+
 		for i := start; i <= masterWalIndex; i++ {
 			data := bk.Get(intToBytes(uint64(i)))
 			logs = append(logs, string(data))

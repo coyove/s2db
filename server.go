@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -157,7 +158,10 @@ func (s *Server) walProgress(shard int) (total uint64, err error) {
 	f := func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk != nil {
-			total += uint64(bk.Stats().KeyN)
+			k, _ := bk.Cursor().Last()
+			if len(k) == 8 {
+				total += binary.BigEndian.Uint64(k)
+			}
 		}
 		return nil
 	}

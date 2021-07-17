@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"fmt"
 	"math"
 	"sync/atomic"
 
@@ -91,7 +92,12 @@ func (s *Survey) Incr(c int32) {
 	s.ts[idx] = ts
 }
 
-func (s *Survey) QPS() (q1, q5, q15 float64) {
+func (s Survey) String() string {
+	q1, q5, q15 := s.QPS()
+	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
+}
+
+func (s Survey) QPS() (q1, q5, q15 float64) {
 	idx, ts := s._i()
 	sec := []int32{}
 

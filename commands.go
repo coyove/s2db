@@ -137,17 +137,18 @@ func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err err
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
+	for range keys {
+		scores = append(scores, math.NaN())
+	}
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
 		}
-		for _, key := range keys {
+		for i, key := range keys {
 			scoreBuf := bkName.Get([]byte(key))
 			if len(scoreBuf) != 0 {
-				scores = append(scores, bytesToFloat(scoreBuf))
-			} else {
-				scores = append(scores, math.NaN())
+				scores[i] = bytesToFloat(scoreBuf)
 			}
 		}
 		return nil
@@ -159,6 +160,7 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
+	data = make([][]byte, len(keys))
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
@@ -168,21 +170,11 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 		if bkScore == nil {
 			return nil
 		}
-		scores := make([]float64, len(keys))
 		for i, key := range keys {
 			scoreBuf := bkName.Get([]byte(key))
 			if len(scoreBuf) != 0 {
-				scores[i] = bytesToFloat(scoreBuf)
-			} else {
-				scores[i] = math.NaN()
-			}
-		}
-		for i, s := range scores {
-			if !math.IsNaN(s) {
-				d := bkScore.Get(append(floatToBytes(s), keys[i]...))
-				data = append(data, append([]byte{}, d...))
-			} else {
-				data = append(data, nil)
+				d := bkScore.Get([]byte(string(scoreBuf) + keys[i]))
+				data[i] = append([]byte{}, d...)
 			}
 		}
 		return nil

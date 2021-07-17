@@ -48,10 +48,10 @@ func TestZSet(t *testing.T) {
 	rdb.ZAdd(ctx, "ztmp", z(20, "y"))
 	// rdb.ZAdd(ctx, "ztmp", z(30, "z"))
 	{
-		rdb.Process(ctx, redis.NewIntCmd(ctx, "ZADDDATA", "ztmp", 30, "z", "zdata"))
+		rdb.Process(ctx, redis.NewIntCmd(ctx, "ZADD", "ztmp", "DATA", 30, "z", "zdata"))
 		assertEqual(rdb.ZRange(ctx, "ztmp", 0, -1).Val(), []string{"x", "y", "z"})
 
-		rdb.Process(ctx, redis.NewIntCmd(ctx, "ZADDDATA", "ztmp", 20, "x", "xxx"))
+		rdb.Process(ctx, redis.NewIntCmd(ctx, "ZADD", "ztmp", "DATA", 20, "x", "xxx"))
 
 		cmd := redis.NewStringSliceCmd(ctx, "ZMDATA", "ztmp", "z", "z", "x", "y")
 		rdb.Process(ctx, cmd)

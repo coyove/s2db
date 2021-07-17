@@ -40,7 +40,10 @@ type Server struct {
 	weakCache *lru.Cache
 	rdb       *redis.Client
 	closed    bool
-	survey    ShardSurvey
+
+	survey struct {
+		sysRead, sysWrite, cache, weakCache Survey
+	}
 
 	db [32]struct {
 		*bbolt.DB
@@ -115,12 +118,22 @@ func (s *Server) canUpdateCache(key string, wm int64) bool {
 	return wm >= s.db[s.shardIndex(key)].writeWatermark
 }
 
+func (s *Server) getCache(h [2]uint64) interface{} {
+	v, ok := s.cache.Get(h)
+	if !ok {
+		return nil
+	}
+	s.survey.cache.Incr(1)
+	return v.Data
+}
+
 func (s *Server) getWeakCache(h [2]uint64) interface{} {
 	v, ok := s.weakCache.Get(h)
 	if !ok {
 		return nil
 	}
 	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= s.WeakTTL {
+		s.survey.weakCache.Incr(1)
 		return i.Data
 	}
 	return nil
@@ -307,9 +320,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError("command: invalid name starts with 'score'")
 		}
 		if cmd == "DEL" || cmd == "ZADD" || strings.HasPrefix(cmd, "ZREM") {
-			s.survey.Write.Incr(1)
+			s.survey.sysWrite.Incr(1)
 		} else {
-			s.survey.Read.Incr(1)
+			s.survey.sysRead.Incr(1)
 		}
 	}
 
@@ -355,8 +368,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	case "CACHESIZE":
 		return w.WriteInt(int64(s.cache.curWeight))
 	case "CACHERESET":
-		weight := s.cache.curWeight
+		weight := s.cache.curWeight + s.weakCache.Weight()
 		s.cache.Clear()
+		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
 	case "BIGKEYS":
 		v, err := s.BigKeys(atoi(name))
@@ -364,31 +378,34 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			return w.WriteError(err.Error())
 		}
 		return writePairs(v, w, command)
-	case "LOAD":
-		a, b, c := s.survey.Read.QPS()
-		d, e, f := s.survey.Write.QPS()
-		return w.WriteSimpleString(fmt.Sprintf("r: %.3f %.3f %.3f, w: %.3f %.3f %.3f", a, b, c, d, e, f))
+	case "SYSLOAD":
+		return w.WriteBulkStrings([]string{
+			fmt.Sprintf("sys read: %v", s.survey.sysRead),
+			fmt.Sprintf("sys write: %v", s.survey.sysWrite),
+			fmt.Sprintf("cache: %v", s.survey.cache),
+			fmt.Sprintf("weak cache: %v", s.survey.weakCache),
+		})
 	case "SHARDCALC":
 		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":
-		if name == "" {
-			a := []string{}
-			for _, x := range s.db {
-				a = append(a, strconv.FormatBool(x.readOnly))
-			}
-			return w.WriteBulkStrings(a)
+		// if name == "" {
+		a := []string{}
+		for _, x := range s.db {
+			a = append(a, strconv.FormatBool(x.readOnly))
 		}
-		x := &s.db[atoi(name)]
-		x.readOnly = string(command.Get(2)) == "on"
-		for len(x.walIn) > 0 {
-		}
-		if err := x.DB.Sync(); err != nil {
-			return w.WriteError(err.Error())
-		}
-		if err := x.wal.Sync(); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
+		return w.WriteBulkStrings(a)
+		// }
+		// x := &s.db[atoi(name)]
+		// x.readOnly = string(command.Get(2)) == "on"
+		// for len(x.walIn) > 0 {
+		// }
+		// if err := x.DB.Sync(); err != nil {
+		// 	return w.WriteError(err.Error())
+		// }
+		// if err := x.wal.Sync(); err != nil {
+		// 	return w.WriteError(err.Error())
+		// }
+		// return w.WriteSimpleString("OK")
 
 		// -----------------------
 		//  Client space commands
@@ -413,7 +430,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if !isBulk && s.isReadOnly(name) {
 			return w.WriteError("readonly")
 		}
-		xx, nx, ch, data, idx := false, false, false, false, 2
+		var xx, nx, ch, data, deferAdd bool
+		idx := 2
 		for ; ; idx++ {
 			switch strings.ToUpper(string(command.Get(idx))) {
 			case "XX":
@@ -428,6 +446,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			case "DATA":
 				data = true
 				continue
+			case "DEFER":
+				deferAdd = true
+				continue
 			}
 			break
 		}
@@ -441,6 +462,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			for i := idx; i < command.ArgCount(); i += 3 {
 				pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: atof(string(command.Get(i))), Data: command.Get(i + 2)})
 			}
+		}
+		if deferAdd {
+			// WIP
+			return w.WriteInt(int64(len(pairs)))
 		}
 
 		added, updated, err := s.ZAdd(name, pairs, nx, xx)
@@ -488,8 +513,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteBulks(data...)
 	case "ZMDATA", "ZMDATAWEAK":
-		if v, ok := s.cache.Get(h); ok {
-			return w.WriteBulks(v.Data.([][]byte)...)
+		if v := s.getCache(h); v != nil {
+			return w.WriteBulks(v.([][]byte)...)
 		}
 		if cmd == "ZMDATAWEAK" {
 			if v := s.getWeakCache(h); v != nil {
@@ -523,8 +548,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 		return w.WriteInt(c)
 	case "ZCOUNT":
-		if v, ok := s.cache.Get(h); ok {
-			return w.WriteInt(int64(v.Data.(int)))
+		if v := s.getCache(h); v != nil {
+			return w.WriteInt(int64(v.(int)))
 		}
 		if cmd == "ZCOUNTWEAK" {
 			if v := s.getWeakCache(h); v != nil {
@@ -542,8 +567,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK", "ZRANKWEAK", "ZREVRANKWEAK":
 		var c int
-		if v, ok := s.cache.Get(h); ok {
-			c = v.Data.(int)
+		if v := s.getCache(h); v != nil {
+			c = v.(int)
 		} else {
 			if strings.HasSuffix(cmd, "WEAK") {
 				if v := s.getWeakCache(h); v != nil {
@@ -573,8 +598,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE",
 		"ZRANGEWEAK", "ZREVRANGEWEAK", "ZRANGEBYLEXWEAK", "ZREVRANGEBYLEXWEAK", "ZRANGEBYSCOREWEAK", "ZREVRANGEBYSCOREWEAK":
-		if v, ok := s.cache.Get(h); ok {
-			return writePairs(v.Data.([]Pair), w, command)
+		if v := s.getCache(h); v != nil {
+			return writePairs(v.([]Pair), w, command)
 		}
 		if strings.HasSuffix(cmd, "WEAK") {
 			if v := s.getWeakCache(h); v != nil {

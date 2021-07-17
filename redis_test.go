@@ -305,7 +305,7 @@ func TestBatch(t *testing.T) {
 	rdb.Del(ctx, "bulk")
 	time.Sleep(time.Second)
 	shard := hashStr("bulk") % uint64(len(s.db))
-	index, _ := s.db[shard].wal.LastIndex()
+	index, _ := s.walProgress(int(shard))
 	cmd := redis.NewIntCmd(ctx, "BULK",
 		shard,
 		index+1,

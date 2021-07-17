@@ -26,6 +26,12 @@ func checkScore(s float64) error {
 	return nil
 }
 
+func intToBytes(i uint64) []byte {
+	v := [8]byte{}
+	binary.BigEndian.PutUint64(v[:], i)
+	return v[:]
+}
+
 func bytesToFloat(b []byte) float64 {
 	x := binary.BigEndian.Uint64(b)
 	if x>>63 == 1 {
@@ -132,12 +138,9 @@ func sizePairs(in []Pair) int {
 	return sz
 }
 
-func dupCommand(cmd *redisproto.Command) [][]byte {
+func dumpCommand(cmd *redisproto.Command) []byte {
 	x := *(*[][]byte)(unsafe.Pointer(cmd))
-	for i := range x {
-		x[i] = append([]byte{}, x[i]...)
-	}
-	return x
+	return joinCommand(x...)
 }
 
 func splitCommand(in []byte) (*redisproto.Command, error) {
@@ -176,8 +179,8 @@ type RangeLimit struct {
 type RangeOptions struct {
 	OffsetStart int
 	OffsetEnd   int
-	Delete      bool
 	CountOnly   bool
+	DeleteLog   []byte
 }
 
 func (r RangeLimit) fromString(v string) RangeLimit {

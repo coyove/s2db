@@ -45,12 +45,11 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		return w.WriteInt(int64(len(pairs)))
 	}
 
-	added, updated, err := s.ZAdd(name, pairs, nx, xx)
+	added, updated, err := s.ZAdd(name, pairs, nx, xx, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	s.cache.Remove(name, s)
-	s.pickWal(name) <- dupCommand(command)
 	if ch {
 		return w.WriteInt(int64(added + updated))
 	}
@@ -62,49 +61,46 @@ func (s *Server) runZRemRange(w *redisproto.Writer, cmd, name string, command *r
 
 	var p []Pair
 	var err error
+	dd := dumpCommand(command)
 
 	switch cmd {
 	case "ZREMRANGEBYLEX":
-		p, err = s.ZRemRangeByLex(name, start, end)
+		p, err = s.ZRemRangeByLex(name, start, end, dd)
 	case "ZREMRANGEBYSCORE":
-		p, err = s.ZRemRangeByScore(name, start, end)
+		p, err = s.ZRemRangeByScore(name, start, end, dd)
 	case "ZREMRANGEBYRANK":
-		p, err = s.ZRemRangeByRank(name, atoi(start), atoi(end))
+		p, err = s.ZRemRangeByRank(name, atoi(start), atoi(end), dd)
 	}
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	s.cache.Remove(name, s)
-	s.pickWal(name) <- dupCommand(command)
 	return w.WriteInt(int64(len(p)))
 }
 
 func (s *Server) runZRem(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	c, err := s.ZRem(name, restCommandsToKeys(2, command)...)
+	c, err := s.ZRem(name, restCommandsToKeys(2, command), dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	s.cache.Remove(name, s)
-	s.pickWal(name) <- dupCommand(command)
 	return w.WriteInt(int64(c))
 }
 
 func (s *Server) runDel(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	c, err := s.DelGroupedKeys(name)
+	c, err := s.Del(name, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	s.cache.Remove(name, s)
-	s.pickWal(name) <- [][]byte{[]byte("DEL"), []byte(name)}
 	return w.WriteInt(int64(c))
 }
 
 func (s *Server) runZIncrBy(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	v, err := s.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))))
+	v, err := s.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))), dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	s.cache.Remove(name, s)
-	s.pickWal(name) <- dupCommand(command)
 	return w.WriteBulkString(ftoa(v))
 }

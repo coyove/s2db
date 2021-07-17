@@ -20,7 +20,6 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/wal"
 	"go.etcd.io/bbolt"
 )
 
@@ -49,10 +48,7 @@ type Server struct {
 		*bbolt.DB
 		writeWatermark int64
 		bulking        int64
-		walIn          chan [][]byte
-		wal            *wal.Log
 		readOnly       bool
-		walCloseSignal chan bool
 		rdCloseSignal  chan bool
 	}
 }
@@ -91,14 +87,7 @@ func Open(path string) (*Server, error) {
 		if err != nil {
 			return nil, err
 		}
-		w, err := wal.Open(filepath.Join(path, "wal"+strconv.Itoa(i)), wal.DefaultOptions)
-		if err != nil {
-			return nil, err
-		}
 		x.db[i].DB = db
-		x.db[i].wal = w
-		x.db[i].walIn = make(chan [][]byte, 1e3)
-		x.db[i].walCloseSignal = make(chan bool)
 		x.db[i].rdCloseSignal = make(chan bool)
 	}
 	return x, nil
@@ -155,12 +144,9 @@ func (s *Server) Close() error {
 			db := &s.db[i]
 			db.readOnly = true
 			errs <- db.Close()
-			close(db.walIn)
-			<-db.walCloseSignal
 			if s.rdb != nil {
 				<-db.rdCloseSignal
 			}
-			errs <- db.wal.Close()
 		}(i)
 	}
 	wg.Wait()
@@ -181,15 +167,24 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) pickWal(name string) chan [][]byte { return s.db[s.shardIndex(name)].walIn }
-
-func (s *Server) walTotalProgress() (total uint64, err error) {
-	for i := range s.db {
-		idx, err := s.db[i].wal.LastIndex()
-		if err != nil {
+func (s *Server) walProgress(shard int) (total uint64, err error) {
+	f := func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("wal"))
+		if bk != nil {
+			total += uint64(bk.Stats().KeyN)
+		}
+		return nil
+	}
+	if shard == -1 {
+		for i := range s.db {
+			if err := s.db[i].View(f); err != nil {
+				return 0, err
+			}
+		}
+	} else {
+		if err := s.db[shard].View(f); err != nil {
 			return 0, err
 		}
-		total += idx
 	}
 	return
 }
@@ -207,9 +202,8 @@ func (s *Server) Serve(addr string) error {
 		})
 	}
 
-	for i := range s.db {
-		go s.writeWalCommand(i)
-		if s.SlaveAddr != "" {
+	if s.SlaveAddr != "" {
+		for i := range s.db {
 			go s.readWalCommand(i, s.SlaveAddr)
 		}
 	}
@@ -289,8 +283,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 	}
 	defer func() { atomic.StoreInt64(&s.db[walShard].bulking, 0) }()
 
-	ww := s.db[walShard].wal
-	if myIndex, _ := ww.LastIndex(); walIndex != int(myIndex)+1 {
+	if myIndex, _ := s.walProgress(walShard); walIndex != int(myIndex)+1 {
 		return w.WriteError(fmt.Sprintf("invalid wal index, want %d, gave %d", myIndex+1, walIndex))
 	}
 
@@ -308,7 +301,7 @@ func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) erro
 		}
 	}
 
-	last, err := ww.LastIndex()
+	last, err := s.walProgress(walShard)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -357,20 +350,14 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	case "WALLAST":
 		var c uint64
 		if name != "" {
-			c, err = s.db[atoi(name)].wal.LastIndex()
+			c, err = s.walProgress(atoi(name))
 		} else {
-			c, err = s.walTotalProgress()
+			c, err = s.walProgress(-1)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt(int64(c))
-	case "WALTRUNCHEAD":
-		index, _ := strconv.ParseUint(name, 10, 64)
-		if err := s.db[atoi(name)].wal.TruncateFront(index); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteInt(int64(index))
 	case "CACHELEN":
 		if name == "" {
 			return w.WriteInt(int64(s.cache.CacheLen()))

@@ -11,6 +11,15 @@ func (s *Server) pick(name string) *bbolt.DB {
 	return s.db[hashStr(name)%uint64(len(s.db))].DB
 }
 
+func (s *Server) writeLog(tx *bbolt.Tx, dd []byte) error {
+	bkWal, err := tx.CreateBucketIfNotExists([]byte("wal"))
+	if err != nil {
+		return err
+	}
+	id, _ := bkWal.NextSequence()
+	return bkWal.Put(intToBytes(id), dd)
+}
+
 func (s *Server) ZCard(name string) (int64, error) {
 	count := 0
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
@@ -24,46 +33,26 @@ func (s *Server) ZCard(name string) (int64, error) {
 	return int64(count), err
 }
 
-func (s *Server) GroupKeys(names ...string) [][]string {
-	nameShards := make([][]string, len(s.db))
-	for _, name := range names {
-		x := &nameShards[hashStr(name)%uint64(len(s.db))]
-		*x = append(*x, name)
-	}
-	return nameShards
-}
-
-func (s *Server) DelGroupedKeys(names ...string) (count int, err error) {
-	if len(names) == 0 {
-		return
-	}
-	db := s.pick(names[0])
-	for i := 1; i < len(names); i++ {
-		if s.pick(names[i]) != db {
-			return 0, fmt.Errorf("keys not grouped")
+func (s *Server) Del(name string, dd []byte) (count int, err error) {
+	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+		bkName := tx.Bucket([]byte("zset." + name))
+		bkScore := tx.Bucket([]byte("zset.score." + name))
+		if bkName == nil || bkScore == nil {
+			return nil
 		}
-	}
-	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range names {
-			bkName := tx.Bucket([]byte("zset." + name))
-			bkScore := tx.Bucket([]byte("zset.score." + name))
-			if bkName == nil || bkScore == nil {
-				continue
-			}
-			if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
-				return err
-			}
-			if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
-				return err
-			}
-			count++
+		if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
+			return err
 		}
-		return nil
+		if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
+			return err
+		}
+		count++
+		return s.writeLog(tx, dd)
 	})
 	return
 }
 
-func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated int, err error) {
+func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, dd []byte) (added, updated int, err error) {
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -105,12 +94,12 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool) (added, updated in
 				return err
 			}
 		}
-		return nil
+		return s.writeLog(tx, dd)
 	})
 	return
 }
 
-func (s *Server) ZRem(name string, keys ...string) (count int, err error) {
+func (s *Server) ZRem(name string, keys []string, dd []byte) (count int, err error) {
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
@@ -128,7 +117,7 @@ func (s *Server) ZRem(name string, keys ...string) (count int, err error) {
 		if len(pairs) == 0 {
 			return nil
 		}
-		return s.deletePair(tx, name, pairs...)
+		return s.deletePair(tx, name, pairs, dd)
 	})
 	return
 }
@@ -182,7 +171,7 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 	return
 }
 
-func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
+func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + name))
 	if bkName == nil {
 		return nil
@@ -199,10 +188,10 @@ func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs ...Pair) error {
 			return err
 		}
 	}
-	return nil
+	return s.writeLog(tx, dd)
 }
 
-func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64, err error) {
+func (s *Server) ZIncrBy(name string, key string, by float64, dd []byte) (newValue float64, err error) {
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -246,7 +235,7 @@ func (s *Server) ZIncrBy(name string, key string, by float64) (newValue float64,
 			return err
 		}
 		newValue = score + by
-		return nil
+		return s.writeLog(tx, dd)
 	})
 	return
 }

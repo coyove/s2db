@@ -6,7 +6,9 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -143,14 +145,14 @@ func dumpCommand(cmd *redisproto.Command) []byte {
 	return joinCommand(x...)
 }
 
-func splitCommand(in []byte) (*redisproto.Command, error) {
+func splitCommand(in string) (*redisproto.Command, error) {
 	var command struct {
 		data [][]byte
 		a    bool
 	}
 	command.a = true
-	rd := base64.NewDecoder(base64.URLEncoding, bytes.NewReader(in))
-	err := gob.NewDecoder(rd).Decode(&command.data)
+	buf, _ := base64.URLEncoding.DecodeString(in)
+	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.data)
 	return (*redisproto.Command)(unsafe.Pointer(&command)), err
 }
 
@@ -220,4 +222,26 @@ func (r RangeLimit) fromFloatString(v string) RangeLimit {
 		r.Float = atof(v)
 	}
 	return r
+}
+
+// Copy the src file to dst. Any existing file will be overwritten and will not
+// copy file attributes.
+func CopyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	return out.Close()
 }

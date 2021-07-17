@@ -35,7 +35,6 @@ func z(s float64, m string) *redis.Z {
 
 func TestZSet(t *testing.T) {
 	s, _ := Open("test")
-	s.SlaveAddr = ":6667"
 	go s.Serve(":6666")
 
 	ctx := context.Background()
@@ -297,28 +296,28 @@ func TestZSet(t *testing.T) {
 }
 
 func TestBatch(t *testing.T) {
-	s, _ := Open("test")
-	go s.Serve(":6666")
+	// s, _ := Open("test")
+	// go s.Serve(":6666")
 
-	ctx := context.TODO()
-	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
-	rdb.Del(ctx, "bulk")
-	time.Sleep(time.Second)
-	shard := hashStr("bulk") % uint64(len(s.db))
-	index, _ := s.walProgress(int(shard))
-	cmd := redis.NewIntCmd(ctx, "BULK",
-		shard,
-		index+1,
-		joinCommandString("zadd", "bulk", "1", "a", "2", "b"),
-		joinCommandString("zadd", "bulk", "3", "c", "4", "d"),
-		joinCommandString("zremrangebyrank", "bulk", "1", "1"),
-		joinCommandString("bad command"),
-		joinCommandString("zadd", "bulk", "999", "bad"),
-	)
-	rdb.Process(ctx, cmd)
-	fmt.Println(cmd.Result())
-	assertEqual([]string{"a", "c", "d"}, rdb.ZRange(ctx, "bulk", 0, -1).Val())
-	s.Close()
+	// ctx := context.TODO()
+	// rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	// rdb.Del(ctx, "bulk")
+	// time.Sleep(time.Second)
+	// shard := hashStr("bulk") % uint64(len(s.db))
+	// index, _ := s.walProgress(int(shard))
+	// cmd := redis.NewIntCmd(ctx, "BULK",
+	// 	shard,
+	// 	index+1,
+	// 	joinCommandString("zadd", "bulk", "1", "a", "2", "b"),
+	// 	joinCommandString("zadd", "bulk", "3", "c", "4", "d"),
+	// 	joinCommandString("zremrangebyrank", "bulk", "1", "1"),
+	// 	joinCommandString("bad command"),
+	// 	joinCommandString("zadd", "bulk", "999", "bad"),
+	// )
+	// rdb.Process(ctx, cmd)
+	// fmt.Println(cmd.Result())
+	// assertEqual([]string{"a", "c", "d"}, rdb.ZRange(ctx, "bulk", 0, -1).Val())
+	// s.Close()
 }
 
 func TestZSetCache(t *testing.T) {
@@ -326,7 +325,6 @@ func TestZSetCache(t *testing.T) {
 	ctx := context.TODO()
 
 	s, _ := Open("test")
-	s.SlaveAddr = ":6667"
 	go s.Serve(":6666")
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})

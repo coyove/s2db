@@ -23,10 +23,6 @@ func (s *Server) ZRange(name string, start, end int) ([]Pair, error) {
 	return s.doZRange(name, start, end, nil)
 }
 
-func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair, error) {
-	return s.doZRange(name, start, end, dd)
-}
-
 func (s *Server) doZRange(name string, start, end int, delete []byte) ([]Pair, error) {
 	p, _, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{OffsetStart: start, OffsetEnd: end, DeleteLog: delete})
 	return p, err
@@ -39,10 +35,6 @@ func (s *Server) ZRevRange(name string, start, end int) ([]Pair, error) {
 
 func (s *Server) ZRangeByLex(name string, start, end string) ([]Pair, error) {
 	return s.doZRangeByLex(name, start, end, nil)
-}
-
-func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pair, error) {
-	return s.doZRangeByLex(name, start, end, dd)
 }
 
 func (s *Server) doZRangeByLex(name string, start, end string, delete []byte) ([]Pair, error) {
@@ -64,11 +56,6 @@ func (s *Server) ZRangeByScore(name string, start, end string) ([]Pair, error) {
 	return p, err
 }
 
-func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, dd, false)
-	return p, err
-}
-
 func (s *Server) doZRangeByScore(name string, start, end string, delete []byte, countOnly bool) ([]Pair, int, error) {
 	rangeStart := (RangeLimit{}).fromFloatString(start)
 	rangeEnd := (RangeLimit{}).fromFloatString(end)
@@ -82,6 +69,19 @@ func (s *Server) ZRevRangeByScore(name string, start, end string) ([]Pair, error
 	rangeEnd := (RangeLimit{}).fromFloatString(start)
 	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1})
 	return reversePairs(p), err
+}
+
+func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair, error) {
+	return s.doZRange(name, start, end, dd)
+}
+
+func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pair, error) {
+	return s.doZRangeByLex(name, start, end, dd)
+}
+
+func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
+	p, _, err := s.doZRangeByScore(name, start, end, dd, false)
+	return p, err
 }
 
 func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) (pairs []Pair, count int, err error) {

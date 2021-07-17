@@ -22,13 +22,14 @@ import (
 )
 
 var (
-	slaveAddr  = flag.String("slave", "", "")
+	masterAddr = flag.String("master", "", "")
 	listenAddr = flag.String("l", ":6379", "")
 	readOnly   = flag.Bool("ro", false, "")
+	serverName = flag.String("n", "sszz", "")
+	cacheSize  = flag.Int("cs", 1024, "")
 	benchmark  = flag.Bool("bench", false, "")
 	coward     = flag.Bool("c", false, "")
 	sparta     = flag.Bool("sparta", false, "")
-	serverName = flag.String("n", "sszz", "")
 )
 
 func main() {
@@ -94,7 +95,11 @@ func main() {
 	}()
 
 	s, _ := Open("test")
-	s.SlaveAddr = *slaveAddr
+	s.MasterAddr = *masterAddr
+	s.CacheSize = *cacheSize
 	s.SetReadOnly(*readOnly)
+	if s.MasterAddr != "" {
+		s.SetReadOnly(true)
+	}
 	s.Serve(*listenAddr)
 }

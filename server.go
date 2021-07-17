@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -13,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coyove/common/lru"
@@ -30,9 +30,10 @@ func init() {
 }
 
 type Server struct {
-	SlaveAddr string
-	HardLimit int
-	WeakTTL   time.Duration
+	MasterAddr string
+	HardLimit  int
+	CacheSize  int
+	WeakTTL    time.Duration
 
 	ln        net.Listener
 	cache     *Cache
@@ -41,14 +42,14 @@ type Server struct {
 	closed    bool
 
 	survey struct {
+		startAt                             time.Time
 		sysRead, sysWrite, cache, weakCache Survey
 	}
 
 	db [32]struct {
 		*bbolt.DB
-		writeWatermark int64
-		bulking        int64
 		readOnly       bool
+		writeWatermark int64
 		rdCloseSignal  chan bool
 	}
 }
@@ -63,23 +64,8 @@ func Open(path string) (*Server, error) {
 	if err := os.MkdirAll(path, 0777); err != nil {
 		return nil, err
 	}
-	//last, _ := w.LastIndex()
-	//first, _ := w.FirstIndex()
-	//for i := first; i <= last; i++ {
-	//	buf, _ := w.Read(i)
-	//	c, _ := splitCommand(buf)
-	//	fmt.Printf("%q\n", c.Get(0))
-	//}
-	//os.Exit(0)
-	sz, _ := strconv.ParseInt(os.Getenv("CACHE"), 10, 64)
-	if sz == 0 {
-		sz = 1024 // 1G
-	}
-	x := &Server{
-		cache:     NewCache(sz * 1024 * 1024),
-		weakCache: lru.NewCache(sz * 1024 * 1024),
-	}
 
+	x := &Server{}
 	for i := range x.db {
 		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
 			FreelistType: bbolt.FreelistMapType,
@@ -99,7 +85,7 @@ func (s *Server) SetReadOnly(v bool) {
 	}
 }
 
-func (s *Server) isReadOnly(key string) bool { return s.db[hashStr(key)%uint64(len(s.db))].readOnly }
+func (s *Server) isReadOnly(key string) bool { return s.db[s.shardIndex(key)].readOnly }
 
 func (s *Server) shardIndex(key string) int { return int(hashStr(key) % uint64(len(s.db))) }
 
@@ -196,27 +182,26 @@ func (s *Server) Serve(addr string) error {
 	}
 
 	s.ln = listener
-	if s.SlaveAddr != "" {
-		s.rdb = redis.NewClient(&redis.Options{
-			Addr: s.SlaveAddr,
-		})
-	}
+	s.survey.startAt = time.Now()
 
-	if s.SlaveAddr != "" {
+	if s.MasterAddr != "" {
+		s.rdb = redis.NewClient(&redis.Options{
+			Addr: s.MasterAddr,
+		})
 		for i := range s.db {
-			go s.readWalCommand(i, s.SlaveAddr)
+			go s.requestLogWorker(i)
 		}
 	}
-
 	if s.HardLimit <= 0 {
 		s.HardLimit = 10000
 	}
-
 	if s.WeakTTL <= 0 {
 		s.WeakTTL = time.Minute * 5
 	}
+	s.cache = NewCache(int64(s.CacheSize * 1024 * 1024))
+	s.weakCache = lru.NewCache(int64(s.CacheSize * 1024 * 1024))
 
-	log.Info("listening on ", addr, " slave=", s.SlaveAddr)
+	log.Info("listening on ", addr, " master=", s.MasterAddr)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -248,11 +233,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		} else {
 			cmd := strings.ToUpper(string(command.Get(0)))
-			if cmd == "BULK" {
-				ew = s.runBulk(writer, command)
-			} else {
-				ew = s.runCommand(writer, cmd, command, false)
-			}
+			ew = s.runCommand(writer, cmd, command, false)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -264,48 +245,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runBulk(w *redisproto.Writer, command *redisproto.Command) error {
-	x := string(command.Get(1))
-	if x == "" {
-		return w.WriteError("missing wal shard number")
-	}
-
-	walShard := atoi(x)
-	walIndex := atoi(string(command.Get(2)))
-	if walIndex == 0 {
-		return w.WriteError("missing wal index")
-	}
-
-	buf := &bytes.Buffer{}
-	dummy := redisproto.NewWriter(buf)
-	if atomic.LoadInt64(&s.db[walShard].bulking) == 1 || !atomic.CompareAndSwapInt64(&s.db[walShard].bulking, 0, 1) {
-		return w.WriteError("concurrent bulk write")
-	}
-	defer func() { atomic.StoreInt64(&s.db[walShard].bulking, 0) }()
-
-	if myIndex, _ := s.walProgress(walShard); walIndex != int(myIndex)+1 {
-		return w.WriteError(fmt.Sprintf("invalid wal index, want %d, gave %d", myIndex+1, walIndex))
-	}
-
-	for i := 3; i < command.ArgCount(); i++ {
-		cmd, err := splitCommand(command.Get(i))
-		if err != nil {
-			log.Error("BULK: invalid payload: ", string(command.Get(i)))
-			break
-		}
-		buf.Reset()
-		s.runCommand(dummy, "", cmd, true)
-		if buf.Len() > 0 && buf.Bytes()[0] == '-' {
-			log.Error("BULK: ", strings.TrimSpace(buf.String()[1:]))
-			break
-		}
-	}
-
-	last, err := s.walProgress(walShard)
-	if err != nil {
-		return w.WriteError(err.Error())
-	}
-	return w.WriteInt(int64(last))
+func (s *Server) runBulk(walShard int, cmds []string) {
 }
 
 func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisproto.Command, isBulk bool) error {
@@ -320,8 +260,8 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		if name == "" {
 			return w.WriteError("command: empty name")
 		}
-		if strings.HasPrefix(name, "score") {
-			return w.WriteError("command: invalid name starts with 'score'")
+		if strings.HasPrefix(name, "score.") {
+			return w.WriteError("command: invalid name starts with 'score.'")
 		}
 		if cmd == "DEL" || cmd == "ZADD" || strings.HasPrefix(cmd, "ZREM") {
 			s.survey.sysWrite.Incr(1)
@@ -340,13 +280,23 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	var err error
 	switch cmd {
 	case "DIE":
-		log.Panic(s.Close())
-		panic("out")
+		sec := time.Now().Second()
+		if sec > 58 {
+			log.Panic(s.Close())
+		}
+		go func() {
+			time.Sleep(time.Duration(60-sec) * time.Second)
+			log.Panic(s.Close())
+		}()
+		return w.WriteInt(60 - int64(sec))
 	case "PING":
 		if name == "" {
 			return w.WriteSimpleString("PONG")
 		}
 		return w.WriteSimpleString(name)
+	case "CONFIG":
+		buf, _ := json.Marshal(s)
+		return w.WriteBulk(buf)
 	case "WALLAST":
 		var c uint64
 		if name != "" {
@@ -378,6 +328,7 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		return writePairs(v, w, command)
 	case "SYSLOAD":
 		return w.WriteBulkStrings([]string{
+			fmt.Sprintf("uptime: %v", time.Since(s.survey.startAt)),
 			fmt.Sprintf("sys read: %v", s.survey.sysRead),
 			fmt.Sprintf("sys write: %v", s.survey.sysWrite),
 			fmt.Sprintf("cache: %v", s.survey.cache),
@@ -386,12 +337,31 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 	case "SHARDCALC":
 		return w.WriteInt(int64(s.shardIndex(name)))
 	case "SHARDRO":
-		// if name == "" {
 		a := []string{}
 		for _, x := range s.db {
 			a = append(a, strconv.FormatBool(x.readOnly))
 		}
 		return w.WriteBulkStrings(a)
+	case "SHARDDUMP":
+		x := &s.db[atoi(name)]
+		x.readOnly = true
+		defer func() { x.readOnly = false }()
+
+		x.DB.Update(func(tx *bbolt.Tx) error { return nil }) // wait all other writes on this shard to finish
+		if err := x.DB.Sync(); err != nil {
+			return w.WriteError(err.Error())
+		}
+		if err := CopyFile(x.DB.Path(), x.DB.Path()+".bak"); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteSimpleString("OK")
+	case "REQUESTLOG":
+		start, _ := strconv.ParseUint(string(command.Get(2)), 10, 64)
+		logs, err := s.responseLog(atoi(name), start)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulkStrings(logs)
 
 		// -----------------------
 		//  Client space write commands

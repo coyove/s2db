@@ -21,7 +21,7 @@ func TestCommandJoinSplit(t *testing.T) {
 			}
 			b = append(b, x)
 		}
-		cmd2, _ := splitCommand((joinCommand(b...)))
+		cmd2, _ := splitCommand(string((joinCommand(b...))))
 		for i := 0; i < cmd2.ArgCount(); i++ {
 			if !bytes.Equal(cmd2.Get(i), b[i]) {
 				t.FailNow()

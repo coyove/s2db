@@ -2,12 +2,18 @@ package main
 
 import (
 	"bytes"
+	"math"
 
 	"go.etcd.io/bbolt"
 )
 
+var (
+	MinScoreRange = RangeLimit{Float: math.Inf(-1), Inclusive: true}
+	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
+)
+
 func (s *Server) ZCount(name string, start, end string) (int, error) {
-	_, c, err := s.doZRangeByScore(name, start, end, nil, true)
+	_, c, err := s.doZRangeByScore(name, start, end, -1, nil, true)
 	return c, err
 }
 
@@ -51,24 +57,30 @@ func (s *Server) ZRevRangeByLex(name string, start, end string) ([]Pair, error) 
 	return reversePairs(p), err
 }
 
-func (s *Server) ZRangeByScore(name string, start, end string) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, nil, false)
+func (s *Server) ZRangeByScore(name string, start, end string, limit int) ([]Pair, error) {
+	p, _, err := s.doZRangeByScore(name, start, end, limit, nil, false)
 	return p, err
 }
 
-func (s *Server) doZRangeByScore(name string, start, end string, delete []byte, countOnly bool) ([]Pair, int, error) {
-	rangeStart := (RangeLimit{}).fromFloatString(start)
-	rangeEnd := (RangeLimit{}).fromFloatString(end)
-	p, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, DeleteLog: delete, CountOnly: countOnly})
-	// fmt.Println(start, end, rangeStart, rangeEnd, p)
-	return p, c, err
-}
-
-func (s *Server) ZRevRangeByScore(name string, start, end string) ([]Pair, error) {
+func (s *Server) ZRevRangeByScore(name string, start, end string, limit int) ([]Pair, error) {
 	rangeStart := (RangeLimit{}).fromFloatString(end)
 	rangeEnd := (RangeLimit{}).fromFloatString(start)
-	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1})
+	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Limit: limit})
 	return reversePairs(p), err
+}
+
+func (s *Server) doZRangeByScore(name string, start, end string, limit int, delete []byte, countOnly bool) ([]Pair, int, error) {
+	rangeStart := (RangeLimit{}).fromFloatString(start)
+	rangeEnd := (RangeLimit{}).fromFloatString(end)
+	p, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+		OffsetStart: 0,
+		OffsetEnd:   -1,
+		DeleteLog:   delete,
+		CountOnly:   countOnly,
+		Limit:       limit,
+	})
+	// fmt.Println(start, end, rangeStart, rangeEnd, p)
+	return p, c, err
 }
 
 func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair, error) {
@@ -80,7 +92,7 @@ func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pa
 }
 
 func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, dd, false)
+	p, _, err := s.doZRangeByScore(name, start, end, -1, dd, false)
 	return p, err
 }
 

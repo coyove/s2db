@@ -1,8 +1,12 @@
 SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go update_cmd.go'
+VERSION=$(date -u +%Y%m%d.%H.%M)
 
 rm -rf zset.7z
-env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o zset $SRC && 7z a zset.7z zset
-go build -o zset_darwin $SRC
+
+env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o zset $SRC && 7z a zset.7z zset
+go build -ldflags "-X main.Version=$VERSION" -o zset_darwin $SRC
+
+mkdir -p slave_dir
 cp zset slave_dir/
 cp zset_darwin slave_dir/
 

@@ -10,7 +10,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -24,17 +23,9 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func init() {
-	redisproto.MaxBulkSize = 1 << 20
-	redisproto.MaxNumArg = 10000
-	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-}
-
 type Server struct {
 	MasterAddr string
-	HardLimit  int
-	CacheSize  int
-	WeakTTL    time.Duration
+	ServerConfig
 
 	ln        net.Listener
 	cache     *Cache
@@ -180,6 +171,10 @@ func (s *Server) walProgress(shard int) (total uint64, err error) {
 }
 
 func (s *Server) Serve(addr string) error {
+	if err := s.loadConfig(); err != nil {
+		return err
+	}
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -196,14 +191,6 @@ func (s *Server) Serve(addr string) error {
 			go s.requestLogWorker(i)
 		}
 	}
-	if s.HardLimit <= 0 {
-		s.HardLimit = 10000
-	}
-	if s.WeakTTL <= 0 {
-		s.WeakTTL = time.Minute * 5
-	}
-	s.cache = NewCache(int64(s.CacheSize * 1024 * 1024))
-	s.weakCache = lru.NewCache(int64(s.CacheSize * 1024 * 1024))
 
 	log.Info("listening on ", addr, " master=", s.MasterAddr)
 	for {
@@ -274,11 +261,20 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		}
 	}
 
-	defer func() {
+	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			log.Error(r, string(debug.Stack()))
+		} else {
+			if diff := time.Since(start); diff > s.SlowLimit {
+				buf := bytes.NewBufferString("[slow log] " + diff.String() + " ")
+				for i := 0; i < command.ArgCount(); i++ {
+					buf.Write(command.Get(i))
+					buf.WriteByte(' ')
+				}
+				log.Info(buf.String())
+			}
 		}
-	}()
+	}(time.Now())
 
 	var p []Pair
 	var err error
@@ -295,12 +291,21 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		return w.WriteInt(60 - int64(sec))
 	case "PING":
 		if name == "" {
-			return w.WriteSimpleString("PONG")
+			return w.WriteSimpleString("PONG " + Version)
 		}
 		return w.WriteSimpleString(name)
 	case "CONFIG":
-		buf, _ := json.Marshal(s)
-		return w.WriteBulk(buf)
+		switch strings.ToUpper(name) {
+		case "GET":
+			v, _ := s.getConfig(string(command.Get(2)))
+			return w.WriteBulkString(v)
+		case "SET":
+			s.updateConfig(string(command.Get(2)), string(command.Get(3)))
+			fallthrough
+		default:
+			buf, _ := json.Marshal(s.ServerConfig)
+			return w.WriteBulk(buf)
+		}
 	case "WALLAST":
 		var c uint64
 		if name != "" {
@@ -506,7 +511,12 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			}
 			cmd = cmd[:len(cmd)-4]
 		}
-		start, end := string(command.Get(2)), string(command.Get(3))
+		start, end, limit := string(command.Get(2)), string(command.Get(3)), -1
+		if strings.EqualFold(string(command.Get(command.ArgCount()-3)), "limit") {
+			limit = atoi(string(command.Get(command.ArgCount() - 1)))
+			command.Argv = command.Argv[:len(command.Argv)-3]
+		}
+
 		switch cmd {
 		case "ZRANGE":
 			p, err = s.ZRange(name, atoi(start), atoi(end))
@@ -517,9 +527,9 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 		case "ZREVRANGEBYLEX":
 			p, err = s.ZRevRangeByLex(name, start, end)
 		case "ZRANGEBYSCORE":
-			p, err = s.ZRangeByScore(name, start, end)
+			p, err = s.ZRangeByScore(name, start, end, limit)
 		case "ZREVRANGEBYSCORE":
-			p, err = s.ZRevRangeByScore(name, start, end)
+			p, err = s.ZRevRangeByScore(name, start, end, limit)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())

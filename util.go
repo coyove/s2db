@@ -9,17 +9,23 @@ import (
 	"io"
 	"math"
 	"os"
+	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
+	"github.com/coyove/common/lru"
 	"github.com/secmask/go-redisproto"
+	"go.etcd.io/bbolt"
 )
 
-var (
-	MinScoreRange = RangeLimit{Float: math.Inf(-1), Inclusive: true}
-	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
-)
+func init() {
+	redisproto.MaxBulkSize = 1 << 20
+	redisproto.MaxNumArg = 10000
+	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+}
 
 func checkScore(s float64) error {
 	if math.IsNaN(s) {
@@ -32,6 +38,13 @@ func intToBytes(i uint64) []byte {
 	v := [8]byte{}
 	binary.BigEndian.PutUint64(v[:], i)
 	return v[:]
+}
+
+func bytesToFloatZero(b []byte) float64 {
+	if len(b) != 8 {
+		return 0
+	}
+	return bytesToFloat(b)
 }
 
 func bytesToFloat(b []byte) float64 {
@@ -183,6 +196,7 @@ type RangeOptions struct {
 	OffsetEnd   int
 	CountOnly   bool
 	DeleteLog   []byte
+	Limit       int
 }
 
 func (r RangeLimit) fromString(v string) RangeLimit {
@@ -244,4 +258,133 @@ func CopyFile(src, dst string) error {
 		return err
 	}
 	return out.Close()
+}
+
+type ServerConfig struct {
+	HardLimit     int
+	CacheSize     int
+	WeakCacheSize int
+	WeakTTL       time.Duration
+	SlowLimit     time.Duration
+}
+
+func (s *Server) validateConfig() {
+	if s.HardLimit <= 0 {
+		s.HardLimit = 10000
+	}
+	if s.WeakTTL <= 0 {
+		s.WeakTTL = time.Minute * 5
+	}
+	if s.CacheSize <= 0 {
+		s.CacheSize = 1024
+	}
+	s.cache = NewCache(int64(s.CacheSize) * 1024 * 1024)
+	if s.WeakCacheSize <= 0 {
+		s.WeakCacheSize = 1024
+	}
+	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	if s.SlowLimit <= 0 {
+		s.SlowLimit = time.Second / 2
+	}
+}
+
+func (s *Server) loadConfig() error {
+	err := s.db[0].Update(func(tx *bbolt.Tx) error {
+		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
+		if err != nil {
+			return err
+		}
+
+		rv := reflect.ValueOf(&s.ServerConfig)
+		rt := reflect.TypeOf(s.ServerConfig)
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			fv := rv.Elem().Field(i)
+			n := strings.ToLower(f.Name)
+			buf := bk.Get([]byte(n))
+			switch f.Type {
+			case reflect.TypeOf(0):
+				fv.SetInt(int64(bytesToFloatZero(buf)))
+			case reflect.TypeOf(time.Second):
+				fv.SetInt(int64(time.Duration(bytesToFloatZero(buf)) * time.Millisecond))
+			case reflect.TypeOf(""):
+				fv.SetString(string(buf))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	s.validateConfig()
+	return s.saveConfig()
+}
+
+func (s *Server) saveConfig() error {
+	return s.db[0].Update(func(tx *bbolt.Tx) error {
+		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
+		if err != nil {
+			return err
+		}
+
+		rv := reflect.ValueOf(&s.ServerConfig)
+		rt := reflect.TypeOf(s.ServerConfig)
+		for i := 0; i < rt.NumField(); i++ {
+			f := rt.Field(i)
+			fv := rv.Elem().Field(i)
+			n := strings.ToLower(f.Name)
+
+			var buf []byte
+			switch f.Type {
+			case reflect.TypeOf(0):
+				buf = floatToBytes(float64(fv.Int()))
+			case reflect.TypeOf(time.Second):
+				buf = floatToBytes(float64(fv.Int() / int64(time.Millisecond)))
+			case reflect.TypeOf(""):
+				buf = []byte(fv.String())
+			}
+			if err := bk.Put([]byte(n), buf); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Server) updateConfig(key, value string) error {
+	rv := reflect.ValueOf(&s.ServerConfig)
+	rt := reflect.TypeOf(s.ServerConfig)
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		fv := rv.Elem().Field(i)
+		if strings.ToLower(f.Name) != key {
+			continue
+		}
+		I := int64(atoi(string(value)))
+		switch f.Type {
+		case reflect.TypeOf(0):
+			fv.SetInt(I)
+		case reflect.TypeOf(time.Second):
+			fv.SetInt(int64(time.Duration(I) * time.Millisecond))
+		case reflect.TypeOf(""):
+			fv.SetString(string(value))
+		}
+		break
+	}
+	s.validateConfig()
+	return s.saveConfig()
+}
+
+func (s *Server) getConfig(key string) (string, bool) {
+	rv := reflect.ValueOf(&s.ServerConfig)
+	rt := reflect.TypeOf(s.ServerConfig)
+	for i := 0; i < rt.NumField(); i++ {
+		f := rt.Field(i)
+		fv := rv.Elem().Field(i)
+		if strings.ToLower(f.Name) != key {
+			continue
+		}
+		return fmt.Sprint(fv.Interface()), true
+	}
+	return "", false
 }

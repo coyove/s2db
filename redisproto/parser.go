@@ -32,20 +32,20 @@ func (p *ProtocolError) Error() string {
 }
 
 type Command struct {
-	argv [][]byte
+	Argv [][]byte
 	last bool
 }
 
 func (c *Command) Get(index int) []byte {
-	if index >= 0 && index < len(c.argv) {
-		return c.argv[index]
+	if index >= 0 && index < len(c.Argv) {
+		return c.Argv[index]
 	} else {
 		return nil
 	}
 }
 
 func (c *Command) ArgCount() int {
-	return len(c.argv)
+	return len(c.Argv)
 }
 
 func (c *Command) IsLast() bool {
@@ -173,7 +173,7 @@ func (r *Parser) parseBinary() (*Command, error) {
 	case numArg > MaxNumArg:
 		return nil, InvalidNumArg
 	}
-	argv := make([][]byte, 0, numArg)
+	Argv := make([][]byte, 0, numArg)
 	for i := 0; i < numArg; i++ {
 		if e = r.requireNBytes(1); e != nil {
 			return nil, e
@@ -191,14 +191,14 @@ func (r *Parser) parseBinary() (*Command, error) {
 		}
 		switch {
 		case plen == -1:
-			argv = append(argv, nil) // null bulk
+			Argv = append(Argv, nil) // null bulk
 		case plen == 0:
-			argv = append(argv, emptyBulk[:]) // empty bulk
+			Argv = append(Argv, emptyBulk[:]) // empty bulk
 		case plen > 0 && plen <= MaxBulkSize:
 			if e = r.requireNBytes(plen); e != nil {
 				return nil, e
 			}
-			argv = append(argv, r.buffer[r.parsePosition:(r.parsePosition+plen)])
+			Argv = append(Argv, r.buffer[r.parsePosition:(r.parsePosition+plen)])
 			r.parsePosition += plen
 		default:
 			return nil, InvalidBulkSize
@@ -207,7 +207,7 @@ func (r *Parser) parseBinary() (*Command, error) {
 			return nil, e
 		}
 	}
-	return &Command{argv: argv}, nil
+	return &Command{Argv: Argv}, nil
 }
 
 func (r *Parser) parseTelnet() (*Command, error) {
@@ -226,7 +226,7 @@ func (r *Parser) parseTelnet() (*Command, error) {
 		}
 	}
 	r.parsePosition = r.writeIndex // we don't support pipeline in telnet mode
-	return &Command{argv: bytes.Split(r.buffer[:nlPos-1], spaceSlice)}, nil
+	return &Command{Argv: bytes.Split(r.buffer[:nlPos-1], spaceSlice)}, nil
 }
 
 func (r *Parser) reset() {

@@ -18,7 +18,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) requestLogWorker(shard int) {
+func (s *Server) requestLogPuller(shard int) {
 	ctx := context.TODO()
 	buf := &bytes.Buffer{}
 	dummy := redisproto.NewWriter(buf)
@@ -26,7 +26,7 @@ func (s *Server) requestLogWorker(shard int) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error(r, string(debug.Stack()))
-			go s.requestLogWorker(shard)
+			go s.requestLogPuller(shard)
 		}
 	}()
 
@@ -75,7 +75,7 @@ func (s *Server) requestLogWorker(shard int) {
 	}
 
 	log.Info("#", shard, " log replayer exited")
-	s.db[shard].rdCloseSignal <- true
+	s.db[shard].pullerCloseSignal <- true
 }
 
 func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {
@@ -198,7 +198,9 @@ func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
 		if sv.Key == p.Key {
 			info := &slaveInfo{}
 			json.Unmarshal(sv.Data, info)
+
 			info.KnownLogOffsets[shard] = logOffset
+
 			p.Data, _ = json.Marshal(info)
 			s.Slaves[i] = p
 			found = true

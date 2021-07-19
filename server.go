@@ -43,9 +43,9 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		readOnly       bool
-		writeWatermark int64
-		rdCloseSignal  chan bool
+		readOnly          bool
+		writeWatermark    int64
+		pullerCloseSignal chan bool
 	}
 }
 
@@ -69,7 +69,7 @@ func Open(path string) (*Server, error) {
 			return nil, err
 		}
 		x.db[i].DB = db
-		x.db[i].rdCloseSignal = make(chan bool)
+		x.db[i].pullerCloseSignal = make(chan bool)
 	}
 	return x, nil
 }
@@ -126,7 +126,7 @@ func (s *Server) Close() error {
 			db.readOnly = true
 			errs <- db.Close()
 			if s.rdb != nil {
-				<-db.rdCloseSignal
+				<-db.pullerCloseSignal
 			}
 		}(i)
 	}
@@ -197,7 +197,7 @@ func (s *Server) Serve(addr string) error {
 			Addr: s.MasterAddr,
 		})
 		for i := range s.db {
-			go s.requestLogWorker(i)
+			go s.requestLogPuller(i)
 		}
 	}
 
@@ -270,6 +270,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			log.Error(r, string(debug.Stack()))
+			w.WriteError("fatal error")
 		} else {
 			if diff := time.Since(start); diff > time.Duration(s.SlowLimit)*time.Millisecond {
 				buf := bytes.NewBufferString("[slow log] " + diff.String() + " ")
@@ -315,7 +316,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "WALLAST", "WALSIZE":
 		var c uint64
 		if name != "" {
-			c, err = s.walProgress(atoi(name), cmd == "WALSIZE")
+			c, err = s.walProgress(atoip(name), cmd == "WALSIZE")
 		} else {
 			c, err = s.walProgress(-1, cmd == "WALSIZE")
 		}
@@ -330,7 +331,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
 	case "BIGKEYS":
-		v, err := s.BigKeys(atoi(name))
+		v, err := s.BigKeys(atoip(name))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -352,7 +353,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		return w.WriteBulkStrings(a)
 	case "SHARDDUMP":
-		x := &s.db[atoi(name)]
+		x := &s.db[atoip(name)]
 		x.readOnly = true
 		defer func() { x.readOnly = false }()
 
@@ -375,7 +376,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		p, tmp, tail := s.slaves.Take(time.Minute), &slaveInfo{}, uint64(math.MaxUint64)
 		for _, x := range p {
 			json.Unmarshal(x.Data, tmp)
-			if v := tmp.KnownLogOffsets[atoi(name)]; v < tail {
+			if v := tmp.KnownLogOffsets[atoip(name)]; v < tail {
 				tail = v
 			}
 		}
@@ -385,14 +386,14 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.responseLog(atoi(name), start)
+		logs, err := s.responseLog(atoip(name), start)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoi(name), start-1)
+		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoip(name), start-1)
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		c, err := s.purgeLog(atoi(name), atoi64(string(command.Get(2))))
+		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
 		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
@@ -523,9 +524,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 
 		switch cmd {
 		case "ZRANGE":
-			p, err = s.ZRange(name, atoi(start), atoi(end))
+			p, err = s.ZRange(name, atoip(start), atoip(end))
 		case "ZREVRANGE":
-			p, err = s.ZRevRange(name, atoi(start), atoi(end))
+			p, err = s.ZRevRange(name, atoip(start), atoip(end))
 		case "ZRANGEBYLEX":
 			p, err = s.ZRangeByLex(name, start, end)
 		case "ZREVRANGEBYLEX":

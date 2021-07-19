@@ -116,6 +116,14 @@ func atoi(a string) int {
 	return i
 }
 
+func atoip(a string) int {
+	i, err := strconv.Atoi(a)
+	if err != nil {
+		panic(err)
+	}
+	return i
+}
+
 func atoi64(a string) uint64 {
 	i, _ := strconv.ParseUint(a, 10, 64)
 	return i

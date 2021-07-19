@@ -63,15 +63,27 @@ func (s *Server) ZRangeByScore(name string, start, end string, limit int) ([]Pai
 }
 
 func (s *Server) ZRevRangeByScore(name string, start, end string, limit int) ([]Pair, error) {
-	rangeStart := (RangeLimit{}).fromFloatString(end)
-	rangeEnd := (RangeLimit{}).fromFloatString(start)
+	rangeStart, err := (RangeLimit{}).fromFloatString(end)
+	if err != nil {
+		return nil, err
+	}
+	rangeEnd, err := (RangeLimit{}).fromFloatString(start)
+	if err != nil {
+		return nil, err
+	}
 	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Limit: limit})
 	return reversePairs(p), err
 }
 
 func (s *Server) doZRangeByScore(name string, start, end string, limit int, delete []byte, countOnly bool) ([]Pair, int, error) {
-	rangeStart := (RangeLimit{}).fromFloatString(start)
-	rangeEnd := (RangeLimit{}).fromFloatString(end)
+	rangeStart, err := (RangeLimit{}).fromFloatString(start)
+	if err != nil {
+		return nil, 0, err
+	}
+	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
+	if err != nil {
+		return nil, 0, err
+	}
 	p, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   -1,

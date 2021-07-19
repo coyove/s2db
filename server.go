@@ -172,11 +172,13 @@ func (s *Server) walProgress(shard int) (total uint64, err error) {
 
 func (s *Server) Serve(addr string) error {
 	if err := s.loadConfig(); err != nil {
+		log.Error(err)
 		return err
 	}
 
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		log.Error(err)
 		return err
 	}
 

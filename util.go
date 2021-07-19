@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 
 	"github.com/coyove/common/lru"
 	"github.com/secmask/go-redisproto"
@@ -98,23 +99,11 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	return h
 }
 
-func atof(a string) float64 {
-	if a == "+inf" {
-		return math.Inf(1)
-	}
-	if a == "-inf" {
-		return math.Inf(-1)
-	}
-	if strings.HasPrefix(a, "now") {
-		return float64(time.Now().Unix()) + calc.EvalZero(a[3:])
-	}
-	i, _ := strconv.ParseFloat(a, 64)
-	return i
-}
+func atof(a string) (float64, error) { return calc.Eval(a) }
 
-func ftoa(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
+func atof2(a []byte) (float64, error) { return atof(*(*string)(unsafe.Pointer(&a))) }
+
+func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
 func atoi(a string) int {
 	i, _ := strconv.Atoi(a)
@@ -214,27 +203,18 @@ func (r RangeLimit) fromString(v string) RangeLimit {
 	return r
 }
 
-func (r RangeLimit) fromFloatString(v string) RangeLimit {
+func (r RangeLimit) fromFloatString(v string) (RangeLimit, error) {
+	var err error
 	r.Inclusive = true
 	if strings.HasPrefix(v, "[") {
-		r.Float = atof(v[1:])
-	} else if v == "(+inf" {
-		r.Float = math.Inf(1)
-		r.Inclusive = false
-	} else if v == "(-inf" {
-		r.Float = math.Inf(-1)
-		r.Inclusive = false
+		r.Float, err = atof(v[1:])
 	} else if strings.HasPrefix(v, "(") {
-		r.Float = atof(v[1:])
+		r.Float, err = atof(v[1:])
 		r.Inclusive = false
-	} else if v == "+inf" {
-		r.Float = math.Inf(1)
-	} else if v == "-inf" {
-		r.Float = math.Inf(-1)
 	} else {
-		r.Float = atof(v)
+		r.Float, err = atof(v)
 	}
-	return r
+	return r, err
 }
 
 // Copy the src file to dst. Any existing file will be overwritten and will not

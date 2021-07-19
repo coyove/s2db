@@ -36,6 +36,7 @@ func z(s float64, m string) *redis.Z {
 func TestZSet(t *testing.T) {
 	s, _ := Open("test")
 	go s.Serve(":6666")
+	time.Sleep(time.Second)
 
 	ctx := context.Background()
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
@@ -291,8 +292,8 @@ func TestZSet(t *testing.T) {
 	assertEqual(3, remrangebyscore("(1", "(5"))
 	assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
 
-	time.Sleep(time.Second)
 	s.Close()
+	time.Sleep(time.Second)
 }
 
 func TestBatch(t *testing.T) {
@@ -326,6 +327,7 @@ func TestZSetCache(t *testing.T) {
 
 	s, _ := Open("test")
 	go s.Serve(":6666")
+	time.Sleep(time.Second)
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 

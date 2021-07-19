@@ -33,11 +33,19 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 	pairs := []Pair{}
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: atof(string(command.Get(i)))})
+			s, err := atof2(command.Get(i))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: atof(string(command.Get(i))), Data: command.Get(i + 2)})
+			s, err := atof2(command.Get(i))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s, Data: command.Get(i + 2)})
 		}
 	}
 	if deferAdd {
@@ -97,7 +105,11 @@ func (s *Server) runDel(w *redisproto.Writer, name string, command *redisproto.C
 }
 
 func (s *Server) runZIncrBy(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	v, err := s.ZIncrBy(name, string(command.Get(3)), atof(string(command.Get(2))), dumpCommand(command))
+	by, err := atof2(command.Get(2))
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	v, err := s.ZIncrBy(name, string(command.Get(3)), by, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}

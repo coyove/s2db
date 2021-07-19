@@ -223,8 +223,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				break
 			}
 		} else {
-			cmd := strings.ToUpper(string(command.Get(0)))
-			ew = s.runCommand(writer, cmd, command, false)
+			ew = s.runCommand(writer, command, false)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -236,17 +235,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runBulk(walShard int, cmds []string) {
-}
-
-func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisproto.Command, isBulk bool) error {
-	if cmd == "" {
-		cmd = strings.ToUpper(string(command.Get(0)))
-	}
-
+func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, isBulk bool) error {
+	cmd := strings.ToUpper(string(command.Get(0)))
 	h := hashCommands(command)
 	wm := s.cache.nextWatermark()
 	name := string(command.Get(1))
+
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
 		if name == "" {
 			return w.WriteError("command: empty name")
@@ -285,10 +279,10 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			log.Panic(s.Close())
 		}
 		go func() {
-			time.Sleep(time.Duration(60-sec) * time.Second)
+			time.Sleep(time.Duration(59-sec) * time.Second)
 			log.Panic(s.Close())
 		}()
-		return w.WriteInt(60 - int64(sec))
+		return w.WriteInt(59 - int64(sec))
 	case "PING":
 		if name == "" {
 			return w.WriteSimpleString("PONG " + Version)
@@ -512,9 +506,16 @@ func (s *Server) runCommand(w *redisproto.Writer, cmd string, command *redisprot
 			cmd = cmd[:len(cmd)-4]
 		}
 		start, end, limit := string(command.Get(2)), string(command.Get(3)), -1
-		if strings.EqualFold(string(command.Get(command.ArgCount()-3)), "limit") {
-			limit = atoi(string(command.Get(command.ArgCount() - 1)))
-			command.Argv = command.Argv[:len(command.Argv)-3]
+		for i := 3; i < command.ArgCount(); i++ {
+			if strings.EqualFold(string(command.Get(i)), "LIMIT") {
+				if atoi(string(command.Get(i+1))) != 0 {
+					return w.WriteError("non-zero limit offset not supported")
+				}
+
+				limit = atoi(string(command.Get(i + 2)))
+				command.Argv = append(command.Argv[:i], command.Argv[i+3:]...)
+				break
+			}
 		}
 
 		switch cmd {

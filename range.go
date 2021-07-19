@@ -171,7 +171,12 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		c := bk.Cursor()
 		k, _ := c.Seek(startBuf)
 
-		for i := 0; len(pairs) < s.HardLimit; i++ {
+		limit := s.HardLimit
+		if opt.Limit > 0 && opt.Limit < s.HardLimit {
+			limit = opt.Limit
+		}
+
+		for i := 0; len(pairs) < limit; i++ {
 			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {

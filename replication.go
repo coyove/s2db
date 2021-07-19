@@ -61,7 +61,7 @@ func (s *Server) requestLogWorker(shard int) {
 			}
 
 			buf.Reset()
-			s.runCommand(dummy, "", cmd, true)
+			s.runCommand(dummy, cmd, true)
 			if buf.Len() > 0 && buf.Bytes()[0] == '-' {
 				log.Error("bulkload: ", strings.TrimSpace(buf.String()[1:]))
 				break

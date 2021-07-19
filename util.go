@@ -14,10 +14,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/coyove/common/lru"
 	"github.com/secmask/go-redisproto"
+	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"go.etcd.io/bbolt"
 )
 
@@ -85,7 +85,7 @@ func hashStr(s string) (h uint64) {
 
 func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	h = [2]uint64{0, 5381}
-	for _, buf := range *(*[][]byte)(unsafe.Pointer(in)) {
+	for _, buf := range in.Argv {
 		for _, b := range buf {
 			old := h[1]
 			h[1] = h[1]*33 + uint64(b)
@@ -93,6 +93,7 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 				h[0]++
 			}
 		}
+		h[1]++
 	}
 	return h
 }
@@ -103,6 +104,9 @@ func atof(a string) float64 {
 	}
 	if a == "-inf" {
 		return math.Inf(-1)
+	}
+	if strings.HasPrefix(a, "now") {
+		return float64(time.Now().Unix()) + calc.EvalZero(a[3:])
 	}
 	i, _ := strconv.ParseFloat(a, 64)
 	return i
@@ -154,19 +158,14 @@ func sizePairs(in []Pair) int {
 }
 
 func dumpCommand(cmd *redisproto.Command) []byte {
-	x := *(*[][]byte)(unsafe.Pointer(cmd))
-	return joinCommand(x...)
+	return joinCommand(cmd.Argv...)
 }
 
 func splitCommand(in string) (*redisproto.Command, error) {
-	var command struct {
-		data [][]byte
-		a    bool
-	}
-	command.a = true
+	command := &redisproto.Command{}
 	buf, _ := base64.URLEncoding.DecodeString(in)
-	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.data)
-	return (*redisproto.Command)(unsafe.Pointer(&command)), err
+	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.Argv)
+	return command, err
 }
 
 func joinCommand(cmd ...[]byte) []byte {

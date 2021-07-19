@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"runtime/debug"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -112,4 +115,98 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 		return nil
 	})
 	return
+}
+
+func (s *Server) purgeLog(shard int) (int, error) {
+	start := time.Now()
+	count := 0
+	exit := false
+AGAIN:
+	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("wal"))
+		if bk == nil {
+			exit = true
+			return nil
+		}
+		if bk.Stats().KeyN == 0 {
+			exit = true
+			return nil
+		}
+
+		c := bk.Cursor()
+		last, _ := c.Last()
+		keys := [][]byte{}
+		for k, _ := c.First(); len(k) == 8 && !bytes.Equal(k, last); k, _ = c.Next() {
+			keys = append(keys, k)
+			if len(keys) == s.PurgeLogRun {
+				break
+			}
+		}
+		if len(keys) == 0 {
+			exit = true
+			return nil
+		}
+		for _, k := range keys {
+			if err := bk.Delete(k); err != nil {
+				return err
+			}
+			count++
+		}
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	if !exit && time.Since(start) < time.Duration(s.PurgeLogMaxRunTime)*time.Second {
+		goto AGAIN
+	}
+	return count, nil
+}
+
+type slaves struct {
+	sync.Mutex
+	Slaves []Pair
+}
+
+type slaveInfo struct {
+	KnownLogOffsets [ShardNum]uint64
+}
+
+func (s *slaves) Take(t time.Duration) []Pair {
+	s.Lock()
+	defer s.Unlock()
+
+	now := time.Now()
+	for i, sv := range s.Slaves {
+		if now.Sub(time.Unix(int64(sv.Score), 0)) > t {
+			return append([]Pair{}, s.Slaves[:i]...)
+		}
+	}
+	return append([]Pair{}, s.Slaves...)
+}
+
+func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
+	s.Lock()
+	defer s.Unlock()
+
+	found := false
+	for i, sv := range s.Slaves {
+		if sv.Key == p.Key {
+			info := &slaveInfo{}
+			json.Unmarshal(sv.Data, info)
+			info.KnownLogOffsets[shard] = logOffset
+			p.Data, _ = json.Marshal(info)
+			s.Slaves[i] = p
+			found = true
+			break
+		}
+	}
+	if !found {
+		info := &slaveInfo{}
+		info.KnownLogOffsets[shard] = logOffset
+		p.Data, _ = json.Marshal(info)
+		s.Slaves = append(s.Slaves, p)
+	}
+	sort.Slice(s.Slaves, func(i, j int) bool {
+		return s.Slaves[i].Score > s.Slaves[j].Score
+	})
 }

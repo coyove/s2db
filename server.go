@@ -23,6 +23,8 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+const ShardNum = 32
+
 type Server struct {
 	MasterAddr string
 	ServerConfig
@@ -32,13 +34,14 @@ type Server struct {
 	weakCache *lru.Cache
 	rdb       *redis.Client
 	closed    bool
+	slaves    slaves
 
 	survey struct {
 		startAt                             time.Time
 		sysRead, sysWrite, cache, weakCache Survey
 	}
 
-	db [32]struct {
+	db [ShardNum]struct {
 		*bbolt.DB
 		readOnly       bool
 		writeWatermark int64
@@ -99,7 +102,7 @@ func (s *Server) getWeakCache(h [2]uint64) interface{} {
 	if !ok {
 		return nil
 	}
-	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= s.WeakTTL {
+	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
 		s.survey.weakCache.Incr(1)
 		return i.Data
 	}
@@ -261,7 +264,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if r := recover(); r != nil {
 			log.Error(r, string(debug.Stack()))
 		} else {
-			if diff := time.Since(start); diff > s.SlowLimit {
+			if diff := time.Since(start); diff > time.Duration(s.SlowLimit)*time.Millisecond {
 				buf := bytes.NewBufferString("[slow log] " + diff.String() + " ")
 				for i := 0; i < command.ArgCount(); i++ {
 					buf.Write(command.Get(i))
@@ -287,7 +290,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return w.WriteInt(59 - int64(sec))
 	case "PING":
 		if name == "" {
-			return w.WriteSimpleString("PONG " + Version)
+			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
 		return w.WriteSimpleString(name)
 	case "CONFIG":
@@ -360,13 +363,30 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
+	case "SLAVES":
+		p := s.slaves.Take(time.Minute)
+		data := make([]string, 0, 2*len(p))
+		for i := range p {
+			data = append(data, p[i].Key, string(p[i].Data))
+		}
+		return w.WriteBulkStrings(data)
 	case "REQUESTLOG":
 		start, _ := strconv.ParseUint(string(command.Get(2)), 10, 64)
+		if start == 0 {
+			return w.WriteError("request at zero offset")
+		}
 		logs, err := s.responseLog(atoi(name), start)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoi(name), start-1)
 		return w.WriteBulkStrings(logs)
+	case "PURGELOG":
+		c, err := s.purgeLog(atoi(name))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt(int64(c))
 
 		// -----------------------
 		//  Client space write commands

@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 	"unsafe"
 
 	"github.com/coyove/common/lru"
@@ -240,11 +239,14 @@ func CopyFile(src, dst string) error {
 }
 
 type ServerConfig struct {
-	HardLimit     int
-	CacheSize     int
-	WeakCacheSize int
-	WeakTTL       time.Duration
-	SlowLimit     time.Duration
+	ServerName         string
+	HardLimit          int
+	CacheSize          int
+	WeakCacheSize      int
+	WeakTTL            int // s
+	SlowLimit          int // ms
+	PurgeLogMaxRunTime int // s
+	PurgeLogRun        int // s
 }
 
 func (s *Server) validateConfig() {
@@ -252,7 +254,7 @@ func (s *Server) validateConfig() {
 		s.HardLimit = 10000
 	}
 	if s.WeakTTL <= 0 {
-		s.WeakTTL = time.Minute * 5
+		s.WeakTTL = 300
 	}
 	if s.CacheSize <= 0 {
 		s.CacheSize = 1024
@@ -263,7 +265,13 @@ func (s *Server) validateConfig() {
 	}
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 	if s.SlowLimit <= 0 {
-		s.SlowLimit = time.Second / 2
+		s.SlowLimit = 500
+	}
+	if s.PurgeLogMaxRunTime <= 0 {
+		s.PurgeLogMaxRunTime = 1
+	}
+	if s.PurgeLogRun <= 0 {
+		s.PurgeLogRun = 1000
 	}
 }
 
@@ -284,8 +292,6 @@ func (s *Server) loadConfig() error {
 			switch f.Type {
 			case reflect.TypeOf(0):
 				fv.SetInt(int64(bytesToFloatZero(buf)))
-			case reflect.TypeOf(time.Second):
-				fv.SetInt(int64(time.Duration(bytesToFloatZero(buf)) * time.Millisecond))
 			case reflect.TypeOf(""):
 				fv.SetString(string(buf))
 			}
@@ -317,8 +323,6 @@ func (s *Server) saveConfig() error {
 			switch f.Type {
 			case reflect.TypeOf(0):
 				buf = floatToBytes(float64(fv.Int()))
-			case reflect.TypeOf(time.Second):
-				buf = floatToBytes(float64(fv.Int() / int64(time.Millisecond)))
 			case reflect.TypeOf(""):
 				buf = []byte(fv.String())
 			}
@@ -343,8 +347,6 @@ func (s *Server) updateConfig(key, value string) error {
 		switch f.Type {
 		case reflect.TypeOf(0):
 			fv.SetInt(I)
-		case reflect.TypeOf(time.Second):
-			fv.SetInt(int64(time.Duration(I) * time.Millisecond))
 		case reflect.TypeOf(""):
 			fv.SetString(string(value))
 		}
@@ -358,12 +360,10 @@ func (s *Server) getConfig(key string) (string, bool) {
 	rv := reflect.ValueOf(&s.ServerConfig)
 	rt := reflect.TypeOf(s.ServerConfig)
 	for i := 0; i < rt.NumField(); i++ {
-		f := rt.Field(i)
-		fv := rv.Elem().Field(i)
-		if strings.ToLower(f.Name) != key {
+		if strings.ToLower(rt.Field(i).Name) != key {
 			continue
 		}
-		return fmt.Sprint(fv.Interface()), true
+		return fmt.Sprint(rv.Elem().Field(i).Interface()), true
 	}
 	return "", false
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net"
 )
 
 var (
@@ -25,6 +26,15 @@ func NewWriter(sink io.Writer) *Writer {
 	return &Writer{
 		w: sink,
 	}
+}
+
+func (w *Writer) RemoteIP() net.IP {
+	addr := w.w.(net.Conn).RemoteAddr()
+	tcp, _ := addr.(*net.TCPAddr)
+	if tcp == nil {
+		return net.IPv4bcast
+	}
+	return tcp.IP
 }
 
 func (w *Writer) Write(data []byte) (int, error) {

@@ -10,6 +10,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,8 +27,8 @@ var (
 
 	masterAddr = flag.String("master", "", "")
 	listenAddr = flag.String("l", ":6379", "")
+	dataDir    = flag.String("d", "test", "")
 	readOnly   = flag.Bool("ro", false, "")
-	serverName = flag.String("n", "sszz", "")
 	benchmark  = flag.Bool("bench", false, "")
 	coward     = flag.Bool("c", false, "")
 	sparta     = flag.Bool("sparta", false, "")
@@ -39,7 +40,7 @@ func main() {
 
 	log.SetReportCaller(true)
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename:   *serverName + "_zset.log",
+		Filename:   filepath.Join(*dataDir, "s2db.log"),
 		MaxSize:    100, // megabytes
 		MaxBackups: 16,
 		MaxAge:     28,   //days
@@ -95,7 +96,7 @@ func main() {
 		log.Error("pprof: ", http.ListenAndServe(":16379", nil))
 	}()
 
-	s, _ := Open("test")
+	s, _ := Open(*dataDir)
 	s.MasterAddr = *masterAddr
 	s.SetReadOnly(*readOnly)
 	if s.MasterAddr != "" {

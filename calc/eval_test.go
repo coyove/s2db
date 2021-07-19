@@ -25,4 +25,5 @@ func TestEval(t *testing.T) {
 	assert(EvalZero("-1"), -1)
 
 	fmt.Println(Eval("(day.)+1"))
+	fmt.Println(Eval("now-hour"))
 }

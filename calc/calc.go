@@ -20,7 +20,7 @@ func Eval(in string) (float64, error) {
 	old := in
 	now := time.Now()
 	in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
-	in = strings.Replace(in, "now", strconv.FormatFloat(float64(now.UnixNano())/1e6, 'f', -1, 64), -1)
+	in = strings.Replace(in, "now", strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64), -1)
 	in = strings.Replace(in, "month.", "2592000000", -1)
 	in = strings.Replace(in, "month", "2592000", -1)
 	in = strings.Replace(in, "week.", "604800000", -1)

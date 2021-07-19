@@ -104,8 +104,20 @@ func atof2(a []byte) (float64, error) { return atof(*(*string)(unsafe.Pointer(&a
 
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
+func ftob(f float64) []byte {
+	if math.IsNaN(f) {
+		return nil
+	}
+	return []byte(strconv.FormatFloat(f, 'f', -1, 64))
+}
+
 func atoi(a string) int {
 	i, _ := strconv.Atoi(a)
+	return i
+}
+
+func atoi64(a string) uint64 {
+	i, _ := strconv.ParseUint(a, 10, 64)
 	return i
 }
 

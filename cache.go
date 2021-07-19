@@ -127,16 +127,13 @@ func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
 	return
 }
 
-func (c *Cache) CacheLen() int {
+func (c *Cache) CacheLen(key string) (ln int) {
 	c.RLock()
-	ln := len(c.cache)
-	c.RUnlock()
-	return ln
-}
-
-func (c *Cache) KeyCacheLen(key string) int {
-	c.RLock()
-	ln := len(c.keyed[key])
+	if key == "" {
+		ln = len(c.cache)
+	} else {
+		ln = len(c.keyed[key])
+	}
 	c.RUnlock()
 	return ln
 }

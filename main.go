@@ -9,15 +9,12 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/mitchellh/go-ps"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -30,8 +27,6 @@ var (
 	dataDir    = flag.String("d", "test", "")
 	readOnly   = flag.Bool("ro", false, "")
 	benchmark  = flag.Bool("bench", false, "")
-	coward     = flag.Bool("c", false, "")
-	sparta     = flag.Bool("sparta", false, "")
 )
 
 func main() {
@@ -77,30 +72,21 @@ func main() {
 		return
 	}
 
-	if !*sparta {
-		p, _ := ps.Processes()
-		for _, p := range p {
-			if strings.Contains(p.Executable(), "zset") && os.Getpid() != p.Pid() {
-				if *coward {
-					log.Info("coward mode, existing server: ", p.Pid(), ", exit quietly")
-					return
-				}
-				log.Info("terminate old server: ", p.Pid(), exec.Command("kill", "-9", strconv.Itoa(p.Pid())).Run())
-				time.Sleep(time.Second)
-			}
-		}
-	}
-
 	go func() {
 		log.Info("serving pprof at :16379")
 		log.Error("pprof: ", http.ListenAndServe(":16379", nil))
 	}()
 
-	s, _ := Open(*dataDir)
+	s, err := Open(*dataDir)
+	if err != nil {
+		log.Panic(err)
+	}
+
 	s.MasterAddr = *masterAddr
 	s.SetReadOnly(*readOnly)
 	if s.MasterAddr != "" {
 		s.SetReadOnly(true)
 	}
+
 	s.Serve(*listenAddr)
 }

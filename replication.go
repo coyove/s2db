@@ -117,7 +117,7 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 	return
 }
 
-func (s *Server) purgeLog(shard int) (int, error) {
+func (s *Server) purgeLog(shard int, until uint64) (int, error) {
 	start := time.Now()
 	count := 0
 	exit := false
@@ -134,9 +134,14 @@ AGAIN:
 		}
 
 		c := bk.Cursor()
+
 		last, _ := c.Last()
+		if until > 0 {
+			last = intToBytes(uint64(until))
+		}
+
 		keys := [][]byte{}
-		for k, _ := c.First(); len(k) == 8 && !bytes.Equal(k, last); k, _ = c.Next() {
+		for k, _ := c.First(); len(k) == 8 && bytes.Compare(k, last) == -1; k, _ = c.Next() {
 			keys = append(keys, k)
 			if len(keys) == s.PurgeLogRun {
 				break

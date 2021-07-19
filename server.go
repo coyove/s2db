@@ -148,13 +148,17 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) walProgress(shard int) (total uint64, err error) {
+func (s *Server) walProgress(shard int, bucketKeys ...bool) (total uint64, err error) {
 	f := func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk != nil {
-			k, _ := bk.Cursor().Last()
-			if len(k) == 8 {
-				total += binary.BigEndian.Uint64(k)
+			if len(bucketKeys) == 1 && bucketKeys[0] {
+				total += uint64(bk.Stats().KeyN)
+			} else {
+				k, _ := bk.Cursor().Last()
+				if len(k) == 8 {
+					total += binary.BigEndian.Uint64(k)
+				}
 			}
 		}
 		return nil
@@ -253,7 +257,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if strings.HasPrefix(name, "score.") {
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
-		if cmd == "DEL" || cmd == "ZADD" || strings.HasPrefix(cmd, "ZREM") {
+		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
+			if !isBulk && s.isReadOnly(name) {
+				return w.WriteError("readonly")
+			}
 			s.survey.sysWrite.Incr(1)
 		} else {
 			s.survey.sysRead.Incr(1)
@@ -305,22 +312,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			buf, _ := json.Marshal(s.ServerConfig)
 			return w.WriteBulk(buf)
 		}
-	case "WALLAST":
+	case "WALLAST", "WALSIZE":
 		var c uint64
 		if name != "" {
-			c, err = s.walProgress(atoi(name))
+			c, err = s.walProgress(atoi(name), cmd == "WALSIZE")
 		} else {
-			c, err = s.walProgress(-1)
+			c, err = s.walProgress(-1, cmd == "WALSIZE")
 		}
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteInt(int64(c))
+		return w.WriteIntOrError(int64(c), err)
 	case "CACHELEN":
-		if name == "" {
-			return w.WriteInt(int64(s.cache.CacheLen()))
-		}
-		return w.WriteInt(int64(s.cache.KeyCacheLen(name)))
+		return w.WriteInt(int64(s.cache.CacheLen(name)))
 	case "CACHESIZE":
 		return w.WriteInt(int64(s.cache.curWeight + s.weakCache.Weight()))
 	case "CACHERESET":
@@ -370,8 +371,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			data = append(data, p[i].Key, string(p[i].Data))
 		}
 		return w.WriteBulkStrings(data)
+	case "SLAVESHARDTAIL":
+		p, tmp, tail := s.slaves.Take(time.Minute), &slaveInfo{}, uint64(math.MaxUint64)
+		for _, x := range p {
+			json.Unmarshal(x.Data, tmp)
+			if v := tmp.KnownLogOffsets[atoi(name)]; v < tail {
+				tail = v
+			}
+		}
+		return w.WriteInt(int64(tail))
 	case "REQUESTLOG":
-		start, _ := strconv.ParseUint(string(command.Get(2)), 10, 64)
+		start := atoi64(string(command.Get(2)))
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
@@ -382,39 +392,21 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoi(name), start-1)
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		c, err := s.purgeLog(atoi(name))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteInt(int64(c))
+		c, err := s.purgeLog(atoi(name), atoi64(string(command.Get(2))))
+		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
 		//  Client space write commands
 		// -----------------------
 	case "DEL": // TODO: multiple keys
-		if !isBulk && s.isReadOnly(name) {
-			return w.WriteError("readonly")
-		}
 		return s.runDel(w, name, command)
 	case "ZADD":
-		if !isBulk && s.isReadOnly(name) {
-			return w.WriteError("readonly")
-		}
 		return s.runZAdd(w, name, command)
 	case "ZINCRBY":
-		if !isBulk && s.isReadOnly(name) {
-			return w.WriteError("readonly")
-		}
 		return s.runZIncrBy(w, name, command)
 	case "ZREM":
-		if !isBulk && s.isReadOnly(name) {
-			return w.WriteError("readonly")
-		}
 		return s.runZRem(w, name, command)
 	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		if !isBulk && s.isReadOnly(name) {
-			return w.WriteError("readonly")
-		}
 		return s.runZRemRange(w, cmd, name, command)
 
 		// -----------------------
@@ -425,10 +417,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if math.IsNaN(s[0]) {
-			return w.WriteBulk(nil)
-		}
-		return w.WriteBulkString(ftoa(s[0]))
+		return w.WriteBulk(ftob(s[0]))
 	case "ZMSCORE":
 		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -436,11 +425,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		data := [][]byte{}
 		for _, s := range s {
-			if math.IsNaN(s) {
-				data = append(data, nil)
-			} else {
-				data = append(data, []byte(ftoa(s)))
-			}
+			data = append(data, ftob(s))
 		}
 		return w.WriteBulks(data...)
 	case "ZMDATA", "ZMDATAWEAK":
@@ -462,11 +447,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.weakCache.Add(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()})
 		return w.WriteBulks(data...)
 	case "ZCARD":
-		c, err := s.ZCard(name)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteInt(c)
+		return w.WriteIntOrError(s.ZCard(name))
 	case "ZCOUNT":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))

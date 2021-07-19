@@ -86,6 +86,13 @@ func (w *Writer) WriteError(s string) error {
 	return err
 }
 
+func (w *Writer) WriteIntOrError(v int64, err error) error {
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	return w.WriteInt(v)
+}
+
 func (w *Writer) WriteObjects(objs ...interface{}) error {
 	if objs == nil {
 		_, err := w.Write(nilArray)

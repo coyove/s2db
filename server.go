@@ -280,7 +280,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	switch cmd {
 	case "DIE":
 		sec := time.Now().Second()
-		if sec > 58 {
+		if sec > 58 || strings.EqualFold(name, "now") {
 			log.Panic(s.Close())
 		}
 		go func() {

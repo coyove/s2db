@@ -22,18 +22,24 @@ import (
 var (
 	Version = ""
 
-	masterAddr = flag.String("master", "", "")
-	listenAddr = flag.String("l", ":6379", "")
-	dataDir    = flag.String("d", "test", "")
-	readOnly   = flag.Bool("ro", false, "")
-	calcChard  = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
-	benchmark  = flag.Bool("bench", false, "")
+	masterAddr      = flag.String("master", "", "connect to master server")
+	listenAddr      = flag.String("l", ":6379", "listen address")
+	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
+	dataDir         = flag.String("d", "test", "data directory")
+	showVersion     = flag.Bool("v", false, "print version")
+	readOnly        = flag.Bool("ro", false, "read only server")
+	calcShard       = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
+	benchmark       = flag.Bool("bench", false, "")
 )
 
 func main() {
 	flag.Parse()
-	if *calcChard != "" {
-		fmt.Println(shardIndex(*calcChard))
+	if *calcShard != "" {
+		fmt.Print(shardIndex(*calcShard))
+		return
+	}
+	if *showVersion {
+		fmt.Println("s2db", Version)
 		return
 	}
 
@@ -86,15 +92,22 @@ func main() {
 		return
 	}
 
+	opened := make(chan bool)
 	go func() {
-		log.Info("serving pprof at :16379")
-		log.Error("pprof: ", http.ListenAndServe(":16379", nil))
+		select {
+		case <-opened:
+		case <-time.After(time.Second * 2):
+			log.Panic("failed to open database, locked by others?")
+		}
+		log.Info("serving pprof at ", *pprofListenAddr)
+		log.Error("pprof: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()
 
 	s, err := Open(*dataDir)
 	if err != nil {
 		log.Panic(err)
 	}
+	opened <- true
 
 	s.MasterAddr = *masterAddr
 	s.ReadOnly = *readOnly || s.MasterAddr != ""

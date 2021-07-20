@@ -6,3 +6,6 @@ slave_dir
 zset
 zset_darwin
 zset.7z
+s2db
+s2db_darwin
+s2db.7z

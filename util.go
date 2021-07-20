@@ -157,11 +157,11 @@ func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) er
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Key)
-		if withScores {
+		if withScores || withData {
 			data = append(data, strconv.FormatFloat(p.Score, 'f', -1, 64))
 		}
 		if withData {
-			data = append(data, p.Key+"--------WITHDATA", string(p.Data))
+			data = append(data, string(p.Data))
 		}
 	}
 	return w.WriteBulkStrings(data)
@@ -173,6 +173,24 @@ func sizePairs(in []Pair) int {
 		sz += len(p.Key) + 8 + len(p.Data)
 	}
 	return sz
+}
+
+func (s *Server) fillPairsData(name string, in []Pair) error {
+	if len(in) == 0 {
+		return nil
+	}
+	keys := make([]string, len(in))
+	for i, el := range in {
+		keys[i] = el.Key
+	}
+	data, err := s.ZMData(name, keys...)
+	if err != nil {
+		return err
+	}
+	for i := range in {
+		in[i].Data = data[i]
+	}
+	return nil
 }
 
 func dumpCommand(cmd *redisproto.Command) []byte {

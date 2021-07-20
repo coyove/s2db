@@ -1,14 +1,17 @@
 package main
 
 import (
+	"math"
 	"strings"
 
 	"github.com/secmask/go-redisproto"
 )
 
 func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	var xx, nx, ch, data, deferAdd bool
-	idx := 2
+	var xx, nx, ch, data bool
+	var idx = 2
+	var scoreGt float64 = math.NaN()
+	var err error
 	for ; ; idx++ {
 		switch strings.ToUpper(string(command.Get(idx))) {
 		case "XX":
@@ -23,8 +26,12 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		case "DATA":
 			data = true
 			continue
-		case "DEFER":
-			deferAdd = true
+		case "SCOREGT":
+			idx++
+			scoreGt, err = atof(string(command.Get(idx)))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
 			continue
 		}
 		break
@@ -48,12 +55,8 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s, Data: command.Get(i + 2)})
 		}
 	}
-	if deferAdd {
-		// WIP
-		return w.WriteInt(int64(len(pairs)))
-	}
 
-	added, updated, err := s.ZAdd(name, pairs, nx, xx, dumpCommand(command))
+	added, updated, err := s.ZAdd(name, pairs, nx, xx, scoreGt, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}

@@ -149,6 +149,7 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 		k, sc := c.Seek(startBuf)
 
 		for i := 0; len(pairs) < s.HardLimit; i++ {
+			// fmt.Println(k, startBuf, endBuf)
 			if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {

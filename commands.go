@@ -52,7 +52,9 @@ func (s *Server) Del(name string, dd []byte) (count int, err error) {
 	return
 }
 
-func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, dd []byte) (added, updated int, err error) {
+// ZAdd
+// :scoreGt new score must be larger than old score + scoreGt
+func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, scoreGt float64, dd []byte) (added, updated int, err error) {
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -72,6 +74,9 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, dd []byte) (added,
 				if nx {
 					continue
 				}
+				if !math.IsNaN(scoreGt) && p.Score <= bytesToFloat(scoreBuf)+scoreGt {
+					continue
+				}
 				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
 					return err
 				}
@@ -81,6 +86,9 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, dd []byte) (added,
 			} else {
 				// we are adding a new key
 				if xx {
+					continue
+				}
+				if !math.IsNaN(scoreGt) && p.Score <= scoreGt {
 					continue
 				}
 				added++

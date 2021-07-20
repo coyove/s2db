@@ -329,14 +329,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			buf, _ := json.Marshal(s.ServerConfig)
 			return w.WriteBulk(buf)
 		}
-	case "WALLAST", "WALSIZE":
-		var c uint64
-		if name != "" {
-			c, err = s.walProgress(atoip(name), cmd == "WALSIZE")
-		} else {
-			c, err = s.walProgress(-1, cmd == "WALSIZE")
-		}
-		return w.WriteIntOrError(int64(c), err)
 	case "CACHELEN":
 		return w.WriteInt(int64(s.cache.CacheLen(name)))
 	case "CACHESIZE":
@@ -347,7 +339,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
 	case "BIGKEYS":
-		v, err := s.BigKeys(atoip(name))
+		v, err := s.BigKeys(atoi(name))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -380,7 +372,19 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			data = append(data, p[i].Key, string(p[i].Data))
 		}
 		return w.WriteBulkStrings(data)
-	case "COLLECTSHARDTAIL":
+
+		// -----------------------
+		//  Log related commands
+		// -----------------------
+	case "LASTLOG", "LOGSIZE":
+		var c uint64
+		if name != "" {
+			c, err = s.walProgress(atoip(name), cmd == "LOGSIZE")
+		} else {
+			c, err = s.walProgress(-1, cmd == "LOGSIZE")
+		}
+		return w.WriteIntOrError(int64(c), err)
+	case "SLAVESLOGTAIL":
 		return w.WriteInt(int64(s.getSlaveShardMinTail(atoip(name))))
 	case "REQUESTLOG":
 		start := atoi64(string(command.Get(2)))
@@ -537,8 +541,18 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			p, err = s.ZRevRange(name, atoip(start), atoip(end), withData)
 		case "ZRANGEBYLEX":
 			p, err = s.ZRangeByLex(name, start, end)
+			if withData {
+				if err := s.fillPairsData(name, p); err != nil {
+					return w.WriteError(err.Error())
+				}
+			}
 		case "ZREVRANGEBYLEX":
 			p, err = s.ZRevRangeByLex(name, start, end)
+			if withData {
+				if err := s.fillPairsData(name, p); err != nil {
+					return w.WriteError(err.Error())
+				}
+			}
 		case "ZRANGEBYSCORE":
 			p, err = s.ZRangeByScore(name, start, end, limit, withData)
 		case "ZREVRANGEBYSCORE":

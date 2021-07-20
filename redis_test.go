@@ -292,6 +292,15 @@ func TestZSet(t *testing.T) {
 	assertEqual(3, remrangebyscore("(1", "(5"))
 	assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
 
+	pipe := rdb.Pipeline()
+	pipe.Del(ctx, "ztmp")
+	pipe.ZAdd(ctx, "ztmp", z(1, "a"), z(2, "b"), z(4, "d"))
+	pipe.ZAdd(ctx, "ztmp", z(2, "b"), z(3, "c"))
+	pipe.ZRemRangeByScore(ctx, "ztmp", "[4", "[4")
+	v := pipe.ZRange(ctx, "ztmp", 0, -1)
+	fmt.Println(pipe.Exec(ctx))
+	assertEqual([]string{"a", "b", "c"}, v.Val())
+
 	s.Close()
 	time.Sleep(time.Second)
 }

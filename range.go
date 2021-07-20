@@ -13,7 +13,7 @@ var (
 )
 
 func (s *Server) ZCount(name string, start, end string) (int, error) {
-	_, c, err := s.doZRangeByScore(name, start, end, -1, nil, true)
+	_, c, err := s.doZRangeByScore(name, start, end, -1, nil, true, false)
 	return c, err
 }
 
@@ -25,29 +25,21 @@ func (s *Server) ZRevRank(name, key string, limit int) (int, error) {
 	return s.zRank(name, key, limit, true)
 }
 
-func (s *Server) ZRange(name string, start, end int) ([]Pair, error) {
-	return s.doZRange(name, start, end, nil)
+func (s *Server) ZRange(name string, start, end int, withData bool) ([]Pair, error) {
+	return s.doZRange(name, start, end, nil, withData)
 }
 
-func (s *Server) doZRange(name string, start, end int, delete []byte) ([]Pair, error) {
-	p, _, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{OffsetStart: start, OffsetEnd: end, DeleteLog: delete})
-	return p, err
-}
-
-func (s *Server) ZRevRange(name string, start, end int) ([]Pair, error) {
-	p, _, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{OffsetStart: -end - 1, OffsetEnd: -start - 1})
+func (s *Server) ZRevRange(name string, start, end int, withData bool) ([]Pair, error) {
+	p, _, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+		OffsetStart: -end - 1,
+		OffsetEnd:   -start - 1,
+		WithData:    withData,
+	})
 	return reversePairs(p), err
 }
 
 func (s *Server) ZRangeByLex(name string, start, end string) ([]Pair, error) {
 	return s.doZRangeByLex(name, start, end, nil)
-}
-
-func (s *Server) doZRangeByLex(name string, start, end string, delete []byte) ([]Pair, error) {
-	rangeStart := (RangeLimit{}).fromString(start)
-	rangeEnd := (RangeLimit{}).fromString(end)
-	p, _, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, DeleteLog: delete})
-	return p, err
 }
 
 func (s *Server) ZRevRangeByLex(name string, start, end string) ([]Pair, error) {
@@ -57,12 +49,12 @@ func (s *Server) ZRevRangeByLex(name string, start, end string) ([]Pair, error) 
 	return reversePairs(p), err
 }
 
-func (s *Server) ZRangeByScore(name string, start, end string, limit int) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, limit, nil, false)
+func (s *Server) ZRangeByScore(name string, start, end string, limit int, withData bool) ([]Pair, error) {
+	p, _, err := s.doZRangeByScore(name, start, end, limit, nil, false, withData)
 	return p, err
 }
 
-func (s *Server) ZRevRangeByScore(name string, start, end string, limit int) ([]Pair, error) {
+func (s *Server) ZRevRangeByScore(name string, start, end string, limit int, withData bool) ([]Pair, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(end)
 	if err != nil {
 		return nil, err
@@ -71,11 +63,50 @@ func (s *Server) ZRevRangeByScore(name string, start, end string, limit int) ([]
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1, Limit: limit})
+	p, _, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+		OffsetStart: 0,
+		OffsetEnd:   -1,
+		Limit:       limit,
+		WithData:    withData,
+	})
 	return reversePairs(p), err
 }
 
-func (s *Server) doZRangeByScore(name string, start, end string, limit int, delete []byte, countOnly bool) ([]Pair, int, error) {
+func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair, error) {
+	return s.doZRange(name, start, end, dd, false)
+}
+
+func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pair, error) {
+	return s.doZRangeByLex(name, start, end, dd)
+}
+
+func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
+	p, _, err := s.doZRangeByScore(name, start, end, -1, dd, false, false)
+	return p, err
+}
+
+func (s *Server) doZRange(name string, start, end int, delete []byte, withData bool) ([]Pair, error) {
+	p, _, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+		OffsetStart: start,
+		OffsetEnd:   end,
+		DeleteLog:   delete,
+		WithData:    withData,
+	})
+	return p, err
+}
+
+func (s *Server) doZRangeByLex(name string, start, end string, delete []byte) ([]Pair, error) {
+	rangeStart := (RangeLimit{}).fromString(start)
+	rangeEnd := (RangeLimit{}).fromString(end)
+	p, _, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+		OffsetStart: 0,
+		OffsetEnd:   -1,
+		DeleteLog:   delete,
+	})
+	return p, err
+}
+
+func (s *Server) doZRangeByScore(name string, start, end string, limit int, delete []byte, countOnly, withData bool) ([]Pair, int, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
 		return nil, 0, err
@@ -89,23 +120,10 @@ func (s *Server) doZRangeByScore(name string, start, end string, limit int, dele
 		OffsetEnd:   -1,
 		DeleteLog:   delete,
 		CountOnly:   countOnly,
+		WithData:    withData,
 		Limit:       limit,
 	})
-	// fmt.Println(start, end, rangeStart, rangeEnd, p)
 	return p, c, err
-}
-
-func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair, error) {
-	return s.doZRange(name, start, end, dd)
-}
-
-func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pair, error) {
-	return s.doZRangeByLex(name, start, end, dd)
-}
-
-func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, -1, dd, false)
-	return p, err
 }
 
 func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) (pairs []Pair, count int, err error) {
@@ -181,7 +199,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		endBuf = append(endBuf, 0xff)
 
 		c := bk.Cursor()
-		k, _ := c.Seek(startBuf)
+		k, dataBuf := c.Seek(startBuf)
 
 		limit := s.HardLimit
 		if opt.Limit > 0 && opt.Limit < s.HardLimit {
@@ -193,7 +211,13 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						if !opt.CountOnly {
-							p := Pair{Key: string(k[8:]), Score: bytesToFloat(k[:8])}
+							p := Pair{
+								Key:   string(k[8:]),
+								Score: bytesToFloat(k[:8]),
+							}
+							if opt.WithData {
+								p.Data = append([]byte{}, dataBuf...)
+							}
 							pairs = append(pairs, p)
 						}
 						count++
@@ -204,7 +228,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 			} else {
 				break
 			}
-			k, _ = c.Next()
+			k, dataBuf = c.Next()
 		}
 		if len(opt.DeleteLog) > 0 {
 			return s.deletePair(tx, name, pairs, opt.DeleteLog)

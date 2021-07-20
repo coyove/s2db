@@ -145,7 +145,7 @@ func (c *Cache) Remove(key string, s *Server) {
 		c.remove(e, false)
 	}
 	delete(c.keyed, key)
-	s.db[s.shardIndex(key)].writeWatermark = c.nextWatermark()
+	s.db[shardIndex(key)].writeWatermark = c.nextWatermark()
 	c.Unlock()
 }
 

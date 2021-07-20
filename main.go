@@ -26,11 +26,17 @@ var (
 	listenAddr = flag.String("l", ":6379", "")
 	dataDir    = flag.String("d", "test", "")
 	readOnly   = flag.Bool("ro", false, "")
+	calcChard  = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark  = flag.Bool("bench", false, "")
 )
 
 func main() {
 	flag.Parse()
+	if *calcChard != "" {
+		fmt.Println(shardIndex(*calcChard))
+		return
+	}
+
 	rand.Seed(time.Now().Unix())
 
 	log.SetReportCaller(true)
@@ -42,9 +48,13 @@ func main() {
 		Compress:   true, // disabled by default
 	}))
 
+	rdb := redis.NewClient(&redis.Options{
+		Addr:        *listenAddr,
+		DialTimeout: time.Second / 2,
+	})
+
 	start := time.Now()
 	if *benchmark {
-		rdb := redis.NewClient(&redis.Options{Addr: *listenAddr})
 		wg := sync.WaitGroup{}
 		ctx := context.TODO()
 		for i := 0; i < 10; i += 1 {
@@ -72,6 +82,10 @@ func main() {
 		return
 	}
 
+	if rdb.Ping(context.TODO()).Err() == nil {
+		return
+	}
+
 	go func() {
 		log.Info("serving pprof at :16379")
 		log.Error("pprof: ", http.ListenAndServe(":16379", nil))
@@ -83,10 +97,6 @@ func main() {
 	}
 
 	s.MasterAddr = *masterAddr
-	s.SetReadOnly(*readOnly)
-	if s.MasterAddr != "" {
-		s.SetReadOnly(true)
-	}
-
+	s.ReadOnly = *readOnly || s.MasterAddr != ""
 	s.Serve(*listenAddr)
 }

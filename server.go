@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -27,6 +26,7 @@ const ShardNum = 32
 
 type Server struct {
 	MasterAddr string
+	ReadOnly   bool
 	ServerConfig
 
 	ln        net.Listener
@@ -43,7 +43,6 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		readOnly          bool
 		writeWatermark    int64
 		pullerCloseSignal chan bool
 	}
@@ -56,13 +55,37 @@ type Pair struct {
 }
 
 func Open(path string) (*Server, error) {
+	var shards [ShardNum]string
+	if idx := strings.Index(path, ":"); idx > 0 {
+		parts := strings.Split(path, ":")
+		for i := range shards {
+			shards[i] = filepath.Join(parts[0], "shard"+strconv.Itoa(i))
+		}
+		for i := 1; i < len(parts); i++ {
+			p := strings.Split(parts[i], "=")
+			if len(p) == 1 {
+				return nil, fmt.Errorf("invalid mapping path: %q", parts[i])
+			}
+			si := atoi(p[0])
+			if si == 0 || si > 31 {
+				return nil, fmt.Errorf("invalid mapping index: %v", si)
+			}
+			shards[si] = filepath.Join(p[1], "shard"+strconv.Itoa(si))
+			log.Infof("shard data %d remapped to %q", si, shards[si])
+		}
+	} else {
+		for i := range shards {
+			shards[i] = filepath.Join(path, "shard"+strconv.Itoa(i))
+		}
+	}
+
 	if err := os.MkdirAll(path, 0777); err != nil {
 		return nil, err
 	}
 
 	x := &Server{}
 	for i := range x.db {
-		db, err := bbolt.Open(filepath.Join(path, "shard"+strconv.Itoa(i)), 0666, &bbolt.Options{
+		db, err := bbolt.Open(shards[i], 0666, &bbolt.Options{
 			FreelistType: bbolt.FreelistMapType,
 		})
 		if err != nil {
@@ -74,18 +97,12 @@ func Open(path string) (*Server, error) {
 	return x, nil
 }
 
-func (s *Server) SetReadOnly(v bool) {
-	for i := range s.db {
-		s.db[i].readOnly = v
-	}
+func shardIndex(key string) int {
+	return int(hashStr(key) % ShardNum)
 }
 
-func (s *Server) isReadOnly(key string) bool { return s.db[s.shardIndex(key)].readOnly }
-
-func (s *Server) shardIndex(key string) int { return int(hashStr(key) % uint64(len(s.db))) }
-
 func (s *Server) canUpdateCache(key string, wm int64) bool {
-	return wm >= s.db[s.shardIndex(key)].writeWatermark
+	return wm >= s.db[shardIndex(key)].writeWatermark
 }
 
 func (s *Server) getCache(h [2]uint64) interface{} {
@@ -123,7 +140,6 @@ func (s *Server) Close() error {
 		go func(i int) {
 			defer wg.Done()
 			db := &s.db[i]
-			db.readOnly = true
 			errs <- db.Close()
 			if s.rdb != nil {
 				<-db.pullerCloseSignal
@@ -258,7 +274,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
 		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
-			if !isBulk && s.isReadOnly(name) {
+			if !isBulk && s.ReadOnly {
 				return w.WriteError("readonly")
 			}
 			s.survey.sysWrite.Incr(1)
@@ -344,27 +360,19 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			fmt.Sprintf("cache: %v", s.survey.cache),
 			fmt.Sprintf("weak cache: %v", s.survey.weakCache),
 		})
-	case "SHARDCALC":
-		return w.WriteInt(int64(s.shardIndex(name)))
-	case "SHARDRO":
-		a := []string{}
-		for _, x := range s.db {
-			a = append(a, strconv.FormatBool(x.readOnly))
-		}
-		return w.WriteBulkStrings(a)
-	case "SHARDDUMP":
+	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
-		x.readOnly = true
-		defer func() { x.readOnly = false }()
-
-		x.DB.Update(func(tx *bbolt.Tx) error { return nil }) // wait all other writes on this shard to finish
-		if err := x.DB.Sync(); err != nil {
+		of, err := os.Create(x.DB.Path() + ".bak")
+		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if err := CopyFile(x.DB.Path(), x.DB.Path()+".bak"); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
+		defer of.Close()
+		var c int64
+		err = x.DB.View(func(tx *bbolt.Tx) error {
+			c, err = tx.WriteTo(of)
+			return err
+		})
+		return w.WriteIntOrError(int64(c), err)
 	case "SLAVES":
 		p := s.slaves.Take(time.Minute)
 		data := make([]string, 0, 2*len(p))
@@ -372,15 +380,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			data = append(data, p[i].Key, string(p[i].Data))
 		}
 		return w.WriteBulkStrings(data)
-	case "SLAVESHARDTAIL":
-		p, tmp, tail := s.slaves.Take(time.Minute), &slaveInfo{}, uint64(math.MaxUint64)
-		for _, x := range p {
-			json.Unmarshal(x.Data, tmp)
-			if v := tmp.KnownLogOffsets[atoip(name)]; v < tail {
-				tail = v
-			}
-		}
-		return w.WriteInt(int64(tail))
+	case "COLLECTSHARDTAIL":
+		return w.WriteInt(int64(s.getSlaveShardMinTail(atoip(name))))
 	case "REQUESTLOG":
 		start := atoi64(string(command.Get(2)))
 		if start == 0 {
@@ -393,7 +394,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoip(name), start-1)
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
+		upTo := atoi64(string(command.Get(2)))
+		c, err := s.purgeLog(atoip(name), upTo)
 		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
@@ -445,7 +447,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if s.canUpdateCache(name, wm) {
 			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: data})
 		}
-		s.weakCache.Add(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()})
+		sz := int64(1)
+		for _, b := range data {
+			sz += int64(len(b))
+		}
+		s.weakCache.AddWeight(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
 		return w.WriteBulks(data...)
 	case "ZCARD":
 		return w.WriteIntOrError(s.ZCard(name))
@@ -509,7 +515,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			}
 			cmd = cmd[:len(cmd)-4]
 		}
-		start, end, limit := string(command.Get(2)), string(command.Get(3)), -1
+		start, end, limit, withData := string(command.Get(2)), string(command.Get(3)), -1, false
 		for i := 3; i < command.ArgCount(); i++ {
 			if strings.EqualFold(string(command.Get(i)), "LIMIT") {
 				if atoi(string(command.Get(i+1))) != 0 {
@@ -518,23 +524,25 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 
 				limit = atoi(string(command.Get(i + 2)))
 				command.Argv = append(command.Argv[:i], command.Argv[i+3:]...)
-				break
+				i--
+			} else if strings.EqualFold(string(command.Get(i)), "WITHDATA") {
+				withData = true
 			}
 		}
 
 		switch cmd {
 		case "ZRANGE":
-			p, err = s.ZRange(name, atoip(start), atoip(end))
+			p, err = s.ZRange(name, atoip(start), atoip(end), withData)
 		case "ZREVRANGE":
-			p, err = s.ZRevRange(name, atoip(start), atoip(end))
+			p, err = s.ZRevRange(name, atoip(start), atoip(end), withData)
 		case "ZRANGEBYLEX":
 			p, err = s.ZRangeByLex(name, start, end)
 		case "ZREVRANGEBYLEX":
 			p, err = s.ZRevRangeByLex(name, start, end)
 		case "ZRANGEBYSCORE":
-			p, err = s.ZRangeByScore(name, start, end, limit)
+			p, err = s.ZRangeByScore(name, start, end, limit, withData)
 		case "ZREVRANGEBYSCORE":
-			p, err = s.ZRevRangeByScore(name, start, end, limit)
+			p, err = s.ZRevRangeByScore(name, start, end, limit, withData)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -542,7 +550,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if s.canUpdateCache(name, wm) {
 			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
 		}
-		s.weakCache.Add(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()})
+		s.weakCache.AddWeight(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
 		return writePairs(p, w, command)
 	default:
 		//for i := 0; i < command.ArgCount(); i++ {

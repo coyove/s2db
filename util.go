@@ -6,9 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"fmt"
-	"io"
 	"math"
-	"os"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -146,12 +144,24 @@ func reversePairs(in []Pair) []Pair {
 }
 
 func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
-	withScores := bytes.Equal(bytes.ToUpper(command.Get(command.ArgCount()-1)), []byte("WITHSCORES"))
+	withScores, withData := false, false
+	for i := len(command.Argv) - 1; i >= len(command.Argv)-3 && i >= 0; i-- {
+		if bytes.EqualFold(command.Get(i), []byte("WITHSCORES")) {
+			withScores = true
+		}
+		if bytes.EqualFold(command.Get(i), []byte("WITHDATA")) {
+			withData = true
+		}
+	}
+
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Key)
 		if withScores {
 			data = append(data, strconv.FormatFloat(p.Score, 'f', -1, 64))
+		}
+		if withData {
+			data = append(data, p.Key+"--------WITHDATA", string(p.Data))
 		}
 	}
 	return w.WriteBulkStrings(data)
@@ -202,6 +212,7 @@ type RangeOptions struct {
 	OffsetStart int
 	OffsetEnd   int
 	CountOnly   bool
+	WithData    bool
 	DeleteLog   []byte
 	Limit       int
 }
@@ -234,28 +245,6 @@ func (r RangeLimit) fromFloatString(v string) (RangeLimit, error) {
 		r.Float, err = atof(v)
 	}
 	return r, err
-}
-
-// Copy the src file to dst. Any existing file will be overwritten and will not
-// copy file attributes.
-func CopyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	if err != nil {
-		return err
-	}
-	return out.Close()
 }
 
 type ServerConfig struct {

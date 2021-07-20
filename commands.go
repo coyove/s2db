@@ -72,13 +72,12 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, dd []byte) (added,
 				if nx {
 					continue
 				}
-				if bytesToFloat(scoreBuf) == p.Score {
-					continue
-				}
 				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
 					return err
 				}
-				updated++
+				if p.Score != bytesToFloat(scoreBuf) {
+					updated++
+				}
 			} else {
 				// we are adding a new key
 				if xx {

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -136,8 +137,16 @@ AGAIN:
 		c := bk.Cursor()
 
 		last, _ := c.Last()
+		if len(last) != 8 {
+			return fmt.Errorf("invalid last key")
+		}
+
 		if until > 0 {
-			last = intToBytes(uint64(until))
+			new := intToBytes(uint64(until))
+			if bytes.Compare(new, last) >= 0 {
+				return fmt.Errorf("purge log break boundary: %d overflows %d", until, binary.BigEndian.Uint64(last))
+			}
+			last = new
 		}
 
 		keys := [][]byte{}
@@ -165,6 +174,21 @@ AGAIN:
 		goto AGAIN
 	}
 	return count, nil
+}
+
+func (s *Server) getSlaveShardMinTail(shard int) uint64 {
+	p, tail := s.slaves.Take(time.Minute), uint64(0)
+	if len(p) == 0 {
+		return math.MaxUint64
+	}
+	for i, x := range p {
+		tmp := &slaveInfo{}
+		json.Unmarshal(x.Data, tmp)
+		if v := tmp.KnownLogOffsets[shard]; v < tail || i == 0 {
+			tail = v
+		}
+	}
+	return tail
 }
 
 type slaves struct {

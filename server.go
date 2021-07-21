@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -13,9 +11,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/common/sched"
 	"github.com/go-redis/redis/v8"
 	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
@@ -35,9 +35,11 @@ type Server struct {
 	rdb       *redis.Client
 	closed    bool
 	slaves    slaves
+	dieKey    sched.SchedKey
 
 	survey struct {
 		startAt                             time.Time
+		connections                         int64
 		sysRead, sysWrite, cache, weakCache Survey
 		addBatchSize, addBatchDrop          Survey
 	}
@@ -100,10 +102,6 @@ func Open(path string) (*Server, error) {
 		x.db[i].deferAdd = make(chan *addTask, 101)
 	}
 	return x, nil
-}
-
-func shardIndex(key string) int {
-	return int(hashStr(key) % ShardNum)
 }
 
 func (s *Server) canUpdateCache(key string, wm int64) bool {
@@ -171,35 +169,6 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) walProgress(shard int, bucketKeys ...bool) (total uint64, err error) {
-	f := func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("wal"))
-		if bk != nil {
-			if len(bucketKeys) == 1 && bucketKeys[0] {
-				total += uint64(bk.Stats().KeyN)
-			} else {
-				k, _ := bk.Cursor().Last()
-				if len(k) == 8 {
-					total += binary.BigEndian.Uint64(k)
-				}
-			}
-		}
-		return nil
-	}
-	if shard == -1 {
-		for i := range s.db {
-			if err := s.db[i].View(f); err != nil {
-				return 0, err
-			}
-		}
-	} else {
-		if err := s.db[shard].View(f); err != nil {
-			return 0, err
-		}
-	}
-	return
-}
-
 func (s *Server) Serve(addr string) error {
 	if err := s.loadConfig(); err != nil {
 		log.Error(err)
@@ -241,7 +210,11 @@ func (s *Server) Serve(addr string) error {
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		conn.Close()
+		atomic.AddInt64(&s.survey.connections, -1)
+	}()
+	atomic.AddInt64(&s.survey.connections, 1)
 	parser := redisproto.NewParser(conn)
 	writer := redisproto.NewWriter(conn)
 	var ew error
@@ -277,7 +250,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	name := string(command.Get(1))
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
-		if name == "" {
+		if name == "" || name == "--" {
 			return w.WriteError("command: empty name")
 		}
 		if strings.HasPrefix(name, "score.") {
@@ -299,10 +272,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			w.WriteError("fatal error")
 		} else {
 			if diff := time.Since(start); diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				buf := bytes.NewBufferString("[slow log] " + diff.String() + " ")
+				buf := bytes.NewBufferString("[slow log] " + diff.String())
 				for i := 0; i < command.ArgCount(); i++ {
+					buf.WriteString(" '")
 					buf.Write(command.Get(i))
-					buf.WriteByte(' ')
+					buf.WriteString("'")
 				}
 				log.Info(buf.String())
 			}
@@ -317,10 +291,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if sec > 58 || strings.EqualFold(name, "now") {
 			log.Panic(s.Close())
 		}
-		go func() {
-			time.Sleep(time.Duration(59-sec) * time.Second)
-			log.Panic(s.Close())
-		}()
+		s.dieKey.Reschedule(func() { log.Panic(s.Close()) }, time.Duration(59-sec)*time.Second)
 		return w.WriteInt(59 - int64(sec))
 	case "PING":
 		if name == "" {
@@ -336,13 +307,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			s.updateConfig(string(command.Get(2)), string(command.Get(3)))
 			fallthrough
 		default:
-			buf, _ := json.Marshal(s.ServerConfig)
-			return w.WriteBulk(buf)
+			return w.WriteBulkStrings(s.listConfig())
 		}
 	case "CACHELEN":
 		return w.WriteInt(int64(s.cache.CacheLen(name)))
-	case "CACHESIZE":
-		return w.WriteInt(int64(s.cache.curWeight + s.weakCache.Weight()))
 	case "CACHERESET":
 		weight := s.cache.curWeight + s.weakCache.Weight()
 		s.cache.Clear()
@@ -354,16 +322,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError(err.Error())
 		}
 		return writePairs(v, w, command)
-	case "SYSLOAD":
-		return w.WriteBulkStrings([]string{
-			fmt.Sprintf("uptime: %v", time.Since(s.survey.startAt)),
-			fmt.Sprintf("sys read: %v", s.survey.sysRead),
-			fmt.Sprintf("sys write: %v", s.survey.sysWrite),
-			fmt.Sprintf("cache: %v", s.survey.cache),
-			fmt.Sprintf("weak cache: %v", s.survey.weakCache),
-			fmt.Sprintf("batch size (avg): %v", s.survey.addBatchSize.MeanString()),
-			fmt.Sprintf("batch drop: %v", s.survey.addBatchDrop),
-		})
+	case "INFO":
+		return w.WriteBulkString(s.info())
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
 		of, err := os.Create(x.DB.Path() + ".bak")
@@ -388,7 +348,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		// -----------------------
 		//  Log related commands
 		// -----------------------
-	case "LASTLOG", "LOGSIZE":
+	case "LOGTAIL", "LOGSIZE":
 		var c uint64
 		if name != "" {
 			c, err = s.walProgress(atoip(name), cmd == "LOGSIZE")
@@ -411,6 +371,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
 		upTo := atoi64(string(command.Get(2)))
+		if upTo == 0 && s.MasterAddr != "" {
+			c, err := s.purgeLogOffline(atoip(name))
+			return w.WriteIntOrError(int64(c), err)
+		}
 		c, err := s.purgeLog(atoip(name), upTo)
 		return w.WriteIntOrError(int64(c), err)
 
@@ -553,15 +517,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			p, err = s.ZRange(name, atoip(start), atoip(end), withData)
 		case "ZREVRANGE":
 			p, err = s.ZRevRange(name, atoip(start), atoip(end), withData)
-		case "ZRANGEBYLEX":
-			p, err = s.ZRangeByLex(name, start, end)
-			if withData {
-				if err := s.fillPairsData(name, p); err != nil {
-					return w.WriteError(err.Error())
-				}
+		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
+			if cmd == "ZRANGEBYLEX" {
+				p, err = s.ZRangeByLex(name, start, end)
+			} else {
+				p, err = s.ZRevRangeByLex(name, start, end)
 			}
-		case "ZREVRANGEBYLEX":
-			p, err = s.ZRevRangeByLex(name, start, end)
 			if withData {
 				if err := s.fillPairsData(name, p); err != nil {
 					return w.WriteError(err.Error())
@@ -581,9 +542,39 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.weakCache.AddWeight(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
 		return writePairs(p, w, command)
 	default:
-		//for i := 0; i < command.ArgCount(); i++ {
-		//	fmt.Println(string(command.Get(i)))
-		//}
 		return w.WriteError("Command not support: " + cmd)
 	}
+}
+
+func (s *Server) info() string {
+	addBatchInfo := []string{}
+	for i := range s.db {
+		addBatchInfo = append(addBatchInfo, strconv.Itoa(len(s.db[i].deferAdd)))
+	}
+	p := s.slaves.Take(time.Minute)
+	slavesInfo := []string{}
+	for i := range p {
+		slavesInfo = append(slavesInfo, p[i].Key)
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("version:%v", Version),
+		fmt.Sprintf("servername:%v", s.ServerName),
+		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
+		fmt.Sprintf("death_scheduler:%v", s.dieKey),
+		fmt.Sprintf("readonly:%v", s.ReadOnly),
+		fmt.Sprintf("master:%v", s.MasterAddr),
+		fmt.Sprintf("slaves:%v", strings.Join(slavesInfo, ",")),
+		fmt.Sprintf("connections:%v", s.survey.connections),
+		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
+		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
+		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
+		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
+		fmt.Sprintf("zadd_batch_queue:%v", strings.Join(addBatchInfo, ",")),
+		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
+		fmt.Sprintf("cache_obj_count:%v", s.cache.CacheLen("")),
+		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
+		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
+		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
+		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
+	}, "\r\n") + "\r\n"
 }

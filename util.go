@@ -127,6 +127,10 @@ func atoi64(a string) uint64 {
 	return i
 }
 
+func shardIndex(key string) int {
+	return int(hashStr(key) % ShardNum)
+}
+
 func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	keys := []string{}
 	for ; i < command.ArgCount(); i++ {
@@ -309,29 +313,23 @@ func (s *Server) validateConfig() {
 }
 
 func (s *Server) loadConfig() error {
-	err := s.db[0].Update(func(tx *bbolt.Tx) error {
+	if err := s.db[0].Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
 			return err
 		}
-
-		rv := reflect.ValueOf(&s.ServerConfig)
-		rt := reflect.TypeOf(s.ServerConfig)
-		for i := 0; i < rt.NumField(); i++ {
-			f := rt.Field(i)
-			fv := rv.Elem().Field(i)
-			n := strings.ToLower(f.Name)
-			buf := bk.Get([]byte(n))
+		s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+			buf := bk.Get([]byte(strings.ToLower(f.Name)))
 			switch f.Type {
 			case reflect.TypeOf(0):
 				fv.SetInt(int64(bytesToFloatZero(buf)))
 			case reflect.TypeOf(""):
 				fv.SetString(string(buf))
 			}
-		}
+			return nil
+		})
 		return nil
-	})
-	if err != nil {
+	}); err != nil {
 		return err
 	}
 	s.validateConfig()
@@ -344,14 +342,7 @@ func (s *Server) saveConfig() error {
 		if err != nil {
 			return err
 		}
-
-		rv := reflect.ValueOf(&s.ServerConfig)
-		rt := reflect.TypeOf(s.ServerConfig)
-		for i := 0; i < rt.NumField(); i++ {
-			f := rt.Field(i)
-			fv := rv.Elem().Field(i)
-			n := strings.ToLower(f.Name)
-
+		return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 			var buf []byte
 			switch f.Type {
 			case reflect.TypeOf(0):
@@ -359,44 +350,53 @@ func (s *Server) saveConfig() error {
 			case reflect.TypeOf(""):
 				buf = []byte(fv.String())
 			}
-			if err := bk.Put([]byte(n), buf); err != nil {
-				return err
-			}
-		}
-		return nil
+			return bk.Put([]byte(strings.ToLower(f.Name)), buf)
+		})
 	})
 }
 
 func (s *Server) updateConfig(key, value string) error {
-	rv := reflect.ValueOf(&s.ServerConfig)
-	rt := reflect.TypeOf(s.ServerConfig)
-	for i := 0; i < rt.NumField(); i++ {
-		f := rt.Field(i)
-		fv := rv.Elem().Field(i)
+	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.ToLower(f.Name) != key {
-			continue
+			return nil
 		}
-		I := int64(atoi(string(value)))
 		switch f.Type {
 		case reflect.TypeOf(0):
-			fv.SetInt(I)
+			fv.SetInt(int64(atoi(value)))
 		case reflect.TypeOf(""):
-			fv.SetString(string(value))
+			fv.SetString(value)
 		}
-		break
-	}
+		return fmt.Errorf("exit")
+	})
 	s.validateConfig()
 	return s.saveConfig()
 }
 
-func (s *Server) getConfig(key string) (string, bool) {
+func (s *Server) getConfig(key string) (v string, ok bool) {
+	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+		if strings.ToLower(f.Name) == key {
+			v, ok = fmt.Sprint(fv.Interface()), true
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Server) listConfig() (list []string) {
+	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
+		return nil
+	})
+	return
+}
+
+func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {
 	rv := reflect.ValueOf(&s.ServerConfig)
 	rt := reflect.TypeOf(s.ServerConfig)
 	for i := 0; i < rt.NumField(); i++ {
-		if strings.ToLower(rt.Field(i).Name) != key {
-			continue
+		if err := cb(rt.Field(i), rv.Elem().Field(i)); err != nil {
+			return err
 		}
-		return fmt.Sprint(rv.Elem().Field(i).Interface()), true
 	}
-	return "", false
+	return nil
 }

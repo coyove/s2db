@@ -12,7 +12,7 @@ func TestMetrics(t *testing.T) {
 	// 	s.data[i] = rand.Int31()
 	// }
 	for i := 0; i < 3; i++ {
-		s.Incr(int32(i) + 1)
+		s.Incr(int64(i) + 1)
 		time.Sleep(time.Second * 2)
 	}
 	fmt.Println(s.QPS())

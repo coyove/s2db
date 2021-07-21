@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -66,6 +67,7 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		count := 0
 		shard := shardIndex(name)
 		for _, p := range pairs {
+			p.Data = append([]byte{}, p.Data...)
 			select {
 			case s.db[shard].deferAdd <- &addTask{name: name, pair: p}:
 				count++
@@ -93,6 +95,12 @@ func (s *Server) runZAddBatchShard(w *redisproto.Writer, name string, command *r
 	// ZADDBATCH name1 score1 key1 data1 name2 score2 key2 data2 ...
 	for i := 1; i < command.ArgCount(); i += 4 {
 		name := string(command.Get(i))
+		if name == "--" {
+			if len(pairs) == 0 {
+				return fmt.Errorf("'--' refers nothing")
+			}
+			name = pairs[len(pairs)-1].name
+		}
 		s, err := atof2(command.Get(i + 1))
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -207,6 +215,12 @@ func (s *Server) deferAddWorker(shard int) {
 		}
 
 		s.survey.addBatchSize.Incr(int64(len(tasks)))
+
+		// ZADDBATCH name1 score1 key1 data1 name2 score2 key2 data2 ...
+		//             1     2     3     4     5     6     7     8
+		for i := 5; i < len(tmp); i += 4 {
+		}
+
 		if err := s.ZAddBatchShard(tasks, joinCommandString(tmp...)); err != nil {
 			log.Error("defer add worker #", shard, " err: ", err)
 		}

@@ -19,6 +19,35 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+func (s *Server) walProgress(shard int, size bool) (total uint64, err error) {
+	f := func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("wal"))
+		if bk != nil {
+			if size {
+				total += uint64(bk.Stats().KeyN)
+			} else {
+				k, _ := bk.Cursor().Last()
+				if len(k) == 8 {
+					total += binary.BigEndian.Uint64(k)
+				}
+			}
+		}
+		return nil
+	}
+	if shard == -1 {
+		for i := range s.db {
+			if err := s.db[i].View(f); err != nil {
+				return 0, err
+			}
+		}
+	} else {
+		if err := s.db[shard].View(f); err != nil {
+			return 0, err
+		}
+	}
+	return
+}
+
 func (s *Server) requestLogPuller(shard int) {
 	ctx := context.TODO()
 	buf := &bytes.Buffer{}
@@ -32,7 +61,7 @@ func (s *Server) requestLogPuller(shard int) {
 	}()
 
 	for !s.closed {
-		myWalIndex, err := s.walProgress(shard)
+		myWalIndex, err := s.walProgress(shard, false)
 		if err != nil {
 			log.Error("#", shard, " read local wal index: ", err)
 			break
@@ -81,7 +110,7 @@ func (s *Server) requestLogPuller(shard int) {
 
 func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {
 	sz := 0
-	masterWalIndex, err := s.walProgress(shard)
+	masterWalIndex, err := s.walProgress(shard, false)
 	if err != nil {
 		return nil, err
 	}
@@ -172,6 +201,43 @@ AGAIN:
 	}
 	if !exit && time.Since(start) < time.Duration(s.PurgeLogMaxRunTime)*time.Second {
 		goto AGAIN
+	}
+	return count, nil
+}
+
+func (s *Server) purgeLogOffline(shard int) (int, error) {
+	count := 0
+	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("wal"))
+		if bk == nil {
+			return nil
+		}
+		if bk.Stats().KeyN == 0 {
+			return nil
+		}
+
+		c := bk.Cursor()
+		count = bk.Stats().KeyN - 1
+
+		last, v := c.Last()
+		if len(last) != 8 {
+			return fmt.Errorf("invalid last key")
+		}
+
+		if err := tx.DeleteBucket([]byte("wal")); err != nil {
+			return err
+		}
+
+		bk, err := tx.CreateBucket([]byte("wal"))
+		if err != nil {
+			return err
+		}
+		if err := bk.SetSequence(binary.BigEndian.Uint64(last)); err != nil {
+			return err
+		}
+		return bk.Put(last, v)
+	}); err != nil {
+		return 0, err
 	}
 	return count, nil
 }

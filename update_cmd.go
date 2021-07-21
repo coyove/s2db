@@ -3,8 +3,10 @@ package main
 import (
 	"math"
 	"strings"
+	"time"
 
 	"github.com/secmask/go-redisproto"
+	log "github.com/sirupsen/logrus"
 )
 
 func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.Command) error {
@@ -61,10 +63,17 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 	}
 
 	if deferAdd {
-		select {
-		default:
-			return w.WriteSimpleString("OK")
+		count := 0
+		shard := shardIndex(name)
+		for _, p := range pairs {
+			select {
+			case s.db[shard].deferAdd <- &addTask{name: name, pair: p}:
+				count++
+			default:
+				s.survey.addBatchDrop.Incr(1)
+			}
 		}
+		return w.WriteInt(int64(count))
 	}
 
 	added, updated, err := s.ZAdd(name, pairs, nx, xx, scoreGt, dumpCommand(command))
@@ -81,6 +90,7 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 func (s *Server) runZAddBatchShard(w *redisproto.Writer, name string, command *redisproto.Command) error {
 	pairs := []*addTask{}
 	names := map[string]bool{}
+	// ZADDBATCH name1 score1 key1 data1 name2 score2 key2 data2 ...
 	for i := 1; i < command.ArgCount(); i += 4 {
 		name := string(command.Get(i))
 		s, err := atof2(command.Get(i + 1))
@@ -98,6 +108,7 @@ func (s *Server) runZAddBatchShard(w *redisproto.Writer, name string, command *r
 		names[name] = true
 	}
 
+	s.survey.addBatchSize.Incr(int64(len(pairs)))
 	err := s.ZAddBatchShard(pairs, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
@@ -168,34 +179,38 @@ type addTask struct {
 
 func (s *Server) deferAddWorker(shard int) {
 	x := &s.db[shard]
-	// 	tasks := []*addTask{}
-	// 	tmp := &bytes.Buffer{}
-	// 	dummy := redisproto.NewWriter(tmp)
-	//
-	// 	for {
-	// 		tasks = tasks[:0]
-	// 		for start := nanotime.Now(); ; {
-	// 			select {
-	// 			case t, ok := <-x.deferAdd:
-	// 				if !ok {
-	// 					goto EXIT
-	// 				}
-	// 				tasks = append(tasks, t)
-	// 			default:
-	// 			}
-	//
-	// 			if len(tasks) == 0 {
-	// 				time.Sleep(time.Millisecond * 100)
-	// 				continue
-	// 			}
-	// 			if len(tasks) >= 50 || nanotime.Since(start) > time.Millisecond*100 {
-	// 				break
-	// 			}
-	// 		}
-	//
-	// 		tmp.Reset()
-	// 		s.runZAdd(dummy, name)
-	// 	}
-	// EXIT:
+	tasks := []*addTask{}
+	tmp := []string{"ZADDBATCH"}
+
+	for {
+		tasks = tasks[:0]
+		tmp = tmp[:1]
+
+		for start := time.Now(); ; {
+			select {
+			case t, ok := <-x.deferAdd:
+				if !ok {
+					goto EXIT
+				}
+				tasks = append(tasks, t)
+				tmp = append(tmp, t.name, ftoa(t.pair.Score), t.pair.Key, string(t.pair.Data))
+			case <-time.After(time.Millisecond * 200):
+			}
+
+			if len(tasks) == 0 {
+				continue
+			}
+
+			if len(tasks) >= 50 || time.Since(start) > time.Second {
+				break
+			}
+		}
+
+		s.survey.addBatchSize.Incr(int64(len(tasks)))
+		if err := s.ZAddBatchShard(tasks, joinCommandString(tmp...)); err != nil {
+			log.Error("defer add worker #", shard, " err: ", err)
+		}
+	}
+EXIT:
 	x.deferCloseSignal <- true
 }

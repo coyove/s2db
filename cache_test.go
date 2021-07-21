@@ -28,6 +28,24 @@ func TestCommandJoinSplit(t *testing.T) {
 			}
 		}
 	}
+
+	for c := 0; c < 1e4; c++ {
+		b := [][]byte{}
+		s := []string{}
+		for i := 0; i < 10; i++ {
+			x := make([]byte, rand.Intn(200)+200)
+			for i := range x {
+				x[i] = byte(rand.Int())
+			}
+			b = append(b, x)
+			s = append(s, string(x))
+		}
+		cmd1 := string(joinCommand(b...))
+		cmd2 := string(joinCommandString(s...))
+		if cmd1 != cmd2 {
+			t.Fatal(cmd1, cmd2)
+		}
+	}
 }
 
 func TestCache(t *testing.T) {

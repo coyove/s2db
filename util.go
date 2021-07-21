@@ -213,11 +213,17 @@ func joinCommand(cmd ...[]byte) []byte {
 }
 
 func joinCommandString(cmd ...string) []byte {
-	tmp := make([][]byte, len(cmd))
+	tmp := make([]struct {
+		v   string
+		cap int
+	}, len(cmd))
 	for i := range cmd {
-		tmp[i] = []byte(cmd[i])
+		tmp[i].v = cmd[i]
+		tmp[i].cap = len(cmd[i])
 	}
-	return joinCommand(tmp...)
+	res := joinCommand(*(*[][]byte)(unsafe.Pointer(&tmp))...)
+	runtime.KeepAlive(tmp)
+	return res
 }
 
 type RangeLimit struct {
@@ -298,7 +304,7 @@ func (s *Server) validateConfig() {
 		s.PurgeLogMaxRunTime = 1
 	}
 	if s.PurgeLogRun <= 0 {
-		s.PurgeLogRun = 1000
+		s.PurgeLogRun = 100
 	}
 }
 

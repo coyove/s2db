@@ -39,6 +39,7 @@ type Server struct {
 	survey struct {
 		startAt                             time.Time
 		sysRead, sysWrite, cache, weakCache Survey
+		addBatchSize, addBatchDrop          Survey
 	}
 
 	db [ShardNum]struct {
@@ -96,7 +97,7 @@ func Open(path string) (*Server, error) {
 		x.db[i].DB = db
 		x.db[i].pullerCloseSignal = make(chan bool)
 		x.db[i].deferCloseSignal = make(chan bool)
-		x.db[i].deferAdd = make(chan *addTask, 1e2)
+		x.db[i].deferAdd = make(chan *addTask, 101)
 	}
 	return x, nil
 }
@@ -360,6 +361,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			fmt.Sprintf("sys write: %v", s.survey.sysWrite),
 			fmt.Sprintf("cache: %v", s.survey.cache),
 			fmt.Sprintf("weak cache: %v", s.survey.weakCache),
+			fmt.Sprintf("batch size (avg): %v", s.survey.addBatchSize.MeanString()),
+			fmt.Sprintf("batch drop: %v", s.survey.addBatchDrop),
 		})
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]

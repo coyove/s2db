@@ -38,10 +38,12 @@ type Server struct {
 	dieKey    sched.SchedKey
 
 	survey struct {
-		startAt                             time.Time
-		connections                         int64
-		sysRead, sysWrite, cache, weakCache Survey
-		addBatchSize, addBatchDrop          Survey
+		startAt                    time.Time
+		connections                int64
+		sysRead, sysWrite          Survey
+		sysReadLat, sysWriteLat    Survey
+		cache, weakCache           Survey
+		addBatchSize, addBatchDrop Survey
 	}
 
 	db [ShardNum]struct {
@@ -248,6 +250,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	h := hashCommands(command)
 	wm := s.cache.nextWatermark()
 	name := string(command.Get(1))
+	isReadWrite := '\x00'
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
 		if name == "" || name == "--" {
@@ -261,8 +264,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				return w.WriteError("readonly")
 			}
 			s.survey.sysWrite.Incr(1)
+			isReadWrite = 'w'
 		} else {
 			s.survey.sysRead.Incr(1)
+			isReadWrite = 'r'
 		}
 	}
 
@@ -271,7 +276,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			log.Error(r, string(debug.Stack()))
 			w.WriteError("fatal error")
 		} else {
-			if diff := time.Since(start); diff > time.Duration(s.SlowLimit)*time.Millisecond {
+			diff := time.Since(start)
+			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
 				buf := bytes.NewBufferString("[slow log] " + diff.String())
 				for i := 0; i < command.ArgCount(); i++ {
 					buf.WriteString(" '")
@@ -279,6 +285,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 					buf.WriteString("'")
 				}
 				log.Info(buf.String())
+			}
+			if isReadWrite == 'r' {
+				s.survey.sysReadLat.Incr(int64(diff.Seconds() * 1000))
+			} else if isReadWrite == 'w' {
+				s.survey.sysWriteLat.Incr(int64(diff.Seconds() * 1000))
 			}
 		}
 	}(time.Now())
@@ -566,7 +577,9 @@ func (s *Server) info() string {
 		fmt.Sprintf("slaves:%v", strings.Join(slavesInfo, ",")),
 		fmt.Sprintf("connections:%v", s.survey.connections),
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
+		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
 		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
+		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
 		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
 		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
 		fmt.Sprintf("zadd_batch_queue:%v", strings.Join(addBatchInfo, ",")),

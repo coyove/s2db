@@ -106,6 +106,52 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, scoreGt float64, d
 	return
 }
 
+func (s *Server) ZAddBatchShard(in []*addTask, dd []byte) (err error) {
+	if len(in) == 0 {
+		return
+	}
+	db := s.pick(in[0].name)
+	for _, i := range in {
+		if s.pick(i.name) != db {
+			return fmt.Errorf("%q should be in shard #%d, batch in #%d", i.name, shardIndex(i.name), shardIndex(in[0].name))
+		}
+	}
+	return db.Update(func(tx *bbolt.Tx) error {
+		for _, i := range in {
+			name := i.name
+			bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
+			if err != nil {
+				return err
+			}
+			bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
+			if err != nil {
+				return err
+			}
+			p := i.pair
+			if err := checkScore(p.Score); err != nil {
+				return err
+			}
+			scoreBuf := bkName.Get([]byte(p.Key))
+			if len(scoreBuf) != 0 {
+				// old key exists
+				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
+					return err
+				}
+			} else {
+				// we are adding a new key
+			}
+			scoreBuf = floatToBytes(p.Score)
+			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
+				return err
+			}
+			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
+				return err
+			}
+		}
+		return s.writeLog(tx, dd)
+	})
+}
+
 func (s *Server) ZRem(name string, keys []string, dd []byte) (count int, err error) {
 	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))

@@ -8,7 +8,7 @@ import (
 )
 
 func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	var xx, nx, ch, data bool
+	var xx, nx, ch, data, deferAdd bool
 	var idx = 2
 	var scoreGt float64 = math.NaN()
 	var err error
@@ -33,6 +33,10 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 				return w.WriteError(err.Error())
 			}
 			continue
+		case "DEFER":
+			deferAdd = true
+			data = true
+			continue
 		}
 		break
 	}
@@ -56,6 +60,13 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		}
 	}
 
+	if deferAdd {
+		select {
+		default:
+			return w.WriteSimpleString("OK")
+		}
+	}
+
 	added, updated, err := s.ZAdd(name, pairs, nx, xx, scoreGt, dumpCommand(command))
 	if err != nil {
 		return w.WriteError(err.Error())
@@ -65,6 +76,36 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		return w.WriteInt(int64(added + updated))
 	}
 	return w.WriteInt(int64(added))
+}
+
+func (s *Server) runZAddBatchShard(w *redisproto.Writer, name string, command *redisproto.Command) error {
+	pairs := []*addTask{}
+	names := map[string]bool{}
+	for i := 1; i < command.ArgCount(); i += 4 {
+		name := string(command.Get(i))
+		s, err := atof2(command.Get(i + 1))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		pairs = append(pairs, &addTask{
+			name: name,
+			pair: Pair{
+				Key:   string(command.Get(i + 2)),
+				Score: s,
+				Data:  command.Get(i + 3),
+			},
+		})
+		names[name] = true
+	}
+
+	err := s.ZAddBatchShard(pairs, dumpCommand(command))
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	for name := range names {
+		s.cache.Remove(name, s)
+	}
+	return w.WriteInt(int64(len(pairs)))
 }
 
 func (s *Server) runZRemRange(w *redisproto.Writer, cmd, name string, command *redisproto.Command) error {
@@ -118,4 +159,43 @@ func (s *Server) runZIncrBy(w *redisproto.Writer, name string, command *redispro
 	}
 	s.cache.Remove(name, s)
 	return w.WriteBulkString(ftoa(v))
+}
+
+type addTask struct {
+	name string
+	pair Pair
+}
+
+func (s *Server) deferAddWorker(shard int) {
+	x := &s.db[shard]
+	// 	tasks := []*addTask{}
+	// 	tmp := &bytes.Buffer{}
+	// 	dummy := redisproto.NewWriter(tmp)
+	//
+	// 	for {
+	// 		tasks = tasks[:0]
+	// 		for start := nanotime.Now(); ; {
+	// 			select {
+	// 			case t, ok := <-x.deferAdd:
+	// 				if !ok {
+	// 					goto EXIT
+	// 				}
+	// 				tasks = append(tasks, t)
+	// 			default:
+	// 			}
+	//
+	// 			if len(tasks) == 0 {
+	// 				time.Sleep(time.Millisecond * 100)
+	// 				continue
+	// 			}
+	// 			if len(tasks) >= 50 || nanotime.Since(start) > time.Millisecond*100 {
+	// 				break
+	// 			}
+	// 		}
+	//
+	// 		tmp.Reset()
+	// 		s.runZAdd(dummy, name)
+	// 	}
+	// EXIT:
+	x.deferCloseSignal <- true
 }

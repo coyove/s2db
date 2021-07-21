@@ -44,6 +44,8 @@ type Server struct {
 	db [ShardNum]struct {
 		*bbolt.DB
 		writeWatermark    int64
+		deferAdd          chan *addTask
+		deferCloseSignal  chan bool
 		pullerCloseSignal chan bool
 	}
 }
@@ -93,6 +95,8 @@ func Open(path string) (*Server, error) {
 		}
 		x.db[i].DB = db
 		x.db[i].pullerCloseSignal = make(chan bool)
+		x.db[i].deferCloseSignal = make(chan bool)
+		x.db[i].deferAdd = make(chan *addTask, 1e2)
 	}
 	return x, nil
 }
@@ -144,6 +148,8 @@ func (s *Server) Close() error {
 			if s.rdb != nil {
 				<-db.pullerCloseSignal
 			}
+			close(db.deferAdd)
+			<-db.deferCloseSignal
 		}(i)
 	}
 	wg.Wait()
@@ -216,6 +222,9 @@ func (s *Server) Serve(addr string) error {
 			go s.requestLogPuller(i)
 		}
 	}
+	for i := range s.db {
+		go s.deferAddWorker(i)
+	}
 
 	log.Info("listening on ", addr, " master=", s.MasterAddr)
 	for {
@@ -273,7 +282,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if strings.HasPrefix(name, "score.") {
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
-		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
+		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZADDBATCH" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if !isBulk && s.ReadOnly {
 				return w.WriteError("readonly")
 			}
@@ -409,6 +418,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return s.runDel(w, name, command)
 	case "ZADD":
 		return s.runZAdd(w, name, command)
+	case "ZADDBATCH":
+		return s.runZAddBatchShard(w, name, command)
 	case "ZINCRBY":
 		return s.runZIncrBy(w, name, command)
 	case "ZREM":

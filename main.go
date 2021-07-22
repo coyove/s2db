@@ -9,7 +9,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -47,7 +46,7 @@ func main() {
 
 	log.SetReportCaller(true)
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename:   filepath.Join(*dataDir, "s2db.log"),
+		Filename:   "s2db.log",
 		MaxSize:    100, // megabytes
 		MaxBackups: 16,
 		MaxAge:     28,   //days
@@ -110,6 +109,6 @@ func main() {
 	opened <- true
 
 	s.MasterAddr = *masterAddr
-	s.ReadOnly = *readOnly || s.MasterAddr != ""
+	s.SetReadOnly(*readOnly || s.MasterAddr != "")
 	s.Serve(*listenAddr)
 }

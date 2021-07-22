@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -19,12 +21,14 @@ var (
 )
 
 type Writer struct {
-	w io.Writer
+	w      io.Writer
+	Logger *logrus.Logger
 }
 
-func NewWriter(sink io.Writer) *Writer {
+func NewWriter(sink io.Writer, logger *logrus.Logger) *Writer {
 	return &Writer{
-		w: sink,
+		w:      sink,
+		Logger: logger,
 	}
 }
 
@@ -80,6 +84,7 @@ func (w *Writer) WriteSimpleString(s string) error {
 }
 
 func (w *Writer) WriteError(s string) error {
+	logrus.Error("redisproto: ", s)
 	w.Write(subs)
 	w.Write([]byte(s))
 	_, err := w.Write(newLine)

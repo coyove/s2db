@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -24,9 +25,12 @@ import (
 
 const ShardNum = 32
 
+var bboltOptions = &bbolt.Options{
+	FreelistType: bbolt.FreelistMapType,
+}
+
 type Server struct {
 	MasterAddr string
-	ReadOnly   bool
 	ServerConfig
 
 	ln        net.Listener
@@ -48,6 +52,7 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
+		readonly          bool
 		writeWatermark    int64
 		deferAdd          chan *addTask
 		deferCloseSignal  chan bool
@@ -92,9 +97,7 @@ func Open(path string) (*Server, error) {
 
 	x := &Server{}
 	for i := range x.db {
-		db, err := bbolt.Open(shards[i], 0666, &bbolt.Options{
-			FreelistType: bbolt.FreelistMapType,
-		})
+		db, err := bbolt.Open(shards[i], 0666, bboltOptions)
 		if err != nil {
 			return nil, err
 		}
@@ -129,6 +132,19 @@ func (s *Server) getWeakCache(h [2]uint64) interface{} {
 		return i.Data
 	}
 	return nil
+}
+
+func (s *Server) SetReadOnly(v bool) {
+	for i := range s.db {
+		s.db[i].readonly = v
+	}
+}
+
+func (s *Server) ReadOnly() (x [ShardNum]bool) {
+	for i := range s.db {
+		x[i] = s.db[i].readonly
+	}
+	return
 }
 
 func (s *Server) Close() error {
@@ -218,7 +234,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 	atomic.AddInt64(&s.survey.connections, 1)
 	parser := redisproto.NewParser(conn)
-	writer := redisproto.NewWriter(conn)
+	writer := redisproto.NewWriter(conn, log.StandardLogger())
 	var ew error
 	for {
 		command, err := parser.ReadCommand()
@@ -260,7 +276,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
 		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZADDBATCH" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
-			if !isBulk && s.ReadOnly {
+			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
 				return w.WriteError("readonly")
 			}
 			s.survey.sysWrite.Incr(1)
@@ -337,7 +353,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return w.WriteBulkString(s.info())
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
-		of, err := os.Create(x.DB.Path() + ".bak")
+		path := string(command.Get(2))
+		if path == "" {
+			path = x.DB.Path() + ".bak"
+		}
+		of, err := os.Create(path)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -348,6 +368,32 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return err
 		})
 		return w.WriteIntOrError(int64(c), err)
+	case "REPLACESHARD":
+		x := &s.db[atoip(name)]
+		path := string(command.Get(2))
+		if _, err := os.Stat(path); err != nil {
+			return w.WriteError("Failed to stat shard")
+		}
+		old := x.DB.Path()
+		x.readonly = true
+		for len(x.deferAdd) > 0 { // wait as-many-as-possible deferred ZAdds to finish
+			runtime.Gosched()
+		}
+		if err := x.DB.Close(); err != nil {
+			return w.WriteError(err.Error()) // keep shard readonly until we find the cause
+		}
+		if err := os.Rename(old, old+time.Now().UTC().Format(".060102150405")); err != nil {
+			return w.WriteError(err.Error()) // keep ...
+		}
+		if err := os.Rename(path, old); err != nil {
+			return w.WriteError(err.Error()) // keep ...
+		}
+		x.DB, err = bbolt.Open(old, 0666, bboltOptions)
+		if err != nil {
+			return w.WriteError(err.Error()) // keep ...
+		}
+		x.readonly = false
+		return w.WriteSimpleString("OK")
 	case "SLAVES":
 		p := s.slaves.Take(time.Minute)
 		data := make([]string, 0, 2*len(p))
@@ -555,39 +601,4 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	default:
 		return w.WriteError("Command not support: " + cmd)
 	}
-}
-
-func (s *Server) info() string {
-	addBatchInfo := []string{}
-	for i := range s.db {
-		addBatchInfo = append(addBatchInfo, strconv.Itoa(len(s.db[i].deferAdd)))
-	}
-	p := s.slaves.Take(time.Minute)
-	slavesInfo := []string{}
-	for i := range p {
-		slavesInfo = append(slavesInfo, p[i].Key)
-	}
-	return strings.Join([]string{
-		fmt.Sprintf("version:%v", Version),
-		fmt.Sprintf("servername:%v", s.ServerName),
-		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
-		fmt.Sprintf("death_scheduler:%v", s.dieKey),
-		fmt.Sprintf("readonly:%v", s.ReadOnly),
-		fmt.Sprintf("master:%v", s.MasterAddr),
-		fmt.Sprintf("slaves:%v", strings.Join(slavesInfo, ",")),
-		fmt.Sprintf("connections:%v", s.survey.connections),
-		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
-		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
-		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
-		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
-		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
-		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
-		fmt.Sprintf("zadd_batch_queue:%v", strings.Join(addBatchInfo, ",")),
-		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
-		fmt.Sprintf("cache_obj_count:%v", s.cache.CacheLen("")),
-		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
-		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
-		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
-		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
-	}, "\r\n") + "\r\n"
 }

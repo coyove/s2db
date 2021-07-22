@@ -51,7 +51,7 @@ func (s *Server) walProgress(shard int, size bool) (total uint64, err error) {
 func (s *Server) requestLogPuller(shard int) {
 	ctx := context.TODO()
 	buf := &bytes.Buffer{}
-	dummy := redisproto.NewWriter(buf)
+	dummy := redisproto.NewWriter(buf, log.StandardLogger())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -138,7 +138,7 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 			data := bk.Get(intToBytes(uint64(i)))
 			logs = append(logs, string(data))
 			sz += len(data)
-			if len(logs) == 200 || sz > 16*1024 {
+			if len(logs) >= s.ResponseLogRun || sz > s.ResponseLogSize*1024 {
 				break
 			}
 		}
@@ -250,7 +250,7 @@ func (s *Server) getSlaveShardMinTail(shard int) uint64 {
 	for i, x := range p {
 		tmp := &slaveInfo{}
 		json.Unmarshal(x.Data, tmp)
-		if v := tmp.KnownLogOffsets[shard]; v < tail || i == 0 {
+		if v := tmp.KnownLogTails[shard]; v < tail || i == 0 {
 			tail = v
 		}
 	}
@@ -263,7 +263,7 @@ type slaves struct {
 }
 
 type slaveInfo struct {
-	KnownLogOffsets [ShardNum]uint64
+	KnownLogTails [ShardNum]uint64
 }
 
 func (s *slaves) Take(t time.Duration) []Pair {
@@ -289,7 +289,7 @@ func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
 			info := &slaveInfo{}
 			json.Unmarshal(sv.Data, info)
 
-			info.KnownLogOffsets[shard] = logOffset
+			info.KnownLogTails[shard] = logOffset
 
 			p.Data, _ = json.Marshal(info)
 			s.Slaves[i] = p
@@ -299,7 +299,7 @@ func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
 	}
 	if !found {
 		info := &slaveInfo{}
-		info.KnownLogOffsets[shard] = logOffset
+		info.KnownLogTails[shard] = logOffset
 		p.Data, _ = json.Marshal(info)
 		s.Slaves = append(s.Slaves, p)
 	}

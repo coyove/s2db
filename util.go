@@ -11,9 +11,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/common/sched"
 	"github.com/secmask/go-redisproto"
 	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"go.etcd.io/bbolt"
@@ -23,6 +25,7 @@ func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+	sched.Verbose = false
 }
 
 func checkScore(s float64) error {
@@ -36,6 +39,13 @@ func intToBytes(i uint64) []byte {
 	v := [8]byte{}
 	binary.BigEndian.PutUint64(v[:], i)
 	return v[:]
+}
+
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func bytesToFloatZero(b []byte) float64 {
@@ -283,33 +293,26 @@ type ServerConfig struct {
 	WeakTTL            int // s
 	SlowLimit          int // ms
 	PurgeLogMaxRunTime int // s
-	PurgeLogRun        int // s
+	PurgeLogRun        int
+	ResponseLogRun     int
+	ResponseLogSize    int // kb
+	ZAddDeferBatchRun  int
 }
 
 func (s *Server) validateConfig() {
-	if s.HardLimit <= 0 {
-		s.HardLimit = 10000
-	}
-	if s.WeakTTL <= 0 {
-		s.WeakTTL = 300
-	}
-	if s.CacheSize <= 0 {
-		s.CacheSize = 1024
-	}
+	ifZero(&s.HardLimit, 10000)
+	ifZero(&s.WeakTTL, 300)
+	ifZero(&s.CacheSize, 1024)
+	ifZero(&s.WeakCacheSize, 1024)
+	ifZero(&s.SlowLimit, 500)
+	ifZero(&s.PurgeLogMaxRunTime, 1)
+	ifZero(&s.PurgeLogRun, 100)
+	ifZero(&s.ResponseLogRun, 200)
+	ifZero(&s.ResponseLogSize, 16)
+	ifZero(&s.ZAddDeferBatchRun, 50)
+
 	s.cache = NewCache(int64(s.CacheSize) * 1024 * 1024)
-	if s.WeakCacheSize <= 0 {
-		s.WeakCacheSize = 1024
-	}
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
-	if s.SlowLimit <= 0 {
-		s.SlowLimit = 500
-	}
-	if s.PurgeLogMaxRunTime <= 0 {
-		s.PurgeLogMaxRunTime = 1
-	}
-	if s.PurgeLogRun <= 0 {
-		s.PurgeLogRun = 100
-	}
 }
 
 func (s *Server) loadConfig() error {
@@ -356,6 +359,10 @@ func (s *Server) saveConfig() error {
 }
 
 func (s *Server) updateConfig(key, value string) error {
+	if strings.HasPrefix(key, "readonly") {
+		s.db[atoip(key[8:])].readonly, _ = strconv.ParseBool(value)
+		return nil
+	}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.ToLower(f.Name) != key {
 			return nil
@@ -383,6 +390,10 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 }
 
 func (s *Server) listConfig() (list []string) {
+	for _, b := range s.ReadOnly() {
+		list = append(list, strconv.Itoa(boolToInt(b)))
+	}
+	list = []string{"readonly", strings.Join(list, ",")}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
 		return nil
@@ -399,4 +410,49 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 		}
 	}
 	return nil
+}
+
+func (s *Server) info() string {
+	addBatchInfo := []string{}
+	for i := range s.db {
+		addBatchInfo = append(addBatchInfo, strconv.Itoa(len(s.db[i].deferAdd)))
+	}
+	p := s.slaves.Take(time.Minute)
+	slavesInfo := []string{}
+	for i := range p {
+		slavesInfo = append(slavesInfo, p[i].Key)
+	}
+	readonlyInfo := []string{}
+	for _, b := range s.ReadOnly() {
+		readonlyInfo = append(readonlyInfo, strconv.Itoa(boolToInt(b)))
+	}
+	return strings.Join([]string{
+		fmt.Sprintf("version:%v", Version),
+		fmt.Sprintf("servername:%v", s.ServerName),
+		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
+		fmt.Sprintf("death_scheduler:%v", s.dieKey),
+		fmt.Sprintf("readonly:%v", strings.Join(readonlyInfo, ",")),
+		fmt.Sprintf("master:%v", s.MasterAddr),
+		fmt.Sprintf("slaves:%v", strings.Join(slavesInfo, ",")),
+		fmt.Sprintf("connections:%v", s.survey.connections),
+		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
+		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
+		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
+		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
+		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
+		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
+		fmt.Sprintf("zadd_batch_queue:%v", strings.Join(addBatchInfo, ",")),
+		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
+		fmt.Sprintf("cache_obj_count:%v", s.cache.CacheLen("")),
+		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
+		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
+		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
+		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
+	}, "\r\n") + "\r\n"
+}
+
+func ifZero(v *int, v2 int) {
+	if *v <= 0 {
+		*v = v2
+	}
 }

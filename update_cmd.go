@@ -209,7 +209,7 @@ func (s *Server) deferAddWorker(shard int) {
 				continue
 			}
 
-			if len(tasks) >= 50 || time.Since(start) > time.Second {
+			if len(tasks) >= s.ServerConfig.ZAddDeferBatchRun || time.Since(start) > time.Second {
 				break
 			}
 		}

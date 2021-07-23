@@ -275,7 +275,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if strings.HasPrefix(name, "score.") {
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
-		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZADDBATCH" || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
+		if cmd == "GEOADD" || cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
 				return w.WriteError("readonly")
 			}
@@ -290,7 +290,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			log.Error(r, string(debug.Stack()))
-			w.WriteError("fatal error")
+			w.WriteError("fatal error: " + fmt.Sprint(r))
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {

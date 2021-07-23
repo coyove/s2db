@@ -423,6 +423,7 @@ func (s *Server) info() string {
 	return strings.Join([]string{
 		fmt.Sprintf("version:%v", Version),
 		fmt.Sprintf("servername:%v", s.ServerName),
+		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
 		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("master:%v", s.MasterAddr),

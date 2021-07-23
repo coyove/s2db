@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mmcloughlin/geohash"
 )
 
 func Eval(in string) (float64, error) {
@@ -44,6 +46,11 @@ func Eval(in string) (float64, error) {
 	return v, nil
 }
 
+const (
+	geoHashFunc      = 0xffffffffffff0001
+	geoHashLossyFunc = 0xffffffffffff0002
+)
+
 func evalBinary(in ast.Expr) float64 {
 	switch in := in.(type) {
 	case *ast.BinaryExpr:
@@ -71,6 +78,31 @@ func evalBinary(in ast.Expr) float64 {
 		return v
 	case *ast.ParenExpr:
 		return evalBinary(in.X)
+	case *ast.Ident:
+		switch in.Name {
+		case "geohash":
+			return math.Float64frombits(geoHashFunc)
+		case "geohashlossy":
+			return math.Float64frombits(geoHashLossyFunc)
+		default:
+		}
+	case *ast.CallExpr:
+		switch math.Float64bits(evalBinary(in.Fun)) {
+		case geoHashFunc:
+			if len(in.Args) == 2 {
+				long := evalBinary(in.Args[0])
+				lat := evalBinary(in.Args[1])
+				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
+			}
+		case geoHashLossyFunc:
+			if len(in.Args) == 2 {
+				h := uint64(evalBinary(in.Args[0]))
+				i := int(evalBinary(in.Args[1]))
+				lat, long := geohash.DecodeIntWithPrecision(h>>i, uint(52-i))
+				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
+			}
+		}
 	}
+	// fmt.Printf("%T", in)
 	return math.NaN()
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 	"testing"
+
+	"github.com/mmcloughlin/geohash"
 )
 
 func TestEval(t *testing.T) {
@@ -30,7 +32,9 @@ func TestEval(t *testing.T) {
 	assert(EvalZero("+Inf"), math.Inf(1))
 	assert(EvalZero("inf"), math.Inf(1))
 	assert(EvalZero("Inf"), math.Inf(1))
+	assert(EvalZero("geohash(10,20*2)+1"), float64(geohash.EncodeIntWithPrecision(40, 10, 52))+1)
 
 	fmt.Println(Eval("(day.)+1"))
 	fmt.Println(Eval("now-hour"))
+	fmt.Println(Eval("geohash(1,2)"))
 }

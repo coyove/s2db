@@ -194,10 +194,10 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		if !start.Inclusive {
 			startBuf = floatBytesStep(startBuf, 1)
 		}
-		if !end.Inclusive {
-			endBuf = floatBytesStep(endBuf, -1)
+
+		if end.Inclusive {
+			endBuf = floatBytesStep(endBuf, 1)
 		}
-		endBuf = append(endBuf, 0xff)
 
 		c := bk.Cursor()
 		k, dataBuf := c.Seek(startBuf)
@@ -208,7 +208,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		}
 
 		for i := 0; len(pairs) < limit; i++ {
-			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= 0 {
+			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						if !opt.CountOnly {

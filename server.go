@@ -350,6 +350,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		return writePairs(v, w, command)
 	case "INFO":
+		if name != "" {
+			return w.WriteBulkString(s.shardInfo(atoip(name)))
+		}
 		return w.WriteBulkString(s.info())
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
@@ -405,16 +408,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		// -----------------------
 		//  Log related commands
 		// -----------------------
-	case "LOGTAIL", "LOGSIZE":
+	case "LOGTAIL":
 		var c uint64
 		if name != "" {
-			c, err = s.walProgress(atoip(name), cmd == "LOGSIZE")
+			c, err = s.walProgress(atoip(name))
 		} else {
-			c, err = s.walProgress(-1, cmd == "LOGSIZE")
+			c, err = s.walProgress(-1)
 		}
 		return w.WriteIntOrError(int64(c), err)
 	case "SLAVESLOGTAIL":
-		return w.WriteInt(int64(s.getSlaveShardMinTail(atoip(name))))
+		return w.WriteInt(int64(s.getSlaveLogTail(atoip(name))))
 	case "REQUESTLOG":
 		start := atoi64(string(command.Get(2)))
 		if start == 0 {
@@ -427,12 +430,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoip(name), start-1)
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		upTo := atoi64(string(command.Get(2)))
-		if upTo == 0 && s.MasterAddr != "" {
-			c, err := s.purgeLogOffline(atoip(name))
-			return w.WriteIntOrError(int64(c), err)
-		}
-		c, err := s.purgeLog(atoip(name), upTo)
+		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
 		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------

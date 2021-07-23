@@ -68,11 +68,16 @@ func (s *Server) runZAdd(w *redisproto.Writer, name string, command *redisproto.
 		shard := shardIndex(name)
 		for _, p := range pairs {
 			p.Data = append([]byte{}, p.Data...)
-			select {
-			case s.db[shard].deferAdd <- &addTask{name: name, pair: p}:
+			if s.ZAddDeferBlocking == 1 {
+				s.db[shard].deferAdd <- &addTask{name: name, pair: p}
 				count++
-			default:
-				s.survey.addBatchDrop.Incr(1)
+			} else {
+				select {
+				case s.db[shard].deferAdd <- &addTask{name: name, pair: p}:
+					count++
+				default:
+					s.survey.addBatchDrop.Incr(1)
+				}
 			}
 		}
 		return w.WriteInt(int64(count))

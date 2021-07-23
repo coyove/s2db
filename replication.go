@@ -19,17 +19,13 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) walProgress(shard int, size bool) (total uint64, err error) {
+func (s *Server) walProgress(shard int) (total uint64, err error) {
 	f := func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk != nil {
-			if size {
-				total += uint64(bk.Stats().KeyN)
-			} else {
-				k, _ := bk.Cursor().Last()
-				if len(k) == 8 {
-					total += binary.BigEndian.Uint64(k)
-				}
+			k, _ := bk.Cursor().Last()
+			if len(k) == 8 {
+				total += binary.BigEndian.Uint64(k)
 			}
 		}
 		return nil
@@ -61,7 +57,7 @@ func (s *Server) requestLogPuller(shard int) {
 	}()
 
 	for !s.closed {
-		myWalIndex, err := s.walProgress(shard, false)
+		myWalIndex, err := s.walProgress(shard)
 		if err != nil {
 			log.Error("#", shard, " read local wal index: ", err)
 			break
@@ -110,7 +106,7 @@ func (s *Server) requestLogPuller(shard int) {
 
 func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {
 	sz := 0
-	masterWalIndex, err := s.walProgress(shard, false)
+	masterWalIndex, err := s.walProgress(shard)
 	if err != nil {
 		return nil, err
 	}
@@ -147,102 +143,64 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 	return
 }
 
-func (s *Server) purgeLog(shard int, until uint64) (int, error) {
-	start := time.Now()
+func (s *Server) purgeLog(shard int, head uint64) (int, error) {
+	if head <= 0 {
+		return 0, fmt.Errorf("head is zero")
+	}
 	count := 0
-	exit := false
-AGAIN:
 	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
-			exit = true
 			return nil
 		}
 		if bk.Stats().KeyN == 0 {
-			exit = true
-			return nil
+			return fmt.Errorf("nothing to purge")
 		}
 
 		c := bk.Cursor()
-
 		last, _ := c.Last()
 		if len(last) != 8 {
-			return fmt.Errorf("invalid last key")
+			return fmt.Errorf("invalid last key, fatal error")
+		}
+		tail := binary.BigEndian.Uint64(last)
+		if head >= tail {
+			return fmt.Errorf("truncate head over tail")
 		}
 
-		if until > 0 {
-			new := intToBytes(uint64(until))
-			if bytes.Compare(new, last) >= 0 {
-				return fmt.Errorf("purge log break boundary: %d overflows %d", until, binary.BigEndian.Uint64(last))
-			}
-			last = new
+		if tail-head > 10000 {
+			return fmt.Errorf("too much gap, purging aborted")
 		}
 
-		keys := [][]byte{}
-		for k, _ := c.First(); len(k) == 8 && bytes.Compare(k, last) == -1; k, _ = c.Next() {
-			keys = append(keys, k)
-			if len(keys) == s.PurgeLogRun {
-				break
-			}
-		}
-		if len(keys) == 0 {
-			exit = true
-			return nil
-		}
-		for _, k := range keys {
-			if err := bk.Delete(k); err != nil {
-				return err
-			}
+		keepLogs := [][2][]byte{}
+		for i := head; i <= tail; i++ {
+			k := intToBytes(i)
+			v := append([]byte{}, bk.Get(k)...)
+			keepLogs = append(keepLogs, [2][]byte{k, v})
 			count++
 		}
-		return nil
-	}); err != nil {
-		return 0, err
-	}
-	if !exit && time.Since(start) < time.Duration(s.PurgeLogMaxRunTime)*time.Second {
-		goto AGAIN
-	}
-	return count, nil
-}
-
-func (s *Server) purgeLogOffline(shard int) (int, error) {
-	count := 0
-	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("wal"))
-		if bk == nil {
-			return nil
+		if len(keepLogs) == 0 {
+			return fmt.Errorf("keep zero logs, fatal error")
 		}
-		if bk.Stats().KeyN == 0 {
-			return nil
-		}
-
-		c := bk.Cursor()
-		count = bk.Stats().KeyN - 1
-
-		last, v := c.Last()
-		if len(last) != 8 {
-			return fmt.Errorf("invalid last key")
-		}
-
 		if err := tx.DeleteBucket([]byte("wal")); err != nil {
 			return err
 		}
-
 		bk, err := tx.CreateBucket([]byte("wal"))
 		if err != nil {
 			return err
 		}
-		if err := bk.SetSequence(binary.BigEndian.Uint64(last)); err != nil {
-			return err
+		for _, p := range keepLogs {
+			if err := bk.Put(p[0], p[1]); err != nil {
+				return err
+			}
 		}
-		return bk.Put(last, v)
+		return bk.SetSequence(tail)
 	}); err != nil {
 		return 0, err
 	}
 	return count, nil
 }
 
-func (s *Server) getSlaveShardMinTail(shard int) uint64 {
+func (s *Server) getSlaveLogTail(shard int) uint64 {
 	p, tail := s.slaves.Take(time.Minute), uint64(0)
 	if len(p) == 0 {
 		return math.MaxUint64

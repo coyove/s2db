@@ -80,9 +80,9 @@ func evalBinary(in ast.Expr) float64 {
 		return evalBinary(in.X)
 	case *ast.Ident:
 		switch in.Name {
-		case "geohash":
+		case "geo":
 			return math.Float64frombits(geoHashFunc)
-		case "geohashlossy":
+		case "geolossy":
 			return math.Float64frombits(geoHashLossyFunc)
 		default:
 		}

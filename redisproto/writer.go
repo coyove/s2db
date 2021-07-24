@@ -138,6 +138,10 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			if err := w.WriteInt(int64(v)); err != nil {
 				return err
 			}
+		case []interface{}:
+			if err := w.WriteObjectsSlice(v); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("value not suppport %v", v)
 		}

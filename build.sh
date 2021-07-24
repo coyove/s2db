@@ -1,4 +1,4 @@
-SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go update_cmd.go'
+SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go update_cmd.go geo.go'
 VERSION=$(date -u +%Y%m%d.%H.%M)
 
 rm -rf zset.7z

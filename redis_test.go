@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"sort"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/mmcloughlin/geohash"
 )
 
 func assert(err error) {
@@ -305,29 +307,137 @@ func TestZSet(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
-func TestBatch(t *testing.T) {
-	// s, _ := Open("test")
-	// go s.Serve(":6666")
+func TestGeo(t *testing.T) {
+	s, _ := Open("test")
+	go s.Serve(":6666")
 
-	// ctx := context.TODO()
-	// rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
-	// rdb.Del(ctx, "bulk")
-	// time.Sleep(time.Second)
-	// shard := hashStr("bulk") % uint64(len(s.db))
-	// index, _ := s.walProgress(int(shard))
-	// cmd := redis.NewIntCmd(ctx, "BULK",
-	// 	shard,
-	// 	index+1,
-	// 	joinCommandString("zadd", "bulk", "1", "a", "2", "b"),
-	// 	joinCommandString("zadd", "bulk", "3", "c", "4", "d"),
-	// 	joinCommandString("zremrangebyrank", "bulk", "1", "1"),
-	// 	joinCommandString("bad command"),
-	// 	joinCommandString("zadd", "bulk", "999", "bad"),
-	// )
-	// rdb.Process(ctx, cmd)
-	// fmt.Println(cmd.Result())
-	// assertEqual([]string{"a", "c", "d"}, rdb.ZRange(ctx, "bulk", 0, -1).Val())
-	// s.Close()
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "geo")
+
+	add := func(key string, lat, long float64) {
+		rdb.ZAdd(ctx, "geo", &redis.Z{Score: float64(geohash.EncodeIntWithPrecision(lat, long, 52)), Member: key})
+	}
+
+	add("Zhangjiajie", 29.117001, 110.478996)
+	add("Xingyi", 25.091999, 104.894997)
+	add("Foshan", 23.016666, 113.116669)
+	add("Anshan", 41.116669, 122.98333)
+	add("Datong", 40.083332, 113.300003)
+	add("Luoyang", 34.669724, 112.442223)
+	add("Baotou", 40.650002, 109.833336)
+	add("Nanchang", 28.683332, 115.883331)
+	add("Guiyang", 26.646999, 106.629997)
+	add("Zibo", 36.783333, 118.050003)
+	add("Tangshan", 39.631001, 118.18)
+	add("Changzhou", 31.811001, 119.973999)
+	add("Kunming", 25.043333, 102.706108)
+	add("Nanning", 22.816668, 108.316666)
+	add("Fuzhou", 26.0753, 119.308197)
+	add("Changsha", 28.228001, 112.939003)
+	add("Jinan", 36.666668, 116.98333)
+	add("Harbin", 45.75, 126.633331)
+	add("Suzhou", 31.299999, 120.599998)
+	add("Dalian", 38.920834, 121.639168)
+	add("Qingdao", 36.066898, 120.382698)
+	add("Shenyang", 41.799999, 123.400002)
+	add("Hangzhou", 30.25, 120.166664)
+	add("Nanjing", 32.049999, 118.76667)
+	add("Chengdu", 30.657, 104.066002)
+	add("Wuhan", 30.583332, 114.283333)
+	add("Tianjin", 39.133331, 117.183334)
+	add("Beijing", 916668, 116.383331)
+	add("Shanghai", 224361, 121.46917)
+	add("Xuzhou", 34.205769, 117.284126)
+	add("Zhengzhou", 34.746613, 113.625328)
+	add("Dabu", 24.347782, 116.695198)
+	add("Taiyuan", 37.87146, 112.551208)
+	add("Tieling", 42.223827, 123.726036)
+	add("Shijiazhuang", 38.042805, 114.514893)
+	add("Fuqing", 25.721292, 119.384155)
+	add("Yichun", 27.819311, 114.41069)
+	add("Shihezi", 44.306095, 86.080605)
+	add("Jiamusi", 46.801086, 130.32312)
+	add("Nagqu", 31.476202, 92.051239)
+	add("Wuhu", 31.350012, 118.429398)
+	add("Lanzhou", 36.054871, 103.828812)
+	add("Qiqihar", 47.354347, 123.918182)
+	add("Suqian", 33.965126, 118.270988)
+	add("Changchun", 43.891262, 125.331345)
+	add("Hohhot", 40.846333, 111.733017)
+	add("Linfen", 36.088005, 111.518974)
+	add("Wuhai", 39.863373, 106.814575)
+	add("Dalangzhen", 22.940195, 113.943916)
+	add("Yancheng", 33.347317, 120.163658)
+	add("Shenzhen", 22.542883, 114.062996)
+	add("Qidong", 31.808025, 121.65744)
+	add("Wujiang", 139071, 120.645134)
+	add("Xiamen", 24.479834, 118.089424)
+	add("Zhongxiang", 31.16782, 112.58812)
+	add("Bayingol", 41.749287, 86.168861)
+	add("Weifang", 36.706776, 119.161758)
+	add("Hefei", 31.848398, 117.272362)
+	add("Xigaze", 29.26687, 88.880585)
+	add("Haixi", 37.363132, 97.377106)
+	add("Jiuquan", 39.732819, 98.494354)
+	add("Tumxuk", 39.865776, 79.070511)
+	add("Zhaohua", 32.323257, 105.962822)
+	add("Zalantun", 48.013733, 122.737465)
+	add("Linyi", 35.102074, 118.345329)
+	add("Golmud", 36.406086, 94.910286)
+	add("Cangnan", 27.51828, 120.425766)
+	add("Korla", 41.723091, 86.175682)
+	add("Huainan", 32.625477, 116.999931)
+	add("Wuxi", 31.565372, 120.327583)
+	add("Suqian", 33.96323, 118.2752)
+	add("Yinchuan", 38.4888, 106.24929)
+	add("Chifeng", 42.259621, 118.888634)
+	add("Weihai", 37.509998, 122.120766)
+	add("Guangzhou", 23.128994, 113.25325)
+	add("Fuxin", 42.035522, 121.659676)
+	add("Lianyungang", 34.661453, 119.224319)
+	add("Neixiang", 33.05817, 111.851074)
+	add("Shannan", 29.240574, 91.774055)
+	add("Yongnian", 36.77774, 114.491051)
+	add("Changji", 44.011185, 87.308228)
+	add("Hulun", 49.220287, 119.75441)
+	add("Damagouxiang", 36.98724, 81.07592)
+	add("Aksu", 41.176327, 80.275902)
+	add("Wuwei", 37.934246, 102.638931)
+	add("Ankang", 32.684715, 109.029022)
+	add("Zhangjiachuan", 34.991192, 106.206551)
+	add("Baoshan", 31.405457, 121.489609)
+	add("Anning", 24.919493, 102.478493)
+	add("Maoxian", 31.681154, 103.853523)
+	add("Bengbu", 32.916286, 117.389717)
+	add("Qingpianxiang", 32.030197, 104.013405)
+	add("Sihong", 33.485291, 118.224564)
+	add("Handan", 36.625656, 114.538963)
+	add("Kizilsu", 39.714527, 76.167816)
+	add("Dongguan", 23.020536, 113.751762)
+	add("Jiangmen", 22.578737, 113.081902)
+	add("Hotan", 37.120632, 79.923134)
+	add("Nanyang", 32.990833, 112.52832)
+
+	{
+		cities := []string{}
+		x := rdb.GeoRadius(ctx, "geo", 118.77, 32.05, &redis.GeoRadiusQuery{Radius: 450, WithDist: true}).Val()
+		for i := 0; i < len(x); i += 2 {
+			cities = append(cities, x[i].Name)
+		}
+		sort.Strings(cities)
+		assertEqual(cities, []string{"Baoshan", "Bengbu", "Changzhou", "Hangzhou", "Hefei", "Huainan", "Nanjing", "Qidong", "Sihong", "Suzhou", "Wuhu", "Wuxi", "Yancheng"})
+	}
+	{
+		cities := []string{}
+		x := rdb.GeoRadius(ctx, "geo", 118.77, 32.05, &redis.GeoRadiusQuery{Radius: 200, WithDist: true}).Val()
+		for i := 0; i < len(x); i += 2 {
+			cities = append(cities, x[i].Name)
+		}
+		sort.Strings(cities)
+		assertEqual(cities, []string{"Bengbu", "Changzhou", "Hefei", "Huainan", "Nanjing", "Sihong", "Suzhou", "Wuhu", "Wuxi", "Yancheng"})
+	}
+	s.Close()
 }
 
 func TestZSetCache(t *testing.T) {

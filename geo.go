@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"fmt"
 	"math"
+	"math/rand"
 	"sort"
 
 	"github.com/mmcloughlin/geohash"
@@ -47,21 +48,89 @@ func geoDistHash(lat1, lon1 float64, hash uint64) float64 {
 }
 
 func geoDist(lat1, lon1, lat2, lon2 float64) float64 {
-	var p = math.Pi / 180
-	var c = math.Cos
+	const p = math.Pi / 180
 	lat1 *= p
 	lat2 *= p
 	lon1 *= p
 	lon2 *= p
-	var a = 0.5 - c(lat2-lat1)/2 + c(lat1)*c(lat2)*(1-c(lon2-lon1))/2
+	a := 0.5 - math.Cos(lat2-lat1)/2 + math.Cos(lat1)*math.Cos(lat2)*(1-math.Cos(lon2-lon1))/2
 	return 12742000 * math.Asin(math.Sqrt(a)) // 2 * R; R = 6371 km
+}
+
+func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redisproto.Command) error {
+	from := (command.Get(2))
+	to := (command.Get(3))
+	dist := math.NaN()
+	err := s.pick(name).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset." + name))
+		if bk == nil {
+			return nil
+		}
+		fromBuf := bk.Get(from)
+		toBuf := bk.Get(to)
+		if len(fromBuf) != 8 || len(toBuf) != 8 {
+			return nil
+		}
+		fromLat, fromLong := geohash.DecodeIntWithPrecision(uint64(bytesToFloat(fromBuf)), 52)
+		toLat, toLong := geohash.DecodeIntWithPrecision(uint64(bytesToFloat(toBuf)), 52)
+		dist = geoDist(fromLat, fromLong, toLat, toLong)
+		return nil
+	})
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	if math.IsNaN(dist) {
+		return w.WriteBulks()
+	}
+	if string(command.Get(4)) == "km" {
+		return w.WriteBulkString(ftoa(dist / 1000))
+	}
+	return w.WriteBulkString(ftoa(dist))
+}
+
+func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisproto.Command) error {
+	if len(command.Argv) <= 2 {
+		return w.WriteError("missing memebers")
+	}
+
+	coords := make([][2]float64, len(command.Argv)-2)
+	for i := range coords {
+		coords[i] = [2]float64{math.NaN(), math.NaN()}
+	}
+
+	err := s.pick(name).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset." + name))
+		if bk == nil {
+			return nil
+		}
+		for i := 2; i < len(command.Argv); i++ {
+			fromBuf := bk.Get(command.Get(i))
+			if len(fromBuf) != 8 {
+				continue
+			}
+			coords[i-2][1], coords[i-2][0] = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(fromBuf)), 52)
+		}
+		return nil
+	})
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	data := []interface{}{}
+	for _, c := range coords {
+		if math.IsNaN(c[0]) || math.IsNaN(c[1]) {
+			data = append(data, nil)
+		} else {
+			data = append(data, []interface{}{ftoa(c[1]), ftoa(c[0])})
+		}
+	}
+	return w.WriteObjectsSlice(data)
 }
 
 func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak bool, command *redisproto.Command) error {
 	var p []Pair
 	var count = -1
 	var any bool
-	var withCoord, withDist, withHash, asc, desc bool
+	var withCoord, withDist, withHash, withData, asc, desc bool
 	var lat, long float64
 	var key string
 	var err error
@@ -108,6 +177,8 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 			withDist = true
 		} else if bytes.EqualFold(options[i], []byte("WITHHASH")) {
 			withHash = true
+		} else if bytes.EqualFold(options[i], []byte("WITHDATA")) {
+			withData = true
 		} else if bytes.EqualFold(options[i], []byte("ASC")) {
 			asc = true
 		} else if bytes.EqualFold(options[i], []byte("DESC")) {
@@ -120,7 +191,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	} else if x := s.getWeakCache(h); weak && x != nil {
 		p = x.([]Pair)
 	} else {
-		p, err = (s.geoRange(name, key, lat, long, radius, count, any))
+		p, err = (s.geoRange(name, key, lat, long, radius, count, any, withData))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -143,45 +214,42 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		s.weakCache.AddWeight(name, p, int64(sizePairs(p)))
 	}
 
-	if withHash {
+	if !withHash && !withCoord && !withDist && !withData {
 		data := []string{}
 		for _, p := range p {
-			data = append(data, p.Key, ftoa(p.Score))
+			data = append(data, p.Key)
 		}
 		return w.WriteBulkStrings(data)
 	}
 
-	if withDist {
-		data := []string{}
-		for _, p := range p {
-			data = append(data, p.Key, ftoa(geoDistHash(lat, long, uint64(p.Score))))
-		}
-		return w.WriteBulkStrings(data)
-	}
-
-	if withCoord {
-		data := []interface{}{}
-		for _, p := range p {
-			lat, long := geohash.DecodeIntWithPrecision(uint64(p.Score), 52)
-			data = append(data, p.Key, []interface{}{ftoa(long), ftoa(lat)})
-		}
-		return w.WriteObjectsSlice(data)
-	}
-
-	data := []string{}
+	data := []interface{}{}
 	for _, p := range p {
-		data = append(data, p.Key)
+		tmp := []interface{}{p.Key}
+		if withHash {
+			tmp = append(tmp, ftoa(p.Score))
+		}
+		if withDist {
+			tmp = append(tmp, ftoa(geoDistHash(lat, long, uint64(p.Score))))
+		}
+		if withCoord {
+			lat, long := geohash.DecodeIntWithPrecision(uint64(p.Score), 52)
+			tmp = append(tmp, ftoa(long), ftoa(lat))
+		}
+		if withData {
+			tmp = append(tmp, string(p.Data))
+		}
+		data = append(data, tmp)
 	}
-	return w.WriteBulkStrings(data)
+	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any bool) (pairs []Pair, err error) {
+func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any, withData bool) (pairs []Pair, err error) {
 	limit := s.HardLimit
 	if count > 0 && count < s.HardLimit {
 		limit = count
 	}
 
-	bits := bitsForBox(radius*2, radius*2)
+	bits := bitsForBox(radius, radius)
 	if bits > 52 {
 		bits = 52
 	}
@@ -194,64 +262,69 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 		if bk == nil {
 			return nil
 		}
+		c := bk.Cursor()
 
 		if key != "" {
 			lat, long = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(tx.Bucket([]byte("zset."+name)).Get([]byte(key)))), 52)
 		}
 
-		start := geohash.EncodeIntWithPrecision(lat, long, bits) - 1
-		end := start + 2
-		start <<= (52 - bits)
-		end <<= (52 - bits)
-		startBuf, endBuf := floatToBytes(float64(start)), floatToBytes(float64(end))
+		check := func(k, v []byte, f func(Pair)) {
+			s := bytesToFloat(k[:8])
+			lat2, long2 := geohash.DecodeIntWithPrecision(uint64(s), 52)
+			if geoDist(lat, long, lat2, long2) <= radius {
+				p := Pair{
+					Key:   string(k[8:]),
+					Score: s,
+				}
+				if withData {
+					p.Data = append([]byte{}, v...)
+				}
+				f(p)
+			}
+		}
 
-		c := bk.Cursor()
-		k, _ := c.Seek(startBuf)
+		center := geohash.EncodeIntWithPrecision(lat, long, bits)
+		neigs := geohash.NeighborsIntWithPrecision(center, bits)
+		rand.Shuffle(len(neigs), func(i, j int) { neigs[i], neigs[j] = neigs[j], neigs[i] })
+		neigs = append([]uint64{center}, neigs...)
 
 		if any {
-			for i := 0; len(pairs) < limit; i++ {
-				// s := bytesToFloat(k[:8])
-				// lat2, long2 := geohash.DecodeIntWithPrecision(uint64(s), 52)
-				// fmt.Println(k, startBuf, endBuf, geoDist(lat, long, lat2, long2))
-				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-					s := bytesToFloat(k[:8])
-					lat2, long2 := geohash.DecodeIntWithPrecision(uint64(s), 52)
-					if geoDist(lat, long, lat2, long2) <= radius {
-						p := Pair{
-							Key:   string(k[8:]),
-							Score: s,
-						}
-						pairs = append(pairs, p)
+			for ; len(neigs) > 0; neigs = neigs[1:] {
+				start := neigs[0] << (52 - bits)
+				end := (neigs[0] + 1) << (52 - bits)
+				startBuf, endBuf := floatToBytes(float64(start)), floatToBytes(float64(end))
+				for k, dataBuf := c.Seek(startBuf); len(pairs) < limit; k, dataBuf = c.Next() {
+					if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
+						check(k, dataBuf, func(p Pair) { pairs = append(pairs, p) })
+					} else {
+						break
 					}
-				} else {
+				}
+				if len(pairs) >= limit {
 					break
 				}
-				k, _ = c.Next()
 			}
 		} else {
 			h := &GeoHeap{lat: lat, long: long}
-			for i := 0; len(pairs) < s.HardLimit; i++ {
-				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-					s := bytesToFloat(k[:8])
-					lat2, long2 := geohash.DecodeIntWithPrecision(uint64(s), 52)
-					if geoDist(lat, long, lat2, long2) <= radius {
-						p := Pair{
-							Key:   string(k[8:]),
-							Score: s,
-						}
-						heap.Push(h, p)
-						if h.Len() > limit {
-							heap.Pop(h)
-						}
+			for ; len(neigs) > 0; neigs = neigs[1:] {
+				start := neigs[0] << (52 - bits)
+				end := (neigs[0] + 1) << (52 - bits)
+				startBuf, endBuf := floatToBytes(float64(start)), floatToBytes(float64(end))
+				for k, dataBuf := c.Seek(startBuf); h.Len() < s.HardLimit; k, dataBuf = c.Next() {
+					if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
+						check(k, dataBuf, func(p Pair) {
+							heap.Push(h, p)
+							if h.Len() > limit {
+								heap.Pop(h)
+							}
+						})
+					} else {
+						break
 					}
-				} else {
-					break
 				}
-				k, _ = c.Next()
 			}
-
 			for h.Len() > 0 {
-				pairs = append(pairs, heap.Pop(h).(Pair))
+				pairs = append(pairs, heap.Pop(h).(Pair)) // from farest to closest
 			}
 		}
 		return nil

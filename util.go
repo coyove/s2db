@@ -7,6 +7,7 @@ import (
 	"encoding/gob"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"reflect"
 	"runtime"
@@ -27,6 +28,7 @@ func init() {
 	redisproto.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 	sched.Verbose = false
+	rand.Seed(time.Now().Unix())
 }
 
 func checkScore(s float64) error {

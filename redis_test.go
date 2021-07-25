@@ -422,16 +422,24 @@ func TestGeo(t *testing.T) {
 	{
 		cities := []string{}
 		x := rdb.GeoRadius(ctx, "geo", 118.77, 32.05, &redis.GeoRadiusQuery{Radius: 450, WithDist: true}).Val()
-		for i := 0; i < len(x); i += 2 {
+		for i := 0; i < len(x); i++ {
 			cities = append(cities, x[i].Name)
 		}
 		sort.Strings(cities)
-		assertEqual(cities, []string{"Baoshan", "Bengbu", "Changzhou", "Hangzhou", "Hefei", "Huainan", "Nanjing", "Qidong", "Sihong", "Suzhou", "Wuhu", "Wuxi", "Yancheng"})
+		assertEqual(cities, []string{"Baoshan", "Bengbu", "Changzhou", "Hangzhou", "Hefei", "Huainan", "Lianyungang", "Linyi", "Nanjing", "Qidong", "Sihong", "Suqian", "Suzhou", "Wuhu", "Wuxi", "Xuzhou", "Yancheng"})
+	}
+	{
+		cities := []string{}
+		x := rdb.GeoRadius(ctx, "geo", 118.77, 32.05, &redis.GeoRadiusQuery{Radius: 450, WithDist: true, Count: 5, Sort: "ASC"}).Val()
+		for i := 0; i < len(x); i++ {
+			cities = append(cities, x[i].Name)
+		}
+		assertEqual(cities, []string{"Nanjing", "Wuhu", "Changzhou", "Hefei", "Wuxi"})
 	}
 	{
 		cities := []string{}
 		x := rdb.GeoRadius(ctx, "geo", 118.77, 32.05, &redis.GeoRadiusQuery{Radius: 200, WithDist: true}).Val()
-		for i := 0; i < len(x); i += 2 {
+		for i := 0; i < len(x); i++ {
 			cities = append(cities, x[i].Name)
 		}
 		sort.Strings(cities)

@@ -600,6 +600,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return s.runGeoRadius(w, false, name, h, wm, strings.HasSuffix(cmd, "WEAK"), command)
 	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO", "GEORADIUSBYMEMBERWEAK":
 		return s.runGeoRadius(w, true, name, h, wm, strings.HasSuffix(cmd, "WEAK"), command)
+	case "GEODIST":
+		return s.runGeoDist(w, name, command)
+	case "GEOPOS":
+		return s.runGeoPos(w, name, command)
 	default:
 		return w.WriteError("Command not support: " + cmd)
 	}

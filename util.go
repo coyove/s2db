@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
@@ -255,6 +256,7 @@ type RangeOptions struct {
 	CountOnly   bool
 	WithData    bool
 	DeleteLog   []byte
+	LexMatch    string
 	Limit       int
 }
 
@@ -267,7 +269,7 @@ func (r RangeLimit) fromString(v string) RangeLimit {
 		r.Value = r.Value[1:]
 		r.Inclusive = false
 	} else if v == "+" {
-		r.Value = "\xff"
+		r.Value = "\xff" // TODO
 	} else if v == "-" {
 		r.Value = ""
 	}
@@ -458,6 +460,7 @@ func (s *Server) shardInfo(shard int) string {
 		fmt.Sprintf("readonly:%v", x.readonly),
 		fmt.Sprintf("zadd_defer_queue:%v", strconv.Itoa(len(x.deferAdd))),
 	}
+	var myTail uint64
 	x.View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
@@ -471,8 +474,23 @@ func (s *Server) shardInfo(shard int) string {
 		tmp = append(tmp, fmt.Sprintf("log_size:%d", inuse))
 		tmp = append(tmp, fmt.Sprintf("log_alloc_size:%d", alloc))
 		tmp = append(tmp, fmt.Sprintf("log_size_ratio:%.2f", float64(inuse)/float64(alloc)))
+		myTail = bk.Sequence()
 		return nil
 	})
+	minTail := uint64(0)
+	for i, sv := range s.slaves.Take(time.Minute) {
+		si := &slaveInfo{}
+		json.Unmarshal(sv.Data, si)
+		tail := si.KnownLogTails[shard]
+		tmp = append(tmp, fmt.Sprintf("slave_%v_log_tail:%d", sv.Key, tail))
+		if i == 0 || tail < minTail {
+			minTail = tail
+		}
+	}
+	if minTail > 0 {
+		tmp = append(tmp, fmt.Sprintf("slave_min_log_tail:%d", minTail))
+		tmp = append(tmp, fmt.Sprintf("slave_log_tail_diff:%d", int64(myTail)-int64(minTail)))
+	}
 	return strings.Join(tmp, "\r\n") + "\r\n"
 }
 

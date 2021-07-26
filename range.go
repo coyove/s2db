@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"math"
+	"path/filepath"
 
 	"go.etcd.io/bbolt"
 )
@@ -38,14 +40,19 @@ func (s *Server) ZRevRange(name string, start, end int, withData bool) ([]Pair, 
 	return reversePairs(p), err
 }
 
-func (s *Server) ZRangeByLex(name string, start, end string) ([]Pair, error) {
-	return s.doZRangeByLex(name, start, end, nil)
+func (s *Server) ZRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
+	return s.doZRangeByLex(name, start, end, match, limit, nil)
 }
 
-func (s *Server) ZRevRangeByLex(name string, start, end string) ([]Pair, error) {
+func (s *Server) ZRevRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
 	rangeStart := (RangeLimit{}).fromString(end)
 	rangeEnd := (RangeLimit{}).fromString(start)
-	p, _, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{OffsetStart: 0, OffsetEnd: -1})
+	p, _, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+		OffsetStart: 0,
+		OffsetEnd:   -1,
+		LexMatch:    match,
+		Limit:       limit,
+	})
 	return reversePairs(p), err
 }
 
@@ -76,8 +83,8 @@ func (s *Server) ZRemRangeByRank(name string, start, end int, dd []byte) ([]Pair
 	return s.doZRange(name, start, end, dd, false)
 }
 
-func (s *Server) ZRemRangeByLex(name string, start, end string, dd []byte) ([]Pair, error) {
-	return s.doZRangeByLex(name, start, end, dd)
+func (s *Server) ZRemRangeByLex(name string, start, end string, match string, dd []byte) ([]Pair, error) {
+	return s.doZRangeByLex(name, start, end, match, -1, dd)
 }
 
 func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
@@ -95,13 +102,15 @@ func (s *Server) doZRange(name string, start, end int, delete []byte, withData b
 	return p, err
 }
 
-func (s *Server) doZRangeByLex(name string, start, end string, delete []byte) ([]Pair, error) {
+func (s *Server) doZRangeByLex(name string, start, end string, match string, limit int, delete []byte) ([]Pair, error) {
 	rangeStart := (RangeLimit{}).fromString(start)
 	rangeEnd := (RangeLimit{}).fromString(end)
 	p, _, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   -1,
 		DeleteLog:   delete,
+		LexMatch:    match,
+		Limit:       limit,
 	})
 	return p, err
 }
@@ -148,11 +157,22 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 		c := bk.Cursor()
 		k, sc := c.Seek(startBuf)
 
-		for i := 0; len(pairs) < s.HardLimit; i++ {
-			// fmt.Println(k, startBuf, endBuf)
+		limit := opt.getLimit(s)
+		for i := 0; len(pairs) < limit; i++ {
 			if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
+						if opt.LexMatch != "" {
+							m, err := filepath.Match(opt.LexMatch, string(k))
+							if err != nil {
+								return err
+							}
+							if !m {
+								k, sc = c.Next()
+								continue
+							}
+						}
+
 						if !opt.CountOnly {
 							pairs = append(pairs, Pair{Key: string(k), Score: bytesToFloat(sc)})
 						}
@@ -165,7 +185,6 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 				break
 			}
 			k, sc = c.Next()
-
 		}
 
 		if len(opt.DeleteLog) > 0 {
@@ -202,11 +221,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		c := bk.Cursor()
 		k, dataBuf := c.Seek(startBuf)
 
-		limit := s.HardLimit
-		if opt.Limit > 0 && opt.Limit < s.HardLimit {
-			limit = opt.Limit
-		}
-
+		limit := opt.getLimit(s)
 		for i := 0; len(pairs) < limit; i++ {
 			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
 				if i >= opt.OffsetStart {
@@ -254,6 +269,14 @@ func (o *RangeOptions) translateOffset(bk *bbolt.Bucket) {
 	}
 }
 
+func (o *RangeOptions) getLimit(s *Server) int {
+	limit := s.HardLimit
+	if o.Limit > 0 && o.Limit < s.HardLimit {
+		limit = o.Limit
+	}
+	return limit
+}
+
 func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err error) {
 	rank = -1
 	keybuf := []byte(key)
@@ -286,6 +309,69 @@ func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err err
 	})
 	if rank == limit+1 {
 		rank = -1
+	}
+	return
+}
+
+func (s *Server) scan(cursor string, match string, count int) (pairs []Pair, nextCursor string, err error) {
+	if count > s.HardLimit {
+		count = s.HardLimit
+	}
+	count++
+
+	startShard := 0
+	if cursor != "" {
+		startShard = shardIndex(cursor)
+	}
+
+	exitErr := fmt.Errorf("exit")
+	for ; startShard < ShardNum; startShard++ {
+		err = s.db[startShard].View(func(tx *bbolt.Tx) error {
+			c := tx.Cursor()
+			k, _ := c.First()
+			if cursor != "" {
+				k, _ = c.Seek([]byte("zset." + cursor))
+			}
+
+			for ; len(k) > 0; k, _ = c.Next() {
+				if bytes.HasPrefix(k, []byte("zset.score")) {
+					continue
+				}
+				if !bytes.HasPrefix(k, []byte("zset.")) {
+					continue
+				}
+				key := string(k[5:])
+				if match != "" {
+					m, err := filepath.Match(match, key)
+					if err != nil {
+						return err
+					}
+					if !m {
+						continue
+					}
+				}
+				pairs = append(pairs, Pair{
+					Key:   key,
+					Score: float64(tx.Bucket(k).Stats().KeyN),
+				})
+				if len(pairs) >= count {
+					return exitErr
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			if err == exitErr {
+				err = nil
+				break
+			}
+			return
+		}
+		cursor = ""
+	}
+
+	if len(pairs) >= count {
+		pairs, nextCursor = pairs[:count-1], pairs[count-1].Key
 	}
 	return
 }

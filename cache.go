@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type WeakCacheItem struct {
@@ -172,4 +173,29 @@ func (c *Cache) remove(e *list.Element, clearKeyed bool) {
 			break
 		}
 	}
+}
+
+func (s *Server) canUpdateCache(key string, wm int64) bool {
+	return wm >= s.db[shardIndex(key)].writeWatermark
+}
+
+func (s *Server) getCache(h [2]uint64) interface{} {
+	v, ok := s.cache.Get(h)
+	if !ok {
+		return nil
+	}
+	s.survey.cache.Incr(1)
+	return v.Data
+}
+
+func (s *Server) getWeakCache(h [2]uint64) interface{} {
+	v, ok := s.weakCache.Get(h)
+	if !ok {
+		return nil
+	}
+	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
+		s.survey.weakCache.Incr(1)
+		return i.Data
+	}
+	return nil
 }

@@ -109,31 +109,6 @@ func Open(path string) (*Server, error) {
 	return x, nil
 }
 
-func (s *Server) canUpdateCache(key string, wm int64) bool {
-	return wm >= s.db[shardIndex(key)].writeWatermark
-}
-
-func (s *Server) getCache(h [2]uint64) interface{} {
-	v, ok := s.cache.Get(h)
-	if !ok {
-		return nil
-	}
-	s.survey.cache.Incr(1)
-	return v.Data
-}
-
-func (s *Server) getWeakCache(h [2]uint64) interface{} {
-	v, ok := s.weakCache.Get(h)
-	if !ok {
-		return nil
-	}
-	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
-		s.survey.weakCache.Incr(1)
-		return i.Data
-	}
-	return nil
-}
-
 func (s *Server) SetReadOnly(v bool) {
 	for i := range s.db {
 		s.db[i].readonly = v
@@ -268,14 +243,14 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	name := string(command.Get(1))
 	isReadWrite := '\x00'
 
-	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") {
+	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
 		if name == "" || name == "--" {
 			return w.WriteError("command: empty name")
 		}
 		if strings.HasPrefix(name, "score.") {
 			return w.WriteError("command: invalid name starts with 'score.'")
 		}
-		if cmd == "GEOADD" || cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
+		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
 				return w.WriteError("readonly")
 			}
@@ -416,8 +391,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			c, err = s.walProgress(-1)
 		}
 		return w.WriteIntOrError(int64(c), err)
-	case "SLAVESLOGTAIL":
-		return w.WriteInt(int64(s.getSlaveLogTail(atoip(name))))
 	case "REQUESTLOG":
 		start := atoi64(string(command.Get(2)))
 		if start == 0 {
@@ -552,7 +525,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			}
 			cmd = cmd[:len(cmd)-4]
 		}
-		start, end, limit, withData := string(command.Get(2)), string(command.Get(3)), -1, false
+		start, end, limit, match, withData := string(command.Get(2)), string(command.Get(3)), -1, "", false
 		for i := 3; i < command.ArgCount(); i++ {
 			if strings.EqualFold(string(command.Get(i)), "LIMIT") {
 				if atoi(string(command.Get(i+1))) != 0 {
@@ -564,6 +537,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				i--
 			} else if strings.EqualFold(string(command.Get(i)), "WITHDATA") {
 				withData = true
+			} else if strings.EqualFold(string(command.Get(i)), "MATCH") {
+				match = string(command.Get(i + 1))
+				i++
 			}
 		}
 
@@ -574,9 +550,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			p, err = s.ZRevRange(name, atoip(start), atoip(end), withData)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 			if cmd == "ZRANGEBYLEX" {
-				p, err = s.ZRangeByLex(name, start, end)
+				p, err = s.ZRangeByLex(name, start, end, match, limit)
 			} else {
-				p, err = s.ZRevRangeByLex(name, start, end)
+				p, err = s.ZRevRangeByLex(name, start, end, match, limit)
 			}
 			if withData {
 				if err := s.fillPairsData(name, p); err != nil {
@@ -604,6 +580,32 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return s.runGeoDist(w, name, command)
 	case "GEOPOS":
 		return s.runGeoPos(w, name, command)
+	case "SCAN":
+		limit, match, withScores := s.HardLimit, "", false
+		for i := 2; i < command.ArgCount(); i++ {
+			if strings.EqualFold(string(command.Get(i)), "COUNT") {
+				limit = atoi(string(command.Get(i + 1)))
+				i++
+			} else if strings.EqualFold(string(command.Get(i)), "MATCH") {
+				match = string(command.Get(i + 1))
+				i++
+			} else if strings.EqualFold(string(command.Get(i)), "WITHSCORES") {
+				withScores = true
+			}
+
+		}
+		p, next, err := s.scan(name, match, limit)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		keys := []interface{}{}
+		for _, p := range p {
+			keys = append(keys, p.Key)
+			if withScores {
+				keys = append(keys, ftoa(p.Score))
+			}
+		}
+		return w.WriteObjects(next, keys)
 	default:
 		return w.WriteError("Command not support: " + cmd)
 	}

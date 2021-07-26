@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -198,21 +197,6 @@ func (s *Server) purgeLog(shard int, head uint64) (int, error) {
 		return 0, err
 	}
 	return count, nil
-}
-
-func (s *Server) getSlaveLogTail(shard int) uint64 {
-	p, tail := s.slaves.Take(time.Minute), uint64(0)
-	if len(p) == 0 {
-		return math.MaxUint64
-	}
-	for i, x := range p {
-		tmp := &slaveInfo{}
-		json.Unmarshal(x.Data, tmp)
-		if v := tmp.KnownLogTails[shard]; v < tail || i == 0 {
-			tail = v
-		}
-	}
-	return tail
 }
 
 type slaves struct {

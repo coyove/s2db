@@ -141,7 +141,7 @@ func (s *Server) runZRemRange(w *redisproto.Writer, cmd, name string, command *r
 
 	switch cmd {
 	case "ZREMRANGEBYLEX":
-		p, err = s.ZRemRangeByLex(name, start, end, dd)
+		p, err = s.ZRemRangeByLex(name, start, end, "", dd)
 	case "ZREMRANGEBYSCORE":
 		p, err = s.ZRemRangeByScore(name, start, end, dd)
 	case "ZREMRANGEBYRANK":

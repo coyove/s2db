@@ -128,15 +128,27 @@ func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
 	return
 }
 
-func (c *Cache) CacheLen(key string) (ln int) {
+func (c *Cache) Len() (ln int) {
 	c.RLock()
-	if key == "" {
-		ln = len(c.cache)
-	} else {
-		ln = len(c.keyed[key])
-	}
+	ln = len(c.cache)
 	c.RUnlock()
 	return ln
+}
+
+func (c *Cache) KeyInfo(key string) (ln, size, hits int) {
+	c.RLock()
+	ln = len(c.keyed[key])
+	for _, x := range c.keyed[key] {
+		e := x.Value.(*entry)
+		if d, ok := e.value.Data.([]Pair); ok {
+			size += sizePairs(d)
+		} else {
+			size += 1
+		}
+		hits += int(e.hits)
+	}
+	c.RUnlock()
+	return
 }
 
 // Remove removes the given key from the cache.

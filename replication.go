@@ -55,7 +55,18 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 	}()
 
-	for !s.closed {
+	for pinger := 0; !s.closed; pinger++ {
+		if pinger%10 == 0 {
+			cmd := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
+			s.rdb.Process(ctx, cmd)
+			s.master = serverInfo{}
+			parts := strings.Split(cmd.Val(), " ")
+			if len(parts) == 3 {
+				s.master.ServerName = parts[1]
+				s.master.Version = parts[2]
+			}
+		}
+
 		myWalIndex, err := s.walProgress(shard)
 		if err != nil {
 			log.Error("#", shard, " read local wal index: ", err)
@@ -204,8 +215,11 @@ type slaves struct {
 	Slaves []Pair
 }
 
-type slaveInfo struct {
-	KnownLogTails [ShardNum]uint64
+type serverInfo struct {
+	KnownLogTails [ShardNum]uint64 `json:"log_tails"`
+	ListenAddr    string           `json:"listen"`
+	ServerName    string           `json:"servername"`
+	Version       string           `json:"version"`
 }
 
 func (s *slaves) Take(t time.Duration) []Pair {
@@ -221,18 +235,18 @@ func (s *slaves) Take(t time.Duration) []Pair {
 	return append([]Pair{}, s.Slaves...)
 }
 
-func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
+func (s *slaves) Update(ip string, update func(*serverInfo)) {
+	p := Pair{Key: ip, Score: float64(time.Now().Unix())}
+
 	s.Lock()
 	defer s.Unlock()
 
 	found := false
 	for i, sv := range s.Slaves {
 		if sv.Key == p.Key {
-			info := &slaveInfo{}
+			info := &serverInfo{}
 			json.Unmarshal(sv.Data, info)
-
-			info.KnownLogTails[shard] = logOffset
-
+			update(info)
 			p.Data, _ = json.Marshal(info)
 			s.Slaves[i] = p
 			found = true
@@ -240,8 +254,8 @@ func (s *slaves) Update(p Pair, shard int, logOffset uint64) {
 		}
 	}
 	if !found {
-		info := &slaveInfo{}
-		info.KnownLogTails[shard] = logOffset
+		info := &serverInfo{}
+		update(info)
 		p.Data, _ = json.Marshal(info)
 		s.Slaves = append(s.Slaves, p)
 	}

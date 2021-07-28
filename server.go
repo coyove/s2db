@@ -39,6 +39,7 @@ type Server struct {
 	rdb       *redis.Client
 	closed    bool
 	slaves    slaves
+	master    serverInfo
 	dieKey    sched.SchedKey
 
 	survey struct {
@@ -244,11 +245,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	isReadWrite := '\x00'
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
-		if name == "" || name == "--" {
-			return w.WriteError("command: empty name")
-		}
-		if strings.HasPrefix(name, "score.") {
-			return w.WriteError("command: invalid name starts with 'score.'")
+		if name == "" || name == "--" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
+			return w.WriteError("invalid name which is either empty, equals to '--', starts with 'score.' or contains '\\r\\n'")
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
@@ -275,6 +273,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 					buf.Write(command.Get(i))
 					buf.WriteString("'")
 				}
+				if diff := buf.Len() - 512; diff > 0 {
+					buf.Truncate(512)
+					buf.WriteString(" ...[" + strconv.Itoa(diff) + " bytes truncated]...")
+				}
 				log.Info(buf.String())
 			}
 			if isReadWrite == 'r' {
@@ -299,6 +301,14 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if name == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
+		if strings.EqualFold(name, "from") {
+			s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
+				info.ListenAddr = string(command.Get(2))
+				info.ServerName = string(command.Get(3))
+				info.Version = string(command.Get(4))
+			})
+			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
+		}
 		return w.WriteSimpleString(name)
 	case "CONFIG":
 		switch strings.ToUpper(name) {
@@ -311,24 +321,32 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		default:
 			return w.WriteBulkStrings(s.listConfig())
 		}
-	case "CACHELEN":
-		return w.WriteInt(int64(s.cache.CacheLen(name)))
-	case "CACHERESET":
+	case "RESETCACHE":
 		weight := s.cache.curWeight + s.weakCache.Weight()
 		s.cache.Clear()
 		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
-	case "BIGKEYS":
-		v, err := s.BigKeys(atoi(name))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return writePairs(v, w, command)
 	case "INFO":
-		if name != "" {
-			return w.WriteBulkString(s.shardInfo(atoip(name)))
+		switch n := strings.ToLower(name); {
+		case n >= "shard0" && n <= "shard9":
+			return w.WriteBulkString(s.shardInfo(atoip(name[5:])))
+		case n == "bigkeys":
+			return w.WriteBulkString(s.bigKeys(atoi(string(command.Get(2)))))
+		case n == "cache":
+			name = string(command.Get(2))
+			length, size, hits := s.cache.KeyInfo(name)
+			return w.WriteBulkString(fmt.Sprintf("# cache[%q]\r\nlength:%d\r\nsize:%d\r\nhits:%d\r\n", name, length, size, hits))
+		case n == "slaves":
+			data := bytes.NewBufferString("# slaves\r\n")
+			for _, p := range s.slaves.Take(time.Minute) {
+				data.WriteString(p.Key + ":")
+				data.Write(p.Data)
+				data.WriteString("\r\n")
+			}
+			return w.WriteBulkString(data.String())
+		default:
+			return w.WriteBulkString(s.info())
 		}
-		return w.WriteBulkString(s.info())
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
 		path := string(command.Get(2))
@@ -372,13 +390,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		x.readonly = false
 		return w.WriteSimpleString("OK")
-	case "SLAVES":
-		p := s.slaves.Take(time.Minute)
-		data := make([]string, 0, 2*len(p))
-		for i := range p {
-			data = append(data, p[i].Key, string(p[i].Data))
-		}
-		return w.WriteBulkStrings(data)
 
 		// -----------------------
 		//  Log related commands
@@ -400,7 +411,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.slaves.Update(Pair{Key: w.RemoteIP().String(), Score: float64(time.Now().Unix())}, atoip(name), start-1)
+		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.KnownLogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
 		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
@@ -581,10 +592,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "GEOPOS":
 		return s.runGeoPos(w, name, command)
 	case "SCAN":
-		limit, match, withScores := s.HardLimit, "", false
+		limit, match, withScores, inShard := s.HardLimit, "", false, -1
 		for i := 2; i < command.ArgCount(); i++ {
 			if strings.EqualFold(string(command.Get(i)), "COUNT") {
 				limit = atoi(string(command.Get(i + 1)))
+				i++
+			} else if strings.EqualFold(string(command.Get(i)), "SHARD") {
+				inShard = atoip(string(command.Get(i + 1)))
 				i++
 			} else if strings.EqualFold(string(command.Get(i)), "MATCH") {
 				match = string(command.Get(i + 1))
@@ -594,7 +608,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			}
 
 		}
-		p, next, err := s.scan(name, match, limit)
+		p, next, err := s.scan(name, match, inShard, limit)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

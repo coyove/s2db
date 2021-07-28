@@ -313,7 +313,7 @@ func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err err
 	return
 }
 
-func (s *Server) scan(cursor string, match string, count int) (pairs []Pair, nextCursor string, err error) {
+func (s *Server) scan(cursor string, match string, shard int, count int) (pairs []Pair, nextCursor string, err error) {
 	if count > s.HardLimit {
 		count = s.HardLimit
 	}
@@ -322,6 +322,9 @@ func (s *Server) scan(cursor string, match string, count int) (pairs []Pair, nex
 	startShard := 0
 	if cursor != "" {
 		startShard = shardIndex(cursor)
+	}
+	if shard >= 0 {
+		startShard = shard
 	}
 
 	exitErr := fmt.Errorf("exit")
@@ -368,6 +371,9 @@ func (s *Server) scan(cursor string, match string, count int) (pairs []Pair, nex
 			return
 		}
 		cursor = ""
+		if shard >= 0 {
+			break
+		}
 	}
 
 	if len(pairs) >= count {

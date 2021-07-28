@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"fmt"
 	"math"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -29,14 +30,14 @@ func (h *BigKeysHeap) Pop() interface{} {
 	return x
 }
 
-func (s *Server) BigKeys(n int) (keys []Pair, err error) {
+func (s *Server) bigKeys(n int) string {
 	if n <= 0 {
 		n = 10
 	}
 	h := &BigKeysHeap{}
 	heap.Init(h)
 	for _, db := range s.db {
-		err = db.View(func(tx *bbolt.Tx) error {
+		db.View(func(tx *bbolt.Tx) error {
 			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
 				if bytes.HasPrefix(name, []byte("zset.score.")) {
 					return nil
@@ -50,15 +51,16 @@ func (s *Server) BigKeys(n int) (keys []Pair, err error) {
 				return nil
 			})
 		})
-		if err != nil {
-			return
-		}
 	}
+	x := bytes.NewBufferString("# big_keys\r\n")
 	for h.Len() > 0 {
-		keys = append(keys, heap.Pop(h).(Pair))
+		p := heap.Pop(h).(Pair)
+		x.WriteString(strconv.Itoa(int(p.Score)))
+		x.WriteString(":")
+		x.WriteString(p.Key)
+		x.WriteString("\r\n")
 	}
-	reversePairs(keys)
-	return
+	return x.String()
 }
 
 const SurveyRange = 900

@@ -20,6 +20,7 @@ import (
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
 	"github.com/secmask/go-redisproto"
+	log "github.com/sirupsen/logrus"
 	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"go.etcd.io/bbolt"
 )
@@ -420,32 +421,36 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 
 func (s *Server) info() string {
 	p := s.slaves.Take(time.Minute)
-	slavesInfo := []string{}
-	for i := range p {
-		slavesInfo = append(slavesInfo, p[i].Key)
-	}
-	return strings.Join([]string{
+	data := []string{
+		"# server",
 		fmt.Sprintf("version:%v", Version),
 		fmt.Sprintf("servername:%v", s.ServerName),
 		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
 		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("master:%v", s.MasterAddr),
-		fmt.Sprintf("slaves:%v", strings.Join(slavesInfo, ",")),
+		fmt.Sprintf("master_name:%v", s.master.ServerName),
+		fmt.Sprintf("master_version:%v", s.master.Version),
+		fmt.Sprintf("slaves:%v", len(p)),
 		fmt.Sprintf("connections:%v", s.survey.connections),
+		"", "# read_write",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
 		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
 		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
 		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
+		"", "# zadd_batch",
 		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
 		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
+		"", "# cache",
 		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
-		fmt.Sprintf("cache_obj_count:%v", s.cache.CacheLen("")),
+		fmt.Sprintf("cache_obj_count:%v", s.cache.Len()),
 		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
+		"", "# weak_cache",
 		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
 		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
 		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
-	}, "\r\n") + "\r\n"
+	}
+	return strings.Join(data, "\r\n") + "\r\n"
 }
 
 func (s *Server) shardInfo(shard int) string {
@@ -455,17 +460,20 @@ func (s *Server) shardInfo(shard int) string {
 		panic(err)
 	}
 	tmp := []string{
+		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
 		fmt.Sprintf("size:%v", fi.Size()),
 		fmt.Sprintf("readonly:%v", x.readonly),
 		fmt.Sprintf("zadd_defer_queue:%v", strconv.Itoa(len(x.deferAdd))),
 	}
 	var myTail uint64
+	start := time.Now()
 	x.View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
 			return nil
 		}
+		tmp = append(tmp, "", "# log")
 		stat := bk.Stats()
 		inuse := stat.LeafInuse + stat.BranchInuse
 		alloc := stat.LeafAlloc + stat.BranchAlloc
@@ -477,15 +485,20 @@ func (s *Server) shardInfo(shard int) string {
 		myTail = bk.Sequence()
 		return nil
 	})
+	log.Info("shard", shard, " info in ", time.Since(start))
 	minTail := uint64(0)
 	for i, sv := range s.slaves.Take(time.Minute) {
-		si := &slaveInfo{}
+		si := &serverInfo{}
 		json.Unmarshal(sv.Data, si)
 		tail := si.KnownLogTails[shard]
-		tmp = append(tmp, fmt.Sprintf("slave_%v_log_tail:%d", sv.Key, tail))
+		if i == 0 {
+			tmp = append(tmp, "", "# slave_log")
+			tmp = append(tmp, fmt.Sprintf("slave_queue:%d", len(s.slaves.Slaves)))
+		}
 		if i == 0 || tail < minTail {
 			minTail = tail
 		}
+		tmp = append(tmp, fmt.Sprintf("slave_%v_log_tail:%d", sv.Key, tail))
 	}
 	if minTail > 0 {
 		tmp = append(tmp, fmt.Sprintf("slave_min_log_tail:%d", minTail))

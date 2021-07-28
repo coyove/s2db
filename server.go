@@ -336,6 +336,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			name = string(command.Get(2))
 			length, size, hits := s.cache.KeyInfo(name)
 			return w.WriteBulkString(fmt.Sprintf("# cache[%q]\r\nlength:%d\r\nsize:%d\r\nhits:%d\r\n", name, length, size, hits))
+		case n == "weakcache":
+			command.Argv = command.Argv[2:]
+			h := hashCommands(command)
+			hits, size, _ := s.weakCache.GetEx(h)
+			return w.WriteBulkString(fmt.Sprintf("# weakcache%x\r\nsize:%d\r\nhits:%d\r\n", h, size, hits))
 		case n == "slaves":
 			data := bytes.NewBufferString("# slaves\r\n")
 			for _, p := range s.slaves.Take(time.Minute) {

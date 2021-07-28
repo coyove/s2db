@@ -216,7 +216,7 @@ type slaves struct {
 }
 
 type serverInfo struct {
-	KnownLogTails [ShardNum]uint64 `json:"log_tails"`
+	KnownLogTails [ShardNum]uint64 `json:"logtails"`
 	ListenAddr    string           `json:"listen"`
 	ServerName    string           `json:"servername"`
 	Version       string           `json:"version"`

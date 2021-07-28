@@ -12,17 +12,17 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-type BigKeysHeap []Pair
+type bigKeysHeap []Pair
 
-func (h BigKeysHeap) Len() int           { return len(h) }
-func (h BigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
-func (h BigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h bigKeysHeap) Len() int           { return len(h) }
+func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
+func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
-func (h *BigKeysHeap) Push(x interface{}) {
+func (h *bigKeysHeap) Push(x interface{}) {
 	*h = append(*h, x.(Pair))
 }
 
-func (h *BigKeysHeap) Pop() interface{} {
+func (h *bigKeysHeap) Pop() interface{} {
 	old := *h
 	n := len(old)
 	x := old[n-1]
@@ -34,7 +34,7 @@ func (s *Server) bigKeys(n int) string {
 	if n <= 0 {
 		n = 10
 	}
-	h := &BigKeysHeap{}
+	h := &bigKeysHeap{}
 	heap.Init(h)
 	for _, db := range s.db {
 		db.View(func(tx *bbolt.Tx) error {

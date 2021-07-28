@@ -14,15 +14,6 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func errorWithPrecision(bits uint) (latErr, lngErr float64) {
-	b := int(bits)
-	latBits := b / 2
-	lngBits := b - latBits
-	latErr = math.Ldexp(180.0, -latBits)
-	lngErr = math.Ldexp(360.0, -lngBits)
-	return
-}
-
 func bitsForBox(w, h float64) uint {
 	long := math.Atan2(w, 6378000) / math.Pi * 180
 	lat := math.Atan2(h, 6356000) / math.Pi * 180
@@ -262,25 +253,13 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 		if bk == nil {
 			return nil
 		}
-		c := bk.Cursor()
 
 		if key != "" {
-			lat, long = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(tx.Bucket([]byte("zset."+name)).Get([]byte(key)))), 52)
-		}
-
-		check := func(k, v []byte, f func(Pair)) {
-			s := bytesToFloat(k[:8])
-			lat2, long2 := geohash.DecodeIntWithPrecision(uint64(s), 52)
-			if geoDist(lat, long, lat2, long2) <= radius {
-				p := Pair{
-					Key:   string(k[8:]),
-					Score: s,
-				}
-				if withData {
-					p.Data = append([]byte{}, v...)
-				}
-				f(p)
+			buf := tx.Bucket([]byte("zset." + name)).Get([]byte(key))
+			if len(buf) != 8 {
+				return fmt.Errorf("%q not found in %q", key, name)
 			}
+			lat, long = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(buf)), 52)
 		}
 
 		center := geohash.EncodeIntWithPrecision(lat, long, bits)
@@ -288,41 +267,46 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 		rand.Shuffle(len(neigs), func(i, j int) { neigs[i], neigs[j] = neigs[j], neigs[i] })
 		neigs = append([]uint64{center}, neigs...)
 
-		if any {
-			for ; len(neigs) > 0; neigs = neigs[1:] {
-				start := neigs[0] << (52 - bits)
-				end := (neigs[0] + 1) << (52 - bits)
-				startBuf, endBuf := floatToBytes(float64(start)), floatToBytes(float64(end))
-				for k, dataBuf := c.Seek(startBuf); len(pairs) < limit; k, dataBuf = c.Next() {
-					if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-						check(k, dataBuf, func(p Pair) { pairs = append(pairs, p) })
-					} else {
-						break
-					}
-				}
-				if len(pairs) >= limit {
-					break
-				}
-			}
-		} else {
-			h := &GeoHeap{lat: lat, long: long}
-			for ; len(neigs) > 0; neigs = neigs[1:] {
-				start := neigs[0] << (52 - bits)
-				end := (neigs[0] + 1) << (52 - bits)
-				startBuf, endBuf := floatToBytes(float64(start)), floatToBytes(float64(end))
-				for k, dataBuf := c.Seek(startBuf); h.Len() < s.HardLimit; k, dataBuf = c.Next() {
-					if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-						check(k, dataBuf, func(p Pair) {
+		h := &geoHeap{lat: lat, long: long}
+
+		// iterate neighbours, starting at center (itself)
+		for c := bk.Cursor(); len(neigs) > 0; neigs = neigs[1:] {
+			start := neigs[0] << (52 - bits)
+			startBuf := floatToBytes(float64(start))
+
+			end := (neigs[0] + 1) << (52 - bits)
+			endBuf := floatToBytes(float64(end))
+
+			for k, v := c.Seek(startBuf); ; k, v = c.Next() {
+				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
+					if s := bytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
+						p := Pair{Key: string(k[8:]), Score: s}
+						if withData {
+							p.Data = append([]byte{}, v...)
+						}
+						if !any {
 							heap.Push(h, p)
 							if h.Len() > limit {
 								heap.Pop(h)
 							}
-						})
-					} else {
-						break
+						} else {
+							h.Push(p)
+						}
 					}
+					if any && h.Len() >= limit {
+						goto ANY_OUT
+					}
+					continue
 				}
+				break
 			}
+			// not enough points (any mode) or need to collect all points (normal mode), goto next neighbour
+		}
+	ANY_OUT:
+
+		if any {
+			pairs = h.p
+		} else {
 			for h.Len() > 0 {
 				pairs = append(pairs, heap.Pop(h).(Pair)) // from farest to closest
 			}
@@ -332,28 +316,28 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 	return
 }
 
-type GeoHeap struct {
+type geoHeap struct {
 	lat, long float64
 	p         []Pair
 }
 
-func (h GeoHeap) Len() int {
+func (h geoHeap) Len() int {
 	return len(h.p)
 }
 
-func (h GeoHeap) Less(i, j int) bool {
+func (h geoHeap) Less(i, j int) bool {
 	return geoDistHash(h.lat, h.long, uint64(h.p[i].Score)) > geoDistHash(h.lat, h.long, uint64(h.p[j].Score))
 }
 
-func (h GeoHeap) Swap(i, j int) {
+func (h geoHeap) Swap(i, j int) {
 	h.p[i], h.p[j] = h.p[j], h.p[i]
 }
 
-func (h *GeoHeap) Push(x interface{}) {
+func (h *geoHeap) Push(x interface{}) {
 	h.p = append(h.p, x.(Pair))
 }
 
-func (h *GeoHeap) Pop() interface{} {
+func (h *geoHeap) Pop() interface{} {
 	old := h.p
 	n := len(old)
 	x := old[n-1]

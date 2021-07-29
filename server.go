@@ -490,7 +490,14 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				return w.WriteInt(int64(v.(int)))
 			}
 		}
-		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)))
+		match := ""
+		for i := 4; i < command.ArgCount(); i++ {
+			if strings.EqualFold(string(command.Get(i)), "MATCH") {
+				match = string(command.Get(i + 1))
+				i++
+			}
+		}
+		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)), match)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -576,9 +583,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				}
 			}
 		case "ZRANGEBYSCORE":
-			p, err = s.ZRangeByScore(name, start, end, limit, withData)
+			p, err = s.ZRangeByScore(name, start, end, match, limit, withData)
 		case "ZREVRANGEBYSCORE":
-			p, err = s.ZRevRangeByScore(name, start, end, limit, withData)
+			p, err = s.ZRevRangeByScore(name, start, end, match, limit, withData)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())

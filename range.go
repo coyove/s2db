@@ -14,8 +14,8 @@ var (
 	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
 )
 
-func (s *Server) ZCount(name string, start, end string) (int, error) {
-	_, c, err := s.doZRangeByScore(name, start, end, -1, nil, true, false)
+func (s *Server) ZCount(name string, start, end string, match string) (int, error) {
+	_, c, err := s.doZRangeByScore(name, start, end, match, -1, nil, true, false)
 	return c, err
 }
 
@@ -56,12 +56,12 @@ func (s *Server) ZRevRangeByLex(name string, start, end string, match string, li
 	return reversePairs(p), err
 }
 
-func (s *Server) ZRangeByScore(name string, start, end string, limit int, withData bool) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, limit, nil, false, withData)
+func (s *Server) ZRangeByScore(name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
+	p, _, err := s.doZRangeByScore(name, start, end, match, limit, nil, false, withData)
 	return p, err
 }
 
-func (s *Server) ZRevRangeByScore(name string, start, end string, limit int, withData bool) ([]Pair, error) {
+func (s *Server) ZRevRangeByScore(name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(end)
 	if err != nil {
 		return nil, err
@@ -75,6 +75,7 @@ func (s *Server) ZRevRangeByScore(name string, start, end string, limit int, wit
 		OffsetEnd:   -1,
 		Limit:       limit,
 		WithData:    withData,
+		LexMatch:    match,
 	})
 	return reversePairs(p), err
 }
@@ -88,7 +89,7 @@ func (s *Server) ZRemRangeByLex(name string, start, end string, match string, dd
 }
 
 func (s *Server) ZRemRangeByScore(name string, start, end string, dd []byte) ([]Pair, error) {
-	p, _, err := s.doZRangeByScore(name, start, end, -1, dd, false, false)
+	p, _, err := s.doZRangeByScore(name, start, end, "", -1, dd, false, false)
 	return p, err
 }
 
@@ -115,7 +116,14 @@ func (s *Server) doZRangeByLex(name string, start, end string, match string, lim
 	return p, err
 }
 
-func (s *Server) doZRangeByScore(name string, start, end string, limit int, delete []byte, countOnly, withData bool) ([]Pair, int, error) {
+func (s *Server) doZRangeByScore(
+	name string,
+	start, end string,
+	match string,
+	limit int,
+	delete []byte,
+	countOnly, withData bool,
+) ([]Pair, int, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
 		return nil, 0, err
@@ -130,6 +138,7 @@ func (s *Server) doZRangeByScore(name string, start, end string, limit int, dele
 		DeleteLog:   delete,
 		CountOnly:   countOnly,
 		WithData:    withData,
+		LexMatch:    match,
 		Limit:       limit,
 	})
 	return p, c, err
@@ -226,9 +235,20 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
+						key := string(k[8:])
+						if opt.LexMatch != "" {
+							m, err := filepath.Match(opt.LexMatch, key)
+							if err != nil {
+								return err
+							}
+							if !m {
+								k, dataBuf = c.Next()
+								continue
+							}
+						}
 						if !opt.CountOnly {
 							p := Pair{
-								Key:   string(k[8:]),
+								Key:   key,
 								Score: bytesToFloat(k[:8]),
 							}
 							if opt.WithData {

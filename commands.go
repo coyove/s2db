@@ -27,7 +27,7 @@ func (s *Server) ZCard(name string) (int64, error) {
 		if bk == nil {
 			return nil
 		}
-		count = bk.Stats().KeyN
+		count = bk.KeyN()
 		return nil
 	})
 	return int64(count), err

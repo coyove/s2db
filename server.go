@@ -55,7 +55,6 @@ type Server struct {
 		*bbolt.DB
 		readonly          bool
 		writeWatermark    int64
-		cachedKeyN        map[string]int
 		deferAdd          chan *addTask
 		deferCloseSignal  chan bool
 		pullerCloseSignal chan bool
@@ -108,7 +107,6 @@ func Open(path string) (*Server, error) {
 		d.pullerCloseSignal = make(chan bool)
 		d.deferCloseSignal = make(chan bool)
 		d.deferAdd = make(chan *addTask, 101)
-		d.cachedKeyN = map[string]int{}
 	}
 	return x, nil
 }

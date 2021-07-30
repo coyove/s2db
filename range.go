@@ -281,7 +281,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 
 func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
 	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
-		n := bk.Stats().KeyN
+		n := bk.KeyN()
 		if o.OffsetStart < 0 {
 			o.OffsetStart += n
 		}

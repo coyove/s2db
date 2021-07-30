@@ -1,3 +1,0 @@
-[submodule "bbolt"]
-	path = bbolt
-	url = https://github.com/etcd-io/bbolt

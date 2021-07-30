@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -370,31 +369,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return err
 		})
 		return w.WriteIntOrError(int64(c), err)
-	case "REPLACESHARD":
-		x := &s.db[atoip(name)]
-		path := string(command.Get(2))
-		if _, err := os.Stat(path); err != nil {
-			return w.WriteError("Failed to stat shard")
-		}
-		old := x.DB.Path()
-		x.readonly = true
-		for len(x.deferAdd) > 0 { // wait as-many-as-possible deferred ZAdds to finish
-			runtime.Gosched()
-		}
-		if err := x.DB.Close(); err != nil {
+	case "COMPACTSHARD":
+		err := s.compactShard(atoip(name))
+		if err != nil {
 			return w.WriteError(err.Error()) // keep shard readonly until we find the cause
 		}
-		if err := os.Rename(old, old+time.Now().UTC().Format(".060102150405")); err != nil {
-			return w.WriteError(err.Error()) // keep ...
-		}
-		if err := os.Rename(path, old); err != nil {
-			return w.WriteError(err.Error()) // keep ...
-		}
-		x.DB, err = bbolt.Open(old, 0666, bboltOptions)
-		if err != nil {
-			return w.WriteError(err.Error()) // keep ...
-		}
-		x.readonly = false
 		return w.WriteSimpleString("OK")
 
 		// -----------------------

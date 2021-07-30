@@ -43,7 +43,7 @@ func (s *Server) bigKeys(n int) string {
 					return nil
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.Stats().KeyN)})
+					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.KeyN())})
 					if h.Len() > n {
 						heap.Pop(h)
 					}

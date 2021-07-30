@@ -421,6 +421,14 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 
 func (s *Server) info() string {
 	p := s.slaves.Take(time.Minute)
+	sz := 0
+	for i := range s.db {
+		fi, err := os.Stat(s.db[i].Path())
+		if err != nil {
+			panic(err)
+		}
+		sz += int(fi.Size())
+	}
 	data := []string{
 		"# server",
 		fmt.Sprintf("version:%v", Version),
@@ -428,11 +436,13 @@ func (s *Server) info() string {
 		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
 		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
+		fmt.Sprintf("connections:%v", s.survey.connections),
+		fmt.Sprintf("db_size:%v", sz),
+		"", "# replication",
 		fmt.Sprintf("master:%v", s.MasterAddr),
 		fmt.Sprintf("master_name:%v", s.master.ServerName),
 		fmt.Sprintf("master_version:%v", s.master.Version),
 		fmt.Sprintf("slaves:%v", len(p)),
-		fmt.Sprintf("connections:%v", s.survey.connections),
 		"", "# read_write",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
 		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),

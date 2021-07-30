@@ -473,8 +473,8 @@ func (s *Server) shardInfo(shard int) string {
 		if bk == nil {
 			return nil
 		}
-		tmp = append(tmp, "", "# log")
 		stat := bk.Stats()
+		tmp = append(tmp, "", "# log")
 		inuse := stat.LeafInuse + stat.BranchInuse
 		alloc := stat.LeafAlloc + stat.BranchAlloc
 		tmp = append(tmp, fmt.Sprintf("log_count:%d", stat.KeyN))

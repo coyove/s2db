@@ -163,13 +163,12 @@ func (s *Server) purgeLog(shard int, head uint64) (int, error) {
 		if bk == nil {
 			return nil
 		}
-		if bk.Stats().KeyN == 0 {
-			return fmt.Errorf("nothing to purge")
-		}
-
 		c := bk.Cursor()
 		last, _ := c.Last()
 		if len(last) != 8 {
+			if bk.Stats().KeyN == 0 {
+				return fmt.Errorf("nothing to purge")
+			}
 			return fmt.Errorf("invalid last key, fatal error")
 		}
 		tail := binary.BigEndian.Uint64(last)

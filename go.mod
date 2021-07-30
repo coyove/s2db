@@ -14,3 +14,4 @@ require (
 )
 
 replace github.com/secmask/go-redisproto v0.1.0 => ./redisproto/
+replace go.etcd.io/bbolt v1.3.6 => ./bbolt

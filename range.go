@@ -152,7 +152,7 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 		}
 
 		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
-		opt.translateOffset(bk)
+		opt.translateOffset(name, bk)
 
 		if !start.Inclusive {
 			startBuf = append(startBuf, 0)
@@ -217,7 +217,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		}
 
 		startBuf, endBuf := floatToBytes(start.Float), floatToBytes(end.Float)
-		opt.translateOffset(bk)
+		opt.translateOffset(name, bk)
 
 		if !start.Inclusive {
 			startBuf = floatBytesStep(startBuf, 1)
@@ -279,13 +279,15 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 	return
 }
 
-func (o *RangeOptions) translateOffset(bk *bbolt.Bucket) {
-	n := bk.Stats().KeyN
-	if o.OffsetStart < 0 {
-		o.OffsetStart += n
-	}
-	if o.OffsetEnd < 0 {
-		o.OffsetEnd += n
+func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
+	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
+		n := bk.Stats().KeyN
+		if o.OffsetStart < 0 {
+			o.OffsetStart += n
+		}
+		if o.OffsetEnd < 0 {
+			o.OffsetEnd += n
+		}
 	}
 }
 

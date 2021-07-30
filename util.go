@@ -295,6 +295,7 @@ type ServerConfig struct {
 	ServerName         string
 	HardLimit          int
 	CacheSize          int
+	CacheKeyMaxLen     int
 	WeakCacheSize      int
 	WeakTTL            int // s
 	SlowLimit          int // ms
@@ -310,6 +311,7 @@ func (s *Server) validateConfig() {
 	ifZero(&s.HardLimit, 10000)
 	ifZero(&s.WeakTTL, 300)
 	ifZero(&s.CacheSize, 1024)
+	ifZero(&s.CacheKeyMaxLen, 100)
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
 	ifZero(&s.PurgeLogMaxRunTime, 1)
@@ -501,7 +503,7 @@ func (s *Server) shardInfo(shard int) string {
 	for i, sv := range s.slaves.Take(time.Minute) {
 		si := &serverInfo{}
 		json.Unmarshal(sv.Data, si)
-		tail := si.KnownLogTails[shard]
+		tail := si.LogTails[shard]
 		if i == 0 {
 			tmp = append(tmp, "", "# slave_log")
 			tmp = append(tmp, fmt.Sprintf("slave_queue:%d", len(s.slaves.Slaves)))

@@ -56,9 +56,11 @@ func (c *Cache) Clear() {
 	c.Unlock()
 }
 
-func (c *Cache) nextWatermark() int64 { return atomic.AddInt64(&c.watermark, 1) }
+func (c *Cache) nextWatermark() int64 {
+	return atomic.AddInt64(&c.watermark, 1)
+}
 
-func (c *Cache) Add(value *CacheItem) error {
+func (c *Cache) Add(value *CacheItem, keyMaxLen int) error {
 	weight := int64(1)
 	if p, ok := value.Data.([]Pair); ok {
 		weight = int64(sizePairs(p))
@@ -103,6 +105,9 @@ func (c *Cache) Add(value *CacheItem) error {
 	ele := c.ll.PushFront(&entry{value, 1, weight})
 	c.cache[value.CmdHash] = ele
 	c.keyed[value.Key] = append(c.keyed[value.Key], ele)
+	if ck := c.keyed[value.Key]; len(ck) > keyMaxLen {
+		c.remove(ck[0], true)
+	}
 	controlWeight()
 
 	if c.curWeight < 0 {
@@ -210,4 +215,15 @@ func (s *Server) getWeakCache(h [2]uint64) interface{} {
 		return i.Data
 	}
 	return nil
+}
+
+func (s *Server) addCache(watermark int64, key string, h [2]uint64, data interface{}) error {
+	if !s.canUpdateCache(key, watermark) {
+		return nil
+	}
+	return s.cache.Add(&CacheItem{
+		Key:     key,
+		CmdHash: h,
+		Data:    data,
+	}, s.ServerConfig.CacheKeyMaxLen)
 }

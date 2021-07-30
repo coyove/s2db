@@ -349,6 +349,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				data.WriteString("\r\n")
 			}
 			return w.WriteBulkString(data.String())
+		case n == "logtaildiff":
+			m, err := s.logDiff()
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			return w.WriteBulkString(m)
 		default:
 			return w.WriteBulkString(s.info())
 		}
@@ -382,9 +388,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "LOGTAIL":
 		var c uint64
 		if name != "" {
-			c, err = s.walProgress(atoip(name))
+			c, err = s.myLogTail(atoip(name))
 		} else {
-			c, err = s.walProgress(-1)
+			c, err = s.myLogTail(-1)
 		}
 		return w.WriteIntOrError(int64(c), err)
 	case "REQUESTLOG":
@@ -396,7 +402,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.KnownLogTails[atoip(name)] = start - 1 })
+		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
 		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
@@ -450,13 +456,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if s.canUpdateCache(name, wm) {
-			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: data})
-		}
 		sz := int64(1)
 		for _, b := range data {
 			sz += int64(len(b))
 		}
+		s.addCache(wm, name, h, data)
 		s.weakCache.AddWeight(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
 		return w.WriteBulks(data...)
 	case "ZCARD":
@@ -481,9 +485,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if s.canUpdateCache(name, wm) {
-			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
-		}
+		s.addCache(wm, name, h, c)
 		s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK", "ZRANKWEAK", "ZREVRANKWEAK":
@@ -507,9 +509,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			if s.canUpdateCache(name, wm) {
-				s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: c})
-			}
+			s.addCache(wm, name, h, c)
 			s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
 		}
 	RANK_RES:
@@ -570,9 +570,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if s.canUpdateCache(name, wm) {
-			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
-		}
+		s.addCache(wm, name, h, p)
 		s.weakCache.AddWeight(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
 		return writePairs(p, w, command)
 	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSWEAK":

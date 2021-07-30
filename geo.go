@@ -199,9 +199,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 			})
 		}
 
-		if s.canUpdateCache(name, wm) {
-			s.cache.Add(&CacheItem{Key: name, CmdHash: h, Data: p})
-		}
+		s.addCache(wm, name, h, p)
 		s.weakCache.AddWeight(name, p, int64(sizePairs(p)))
 	}
 

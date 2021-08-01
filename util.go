@@ -303,8 +303,7 @@ type ServerConfig struct {
 	PurgeLogRun        int
 	ResponseLogRun     int
 	ResponseLogSize    int // kb
-	ZAddDeferBatchRun  int
-	ZAddDeferBlocking  int // bool
+	MaxBatchRun        int
 }
 
 func (s *Server) validateConfig() {
@@ -318,7 +317,7 @@ func (s *Server) validateConfig() {
 	ifZero(&s.PurgeLogRun, 100)
 	ifZero(&s.ResponseLogRun, 200)
 	ifZero(&s.ResponseLogSize, 16)
-	ifZero(&s.ZAddDeferBatchRun, 50)
+	ifZero(&s.MaxBatchRun, 50)
 
 	s.cache = NewCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)

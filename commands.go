@@ -33,40 +33,37 @@ func (s *Server) ZCard(name string) (int64, error) {
 	return int64(count), err
 }
 
-func (s *Server) Del(name string, dd []byte) (count int, err error) {
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, err error) {
+	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName := tx.Bucket([]byte("zset." + name))
 		bkScore := tx.Bucket([]byte("zset.score." + name))
 		if bkName == nil || bkScore == nil {
-			return nil
+			return 0, nil
 		}
 		if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
-			return err
+			return 0, err
 		}
 		if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
-			return err
+			return 0, err
 		}
-		count++
-		return s.writeLog(tx, dd)
-	})
-	return
+		return 1, s.writeLog(tx, dd)
+	}
 }
 
-// ZAdd
-// :scoreGt new score must be larger than old score + scoreGt
-func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, scoreGt float64, dd []byte) (added, updated int, err error) {
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
-			return err
+			return nil, err
 		}
 		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
 		if err != nil {
-			return err
+			return nil, err
 		}
+		added, updated := 0, 0
 		for _, p := range pairs {
 			if err := checkScore(p.Score); err != nil {
-				return err
+				return nil, err
 			}
 			scoreBuf := bkName.Get([]byte(p.Key))
 			if len(scoreBuf) != 0 {
@@ -74,11 +71,8 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, scoreGt float64, d
 				if nx {
 					continue
 				}
-				if !math.IsNaN(scoreGt) && p.Score <= bytesToFloat(scoreBuf)+scoreGt {
-					continue
-				}
 				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
-					return err
+					return nil, err
 				}
 				if p.Score != bytesToFloat(scoreBuf) {
 					updated++
@@ -88,75 +82,28 @@ func (s *Server) ZAdd(name string, pairs []Pair, nx, xx bool, scoreGt float64, d
 				if xx {
 					continue
 				}
-				if !math.IsNaN(scoreGt) && p.Score <= scoreGt {
-					continue
-				}
 				added++
 			}
 			scoreBuf = floatToBytes(p.Score)
 			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
-				return err
+				return nil, err
 			}
 			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
-				return err
+				return nil, err
 			}
 		}
-		return s.writeLog(tx, dd)
-	})
-	return
+		if ch {
+			return added + updated, s.writeLog(tx, dd)
+		}
+		return added, s.writeLog(tx, dd)
+	}
 }
 
-func (s *Server) ZAddBatchShard(in []*addTask, dd []byte) (err error) {
-	if len(in) == 0 {
-		return
-	}
-	db := s.pick(in[0].name)
-	for _, i := range in {
-		if s.pick(i.name) != db {
-			return fmt.Errorf("%q should be in shard #%d, batch in #%d", i.name, shardIndex(i.name), shardIndex(in[0].name))
-		}
-	}
-	return db.Update(func(tx *bbolt.Tx) error {
-		for _, i := range in {
-			name := i.name
-			bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
-			if err != nil {
-				return err
-			}
-			bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
-			if err != nil {
-				return err
-			}
-			p := i.pair
-			if err := checkScore(p.Score); err != nil {
-				return err
-			}
-			scoreBuf := bkName.Get([]byte(p.Key))
-			if len(scoreBuf) != 0 {
-				// old key exists
-				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
-					return err
-				}
-			} else {
-				// we are adding a new key
-			}
-			scoreBuf = floatToBytes(p.Score)
-			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
-				return err
-			}
-			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
-				return err
-			}
-		}
-		return s.writeLog(tx, dd)
-	})
-}
-
-func (s *Server) ZRem(name string, keys []string, dd []byte) (count int, err error) {
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+func (s *Server) prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	return func(tx *bbolt.Tx) (count interface{}, err error) {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
-			return nil
+			return 0, nil
 		}
 		pairs := []Pair{}
 		for _, key := range keys {
@@ -165,14 +112,58 @@ func (s *Server) ZRem(name string, keys []string, dd []byte) (count int, err err
 				continue
 			}
 			pairs = append(pairs, Pair{Key: key, Score: bytesToFloat(scoreBuf)})
-			count++
 		}
 		if len(pairs) == 0 {
-			return nil
+			return 0, nil
 		}
-		return s.deletePair(tx, name, pairs, dd)
-	})
-	return
+		return len(pairs), s.deletePair(tx, name, pairs, dd)
+	}
+}
+
+func (s *Server) prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	return func(tx *bbolt.Tx) (newValue interface{}, err error) {
+		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
+		if err != nil {
+			return 0, err
+		}
+		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
+		if err != nil {
+			return 0, err
+		}
+		scoreBuf := bkName.Get([]byte(key))
+		score := 0.0
+
+		var dataBuf []byte
+		if len(scoreBuf) != 0 {
+			oldKey := []byte(string(scoreBuf) + key)
+			dataBuf = append([]byte{}, bkScore.Get(oldKey)...)
+			if err := bkScore.Delete(oldKey); err != nil {
+				return 0, err
+			}
+			score = bytesToFloat(scoreBuf)
+		} else {
+			dataBuf = []byte("")
+		}
+
+		if by == 0 {
+			if len(scoreBuf) == 0 {
+				// special case: zincrby name 0 non_existed_key
+			} else {
+				return score, nil
+			}
+		}
+		if err := checkScore(score + by); err != nil {
+			return 0, err
+		}
+		scoreBuf = floatToBytes(score + by)
+		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
+			return 0, err
+		}
+		if err := bkScore.Put([]byte(string(scoreBuf)+key), dataBuf); err != nil {
+			return 0, err
+		}
+		return score + by, s.writeLog(tx, dd)
+	}
 }
 
 func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err error) {
@@ -182,7 +173,7 @@ func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err err
 	for range keys {
 		scores = append(scores, math.NaN())
 	}
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+	err = s.pick(name).View(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
@@ -203,7 +194,7 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 		return nil, fmt.Errorf("missing keys")
 	}
 	data = make([][]byte, len(keys))
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
+	err = s.pick(name).View(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
 			return nil
@@ -242,53 +233,4 @@ func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) 
 		}
 	}
 	return s.writeLog(tx, dd)
-}
-
-func (s *Server) ZIncrBy(name string, key string, by float64, dd []byte) (newValue float64, err error) {
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
-		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
-		if err != nil {
-			return err
-		}
-		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
-		if err != nil {
-			return err
-		}
-		scoreBuf := bkName.Get([]byte(key))
-		score := 0.0
-
-		var dataBuf []byte
-		if len(scoreBuf) != 0 {
-			oldKey := []byte(string(scoreBuf) + key)
-			dataBuf = append([]byte{}, bkScore.Get(oldKey)...)
-			if err := bkScore.Delete(oldKey); err != nil {
-				return err
-			}
-			score = bytesToFloat(scoreBuf)
-		} else {
-			dataBuf = []byte("")
-		}
-
-		if by == 0 {
-			if len(scoreBuf) == 0 {
-				// special case: zincrby name 0 non_existed_key
-			} else {
-				newValue = score
-				return nil
-			}
-		}
-		if err := checkScore(score + by); err != nil {
-			return err
-		}
-		scoreBuf = floatToBytes(score + by)
-		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
-			return err
-		}
-		if err := bkScore.Put([]byte(string(scoreBuf)+key), dataBuf); err != nil {
-			return err
-		}
-		newValue = score + by
-		return s.writeLog(tx, dd)
-	})
-	return
 }

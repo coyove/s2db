@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -64,8 +63,6 @@ func (s *Server) logDiff() (diff string, err error) {
 
 func (s *Server) requestLogPuller(shard int) {
 	ctx := context.TODO()
-	buf := &bytes.Buffer{}
-	dummy := redisproto.NewWriter(buf, log.StandardLogger())
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -111,21 +108,40 @@ func (s *Server) requestLogPuller(shard int) {
 			continue
 		}
 
-		for _, x := range cmds {
-			cmd, err := splitCommand(x)
-			if err != nil {
-				log.Error("bulkload: invalid payload: ", x)
-				break
+		var names []string
+		err = s.db[shard].Update(func(tx *bbolt.Tx) error {
+			for _, x := range cmds {
+				command, err := splitCommand(x)
+				if err != nil {
+					return fmt.Errorf("fatal: invalid payload: %q", x)
+				}
+				cmd := string(bytes.ToUpper(command.Get(0)))
+				name := string(command.Get(1))
+				switch cmd {
+				case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+					_, err = s.parseDel(cmd, name, command)(tx)
+				case "ZADD":
+					_, err = s.parseZAdd(cmd, name, command)(tx)
+				case "ZINCRBY":
+					_, err = s.parseZIncrBy(cmd, name, command)(tx)
+				default:
+					return fmt.Errorf("fatal: not a write command: %q", cmd)
+				}
+				if err != nil {
+					log.Error("bulkload, error ocurred: ", cmd, " ", name)
+					return err
+				}
+				names = append(names, name)
 			}
-
-			buf.Reset()
-			s.runCommand(dummy, cmd, true)
-			if buf.Len() > 0 && buf.Bytes()[0] == '-' {
-				log.Error("bulkload: ", strings.TrimSpace(buf.String()[1:]))
-				break
+			return nil
+		})
+		if err != nil {
+			log.Error("bulkload: ", err)
+		} else {
+			for _, n := range names {
+				s.cache.Remove(n, s)
 			}
 		}
-
 		time.Sleep(time.Second / 2)
 	}
 

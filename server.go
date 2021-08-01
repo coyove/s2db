@@ -48,6 +48,7 @@ type Server struct {
 		sysReadLat, sysWriteLat    Survey
 		cache, weakCache           Survey
 		addBatchSize, addBatchDrop Survey
+		batchLat                   Survey
 	}
 
 	db [ShardNum]struct {
@@ -411,18 +412,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		// -----------------------
 		//  Client space write commands
 		// -----------------------
-	case "DEL": // TODO: multiple keys
-		return s.runDel(w, name, command)
+	case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+		return s.runPreparedTxAndWrite(name, s.parseDel(cmd, name, command), w)
 	case "ZADD":
-		return s.runZAdd(w, name, command)
-	case "ZADDBATCH":
-		return s.runZAddBatchShard(w, name, command)
+		return s.runPreparedTxAndWrite(name, s.parseZAdd(cmd, name, command), w)
 	case "ZINCRBY":
-		return s.runZIncrBy(w, name, command)
-	case "ZREM":
-		return s.runZRem(w, name, command)
-	case "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runZRemRange(w, cmd, name, command)
+		return s.runPreparedTxAndWrite(name, s.parseZIncrBy(cmd, name, command), w)
 
 		// -----------------------
 		//  Client space read commands

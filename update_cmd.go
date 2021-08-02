@@ -145,7 +145,7 @@ func (s *Server) deferAddWorker(shard int) {
 		}
 
 		s.survey.batchLat.Incr(time.Since(start).Milliseconds())
-		s.survey.addBatchSize.Incr(int64(len(tasks)))
+		s.survey.batchSize.Incr(int64(len(tasks)))
 	}
 
 EXIT:

@@ -444,14 +444,16 @@ func (s *Server) info() string {
 		fmt.Sprintf("master_name:%v", s.master.ServerName),
 		fmt.Sprintf("master_version:%v", s.master.Version),
 		fmt.Sprintf("slaves:%v", len(p)),
+		"", "# batch",
+		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
+		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSlave.MeanString()),
+		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
+		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSlave.MeanString()),
 		"", "# read_write",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
 		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
 		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
 		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
-		"", "# zadd_batch",
-		fmt.Sprintf("zadd_batch_avg_items:%v", s.survey.addBatchSize.MeanString()),
-		fmt.Sprintf("zadd_batch_drop_qps:%v", s.survey.addBatchDrop),
 		"", "# cache",
 		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
 		fmt.Sprintf("cache_obj_count:%v", s.cache.Len()),
@@ -475,7 +477,7 @@ func (s *Server) shardInfo(shard int) string {
 		fmt.Sprintf("path:%v", x.Path()),
 		fmt.Sprintf("size:%v", fi.Size()),
 		fmt.Sprintf("readonly:%v", x.readonly),
-		fmt.Sprintf("zadd_defer_queue:%v", strconv.Itoa(len(x.deferAdd))),
+		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.deferAdd))),
 	}
 	var myTail uint64
 	start := time.Now()

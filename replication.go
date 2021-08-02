@@ -109,6 +109,7 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		var names []string
+		start := time.Now()
 		err = s.db[shard].Update(func(tx *bbolt.Tx) error {
 			for _, x := range cmds {
 				command, err := splitCommand(x)
@@ -141,6 +142,8 @@ func (s *Server) requestLogPuller(shard int) {
 			for _, n := range names {
 				s.cache.Remove(n, s)
 			}
+			s.survey.batchLatSlave.Incr(time.Since(start).Milliseconds())
+			s.survey.batchSizeSlave.Incr(int64(len(names)))
 		}
 		time.Sleep(time.Second / 2)
 	}

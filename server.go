@@ -42,13 +42,13 @@ type Server struct {
 	dieKey    sched.SchedKey
 
 	survey struct {
-		startAt                    time.Time
-		connections                int64
-		sysRead, sysWrite          Survey
-		sysReadLat, sysWriteLat    Survey
-		cache, weakCache           Survey
-		addBatchSize, addBatchDrop Survey
-		batchLat                   Survey
+		startAt                       time.Time
+		connections                   int64
+		sysRead, sysWrite             Survey
+		sysReadLat, sysWriteLat       Survey
+		cache, weakCache              Survey
+		batchSize, batchLat           Survey
+		batchSizeSlave, batchLatSlave Survey
 	}
 
 	db [ShardNum]struct {

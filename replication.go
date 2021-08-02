@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,10 +63,11 @@ func (s *Server) logDiff() (diff string, err error) {
 
 func (s *Server) requestLogPuller(shard int) {
 	ctx := context.TODO()
+	log := log.WithField("shard", strconv.Itoa(shard))
 
 	defer func() {
 		if r := recover(); r != nil {
-			log.Error(r, string(debug.Stack()))
+			log.Error(r, " ", string(debug.Stack()))
 			go s.requestLogPuller(shard)
 		}
 	}()
@@ -84,7 +86,7 @@ func (s *Server) requestLogPuller(shard int) {
 
 		myWalIndex, err := s.myLogTail(shard)
 		if err != nil {
-			log.Error("#", shard, " read local wal index: ", err)
+			log.Error("read local log index: ", err)
 			break
 		}
 
@@ -92,10 +94,10 @@ func (s *Server) requestLogPuller(shard int) {
 		if err := s.rdb.Process(ctx, cmd); err != nil {
 			if strings.Contains(err.Error(), "refused") {
 				if shard == 0 {
-					log.Error("#", shard, " master not alive")
+					log.Error("master not alive")
 				}
 			} else if err != redis.Nil {
-				log.Error("#", shard, " request log from master: ", err)
+				log.Error("request log from master: ", err)
 			}
 			time.Sleep(time.Second * 2)
 			continue
@@ -147,7 +149,7 @@ func (s *Server) requestLogPuller(shard int) {
 		time.Sleep(time.Second / 2)
 	}
 
-	log.Info("#", shard, " log replayer exited")
+	log.Info("log replayer exited")
 	s.db[shard].pullerCloseSignal <- true
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -45,6 +47,7 @@ func main() {
 	rand.Seed(time.Now().Unix())
 
 	log.SetReportCaller(true)
+	log.SetFormatter(&LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename:   "s2db.log",
 		MaxSize:    100, // megabytes
@@ -106,4 +109,28 @@ func main() {
 	s.MasterAddr = *masterAddr
 	s.SetReadOnly(*readOnly || s.MasterAddr != "")
 	s.Serve(*listenAddr)
+}
+
+type LogFormatter struct{}
+
+func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
+	buf := bytes.Buffer{}
+	if entry.Level <= log.ErrorLevel {
+		buf.WriteString("@err")
+	} else {
+		buf.WriteString("@sys")
+	}
+	if v, ok := entry.Data["shard"]; ok {
+		buf.WriteString("`shard")
+		buf.WriteString(v.(string))
+	}
+	buf.WriteString("\t")
+	buf.WriteString(entry.Time.UTC().Format("2006-01-02T15:04:05.000\t"))
+	buf.WriteString(filepath.Base(entry.Caller.File))
+	buf.WriteString(":")
+	buf.WriteString(strconv.Itoa(entry.Caller.Line))
+	buf.WriteString("\t")
+	buf.WriteString(entry.Message)
+	buf.WriteByte('\n')
+	return buf.Bytes(), nil
 }

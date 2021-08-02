@@ -164,15 +164,15 @@ func (s *Server) prepareZRemRangeByLex(name string, start, end string, dd []byte
 }
 
 func (s *Server) prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	rangeStart, err := (RangeLimit{}).fromFloatString(start)
+	if err != nil {
+		panic(err)
+	}
+	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
+	if err != nil {
+		panic(err)
+	}
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart, err := (RangeLimit{}).fromFloatString(start)
-		if err != nil {
-			return nil, err
-		}
-		rangeEnd, err := (RangeLimit{}).fromFloatString(end)
-		if err != nil {
-			return nil, err
-		}
 		_, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,

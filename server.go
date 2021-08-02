@@ -33,7 +33,7 @@ type Server struct {
 	ServerConfig
 
 	ln        net.Listener
-	cache     *Cache
+	cache     *keyedCache
 	weakCache *lru.Cache
 	rdb       *redis.Client
 	closed    bool
@@ -239,15 +239,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, isBulk bool) error {
-	cmd := strings.ToUpper(string(command.Get(0)))
-	h := hashCommands(command)
-	wm := s.cache.nextWatermark()
-	name := string(command.Get(1))
-	isReadWrite := '\x00'
+	var (
+		cmd         = strings.ToUpper(command.Get(0))
+		name        = command.Get(1)
+		h           = hashCommands(command)
+		wm          = s.cache.nextWatermark()
+		isReadWrite byte
+	)
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
-		if name == "" || name == "--" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
-			return w.WriteError("invalid name which is either empty, equals to '--', starts with 'score.' or contains '\\r\\n'")
+		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
+			return w.WriteError("invalid name which is either empty, starts with 'score.' or contains '\\r\\n'")
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
@@ -268,17 +270,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				buf := bytes.NewBufferString("[slow log] " + diff.String())
-				for i := 0; i < command.ArgCount(); i++ {
-					buf.WriteString(" '")
-					buf.Write(command.Get(i))
-					buf.WriteString("'")
+				buf := "[slow log] " + diff.String() + " " + command.String()
+				if diff := len(buf) - 512; diff > 0 {
+					buf = buf[:512] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
 				}
-				if diff := buf.Len() - 512; diff > 0 {
-					buf.Truncate(512)
-					buf.WriteString(" ...[" + strconv.Itoa(diff) + " bytes truncated]...")
-				}
-				log.Info(buf.String())
+				log.Info(buf)
 			}
 			if isReadWrite == 'r' {
 				s.survey.sysReadLat.Incr(int64(diff.Seconds() * 1000))
@@ -304,9 +300,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		if strings.EqualFold(name, "from") {
 			s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
-				info.ListenAddr = string(command.Get(2))
-				info.ServerName = string(command.Get(3))
-				info.Version = string(command.Get(4))
+				info.ListenAddr = command.Get(2)
+				info.ServerName = command.Get(3)
+				info.Version = command.Get(4)
 			})
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
@@ -314,10 +310,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "CONFIG":
 		switch strings.ToUpper(name) {
 		case "GET":
-			v, _ := s.getConfig(string(command.Get(2)))
+			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
 		case "SET":
-			s.updateConfig(string(command.Get(2)), string(command.Get(3)))
+			s.updateConfig(command.Get(2), command.Get(3))
 			fallthrough
 		default:
 			return w.WriteBulkStrings(s.listConfig())
@@ -332,9 +328,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		case n >= "shard0" && n <= "shard9":
 			return w.WriteBulkString(s.shardInfo(atoip(name[5:])))
 		case n == "bigkeys":
-			return w.WriteBulkString(s.bigKeys(atoi(string(command.Get(2)))))
+			return w.WriteBulkString(s.bigKeys(atoip(command.Get(2))))
 		case n == "cache":
-			name = string(command.Get(2))
+			name = command.Get(2)
 			length, size, hits := s.cache.KeyInfo(name)
 			return w.WriteBulkString(fmt.Sprintf("# cache[%q]\r\nlength:%d\r\nsize:%d\r\nhits:%d\r\n", name, length, size, hits))
 		case n == "weakcache":
@@ -361,7 +357,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]
-		path := string(command.Get(2))
+		path := command.Get(2)
 		if path == "" {
 			path = x.DB.Path() + ".bak"
 		}
@@ -395,7 +391,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		return w.WriteIntOrError(int64(c), err)
 	case "REQUESTLOG":
-		start := atoi64(string(command.Get(2)))
+		start := atoi64(command.Get(2))
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
@@ -406,7 +402,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		c, err := s.purgeLog(atoip(name), atoi64(string(command.Get(2))))
+		c, err := s.purgeLog(atoip(name), atoi64(command.Get(2)))
 		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
@@ -457,7 +453,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			sz += int64(len(b))
 		}
 		s.addCache(wm, name, h, data)
-		s.weakCache.AddWeight(h, &WeakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
+		s.weakCache.AddWeight(h, &weakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
 		return w.WriteBulks(data...)
 	case "ZCARD":
 		return w.WriteIntOrError(s.ZCard(name))
@@ -472,17 +468,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		match := ""
 		for i := 4; i < command.ArgCount(); i++ {
-			if strings.EqualFold(string(command.Get(i)), "MATCH") {
-				match = string(command.Get(i + 1))
+			if strings.EqualFold(command.Get(i), "MATCH") {
+				match = command.Get(i + 1)
 				i++
 			}
 		}
-		c, err := s.ZCount(name, string(command.Get(2)), string(command.Get(3)), match)
+		c, err := s.ZCount(name, command.Get(2), command.Get(3), match)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.addCache(wm, name, h, c)
-		s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
+		s.weakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK", "ZRANKWEAK", "ZREVRANKWEAK":
 		var c int
@@ -496,17 +492,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				}
 				cmd = cmd[:len(cmd)-4]
 			}
-			limit := atoi(string(command.Get(3)))
+			limit := atoi(command.Get(3))
 			if cmd == "ZRANK" {
-				c, err = s.ZRank(name, string(command.Get(2)), limit)
+				c, err = s.ZRank(name, command.Get(2), limit)
 			} else {
-				c, err = s.ZRevRank(name, string(command.Get(2)), limit)
+				c, err = s.ZRevRank(name, command.Get(2), limit)
 			}
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
 			s.addCache(wm, name, h, c)
-			s.weakCache.Add(h, &WeakCacheItem{Data: c, Time: time.Now().Unix()})
+			s.weakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
 		}
 	RANK_RES:
 		if c == -1 {
@@ -524,20 +520,21 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			}
 			cmd = cmd[:len(cmd)-4]
 		}
-		start, end, limit, match, withData := string(command.Get(2)), string(command.Get(3)), -1, "", false
+		start, end := command.Get(2), command.Get(3)
+		limit, match, withData := -1, "", false
 		for i := 3; i < command.ArgCount(); i++ {
-			if strings.EqualFold(string(command.Get(i)), "LIMIT") {
-				if atoi(string(command.Get(i+1))) != 0 {
+			if command.EqualFold(i, "LIMIT") {
+				if atoi(command.Get(i+1)) != 0 {
 					return w.WriteError("non-zero limit offset not supported")
 				}
 
-				limit = atoi(string(command.Get(i + 2)))
+				limit = atoi(command.Get(i + 2))
 				command.Argv = append(command.Argv[:i], command.Argv[i+3:]...)
 				i--
-			} else if strings.EqualFold(string(command.Get(i)), "WITHDATA") {
+			} else if command.EqualFold(i, "WITHDATA") {
 				withData = true
-			} else if strings.EqualFold(string(command.Get(i)), "MATCH") {
-				match = string(command.Get(i + 1))
+			} else if command.EqualFold(i, "MATCH") {
+				match = command.Get(i + 1)
 				i++
 			}
 		}
@@ -567,7 +564,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError(err.Error())
 		}
 		s.addCache(wm, name, h, p)
-		s.weakCache.AddWeight(h, &WeakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
+		s.weakCache.AddWeight(h, &weakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
 		return writePairs(p, w, command)
 	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSWEAK":
 		return s.runGeoRadius(w, false, name, h, wm, strings.HasSuffix(cmd, "WEAK"), command)
@@ -580,16 +577,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "SCAN":
 		limit, match, withScores, inShard := s.HardLimit, "", false, -1
 		for i := 2; i < command.ArgCount(); i++ {
-			if strings.EqualFold(string(command.Get(i)), "COUNT") {
-				limit = atoi(string(command.Get(i + 1)))
+			if command.EqualFold(i, "COUNT") {
+				limit = atoip(command.Get(i + 1))
 				i++
-			} else if strings.EqualFold(string(command.Get(i)), "SHARD") {
-				inShard = atoip(string(command.Get(i + 1)))
+			} else if command.EqualFold(i, "SHARD") {
+				inShard = atoip(command.Get(i + 1))
 				i++
-			} else if strings.EqualFold(string(command.Get(i)), "MATCH") {
-				match = string(command.Get(i + 1))
+			} else if command.EqualFold(i, "MATCH") {
+				match = command.Get(i + 1)
 				i++
-			} else if strings.EqualFold(string(command.Get(i)), "WITHSCORES") {
+			} else if command.EqualFold(i, "WITHSCORES") {
 				withScores = true
 			}
 

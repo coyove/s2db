@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -116,8 +115,8 @@ func (s *Server) requestLogPuller(shard int) {
 				if err != nil {
 					return fmt.Errorf("fatal: invalid payload: %q", x)
 				}
-				cmd := string(bytes.ToUpper(command.Get(0)))
-				name := string(command.Get(1))
+				cmd := strings.ToUpper(command.Get(0))
+				name := command.Get(1)
 				switch cmd {
 				case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 					_, err = s.parseDel(cmd, name, command)(tx)
@@ -140,7 +139,7 @@ func (s *Server) requestLogPuller(shard int) {
 			log.Error("bulkload: ", err)
 		} else {
 			for _, n := range names {
-				s.cache.Remove(n, s)
+				s.removeCache(n)
 			}
 			s.survey.batchLatSv.Incr(time.Since(start).Milliseconds())
 			s.survey.batchSizeSv.Incr(int64(len(names)))

@@ -26,7 +26,7 @@ func (s *Server) parseZAdd(cmd, name string, command *redisproto.Command) func(*
 	var xx, nx, ch, data bool
 	var idx = 2
 	for ; ; idx++ {
-		switch strings.ToUpper(string(command.Get(idx))) {
+		switch strings.ToUpper(command.Get(idx)) {
 		case "XX":
 			xx = true
 			continue
@@ -46,19 +46,13 @@ func (s *Server) parseZAdd(cmd, name string, command *redisproto.Command) func(*
 	pairs := []Pair{}
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			s, err := atof2(command.Get(i))
-			if err != nil {
-				return func(*bbolt.Tx) (interface{}, error) { return nil, err }
-			}
-			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s})
+			s := atof2p(command.At(i))
+			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			s, err := atof2(command.Get(i))
-			if err != nil {
-				return func(*bbolt.Tx) (interface{}, error) { return nil, err }
-			}
-			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s, Data: command.Get(i + 2)})
+			s := atof2p(command.At(i))
+			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: command.At(i + 2)})
 		}
 	}
 	return s.prepareZAdd(name, pairs, nx, xx, ch, dumpCommand(command))
@@ -72,7 +66,7 @@ func (s *Server) parseDel(cmd, name string, command *redisproto.Command) func(*b
 	case "ZREM":
 		return s.prepareZRem(name, restCommandsToKeys(2, command), dd)
 	}
-	start, end := string(command.Get(2)), string(command.Get(3))
+	start, end := command.Get(2), command.Get(3)
 	switch cmd {
 	case "ZREMRANGEBYLEX":
 		return s.prepareZRemRangeByLex(name, start, end, dd)
@@ -86,11 +80,8 @@ func (s *Server) parseDel(cmd, name string, command *redisproto.Command) func(*b
 }
 
 func (s *Server) parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	by, err := atof2(command.Get(2))
-	if err != nil {
-		return func(*bbolt.Tx) (interface{}, error) { return nil, err }
-	}
-	return s.prepareZIncrBy(name, string(command.Get(3)), by, dumpCommand(command))
+	by := atof2p(command.At(2))
+	return s.prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
 }
 
 func (s *Server) ZCard(name string) (int64, error) {

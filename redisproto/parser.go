@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
+	"unsafe"
 )
 
 var (
@@ -36,12 +38,21 @@ type Command struct {
 	last bool
 }
 
-func (c *Command) Get(index int) []byte {
+func (c *Command) At(index int) []byte {
 	if index >= 0 && index < len(c.Argv) {
 		return c.Argv[index]
 	} else {
 		return nil
 	}
+}
+
+func (c *Command) Get(index int) string {
+	return string(c.At(index))
+}
+
+func (c *Command) EqualFold(index int, v string) bool {
+	buf := c.At(index)
+	return strings.EqualFold(*(*string)(unsafe.Pointer(&buf)), v)
 }
 
 func (c *Command) ArgCount() int {
@@ -50,6 +61,19 @@ func (c *Command) ArgCount() int {
 
 func (c *Command) IsLast() bool {
 	return c.last
+}
+
+func (c *Command) String() string {
+	if len(c.Argv) == 0 {
+		return "<empty command>"
+	}
+	buf := bytes.NewBufferString(c.Get(0))
+	for i := 1; i < c.ArgCount(); i++ {
+		buf.WriteString(" '")
+		buf.Write(c.At(i))
+		buf.WriteString("'")
+	}
+	return buf.String()
 }
 
 type Parser struct {

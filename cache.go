@@ -2,24 +2,25 @@ package main
 
 import (
 	"container/list"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/coyove/common/lru"
 )
 
-type WeakCacheItem struct {
+type weakCacheItem struct {
 	Time int64
 	Data interface{}
 }
 
-type CacheItem struct {
+type cacheItem struct {
 	Key     string
 	CmdHash [2]uint64
 	Data    interface{}
 }
 
-type Cache struct {
+type keyedCache struct {
 	maxWeight int64
 	curWeight int64
 	watermark int64
@@ -32,22 +33,20 @@ type Cache struct {
 }
 
 type entry struct {
-	value  *CacheItem
+	value  *cacheItem
 	hits   int64
 	weight int64
 }
 
-var ErrWeightTooBig = fmt.Errorf("weight can't be held by the cache")
-
-// NewCache creates a new Cache.
-func NewCache(maxWeight int64) *Cache {
-	c := &Cache{maxWeight: maxWeight}
+// newKeyedCache creates a new Cache.
+func newKeyedCache(maxWeight int64) *keyedCache {
+	c := &keyedCache{maxWeight: maxWeight}
 	c.Clear()
 	return c
 }
 
 // Clear clears the cache
-func (c *Cache) Clear() {
+func (c *keyedCache) Clear() {
 	c.Lock()
 	c.ll = list.New()
 	c.cache = make(map[[2]uint64]*list.Element)
@@ -56,18 +55,18 @@ func (c *Cache) Clear() {
 	c.Unlock()
 }
 
-func (c *Cache) nextWatermark() int64 {
+func (c *keyedCache) nextWatermark() int64 {
 	return atomic.AddInt64(&c.watermark, 1)
 }
 
-func (c *Cache) Add(value *CacheItem, keyMaxLen int) error {
+func (c *keyedCache) Add(value *cacheItem, keyMaxLen int) error {
 	weight := int64(1)
 	if p, ok := value.Data.([]Pair); ok {
 		weight = int64(sizePairs(p))
 	}
 
 	if weight > c.maxWeight || weight < 1 {
-		return ErrWeightTooBig
+		return lru.ErrWeightTooBig
 	}
 
 	c.Lock()
@@ -118,7 +117,7 @@ func (c *Cache) Add(value *CacheItem, keyMaxLen int) error {
 }
 
 // Get gets a key
-func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
+func (c *keyedCache) Get(h [2]uint64) (value *cacheItem, ok bool) {
 	c.RLock()
 	defer c.RUnlock()
 
@@ -133,14 +132,14 @@ func (c *Cache) Get(h [2]uint64) (value *CacheItem, ok bool) {
 	return
 }
 
-func (c *Cache) Len() (ln int) {
+func (c *keyedCache) Len() (ln int) {
 	c.RLock()
 	ln = len(c.cache)
 	c.RUnlock()
 	return ln
 }
 
-func (c *Cache) KeyInfo(key string) (ln, size, hits int) {
+func (c *keyedCache) KeyInfo(key string) (ln, size, hits int) {
 	c.RLock()
 	ln = len(c.keyed[key])
 	for _, x := range c.keyed[key] {
@@ -156,8 +155,8 @@ func (c *Cache) KeyInfo(key string) (ln, size, hits int) {
 	return
 }
 
-// Remove removes the given key from the cache.
-func (c *Cache) Remove(key string, s *Server) {
+func (s *Server) removeCache(key string) {
+	c := s.cache
 	c.Lock()
 	for _, e := range c.keyed[key] {
 		c.remove(e, false)
@@ -167,7 +166,7 @@ func (c *Cache) Remove(key string, s *Server) {
 	c.Unlock()
 }
 
-func (c *Cache) remove(e *list.Element, clearKeyed bool) {
+func (c *keyedCache) remove(e *list.Element, clearKeyed bool) {
 	kv := e.Value.(*entry)
 	c.ll.Remove(e)
 	c.curWeight -= kv.weight
@@ -210,7 +209,7 @@ func (s *Server) getWeakCache(h [2]uint64) interface{} {
 	if !ok {
 		return nil
 	}
-	if i := v.(*WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
+	if i := v.(*weakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
 		s.survey.weakCache.Incr(1)
 		return i.Data
 	}
@@ -221,7 +220,7 @@ func (s *Server) addCache(watermark int64, key string, h [2]uint64, data interfa
 	if !s.canUpdateCache(key, watermark) {
 		return nil
 	}
-	return s.cache.Add(&CacheItem{
+	return s.cache.Add(&cacheItem{
 		Key:     key,
 		CmdHash: h,
 		Data:    data,

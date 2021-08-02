@@ -26,7 +26,7 @@ func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bb
 	if err, _ := out.(error); err != nil {
 		return w.WriteError(err.Error())
 	}
-	s.cache.Remove(name, s)
+	s.removeCache(name)
 	switch res := out.(type) {
 	case int:
 		return w.WriteInt(int64(res))

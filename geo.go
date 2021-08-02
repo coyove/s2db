@@ -49,8 +49,8 @@ func geoDist(lat1, lon1, lat2, lon2 float64) float64 {
 }
 
 func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redisproto.Command) error {
-	from := (command.Get(2))
-	to := (command.Get(3))
+	from := (command.At(2))
+	to := (command.At(3))
 	dist := math.NaN()
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("zset." + name))
@@ -73,7 +73,7 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 	if math.IsNaN(dist) {
 		return w.WriteBulks()
 	}
-	if string(command.Get(4)) == "km" {
+	if string(command.At(4)) == "km" {
 		return w.WriteBulkString(ftoa(dist / 1000))
 	}
 	return w.WriteBulkString(ftoa(dist))
@@ -95,7 +95,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 			return nil
 		}
 		for i := 2; i < len(command.Argv); i++ {
-			fromBuf := bk.Get(command.Get(i))
+			fromBuf := bk.Get(command.At(i))
 			if len(fromBuf) != 8 {
 				continue
 			}
@@ -128,14 +128,14 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	options := command.Argv[4:]
 
 	if byMember {
-		key = string(command.Get(2))
+		key = string(command.At(2))
 		options = command.Argv[3:]
 	} else {
-		long, err = calc.Eval(string(command.Get(2)))
+		long, err = calc.Eval(string(command.At(2)))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		lat, err = calc.Eval(string(command.Get(3)))
+		lat, err = calc.Eval(string(command.At(3)))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

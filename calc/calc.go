@@ -36,7 +36,7 @@ func Eval(in string) (float64, error) {
 
 	f, err := parser.ParseExpr(in)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("invalid expression: %q, parser reports: %v", in, err)
 	}
 
 	v = evalBinary(f)

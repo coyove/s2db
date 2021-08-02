@@ -115,6 +115,22 @@ func atof(a string) (float64, error) { return calc.Eval(a) }
 
 func atof2(a []byte) (float64, error) { return atof(*(*string)(unsafe.Pointer(&a))) }
 
+func atofp(a string) float64 {
+	f, err := atof(a)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
+func atof2p(a []byte) float64 {
+	f, err := atof2(a)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
 func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
 
 func ftob(f float64) []byte {
@@ -132,7 +148,7 @@ func atoi(a string) int {
 func atoip(a string) int {
 	i, err := strconv.Atoi(a)
 	if err != nil {
-		panic(err)
+		panic("invalid integer: " + a)
 	}
 	return i
 }
@@ -149,7 +165,7 @@ func shardIndex(key string) int {
 func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	keys := []string{}
 	for ; i < command.ArgCount(); i++ {
-		keys = append(keys, string(command.Get(i)))
+		keys = append(keys, string(command.At(i)))
 	}
 	return keys
 }
@@ -165,10 +181,10 @@ func reversePairs(in []Pair) []Pair {
 func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
 	withScores, withData := false, false
 	for i := len(command.Argv) - 1; i >= len(command.Argv)-3 && i >= 0; i-- {
-		if bytes.EqualFold(command.Get(i), []byte("WITHSCORES")) {
+		if bytes.EqualFold(command.At(i), []byte("WITHSCORES")) {
 			withScores = true
 		}
-		if bytes.EqualFold(command.Get(i), []byte("WITHDATA")) {
+		if bytes.EqualFold(command.At(i), []byte("WITHDATA")) {
 			withData = true
 		}
 	}
@@ -339,7 +355,7 @@ func (s *Server) validateConfig() {
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
 
-	s.cache = NewCache(int64(s.CacheSize) * 1024 * 1024)
+	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 }
 
@@ -459,26 +475,26 @@ func (s *Server) info() string {
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("connections:%v", s.survey.connections),
 		fmt.Sprintf("db_size:%v", sz),
+		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
 		"", "# replication",
 		fmt.Sprintf("master:%v", s.MasterAddr),
 		fmt.Sprintf("master_name:%v", s.master.ServerName),
 		fmt.Sprintf("master_version:%v", s.master.Version),
 		fmt.Sprintf("slaves:%v", len(p)),
+		"", "# sys_rw_stats",
+		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
+		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
+		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
+		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
 		"", "# batch",
 		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
 		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
 		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSv.MeanString()),
 		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSv.MeanString()),
-		"", "# read_write",
-		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
-		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
-		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
-		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
 		"", "# cache",
 		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
 		fmt.Sprintf("cache_obj_count:%v", s.cache.Len()),
 		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
-		"", "# weak_cache",
 		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
 		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
 		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),

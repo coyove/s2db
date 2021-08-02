@@ -19,9 +19,9 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
-	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
 	"gitlab.litatom.com/zhangzezhong/zset/calc"
+	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -148,7 +148,7 @@ func atoi(a string) int {
 func atoip(a string) int {
 	i, err := strconv.Atoi(a)
 	if err != nil {
-		panic("invalid integer: " + a)
+		panic("invalid integer: " + strconv.Quote(a))
 	}
 	return i
 }
@@ -181,10 +181,10 @@ func reversePairs(in []Pair) []Pair {
 func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
 	withScores, withData := false, false
 	for i := len(command.Argv) - 1; i >= len(command.Argv)-3 && i >= 0; i-- {
-		if bytes.EqualFold(command.At(i), []byte("WITHSCORES")) {
+		if command.EqualFold(i, "WITHSCORES") {
 			withScores = true
 		}
-		if bytes.EqualFold(command.At(i), []byte("WITHDATA")) {
+		if command.EqualFold(i, "WITHDATA") {
 			withData = true
 		}
 	}

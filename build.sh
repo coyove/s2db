@@ -2,7 +2,7 @@ SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replicat
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then
-    MONTH=0
+    MONTH=O
 elif [[ "$MONTH" == "11" ]]; then
     MONTH=X
 elif [[ "$MONTH" == "12" ]]; then

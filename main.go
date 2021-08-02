@@ -89,6 +89,7 @@ func main() {
 		return
 	}
 
+	log.Info("version: ", Version)
 	opened := make(chan bool)
 	go func() {
 		select {
@@ -118,7 +119,7 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	if entry.Level <= log.ErrorLevel {
 		buf.WriteString("@err")
 	} else {
-		buf.WriteString("@sys")
+		buf.WriteString("@info")
 	}
 	if v, ok := entry.Data["shard"]; ok {
 		buf.WriteString("`shard")

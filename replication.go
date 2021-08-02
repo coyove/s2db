@@ -68,6 +68,7 @@ func (s *Server) requestLogPuller(shard int) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Error(r, " ", string(debug.Stack()))
+			time.Sleep(time.Second)
 			go s.requestLogPuller(shard)
 		}
 	}()
@@ -78,9 +79,25 @@ func (s *Server) requestLogPuller(shard int) {
 			s.rdb.Process(ctx, cmd)
 			s.master = serverInfo{}
 			parts := strings.Split(cmd.Val(), " ")
-			if len(parts) == 3 {
-				s.master.ServerName = parts[1]
-				s.master.Version = parts[2]
+			if len(parts) != 3 {
+				if cmd.Err() != nil && strings.Contains(cmd.Err().Error(), "refused") {
+					if shard == 0 {
+						log.Error("ping: master not alive")
+					}
+				} else {
+					log.Error("ping: invalid response: ", cmd.Val(), cmd.Err())
+				}
+				pinger += 9
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			s.master.ServerName = parts[1]
+			s.master.Version = parts[2]
+			if s.master.Version > Version {
+				log.Error("ping: master version too high: ", s.master.Version, ">", Version)
+				pinger += 9
+				time.Sleep(10 * time.Second)
+				continue
 			}
 		}
 
@@ -307,7 +324,7 @@ func (s *Server) compactShard(shard int) error {
 
 	// Turn the shard into read only mode
 	x.readonly = true
-	for len(x.batchTx) > 0 { // wait as-many-as-possible deferred ZAdds to finish
+	for len(x.batchTx) > 0 { // wait batch worker to clear the queue
 		runtime.Gosched()
 	}
 

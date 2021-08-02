@@ -9,8 +9,8 @@ import (
 	"sort"
 
 	"github.com/mmcloughlin/geohash"
-	"github.com/secmask/go-redisproto"
 	"gitlab.litatom.com/zhangzezhong/zset/calc"
+	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
 

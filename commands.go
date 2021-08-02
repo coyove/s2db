@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/secmask/go-redisproto"
+	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
 

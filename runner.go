@@ -1,10 +1,12 @@
 package main
 
 import (
+	"runtime/debug"
+	"strconv"
 	"time"
 
-	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
+	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -43,6 +45,15 @@ type batchTask struct {
 }
 
 func (s *Server) batchWorker(shard int) {
+	log := log.WithField("shard", strconv.Itoa(shard))
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error(r, " ", string(debug.Stack()))
+			time.Sleep(time.Second)
+			go s.batchWorker(shard)
+		}
+	}()
+
 	x := &s.db[shard]
 	tasks := []*batchTask{}
 	blocking := false
@@ -93,6 +104,9 @@ func (s *Server) batchWorker(shard int) {
 			}
 			return nil
 		})
+		if err != nil {
+			log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
+		}
 		for i, t := range tasks {
 			if err != nil {
 				t.out <- err
@@ -106,6 +120,6 @@ func (s *Server) batchWorker(shard int) {
 	}
 
 EXIT:
-	log.Info("#", shard, " batch worker exited")
+	log.Info("batch worker exited")
 	x.batchCloseSignal <- true
 }

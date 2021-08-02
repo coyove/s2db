@@ -17,8 +17,8 @@ import (
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
 	"github.com/go-redis/redis/v8"
-	"github.com/secmask/go-redisproto"
 	log "github.com/sirupsen/logrus"
+	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -179,7 +179,9 @@ func (s *Server) Serve(addr string) error {
 	s.ln = listener
 	s.survey.startAt = time.Now()
 
+	log.Info("listening on ", addr)
 	if s.MasterAddr != "" {
+		log.Info("contacting master ", s.MasterAddr)
 		s.rdb = redis.NewClient(&redis.Options{
 			Addr: s.MasterAddr,
 		})
@@ -187,16 +189,16 @@ func (s *Server) Serve(addr string) error {
 			go s.requestLogPuller(i)
 		}
 	}
+
 	for i := range s.db {
 		go s.batchWorker(i)
 	}
 
-	log.Info("listening on ", addr, " master=", s.MasterAddr)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			if !s.closed {
-				log.Error("Error on accept: ", err)
+				log.Error("accept: ", err)
 			}
 			return err
 		}
@@ -221,7 +223,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				ew = writer.WriteError(err.Error())
 			} else {
 				if err != io.EOF {
-					log.Println(err, " closed connection to ", conn.RemoteAddr())
+					log.Info(err, " closed connection to ", conn.RemoteAddr())
 				}
 				break
 			}
@@ -232,7 +234,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			writer.Flush()
 		}
 		if ew != nil {
-			log.Println("Connection closed", ew)
+			log.Info("connection closed: ", ew)
 			break
 		}
 	}
@@ -457,7 +459,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return w.WriteBulks(data...)
 	case "ZCARD":
 		return w.WriteIntOrError(s.ZCard(name))
-	case "ZCOUNT":
+	case "ZCOUNT", "ZCOUNTWEAK":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
@@ -522,12 +524,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		start, end := command.Get(2), command.Get(3)
 		limit, match, withData := -1, "", false
+
+		// Parse command flags and remove "LIMIT 0 X" and "MATCH X"
 		for i := 3; i < command.ArgCount(); i++ {
 			if command.EqualFold(i, "LIMIT") {
 				if atoi(command.Get(i+1)) != 0 {
 					return w.WriteError("non-zero limit offset not supported")
 				}
-
 				limit = atoi(command.Get(i + 2))
 				command.Argv = append(command.Argv[:i], command.Argv[i+3:]...)
 				i--
@@ -535,7 +538,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				withData = true
 			} else if command.EqualFold(i, "MATCH") {
 				match = command.Get(i + 1)
-				i++
+				command.Argv = append(command.Argv[:i], command.Argv[i+2:]...)
+				i--
 			}
 		}
 

@@ -42,21 +42,21 @@ type Server struct {
 	dieKey    sched.SchedKey
 
 	survey struct {
-		startAt                       time.Time
-		connections                   int64
-		sysRead, sysWrite             Survey
-		sysReadLat, sysWriteLat       Survey
-		cache, weakCache              Survey
-		batchSize, batchLat           Survey
-		batchSizeSlave, batchLatSlave Survey
+		startAt                 time.Time
+		connections             int64
+		sysRead, sysWrite       Survey
+		sysReadLat, sysWriteLat Survey
+		cache, weakCache        Survey
+		batchSize, batchLat     Survey
+		batchSizeSv, batchLatSv Survey
 	}
 
 	db [ShardNum]struct {
 		*bbolt.DB
 		readonly          bool
 		writeWatermark    int64
-		deferAdd          chan *addTask
-		deferCloseSignal  chan bool
+		batchTx           chan *batchTask
+		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
 	}
 }
@@ -105,8 +105,8 @@ func Open(path string) (*Server, error) {
 		d := &x.db[i]
 		d.DB = db
 		d.pullerCloseSignal = make(chan bool)
-		d.deferCloseSignal = make(chan bool)
-		d.deferAdd = make(chan *addTask, 101)
+		d.batchCloseSignal = make(chan bool)
+		d.batchTx = make(chan *batchTask, 101)
 	}
 	return x, nil
 }
@@ -142,8 +142,8 @@ func (s *Server) Close() error {
 			if s.rdb != nil {
 				<-db.pullerCloseSignal
 			}
-			close(db.deferAdd)
-			<-db.deferCloseSignal
+			close(db.batchTx)
+			<-db.batchCloseSignal
 		}(i)
 	}
 	wg.Wait()
@@ -188,7 +188,7 @@ func (s *Server) Serve(addr string) error {
 		}
 	}
 	for i := range s.db {
-		go s.deferAddWorker(i)
+		go s.batchWorker(i)
 	}
 
 	log.Info("listening on ", addr, " master=", s.MasterAddr)

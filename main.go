@@ -62,18 +62,13 @@ func main() {
 	if *benchmark {
 		wg := sync.WaitGroup{}
 		ctx := context.TODO()
-		for i := 0; i < 10; i += 1 {
+		for i := 0; i < 100; i += 1 {
 			wg.Add(1)
 			go func(i int) {
 				fmt.Println("client #", i)
 				p := rdb.Pipeline()
-				for c := 0; c < 100; c += 10 {
-					data := []*redis.Z{}
-					for cc := c; cc < c+10; cc++ {
-						data = append(data, &redis.Z{Member: strconv.Itoa(c), Score: rand.Float64()*10 - 5})
-					}
-					p.ZAdd(ctx, "bench"+strconv.Itoa(i), data...)
-					// p.ZAdd("bench"+strconv.Itoa(i), []Pair{{strconv.Itoa(c), rand.Float64() * 2}}, false, false)
+				for c := 0; c < 100; c++ {
+					p.ZAdd(ctx, "bench", &redis.Z{Member: strconv.Itoa(c), Score: rand.Float64()*10 - 5})
 				}
 				_, err := p.Exec(ctx)
 				if err != nil {

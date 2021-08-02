@@ -6,7 +6,6 @@ import (
 	"math"
 	"path/filepath"
 
-	"github.com/secmask/go-redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -32,7 +31,7 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 	if err != nil {
 		return 0, err
 	}
-	_, c, err := s.viewPreparedRange(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	_, c, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		CountOnly:   true,
@@ -43,7 +42,7 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 }
 
 func (s *Server) ZRange(name string, start, end int, withData bool) ([]Pair, error) {
-	p, _, err := s.viewPreparedRange(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 		OffsetStart: start,
 		OffsetEnd:   end,
 		WithData:    withData,
@@ -52,7 +51,7 @@ func (s *Server) ZRange(name string, start, end int, withData bool) ([]Pair, err
 }
 
 func (s *Server) ZRevRange(name string, start, end int, withData bool) ([]Pair, error) {
-	p, _, err := s.viewPreparedRange(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 		OffsetStart: -end - 1,
 		OffsetEnd:   -start - 1,
 		WithData:    withData,
@@ -63,7 +62,7 @@ func (s *Server) ZRevRange(name string, start, end int, withData bool) ([]Pair, 
 func (s *Server) ZRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
 	rangeStart := (RangeLimit{}).fromString(start)
 	rangeEnd := (RangeLimit{}).fromString(end)
-	p, _, err := s.viewPreparedRange(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		LexMatch:    match,
@@ -75,7 +74,7 @@ func (s *Server) ZRangeByLex(name string, start, end string, match string, limit
 func (s *Server) ZRevRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
 	rangeStart := (RangeLimit{}).fromString(end)
 	rangeEnd := (RangeLimit{}).fromString(start)
-	p, _, err := s.viewPreparedRange(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		LexMatch:    match,
@@ -93,7 +92,7 @@ func (s *Server) ZRangeByScore(name string, start, end string, match string, lim
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.viewPreparedRange(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		WithData:    withData,
@@ -112,7 +111,7 @@ func (s *Server) ZRevRangeByScore(name string, start, end string, match string, 
 	if err != nil {
 		return nil, err
 	}
-	p, _, err := s.viewPreparedRange(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		Limit:       limit,
@@ -120,49 +119,6 @@ func (s *Server) ZRevRangeByScore(name string, start, end string, match string, 
 		LexMatch:    match,
 	}))
 	return reversePairs(p), err
-}
-
-func (s *Server) prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
-			OffsetStart: start,
-			OffsetEnd:   end,
-			DeleteLog:   dd,
-		})(tx)
-		return c, err
-	}
-}
-
-func (s *Server) prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart := (RangeLimit{}).fromString(start)
-		rangeEnd := (RangeLimit{}).fromString(end)
-		_, c, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
-			OffsetStart: 0,
-			OffsetEnd:   math.MaxInt64,
-			DeleteLog:   dd,
-		})(tx)
-		return c, err
-	}
-}
-
-func (s *Server) prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart, err := (RangeLimit{}).fromFloatString(start)
-		if err != nil {
-			return nil, err
-		}
-		rangeEnd, err := (RangeLimit{}).fromFloatString(end)
-		if err != nil {
-			return nil, err
-		}
-		_, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
-			OffsetStart: 0,
-			OffsetEnd:   math.MaxInt64,
-			DeleteLog:   dd,
-		})(tx)
-		return c, err
-	}
 }
 
 func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
@@ -288,26 +244,6 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 	}
 }
 
-func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
-	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
-		n := bk.KeyN()
-		if o.OffsetStart < 0 {
-			o.OffsetStart += n
-		}
-		if o.OffsetEnd < 0 {
-			o.OffsetEnd += n
-		}
-	}
-}
-
-func (o *RangeOptions) getLimit(s *Server) int {
-	limit := s.HardLimit
-	if o.Limit > 0 && o.Limit < s.HardLimit {
-		limit = o.Limit
-	}
-	return limit
-}
-
 func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err error) {
 	rank = -1
 	keybuf := []byte(key)
@@ -411,42 +347,4 @@ func (s *Server) scan(cursor string, match string, shard int, count int) (pairs 
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Key
 	}
 	return
-}
-
-func (s *Server) viewPreparedRange(name string, f func(tx *bbolt.Tx) ([]Pair, int, error)) (pairs []Pair, count int, err error) {
-	err = s.pick(name).View(func(tx *bbolt.Tx) error {
-		pairs, count, err = f(tx)
-		return err
-	})
-	return
-}
-
-func (s *Server) runPreparedTxAndWrite(name string, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
-	t := &addTask{f: f, out: make(chan interface{})}
-	s.db[shardIndex(name)].deferAdd <- t
-	out := <-t.out
-	if err, _ := out.(error); err != nil {
-		return w.WriteError(err.Error())
-	}
-	s.cache.Remove(name, s)
-	switch res := out.(type) {
-	case int:
-		return w.WriteInt(int64(res))
-	case float64:
-		return w.WriteBulkString(ftoa(res))
-	default:
-		panic(-1)
-	}
-}
-
-func (s *Server) runPreparedTx(name string, f func(tx *bbolt.Tx) (interface{}, error)) (res interface{}, err error) {
-	err = s.pick(name).Update(func(tx *bbolt.Tx) error {
-		res, err = f(tx)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	s.cache.Remove(name, s)
-	return res, nil
 }

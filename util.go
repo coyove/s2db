@@ -291,6 +291,26 @@ func (r RangeLimit) fromFloatString(v string) (RangeLimit, error) {
 	return r, err
 }
 
+func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
+	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
+		n := bk.KeyN()
+		if o.OffsetStart < 0 {
+			o.OffsetStart += n
+		}
+		if o.OffsetEnd < 0 {
+			o.OffsetEnd += n
+		}
+	}
+}
+
+func (o *RangeOptions) getLimit(s *Server) int {
+	limit := s.HardLimit
+	if o.Limit > 0 && o.Limit < s.HardLimit {
+		limit = o.Limit
+	}
+	return limit
+}
+
 type ServerConfig struct {
 	ServerName         string
 	HardLimit          int
@@ -446,9 +466,9 @@ func (s *Server) info() string {
 		fmt.Sprintf("slaves:%v", len(p)),
 		"", "# batch",
 		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
-		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSlave.MeanString()),
 		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
-		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSlave.MeanString()),
+		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSv.MeanString()),
+		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSv.MeanString()),
 		"", "# read_write",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
 		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
@@ -477,7 +497,7 @@ func (s *Server) shardInfo(shard int) string {
 		fmt.Sprintf("path:%v", x.Path()),
 		fmt.Sprintf("size:%v", fi.Size()),
 		fmt.Sprintf("readonly:%v", x.readonly),
-		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.deferAdd))),
+		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
 	}
 	var myTail uint64
 	start := time.Now()

@@ -142,8 +142,8 @@ func (s *Server) requestLogPuller(shard int) {
 			for _, n := range names {
 				s.cache.Remove(n, s)
 			}
-			s.survey.batchLatSlave.Incr(time.Since(start).Milliseconds())
-			s.survey.batchSizeSlave.Incr(int64(len(names)))
+			s.survey.batchLatSv.Incr(time.Since(start).Milliseconds())
+			s.survey.batchSizeSv.Incr(int64(len(names)))
 		}
 		time.Sleep(time.Second / 2)
 	}
@@ -306,7 +306,7 @@ func (s *Server) compactShard(shard int) error {
 
 	// Turn the shard into read only mode
 	x.readonly = true
-	for len(x.deferAdd) > 0 { // wait as-many-as-possible deferred ZAdds to finish
+	for len(x.batchTx) > 0 { // wait as-many-as-possible deferred ZAdds to finish
 		runtime.Gosched()
 	}
 

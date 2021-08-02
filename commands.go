@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"strings"
 
+	"github.com/secmask/go-redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -20,6 +22,77 @@ func (s *Server) writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bkWal.Put(intToBytes(id), dd)
 }
 
+func (s *Server) parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+	var xx, nx, ch, data bool
+	var idx = 2
+	for ; ; idx++ {
+		switch strings.ToUpper(string(command.Get(idx))) {
+		case "XX":
+			xx = true
+			continue
+		case "NX":
+			nx = true
+			continue
+		case "CH":
+			ch = true
+			continue
+		case "DATA":
+			data = true
+			continue
+		}
+		break
+	}
+
+	pairs := []Pair{}
+	if !data {
+		for i := idx; i < command.ArgCount(); i += 2 {
+			s, err := atof2(command.Get(i))
+			if err != nil {
+				return func(*bbolt.Tx) (interface{}, error) { return nil, err }
+			}
+			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s})
+		}
+	} else {
+		for i := idx; i < command.ArgCount(); i += 3 {
+			s, err := atof2(command.Get(i))
+			if err != nil {
+				return func(*bbolt.Tx) (interface{}, error) { return nil, err }
+			}
+			pairs = append(pairs, Pair{Key: string(command.Get(i + 1)), Score: s, Data: command.Get(i + 2)})
+		}
+	}
+	return s.prepareZAdd(name, pairs, nx, xx, ch, dumpCommand(command))
+}
+
+func (s *Server) parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+	dd := dumpCommand(command)
+	switch cmd {
+	case "DEL":
+		return s.prepareDel(name, dd)
+	case "ZREM":
+		return s.prepareZRem(name, restCommandsToKeys(2, command), dd)
+	}
+	start, end := string(command.Get(2)), string(command.Get(3))
+	switch cmd {
+	case "ZREMRANGEBYLEX":
+		return s.prepareZRemRangeByLex(name, start, end, dd)
+	case "ZREMRANGEBYSCORE":
+		return s.prepareZRemRangeByScore(name, start, end, dd)
+	case "ZREMRANGEBYRANK":
+		return s.prepareZRemRangeByRank(name, atoip(start), atoip(end), dd)
+	default:
+		panic(-1)
+	}
+}
+
+func (s *Server) parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+	by, err := atof2(command.Get(2))
+	if err != nil {
+		return func(*bbolt.Tx) (interface{}, error) { return nil, err }
+	}
+	return s.prepareZIncrBy(name, string(command.Get(3)), by, dumpCommand(command))
+}
+
 func (s *Server) ZCard(name string) (int64, error) {
 	count := 0
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
@@ -31,139 +104,6 @@ func (s *Server) ZCard(name string) (int64, error) {
 		return nil
 	})
 	return int64(count), err
-}
-
-func (s *Server) prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, err error) {
-	return func(tx *bbolt.Tx) (interface{}, error) {
-		bkName := tx.Bucket([]byte("zset." + name))
-		bkScore := tx.Bucket([]byte("zset.score." + name))
-		if bkName == nil || bkScore == nil {
-			return 0, nil
-		}
-		if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
-			return 0, err
-		}
-		if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
-			return 0, err
-		}
-		return 1, s.writeLog(tx, dd)
-	}
-}
-
-func (s *Server) prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (interface{}, error) {
-		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
-		if err != nil {
-			return nil, err
-		}
-		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
-		if err != nil {
-			return nil, err
-		}
-		added, updated := 0, 0
-		for _, p := range pairs {
-			if err := checkScore(p.Score); err != nil {
-				return nil, err
-			}
-			scoreBuf := bkName.Get([]byte(p.Key))
-			if len(scoreBuf) != 0 {
-				// old key exists
-				if nx {
-					continue
-				}
-				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
-					return nil, err
-				}
-				if p.Score != bytesToFloat(scoreBuf) {
-					updated++
-				}
-			} else {
-				// we are adding a new key
-				if xx {
-					continue
-				}
-				added++
-			}
-			scoreBuf = floatToBytes(p.Score)
-			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
-				return nil, err
-			}
-			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
-				return nil, err
-			}
-		}
-		if ch {
-			return added + updated, s.writeLog(tx, dd)
-		}
-		return added, s.writeLog(tx, dd)
-	}
-}
-
-func (s *Server) prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (count interface{}, err error) {
-		bkName := tx.Bucket([]byte("zset." + name))
-		if bkName == nil {
-			return 0, nil
-		}
-		pairs := []Pair{}
-		for _, key := range keys {
-			scoreBuf := bkName.Get([]byte(key))
-			if len(scoreBuf) == 0 {
-				continue
-			}
-			pairs = append(pairs, Pair{Key: key, Score: bytesToFloat(scoreBuf)})
-		}
-		if len(pairs) == 0 {
-			return 0, nil
-		}
-		return len(pairs), s.deletePair(tx, name, pairs, dd)
-	}
-}
-
-func (s *Server) prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	return func(tx *bbolt.Tx) (newValue interface{}, err error) {
-		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
-		if err != nil {
-			return 0, err
-		}
-		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + name))
-		if err != nil {
-			return 0, err
-		}
-		scoreBuf := bkName.Get([]byte(key))
-		score := 0.0
-
-		var dataBuf []byte
-		if len(scoreBuf) != 0 {
-			oldKey := []byte(string(scoreBuf) + key)
-			dataBuf = append([]byte{}, bkScore.Get(oldKey)...)
-			if err := bkScore.Delete(oldKey); err != nil {
-				return 0, err
-			}
-			score = bytesToFloat(scoreBuf)
-		} else {
-			dataBuf = []byte("")
-		}
-
-		if by == 0 {
-			if len(scoreBuf) == 0 {
-				// special case: zincrby name 0 non_existed_key
-			} else {
-				return score, nil
-			}
-		}
-		if err := checkScore(score + by); err != nil {
-			return 0, err
-		}
-		scoreBuf = floatToBytes(score + by)
-		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
-			return 0, err
-		}
-		if err := bkScore.Put([]byte(string(scoreBuf)+key), dataBuf); err != nil {
-			return 0, err
-		}
-		return score + by, s.writeLog(tx, dd)
-	}
 }
 
 func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err error) {

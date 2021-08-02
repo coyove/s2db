@@ -413,11 +413,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		//  Client space write commands
 		// -----------------------
 	case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(name, s.parseDel(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, false, s.parseDel(cmd, name, command), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(name, s.parseZAdd(cmd, name, command), w)
+		deferred := parseDeferFlag(command) // ZADD name --DEFER-- arg1 arg2 ...
+		return s.runPreparedTxAndWrite(name, deferred, s.parseZAdd(cmd, name, command), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(name, s.parseZIncrBy(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, false, s.parseZIncrBy(cmd, name, command), w)
 
 		// -----------------------
 		//  Client space read commands

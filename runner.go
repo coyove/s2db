@@ -16,9 +16,12 @@ func (s *Server) runPreparedRangeTx(name string, f func(tx *bbolt.Tx) ([]Pair, i
 	return
 }
 
-func (s *Server) runPreparedTxAndWrite(name string, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
-	t := &batchTask{f: f, out: make(chan interface{})}
+func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
+	t := &batchTask{f: f, out: make(chan interface{}, 1)}
 	s.db[shardIndex(name)].batchTx <- t
+	if deferred {
+		return w.WriteSimpleString("OK")
+	}
 	out := <-t.out
 	if err, _ := out.(error); err != nil {
 		return w.WriteError(err.Error())
@@ -47,7 +50,7 @@ func (s *Server) batchWorker(shard int) {
 	for {
 		tasks = tasks[:0]
 
-		for len(tasks) < s.ServerConfig.MaxBatchRun {
+		for len(tasks) < s.ServerConfig.BatchMaxRun {
 			if blocking {
 				t, ok := <-x.batchTx
 				if !ok {

@@ -323,7 +323,7 @@ type ServerConfig struct {
 	PurgeLogRun        int
 	ResponseLogRun     int
 	ResponseLogSize    int // kb
-	MaxBatchRun        int
+	BatchMaxRun        int
 }
 
 func (s *Server) validateConfig() {
@@ -337,7 +337,7 @@ func (s *Server) validateConfig() {
 	ifZero(&s.PurgeLogRun, 100)
 	ifZero(&s.ResponseLogRun, 200)
 	ifZero(&s.ResponseLogSize, 16)
-	ifZero(&s.MaxBatchRun, 50)
+	ifZero(&s.BatchMaxRun, 50)
 
 	s.cache = NewCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
@@ -545,4 +545,12 @@ func ifZero(v *int, v2 int) {
 	if *v <= 0 {
 		*v = v2
 	}
+}
+
+func parseDeferFlag(in *redisproto.Command) bool {
+	if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
+		in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+		return true
+	}
+	return false
 }

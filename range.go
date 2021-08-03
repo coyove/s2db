@@ -14,14 +14,6 @@ var (
 	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
 )
 
-func (s *Server) ZRank(name, key string, limit int) (int, error) {
-	return s.zRank(name, key, limit, false)
-}
-
-func (s *Server) ZRevRank(name, key string, limit int) (int, error) {
-	return s.zRank(name, key, limit, true)
-}
-
 func (s *Server) ZCount(name string, start, end string, match string) (int, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
@@ -41,7 +33,15 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 
 }
 
-func (s *Server) ZRange(name string, start, end int, withData bool) ([]Pair, error) {
+func (s *Server) ZRange(rev bool, name string, start, end int, withData bool) ([]Pair, error) {
+	if rev {
+		p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+			OffsetStart: -end - 1,
+			OffsetEnd:   -start - 1,
+			WithData:    withData,
+		}))
+		return reversePairs(p), err
+	}
 	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 		OffsetStart: start,
 		OffsetEnd:   end,
@@ -50,75 +50,56 @@ func (s *Server) ZRange(name string, start, end int, withData bool) ([]Pair, err
 	return p, err
 }
 
-func (s *Server) ZRevRange(name string, start, end int, withData bool) ([]Pair, error) {
-	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
-		OffsetStart: -end - 1,
-		OffsetEnd:   -start - 1,
-		WithData:    withData,
-	}))
-	return reversePairs(p), err
-}
-
-func (s *Server) ZRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
-	rangeStart := (RangeLimit{}).fromString(start)
-	rangeEnd := (RangeLimit{}).fromString(end)
+func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
+	var rangeStart, rangeEnd RangeLimit
+	if rev {
+		rangeStart = rangeStart.fromString(end)
+		rangeEnd = rangeEnd.fromString(start)
+	} else {
+		rangeStart = rangeStart.fromString(start)
+		rangeEnd = rangeEnd.fromString(end)
+	}
 	p, _, err := s.runPreparedRangeTx(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		LexMatch:    match,
 		Limit:       limit,
 	}))
+	if rev {
+		p = reversePairs(p)
+	}
+	if withData {
+		err = s.fillPairsData(name, p)
+	}
 	return p, err
 }
 
-func (s *Server) ZRevRangeByLex(name string, start, end string, match string, limit int) ([]Pair, error) {
-	rangeStart := (RangeLimit{}).fromString(end)
-	rangeEnd := (RangeLimit{}).fromString(start)
-	p, _, err := s.runPreparedRangeTx(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
-		OffsetStart: 0,
-		OffsetEnd:   math.MaxInt64,
-		LexMatch:    match,
-		Limit:       limit,
-	}))
-	return reversePairs(p), err
-}
-
-func (s *Server) ZRangeByScore(name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
-	rangeStart, err := (RangeLimit{}).fromFloatString(start)
-	if err != nil {
-		return nil, err
+func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match string, limit int, withData bool) (p []Pair, err error) {
+	var rangeStart, rangeEnd RangeLimit
+	var err1, err2 error
+	if rev {
+		rangeStart, err1 = rangeStart.fromFloatString(end)
+		rangeEnd, err2 = rangeEnd.fromFloatString(start)
+	} else {
+		rangeStart, err1 = rangeStart.fromFloatString(start)
+		rangeEnd, err2 = rangeEnd.fromFloatString(end)
 	}
-	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
-	if err != nil {
-		return nil, err
+	if err1 != nil {
+		return nil, err1
+	} else if err2 != nil {
+		return nil, err2
 	}
-	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
-		OffsetStart: 0,
-		OffsetEnd:   math.MaxInt64,
-		WithData:    withData,
-		LexMatch:    match,
-		Limit:       limit,
-	}))
-	return p, err
-}
-
-func (s *Server) ZRevRangeByScore(name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
-	rangeStart, err := (RangeLimit{}).fromFloatString(end)
-	if err != nil {
-		return nil, err
-	}
-	rangeEnd, err := (RangeLimit{}).fromFloatString(start)
-	if err != nil {
-		return nil, err
-	}
-	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err = s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		Limit:       limit,
 		WithData:    withData,
 		LexMatch:    match,
 	}))
-	return reversePairs(p), err
+	if rev {
+		reversePairs(p)
+	}
+	return p, err
 }
 
 func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
@@ -244,7 +225,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 	}
 }
 
-func (s *Server) zRank(name, key string, limit int, rev bool) (rank int, err error) {
+func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err error) {
 	rank = -1
 	keybuf := []byte(key)
 	err = s.pick(name).View(func(tx *bbolt.Tx) error {

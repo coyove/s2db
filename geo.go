@@ -128,14 +128,14 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	options := command.Argv[4:]
 
 	if byMember {
-		key = string(command.At(2))
+		key = command.Get(2)
 		options = command.Argv[3:]
 	} else {
-		long, err = calc.Eval(string(command.At(2)))
+		long, err = calc.Eval(command.Get(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		lat, err = calc.Eval(string(command.At(3)))
+		lat, err = calc.Eval(command.Get(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

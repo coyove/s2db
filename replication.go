@@ -5,6 +5,8 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/rand"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -73,32 +75,29 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 	}()
 
-	for pinger := 0; !s.closed; pinger++ {
-		if pinger%10 == 0 {
-			cmd := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
-			s.rdb.Process(ctx, cmd)
-			s.master = serverInfo{}
-			parts := strings.Split(cmd.Val(), " ")
-			if len(parts) != 3 {
-				if cmd.Err() != nil && strings.Contains(cmd.Err().Error(), "refused") {
-					if shard == 0 {
-						log.Error("ping: master not alive")
-					}
-				} else {
-					log.Error("ping: invalid response: ", cmd.Val(), cmd.Err())
+	for !s.closed {
+		ping := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
+		s.rdb.Process(ctx, ping)
+		parts := strings.Split(ping.Val(), " ")
+		if len(parts) != 3 {
+			if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
+				if shard == 0 {
+					log.Error("ping: master not alive")
 				}
-				pinger += 9
-				time.Sleep(10 * time.Second)
-				continue
+			} else {
+				log.Error("ping: invalid response: ", ping.Val(), ping.Err())
 			}
-			s.master.ServerName = parts[1]
-			s.master.Version = parts[2]
-			if s.master.Version > Version {
-				log.Error("ping: master version too high: ", s.master.Version, ">", Version)
-				pinger += 9
-				time.Sleep(10 * time.Second)
-				continue
-			}
+			time.Sleep(time.Second * 10)
+			continue
+		}
+		s.master = serverInfo{
+			ServerName: parts[1],
+			Version:    parts[2],
+		}
+		if s.master.Version > Version {
+			log.Error("ping: master version too high: ", s.master.Version, ">", Version)
+			time.Sleep(time.Second * 10)
+			continue
 		}
 
 		myWalIndex, err := s.myLogTail(shard)
@@ -209,36 +208,61 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 	return
 }
 
-func (s *Server) purgeLog(shard int, head uint64) (int, error) {
-	if head <= 0 {
-		return 0, fmt.Errorf("head is zero")
+func (s *Server) purgeLog(shard int, head int64) (int, int, error) {
+	if head == 0 {
+		return 0, 0, fmt.Errorf("head is zero")
 	}
-	count := 0
+	if head < 0 && -head > 10000 {
+		return 0, 0, fmt.Errorf("neg-head is too large")
+	}
+	oldCount, count := 0, 0
 	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
 			return nil
 		}
+
+		oldCount = bk.Stats().KeyN
+		if oldCount == 0 {
+			return nil
+		}
 		c := bk.Cursor()
 		last, _ := c.Last()
 		if len(last) != 8 {
-			if bk.Stats().KeyN == 0 {
-				return fmt.Errorf("nothing to purge")
-			}
 			return fmt.Errorf("invalid last key, fatal error")
 		}
-		tail := binary.BigEndian.Uint64(last)
+		tail := int64(binary.BigEndian.Uint64(last))
+		if head < 0 {
+			head = tail + head
+			if head < 1 {
+				head = 1
+			}
+		}
 		if head >= tail {
 			return fmt.Errorf("truncate head over tail")
 		}
-
 		if tail-head > 10000 {
 			return fmt.Errorf("too much gap, purging aborted")
+		}
+		var min uint64 = math.MaxUint64
+		for _, sv := range s.slaves.Take(time.Minute) {
+			si := &serverInfo{}
+			json.Unmarshal(sv.Data, si)
+			if si.LogTails[shard] < min {
+				min = si.LogTails[shard]
+			}
+		}
+		if min != math.MaxUint64 {
+			// If master have any slaves, it can't purge logs which slaves don't have yet
+			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
+			if head < int64(min) {
+				return fmt.Errorf("truncate too much (slave rejection)")
+			}
 		}
 
 		keepLogs := [][2][]byte{}
 		for i := head; i <= tail; i++ {
-			k := intToBytes(i)
+			k := intToBytes(uint64(i))
 			v := append([]byte{}, bk.Get(k)...)
 			keepLogs = append(keepLogs, [2][]byte{k, v})
 			count++
@@ -258,11 +282,11 @@ func (s *Server) purgeLog(shard int, head uint64) (int, error) {
 				return err
 			}
 		}
-		return bk.SetSequence(tail)
+		return bk.SetSequence(uint64(tail))
 	}); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return count, nil
+	return count, oldCount, nil
 }
 
 type slaves struct {
@@ -364,4 +388,24 @@ func (s *Server) compactShard(shard int) error {
 
 	x.DB, x.readonly = db, false
 	return nil
+}
+
+func (s *Server) schedPurge() {
+	if s.closed {
+		return
+	}
+	if s.SchedPurgeEnable == 0 {
+		time.AfterFunc(time.Minute*10, s.schedPurge)
+		return
+	}
+	hr := time.Now().UTC().Hour()
+	if hr == s.SchedPurgeHourUTC {
+		log.Info("begin scheduled purging")
+		for i := 0; i < ShardNum; i++ {
+			remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
+			log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err)
+		}
+	}
+	delta := time.Duration(rand.Intn(100)) * time.Millisecond
+	time.AfterFunc(time.Hour+delta, s.schedPurge)
 }

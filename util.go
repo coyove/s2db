@@ -33,6 +33,12 @@ func init() {
 	rand.Seed(time.Now().Unix())
 }
 
+type Pair struct {
+	Key   string
+	Score float64
+	Data  []byte
+}
+
 func checkScore(s float64) error {
 	if math.IsNaN(s) {
 		return fmt.Errorf("score is NaN")
@@ -179,21 +185,16 @@ func reversePairs(in []Pair) []Pair {
 }
 
 func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
-	withScores, withData := false, false
+	var withScores, withData bool
 	for i := len(command.Argv) - 1; i >= len(command.Argv)-3 && i >= 0; i-- {
-		if command.EqualFold(i, "WITHSCORES") {
-			withScores = true
-		}
-		if command.EqualFold(i, "WITHDATA") {
-			withData = true
-		}
+		withScores = withScores || command.EqualFold(i, "WITHSCORES")
+		withData = withData || command.EqualFold(i, "WITHDATA")
 	}
-
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Key)
 		if withScores || withData {
-			data = append(data, strconv.FormatFloat(p.Score, 'f', -1, 64))
+			data = append(data, ftoa(p.Score))
 		}
 		if withData {
 			data = append(data, string(p.Data))
@@ -340,23 +341,9 @@ type ServerConfig struct {
 	ResponseLogRun     int
 	ResponseLogSize    int // kb
 	BatchMaxRun        int
-}
-
-func (s *Server) validateConfig() {
-	ifZero(&s.HardLimit, 10000)
-	ifZero(&s.WeakTTL, 300)
-	ifZero(&s.CacheSize, 1024)
-	ifZero(&s.CacheKeyMaxLen, 100)
-	ifZero(&s.WeakCacheSize, 1024)
-	ifZero(&s.SlowLimit, 500)
-	ifZero(&s.PurgeLogMaxRunTime, 1)
-	ifZero(&s.PurgeLogRun, 100)
-	ifZero(&s.ResponseLogRun, 200)
-	ifZero(&s.ResponseLogSize, 16)
-	ifZero(&s.BatchMaxRun, 50)
-
-	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
-	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	SchedPurgeEnable   int
+	SchedPurgeHourUTC  int
+	SchedPurgeHead     int
 }
 
 func (s *Server) loadConfig() error {
@@ -379,11 +366,26 @@ func (s *Server) loadConfig() error {
 	}); err != nil {
 		return err
 	}
-	s.validateConfig()
 	return s.saveConfig()
 }
 
 func (s *Server) saveConfig() error {
+	ifZero(&s.HardLimit, 10000)
+	ifZero(&s.WeakTTL, 300)
+	ifZero(&s.CacheSize, 1024)
+	ifZero(&s.CacheKeyMaxLen, 100)
+	ifZero(&s.WeakCacheSize, 1024)
+	ifZero(&s.SlowLimit, 500)
+	ifZero(&s.PurgeLogMaxRunTime, 1)
+	ifZero(&s.PurgeLogRun, 100)
+	ifZero(&s.ResponseLogRun, 200)
+	ifZero(&s.ResponseLogSize, 16)
+	ifZero(&s.BatchMaxRun, 50)
+	ifZero(&s.SchedPurgeHead, 1500)
+
+	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
+	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
+
 	return s.db[0].Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
@@ -419,7 +421,6 @@ func (s *Server) updateConfig(key, value string) error {
 		}
 		return fmt.Errorf("exit")
 	})
-	s.validateConfig()
 	return s.saveConfig()
 }
 

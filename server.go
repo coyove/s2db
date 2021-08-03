@@ -61,12 +61,6 @@ type Server struct {
 	}
 }
 
-type Pair struct {
-	Key   string
-	Score float64
-	Data  []byte
-}
-
 func Open(path string) (*Server, error) {
 	var shards [ShardNum]string
 	if idx := strings.Index(path, ":"); idx > 0 {
@@ -193,6 +187,7 @@ func (s *Server) Serve(addr string) error {
 	for i := range s.db {
 		go s.batchWorker(i)
 	}
+	go s.schedPurge() // TODO: close signal
 
 	for {
 		conn, err := listener.Accept()
@@ -300,7 +295,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		if name == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
-		if strings.EqualFold(name, "from") {
+		if strings.EqualFold(name, "FROM") {
 			s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
 				info.ListenAddr = command.Get(2)
 				info.ServerName = command.Get(3)
@@ -404,7 +399,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
 	case "PURGELOG":
-		c, err := s.purgeLog(atoip(name), atoi64(command.Get(2)))
+		head := int64(atoi(command.Get(2)))
+		if strings.EqualFold(name, "ALL") {
+			for i := 0; i < ShardNum; i++ {
+				if _, _, err := s.purgeLog(i, head); err != nil {
+					return w.WriteError(err.Error())
+				}
+				log.Info("purgelog all finished: ", i)
+			}
+			return w.WriteSimpleString("OK")
+		}
+		c, _, err := s.purgeLog(atoip(name), head)
 		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
@@ -468,13 +473,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				return w.WriteInt(int64(v.(int)))
 			}
 		}
-		match := ""
-		for i := 4; i < command.ArgCount(); i++ {
-			if strings.EqualFold(command.Get(i), "MATCH") {
-				match = command.Get(i + 1)
-				i++
-			}
-		}
+		// ZCOUNT name start end [MATCH X]
+		match := command.Get(5) // maybe empty
 		c, err := s.ZCount(name, command.Get(2), command.Get(3), match)
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -495,11 +495,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				cmd = cmd[:len(cmd)-4]
 			}
 			limit := atoi(command.Get(3))
-			if cmd == "ZRANK" {
-				c, err = s.ZRank(name, command.Get(2), limit)
-			} else {
-				c, err = s.ZRevRank(name, command.Get(2), limit)
-			}
+			c, err = s.ZRank(cmd == "ZREVRANK", name, command.Get(2), limit)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -544,25 +540,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 
 		switch cmd {
-		case "ZRANGE":
-			p, err = s.ZRange(name, atoip(start), atoip(end), withData)
-		case "ZREVRANGE":
-			p, err = s.ZRevRange(name, atoip(start), atoip(end), withData)
+		case "ZRANGE", "ZREVRANGE":
+			p, err = s.ZRange(cmd == "ZREVRANGE", name, atoip(start), atoip(end), withData)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			if cmd == "ZRANGEBYLEX" {
-				p, err = s.ZRangeByLex(name, start, end, match, limit)
-			} else {
-				p, err = s.ZRevRangeByLex(name, start, end, match, limit)
-			}
-			if withData {
-				if err := s.fillPairsData(name, p); err != nil {
-					return w.WriteError(err.Error())
-				}
-			}
-		case "ZRANGEBYSCORE":
-			p, err = s.ZRangeByScore(name, start, end, match, limit, withData)
-		case "ZREVRANGEBYSCORE":
-			p, err = s.ZRevRangeByScore(name, start, end, match, limit, withData)
+			p, err = s.ZRangeByLex(cmd == "ZREVRANGEBYLEX", name, start, end, match, limit, withData)
+		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+			p, err = s.ZRangeByScore(cmd == "ZREVRANGEBYSCORE", name, start, end, match, limit, withData)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())

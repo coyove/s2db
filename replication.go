@@ -94,11 +94,11 @@ func (s *Server) requestLogPuller(shard int) {
 			ServerName: parts[1],
 			Version:    parts[2],
 		}
-		if s.master.Version > Version {
-			log.Error("ping: master version too high: ", s.master.Version, ">", Version)
-			time.Sleep(time.Second * 10)
-			continue
-		}
+		// if s.master.Version > Version {
+		// 	log.Error("ping: master version too high: ", s.master.Version, ">", Version)
+		// 	time.Sleep(time.Second * 10)
+		// 	continue
+		// }
 
 		myWalIndex, err := s.myLogTail(shard)
 		if err != nil {
@@ -255,8 +255,8 @@ func (s *Server) purgeLog(shard int, head int64) (int, int, error) {
 		if min != math.MaxUint64 {
 			// If master have any slaves, it can't purge logs which slaves don't have yet
 			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-			if head < int64(min) {
-				return fmt.Errorf("truncate too much (slave rejection)")
+			if head > int64(min) {
+				return fmt.Errorf("truncate too much: %d (slave rejection: %d)", head, min)
 			}
 		}
 

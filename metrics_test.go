@@ -2,9 +2,12 @@ package main
 
 import (
 	"fmt"
-	"sync"
+	"math/rand"
+	"sort"
 	"testing"
 	"time"
+
+	"go.etcd.io/bbolt"
 )
 
 func TestMetrics(t *testing.T) {
@@ -21,30 +24,21 @@ func TestMetrics(t *testing.T) {
 }
 
 func BenchmarkChan(b *testing.B) {
-	c := make(chan chan bool)
-	go func() {
-		for x := range c {
-			x <- true
-		}
-	}()
-	x := make(chan bool)
+	x := make([]uint64, 1e4)
+	for i := range x {
+		x[i] = rand.Uint64()
+	}
 	for i := 0; i < b.N; i++ {
-		c <- x
-		<-x
+		bbolt.SortU8(x)
 	}
 }
 
 func BenchmarkChan2(b *testing.B) {
-	c := make(chan *sync.WaitGroup)
-	go func() {
-		for x := range c {
-			x.Done()
-		}
-	}()
-	x := &sync.WaitGroup{}
+	x := make([]int, 1e4)
+	for i := range x {
+		x[i] = rand.Int()
+	}
 	for i := 0; i < b.N; i++ {
-		x.Add(1)
-		c <- x
-		x.Wait()
+		sort.Ints(x)
 	}
 }

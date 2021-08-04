@@ -1,6 +1,8 @@
 package bbolt
 
-import "sort"
+import (
+	"unsafe"
+)
 
 // hashmapFreeCount returns count of free pages(hashmap version)
 func (f *freelist) hashmapFreeCount() int {
@@ -81,7 +83,8 @@ func (f *freelist) hashmapGetFreePageIDs() []pgid {
 			m = append(m, start+pgid(i))
 		}
 	}
-	sort.Sort(pgids(m))
+	// sort.Sort(pgids(m))
+	SortU8(*(*[]uint64)(unsafe.Pointer(&m)))
 
 	return m
 }
@@ -151,7 +154,8 @@ func (f *freelist) init(pgids []pgid) {
 	size := uint64(1)
 	start := pgids[0]
 
-	if !sort.SliceIsSorted([]pgid(pgids), func(i, j int) bool { return pgids[i] < pgids[j] }) {
+	//  if !sort.SliceIsSorted([]pgid(pgids), func(i, j int) bool { return pgids[i] < pgids[j] }) {
+	if IsSortedU8(*(*[]uint64)(unsafe.Pointer(&pgids))) != 0 {
 		panic("pgids not sorted")
 	}
 

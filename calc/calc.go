@@ -20,19 +20,29 @@ func Eval(in string) (float64, error) {
 	}
 
 	old := in
+
+	in = strings.Replace(in, "\n", "", -1)
+	now := time.Now().UTC()
 	if strings.Contains(in, "now") {
-		now := time.Now()
 		in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
 		in = strings.Replace(in, "now", strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64), -1)
 	}
-	in = strings.Replace(in, "month.", "2592000000", -1)
-	in = strings.Replace(in, "month", "2592000", -1)
-	in = strings.Replace(in, "week.", "604800000", -1)
-	in = strings.Replace(in, "week", "604800", -1)
-	in = strings.Replace(in, "day.", "86400000", -1)
-	in = strings.Replace(in, "day", "86400", -1)
-	in = strings.Replace(in, "hour.", "3600000", -1)
-	in = strings.Replace(in, "hour", "3600", -1)
+
+	in = replaceInt(in, "month.", 2592000000)
+	in = replaceInt(in, "month", 2592000)
+	in = replaceInt(in, "week.", 604800000)
+	in = replaceInt(in, "week", 604800)
+	in = replaceInt(in, "day.", 86400000)
+	in = replaceInt(in, "day", 86400)
+	in = replaceInt(in, "hour", 3600000)
+	in = replaceInt(in, "hour", 3600)
+
+	in = replaceInt(in, "MIN", now.Minute())
+	in = replaceInt(in, "HOUR", now.Hour())
+	in = replaceInt(in, "DOW", int(now.Weekday()))
+	in = replaceInt(in, "DOY", int(now.YearDay()))
+	in = replaceInt(in, "DOM", now.Day())
+	in = replaceInt(in, "MON", int(now.Month()))
 
 	f, err := parser.ParseExpr(in)
 	if err != nil {
@@ -47,8 +57,11 @@ func Eval(in string) (float64, error) {
 }
 
 const (
-	geoHashFunc      = 0xffffffffffff0001
-	geoHashLossyFunc = 0xffffffffffff0002
+	intFunc = 0xffffffffffff0001 + iota
+	geoHashFunc
+	geoHashLossyFunc
+	inFunc
+	ninFunc
 )
 
 func evalBinary(in ast.Expr) float64 {
@@ -64,7 +77,27 @@ func evalBinary(in ast.Expr) float64 {
 		case token.QUO:
 			return evalBinary(in.X) / evalBinary(in.Y)
 		case token.REM:
-			return math.Remainder(evalBinary(in.X), evalBinary(in.Y))
+			x, y := evalBinary(in.X), evalBinary(in.Y)
+			if float64(int64(x)) == x && float64(int64(y)) == y {
+				return float64(int64(x) % int64(y))
+			}
+			return math.Remainder(x, y)
+		case token.EQL:
+			return bton(evalBinary(in.X) == evalBinary(in.Y))
+		case token.NEQ:
+			return bton(evalBinary(in.X) != evalBinary(in.Y))
+		case token.GTR:
+			return bton(evalBinary(in.X) > evalBinary(in.Y))
+		case token.LSS:
+			return bton(evalBinary(in.X) < evalBinary(in.Y))
+		case token.GEQ:
+			return bton(evalBinary(in.X) >= evalBinary(in.Y))
+		case token.LEQ:
+			return bton(evalBinary(in.X) <= evalBinary(in.Y))
+		case token.LAND:
+			return bton(evalBinary(in.X) != 0 && evalBinary(in.Y) != 0)
+		case token.LOR:
+			return bton(evalBinary(in.X) != 0 || evalBinary(in.Y) != 0)
 		}
 	case *ast.UnaryExpr:
 		switch in.Op {
@@ -84,10 +117,16 @@ func evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(geoHashFunc)
 		case "coordLossy":
 			return math.Float64frombits(geoHashLossyFunc)
+		case "int":
+			return math.Float64frombits(intFunc)
+		case "in":
+			return math.Float64frombits(inFunc)
+		case "nin":
+			return math.Float64frombits(ninFunc)
 		default:
 		}
 	case *ast.CallExpr:
-		switch math.Float64bits(evalBinary(in.Fun)) {
+		switch n := math.Float64bits(evalBinary(in.Fun)); n {
 		case geoHashFunc:
 			if len(in.Args) == 2 {
 				long := evalBinary(in.Args[0])
@@ -101,8 +140,36 @@ func evalBinary(in ast.Expr) float64 {
 				lat, long := geohash.DecodeIntWithPrecision(h>>i, uint(52-i))
 				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
 			}
+		case intFunc:
+			if len(in.Args) == 1 {
+				return float64(int64(evalBinary(in.Args[0])))
+			}
+		case inFunc, ninFunc:
+			if len(in.Args) > 2 {
+				a := evalBinary(in.Args[0])
+				for i := 1; i < len(in.Args); i++ {
+					if a == evalBinary(in.Args[i]) {
+						return bton(n == inFunc)
+					}
+				}
+				return bton(n == ninFunc)
+			}
 		}
 	}
 	// fmt.Printf("%T", in)
 	return math.NaN()
+}
+
+func bton(v bool) float64 {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func replaceInt(s, old string, new int) string {
+	if strings.Contains(s, old) {
+		return strings.Replace(s, old, strconv.Itoa(new), -1)
+	}
+	return s
 }

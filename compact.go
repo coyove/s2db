@@ -3,12 +3,12 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
-	"math/rand"
 	"os"
 	"strconv"
 	"time"
 
 	log "github.com/sirupsen/logrus"
+	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"go.etcd.io/bbolt"
 )
 
@@ -114,18 +114,20 @@ func (s *Server) schedPurge() {
 	if s.closed {
 		return
 	}
-	if s.SchedPurgeEnable == 0 {
-		time.AfterFunc(time.Minute*10, s.schedPurge)
+	if s.SchedPurgeJob == "" {
+		time.AfterFunc(time.Minute, s.schedPurge)
 		return
 	}
-	hr := time.Now().UTC().Hour()
-	if hr == s.SchedPurgeHourUTC {
-		log.Info("begin scheduled purging")
+
+	ok, err := calc.Eval(s.SchedPurgeJob)
+	if err != nil {
+		log.Error("scheduled purgelog job string: ", err)
+	} else if ok != 0 {
+		log.Info("begin scheduled purging: ", s.SchedPurgeJob)
 		for i := 0; i < ShardNum; i++ {
 			remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
 			log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err, " compact=", s.compactShard(i))
 		}
 	}
-	delta := time.Duration(rand.Intn(100)) * time.Millisecond
-	time.AfterFunc(time.Hour+delta, s.schedPurge)
+	time.AfterFunc(time.Minute, s.schedPurge)
 }

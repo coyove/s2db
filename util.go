@@ -342,8 +342,7 @@ type ServerConfig struct {
 	ResponseLogRun     int
 	ResponseLogSize    int // kb
 	BatchMaxRun        int
-	SchedPurgeEnable   int
-	SchedPurgeHourUTC  int
+	SchedPurgeJob      string
 	SchedPurgeHead     int
 	CompactTxSize      int
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -134,7 +133,6 @@ func (s *Server) requestLogPuller(shard int) {
 			s.survey.batchLatSv.Incr(time.Since(start).Milliseconds())
 			s.survey.batchSizeSv.Incr(int64(len(names)))
 		}
-		time.Sleep(time.Second / 2)
 	}
 
 	log.Info("log replayer exited")
@@ -344,24 +342,4 @@ func (s *slaves) Update(ip string, update func(*serverInfo)) {
 	sort.Slice(s.Slaves, func(i, j int) bool {
 		return s.Slaves[i].Score > s.Slaves[j].Score
 	})
-}
-
-func (s *Server) schedPurge() {
-	if s.closed {
-		return
-	}
-	if s.SchedPurgeEnable == 0 {
-		time.AfterFunc(time.Minute*10, s.schedPurge)
-		return
-	}
-	hr := time.Now().UTC().Hour()
-	if hr == s.SchedPurgeHourUTC {
-		log.Info("begin scheduled purging")
-		for i := 0; i < ShardNum; i++ {
-			remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
-			log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err)
-		}
-	}
-	delta := time.Duration(rand.Intn(100)) * time.Millisecond
-	time.AfterFunc(time.Hour+delta, s.schedPurge)
 }

@@ -331,23 +331,21 @@ func (o *RangeOptions) getLimit() int {
 }
 
 type ServerConfig struct {
-	ServerName          string
-	CacheSize           int
-	CacheKeyMaxLen      int
-	WeakCacheSize       int
-	WeakTTL             int // s
-	SlowLimit           int // ms
-	PurgeLogMaxRunTime  int // s
-	PurgeLogRun         int
-	ResponseLogRun      int
-	ResponseLogSize     int // kb
-	BatchMaxRun         int
-	SchedPurgeEnable    int
-	SchedPurgeHourUTC   int
-	SchedPurgeHead      int
-	CompactTxSize       int
-	SchedCompactEnable  int
-	SchedCompactHourUTC int
+	ServerName         string
+	CacheSize          int
+	CacheKeyMaxLen     int
+	WeakCacheSize      int
+	WeakTTL            int // s
+	SlowLimit          int // ms
+	PurgeLogMaxRunTime int // s
+	PurgeLogRun        int
+	ResponseLogRun     int
+	ResponseLogSize    int // kb
+	BatchMaxRun        int
+	SchedPurgeEnable   int
+	SchedPurgeHourUTC  int
+	SchedPurgeHead     int
+	CompactTxSize      int
 }
 
 func (s *Server) loadConfig() error {

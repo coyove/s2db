@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"os"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -341,53 +339,6 @@ func (s *slaves) Update(ip string, update func(*serverInfo)) {
 	sort.Slice(s.Slaves, func(i, j int) bool {
 		return s.Slaves[i].Score > s.Slaves[j].Score
 	})
-}
-
-func (s *Server) compactShard(shard int) error {
-	x := &s.db[shard]
-
-	// Turn the shard into read only mode
-	x.readonly = true
-	for len(x.batchTx) > 0 { // wait batch worker to clear the queue
-		runtime.Gosched()
-	}
-
-	old := x.DB.Path()
-	path := old + ".bak"
-
-	of, err := os.Create(path)
-	if err != nil {
-		return err // keep shard readonly until we find the cause
-	}
-	err = x.DB.Update(func(tx *bbolt.Tx) error {
-		_, err = tx.WriteTo(of)
-		return err
-	})
-	of.Close()
-	if err != nil {
-		return err // keep ...
-	}
-
-	if err := x.DB.Close(); err != nil {
-		return err // keep ...
-	}
-
-	// Replace the database file on disk
-	if err := os.Rename(old, old+time.Now().UTC().Format(".060102150405")); err != nil {
-		return err // keep ...
-	}
-	if err := os.Rename(path, old); err != nil {
-		return err // keep ...
-	}
-
-	// Reload new database
-	db, err := bbolt.Open(old, 0666, bboltOptions)
-	if err != nil {
-		return err // keep ...
-	}
-
-	x.DB, x.readonly = db, false
-	return nil
 }
 
 func (s *Server) schedPurge() {

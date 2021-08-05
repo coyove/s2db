@@ -24,9 +24,15 @@ import (
 
 const ShardNum = 32
 
-var bboltOptions = &bbolt.Options{
-	FreelistType: bbolt.FreelistMapType,
-}
+var (
+	bboltOptions = &bbolt.Options{
+		FreelistType: bbolt.FreelistMapType,
+	}
+	bboltReadonlyOptions = &bbolt.Options{
+		FreelistType: bbolt.FreelistMapType,
+		ReadOnly:     true,
+	}
+)
 
 type Server struct {
 	MasterAddr string

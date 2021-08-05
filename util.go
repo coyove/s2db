@@ -329,21 +329,24 @@ func (o *RangeOptions) getLimit(s *Server) int {
 }
 
 type ServerConfig struct {
-	ServerName         string
-	HardLimit          int
-	CacheSize          int
-	CacheKeyMaxLen     int
-	WeakCacheSize      int
-	WeakTTL            int // s
-	SlowLimit          int // ms
-	PurgeLogMaxRunTime int // s
-	PurgeLogRun        int
-	ResponseLogRun     int
-	ResponseLogSize    int // kb
-	BatchMaxRun        int
-	SchedPurgeEnable   int
-	SchedPurgeHourUTC  int
-	SchedPurgeHead     int
+	ServerName          string
+	HardLimit           int
+	CacheSize           int
+	CacheKeyMaxLen      int
+	WeakCacheSize       int
+	WeakTTL             int // s
+	SlowLimit           int // ms
+	PurgeLogMaxRunTime  int // s
+	PurgeLogRun         int
+	ResponseLogRun      int
+	ResponseLogSize     int // kb
+	BatchMaxRun         int
+	SchedPurgeEnable    int
+	SchedPurgeHourUTC   int
+	SchedPurgeHead      int
+	CompactTxSize       int
+	SchedCompactEnable  int
+	SchedCompactHourUTC int
 }
 
 func (s *Server) loadConfig() error {
@@ -382,6 +385,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.SchedPurgeHead, 1500)
+	ifZero(&s.CompactTxSize, 50000)
 
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)

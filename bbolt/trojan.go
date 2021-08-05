@@ -1,6 +1,10 @@
 package bbolt
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+
+	"github.com/sirupsen/logrus"
+)
 
 // KeyN is a shortcut of Bucket.Stats().KeyN, which assumes there is no nested buckets
 func (b *Bucket) KeyN() (n int) {
@@ -10,6 +14,15 @@ func (b *Bucket) KeyN() (n int) {
 		}
 	})
 	return
+}
+
+func (b *DB) Size() int64 {
+	fi, err := b.file.Stat()
+	if err != nil {
+		logrus.Error("database file stat: ", err)
+		return -1
+	}
+	return fi.Size()
 }
 
 /*	Copyright (c) 2019, Serhat Şevki Dinçer.

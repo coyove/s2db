@@ -1,4 +1,4 @@
-SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go geo.go preparer.go runner.go'
+SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go geo.go preparer.go runner.go compact.go'
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then

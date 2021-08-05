@@ -123,38 +123,12 @@ func (s *Server) requestLogPuller(shard int) {
 			continue
 		}
 
-		var names []string
 		start := time.Now()
-		err = s.db[shard].Update(func(tx *bbolt.Tx) error {
-			for _, x := range cmds {
-				command, err := splitCommand(x)
-				if err != nil {
-					return fmt.Errorf("fatal: invalid payload: %q", x)
-				}
-				cmd := strings.ToUpper(command.Get(0))
-				name := command.Get(1)
-				switch cmd {
-				case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-					_, err = s.parseDel(cmd, name, command)(tx)
-				case "ZADD":
-					_, err = s.parseZAdd(cmd, name, command)(tx)
-				case "ZINCRBY":
-					_, err = s.parseZIncrBy(cmd, name, command)(tx)
-				default:
-					return fmt.Errorf("fatal: not a write command: %q", cmd)
-				}
-				if err != nil {
-					log.Error("bulkload, error ocurred: ", cmd, " ", name)
-					return err
-				}
-				names = append(names, name)
-			}
-			return nil
-		})
+		names, err := runLog(cmds, s.db[shard].DB)
 		if err != nil {
 			log.Error("bulkload: ", err)
 		} else {
-			for _, n := range names {
+			for n := range names {
 				s.removeCache(n)
 			}
 			s.survey.batchLatSv.Incr(time.Since(start).Milliseconds())
@@ -165,6 +139,37 @@ func (s *Server) requestLogPuller(shard int) {
 
 	log.Info("log replayer exited")
 	s.db[shard].pullerCloseSignal <- true
+}
+
+func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
+	names = map[string]bool{}
+	err = db.Update(func(tx *bbolt.Tx) error {
+		for _, x := range cmds {
+			command, err := splitCommand(x)
+			if err != nil {
+				return fmt.Errorf("fatal: invalid payload: %q", x)
+			}
+			cmd := strings.ToUpper(command.Get(0))
+			name := command.Get(1)
+			switch cmd {
+			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+				_, err = parseDel(cmd, name, command)(tx)
+			case "ZADD":
+				_, err = parseZAdd(cmd, name, command)(tx)
+			case "ZINCRBY":
+				_, err = parseZIncrBy(cmd, name, command)(tx)
+			default:
+				return fmt.Errorf("fatal: not a write command: %q", cmd)
+			}
+			if err != nil {
+				log.Error("bulkload, error ocurred: ", cmd, " ", name)
+				return err
+			}
+			names[name] = true
+		}
+		return nil
+	})
+	return
 }
 
 func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {

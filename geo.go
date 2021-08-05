@@ -233,8 +233,8 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 }
 
 func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any, withData bool) (pairs []Pair, err error) {
-	limit := s.HardLimit
-	if count > 0 && count < s.HardLimit {
+	limit := HardLimit
+	if count > 0 && count < HardLimit {
 		limit = count
 	}
 

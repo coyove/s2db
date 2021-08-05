@@ -25,6 +25,8 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+var HardLimit = 100000
+
 func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
@@ -320,9 +322,9 @@ func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
 	}
 }
 
-func (o *RangeOptions) getLimit(s *Server) int {
-	limit := s.HardLimit
-	if o.Limit > 0 && o.Limit < s.HardLimit {
+func (o *RangeOptions) getLimit() int {
+	limit := HardLimit
+	if o.Limit > 0 && o.Limit < HardLimit {
 		limit = o.Limit
 	}
 	return limit
@@ -330,7 +332,6 @@ func (o *RangeOptions) getLimit(s *Server) int {
 
 type ServerConfig struct {
 	ServerName          string
-	HardLimit           int
 	CacheSize           int
 	CacheKeyMaxLen      int
 	WeakCacheSize       int
@@ -373,7 +374,6 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig() error {
-	ifZero(&s.HardLimit, 10000)
 	ifZero(&s.WeakTTL, 300)
 	ifZero(&s.CacheSize, 1024)
 	ifZero(&s.CacheKeyMaxLen, 100)

@@ -6,7 +6,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, err error) {
+func prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, err error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName := tx.Bucket([]byte("zset." + name))
 		bkScore := tx.Bucket([]byte("zset.score." + name))
@@ -19,11 +19,11 @@ func (s *Server) prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count in
 		if err := tx.DeleteBucket([]byte("zset.score." + name)); err != nil {
 			return 0, err
 		}
-		return 1, s.writeLog(tx, dd)
+		return 1, writeLog(tx, dd)
 	}
 }
 
-func (s *Server) prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -66,13 +66,13 @@ func (s *Server) prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, dd []by
 			}
 		}
 		if ch {
-			return added + updated, s.writeLog(tx, dd)
+			return added + updated, writeLog(tx, dd)
 		}
-		return added, s.writeLog(tx, dd)
+		return added, writeLog(tx, dd)
 	}
 }
 
-func (s *Server) prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (count interface{}, err error) {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
@@ -89,11 +89,11 @@ func (s *Server) prepareZRem(name string, keys []string, dd []byte) func(tx *bbo
 		if len(pairs) == 0 {
 			return 0, nil
 		}
-		return len(pairs), s.deletePair(tx, name, pairs, dd)
+		return len(pairs), deletePair(tx, name, pairs, dd)
 	}
 }
 
-func (s *Server) prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (newValue interface{}, err error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -135,13 +135,13 @@ func (s *Server) prepareZIncrBy(name string, key string, by float64, dd []byte) 
 		if err := bkScore.Put([]byte(string(scoreBuf)+key), dataBuf); err != nil {
 			return 0, err
 		}
-		return score + by, s.writeLog(tx, dd)
+		return score + by, writeLog(tx, dd)
 	}
 }
 
-func (s *Server) prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+		_, c, err := rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
@@ -150,11 +150,11 @@ func (s *Server) prepareZRemRangeByRank(name string, start, end int, dd []byte) 
 	}
 }
 
-func (s *Server) prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		rangeStart := (RangeLimit{}).fromString(start)
 		rangeEnd := (RangeLimit{}).fromString(end)
-		_, c, err := s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+		_, c, err := rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
@@ -163,7 +163,7 @@ func (s *Server) prepareZRemRangeByLex(name string, start, end string, dd []byte
 	}
 }
 
-func (s *Server) prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
 		panic(err)
@@ -173,7 +173,7 @@ func (s *Server) prepareZRemRangeByScore(name string, start, end string, dd []by
 		panic(err)
 	}
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+		_, c, err := rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,

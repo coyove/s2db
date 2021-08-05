@@ -13,7 +13,7 @@ func (s *Server) pick(name string) *bbolt.DB {
 	return s.db[hashStr(name)%uint64(len(s.db))].DB
 }
 
-func (s *Server) writeLog(tx *bbolt.Tx, dd []byte) error {
+func writeLog(tx *bbolt.Tx, dd []byte) error {
 	bkWal, err := tx.CreateBucketIfNotExists([]byte("wal"))
 	if err != nil {
 		return err
@@ -22,7 +22,7 @@ func (s *Server) writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bkWal.Put(intToBytes(id), dd)
 }
 
-func (s *Server) parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	var xx, nx, ch, data bool
 	var idx = 2
 	for ; ; idx++ {
@@ -55,33 +55,33 @@ func (s *Server) parseZAdd(cmd, name string, command *redisproto.Command) func(*
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: command.At(i + 2)})
 		}
 	}
-	return s.prepareZAdd(name, pairs, nx, xx, ch, dumpCommand(command))
+	return prepareZAdd(name, pairs, nx, xx, ch, dumpCommand(command))
 }
 
-func (s *Server) parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	dd := dumpCommand(command)
 	switch cmd {
 	case "DEL":
-		return s.prepareDel(name, dd)
+		return prepareDel(name, dd)
 	case "ZREM":
-		return s.prepareZRem(name, restCommandsToKeys(2, command), dd)
+		return prepareZRem(name, restCommandsToKeys(2, command), dd)
 	}
 	start, end := command.Get(2), command.Get(3)
 	switch cmd {
 	case "ZREMRANGEBYLEX":
-		return s.prepareZRemRangeByLex(name, start, end, dd)
+		return prepareZRemRangeByLex(name, start, end, dd)
 	case "ZREMRANGEBYSCORE":
-		return s.prepareZRemRangeByScore(name, start, end, dd)
+		return prepareZRemRangeByScore(name, start, end, dd)
 	case "ZREMRANGEBYRANK":
-		return s.prepareZRemRangeByRank(name, atoip(start), atoip(end), dd)
+		return prepareZRemRangeByRank(name, atoip(start), atoip(end), dd)
 	default:
 		panic(-1)
 	}
 }
 
-func (s *Server) parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	by := atof2p(command.At(2))
-	return s.prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
+	return prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
 }
 
 func (s *Server) ZCard(name string) (int64, error) {
@@ -146,7 +146,7 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 	return
 }
 
-func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
+func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + name))
 	if bkName == nil {
 		return nil
@@ -163,5 +163,5 @@ func (s *Server) deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) 
 			return err
 		}
 	}
-	return s.writeLog(tx, dd)
+	return writeLog(tx, dd)
 }

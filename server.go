@@ -422,12 +422,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		//  Client space write commands
 		// -----------------------
 	case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(name, false, s.parseDel(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, false, parseDel(cmd, name, command), w)
 	case "ZADD":
 		deferred := parseDeferFlag(command) // ZADD name --DEFER-- arg1 arg2 ...
-		return s.runPreparedTxAndWrite(name, deferred, s.parseZAdd(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, command), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(name, false, s.parseZIncrBy(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
 
 		// -----------------------
 		//  Client space read commands
@@ -568,7 +568,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "GEOPOS":
 		return s.runGeoPos(w, name, command)
 	case "SCAN":
-		limit, match, withScores, inShard := s.HardLimit, "", false, -1
+		limit, match, withScores, inShard := HardLimit, "", false, -1
 		for i := 2; i < command.ArgCount(); i++ {
 			if command.EqualFold(i, "COUNT") {
 				limit = atoip(command.Get(i + 1))

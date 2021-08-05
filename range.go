@@ -23,7 +23,7 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 	if err != nil {
 		return 0, err
 	}
-	_, c, err := s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	_, c, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		CountOnly:   true,
@@ -35,14 +35,14 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 
 func (s *Server) ZRange(rev bool, name string, start, end int, withData bool) ([]Pair, error) {
 	if rev {
-		p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+		p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 			OffsetStart: -end - 1,
 			OffsetEnd:   -start - 1,
 			WithData:    withData,
 		}))
 		return reversePairs(p), err
 	}
-	p, _, err := s.runPreparedRangeTx(name, s.rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 		OffsetStart: start,
 		OffsetEnd:   end,
 		WithData:    withData,
@@ -59,7 +59,7 @@ func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match str
 		rangeStart = rangeStart.fromString(start)
 		rangeEnd = rangeEnd.fromString(end)
 	}
-	p, _, err := s.runPreparedRangeTx(name, s.rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, rangeLex(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		LexMatch:    match,
@@ -89,7 +89,7 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match s
 	} else if err2 != nil {
 		return nil, err2
 	}
-	p, _, err = s.runPreparedRangeTx(name, s.rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		Limit:       limit,
@@ -102,7 +102,7 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match s
 	return p, err
 }
 
-func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
+func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + name))
 		if bk == nil {
@@ -124,7 +124,7 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 		c := bk.Cursor()
 		k, sc := c.Seek(startBuf)
 
-		limit := opt.getLimit(s)
+		limit := opt.getLimit()
 		for i := 0; len(pairs) < limit; i++ {
 			if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
 				if i >= opt.OffsetStart {
@@ -155,13 +155,13 @@ func (s *Server) rangeLex(name string, start, end RangeLimit, opt RangeOptions) 
 		}
 
 		if len(opt.DeleteLog) > 0 {
-			return pairs, count, s.deletePair(tx, name, pairs, opt.DeleteLog)
+			return pairs, count, deletePair(tx, name, pairs, opt.DeleteLog)
 		}
 		return pairs, count, nil
 	}
 }
 
-func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
+func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + name))
 		if bk == nil {
@@ -182,7 +182,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 		c := bk.Cursor()
 		k, dataBuf := c.Seek(startBuf)
 
-		limit := opt.getLimit(s)
+		limit := opt.getLimit()
 		for i := 0; len(pairs) < limit; i++ {
 			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
 				if i >= opt.OffsetStart {
@@ -219,7 +219,7 @@ func (s *Server) rangeScore(name string, start, end RangeLimit, opt RangeOptions
 			k, dataBuf = c.Next()
 		}
 		if len(opt.DeleteLog) > 0 {
-			return pairs, count, s.deletePair(tx, name, pairs, opt.DeleteLog)
+			return pairs, count, deletePair(tx, name, pairs, opt.DeleteLog)
 		}
 		return pairs, count, nil
 	}
@@ -234,7 +234,7 @@ func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err err
 			return nil
 		}
 		if limit <= 0 {
-			limit = s.HardLimit * 2
+			limit = HardLimit * 2
 		}
 		c := bk.Cursor()
 		if rev {
@@ -262,8 +262,8 @@ func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err err
 }
 
 func (s *Server) scan(cursor string, match string, shard int, count int) (pairs []Pair, nextCursor string, err error) {
-	if count > s.HardLimit {
-		count = s.HardLimit
+	if count > HardLimit {
+		count = HardLimit
 	}
 	count++
 

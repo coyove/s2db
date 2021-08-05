@@ -13,7 +13,7 @@ import (
 	"github.com/mmcloughlin/geohash"
 )
 
-func Eval(in string) (float64, error) {
+func Eval(in string, args ...float64) (float64, error) {
 	v, err := strconv.ParseFloat(in, 64)
 	if err == nil {
 		return v, nil
@@ -22,6 +22,20 @@ func Eval(in string) (float64, error) {
 	old := in
 
 	in = strings.Replace(in, "\n", "", -1)
+	in = strings.Replace(in, "if(", "IF(", -1)
+
+	depth := 0
+	for _, r := range in {
+		if r == '(' {
+			depth++
+		} else if r == ')' {
+			depth--
+		}
+	}
+	if depth > 0 {
+		in = in + "))))))))))))))))))))))))))))))))"[:depth]
+	}
+
 	now := time.Now().UTC()
 	if strings.Contains(in, "now") {
 		in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
@@ -49,7 +63,21 @@ func Eval(in string) (float64, error) {
 		return 0, fmt.Errorf("invalid expression: %q, parser reports: %v", in, err)
 	}
 
-	v = evalBinary(f)
+	var r runner
+	if len(args) > 0 {
+		if len(args)%2 != 0 {
+			return 0, fmt.Errorf("invalid arguments")
+		}
+		for i := 0; i < len(args); i += 2 {
+			if args[i] > 64 && args[i] < 128 {
+				r.args[byte(args[i])-64] = args[i+1]
+				continue
+			}
+			return 0, fmt.Errorf("invalid arguments")
+		}
+	}
+
+	v = r.evalBinary(f)
 	if math.IsNaN(v) {
 		return v, fmt.Errorf("invalid expression: %q", old)
 	}
@@ -62,55 +90,62 @@ const (
 	geoHashLossyFunc
 	inFunc
 	ninFunc
+	ifFunc
 )
 
-func evalBinary(in ast.Expr) float64 {
+type runner struct {
+	args [64]float64
+}
+
+func (r *runner) evalBinary(in ast.Expr) float64 {
 	switch in := in.(type) {
 	case *ast.BinaryExpr:
 		switch in.Op {
 		case token.ADD:
-			return evalBinary(in.X) + evalBinary(in.Y)
+			return r.evalBinary(in.X) + r.evalBinary(in.Y)
 		case token.SUB:
-			return evalBinary(in.X) - evalBinary(in.Y)
+			return r.evalBinary(in.X) - r.evalBinary(in.Y)
 		case token.MUL:
-			return evalBinary(in.X) * evalBinary(in.Y)
+			return r.evalBinary(in.X) * r.evalBinary(in.Y)
 		case token.QUO:
-			return evalBinary(in.X) / evalBinary(in.Y)
+			return r.evalBinary(in.X) / r.evalBinary(in.Y)
 		case token.REM:
-			x, y := evalBinary(in.X), evalBinary(in.Y)
+			x, y := r.evalBinary(in.X), r.evalBinary(in.Y)
 			if float64(int64(x)) == x && float64(int64(y)) == y {
 				return float64(int64(x) % int64(y))
 			}
 			return math.Remainder(x, y)
 		case token.EQL:
-			return bton(evalBinary(in.X) == evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) == r.evalBinary(in.Y))
 		case token.NEQ:
-			return bton(evalBinary(in.X) != evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) != r.evalBinary(in.Y))
 		case token.GTR:
-			return bton(evalBinary(in.X) > evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) > r.evalBinary(in.Y))
 		case token.LSS:
-			return bton(evalBinary(in.X) < evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) < r.evalBinary(in.Y))
 		case token.GEQ:
-			return bton(evalBinary(in.X) >= evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) >= r.evalBinary(in.Y))
 		case token.LEQ:
-			return bton(evalBinary(in.X) <= evalBinary(in.Y))
+			return bton(r.evalBinary(in.X) <= r.evalBinary(in.Y))
 		case token.LAND:
-			return bton(evalBinary(in.X) != 0 && evalBinary(in.Y) != 0)
+			return bton(r.evalBinary(in.X) != 0 && r.evalBinary(in.Y) != 0)
 		case token.LOR:
-			return bton(evalBinary(in.X) != 0 || evalBinary(in.Y) != 0)
+			return bton(r.evalBinary(in.X) != 0 || r.evalBinary(in.Y) != 0)
 		}
 	case *ast.UnaryExpr:
 		switch in.Op {
 		case token.ADD:
-			return evalBinary(in.X)
+			return r.evalBinary(in.X)
 		case token.SUB:
-			return -evalBinary(in.X)
+			return -r.evalBinary(in.X)
+		case token.NOT:
+			return bton(r.evalBinary(in.X) == 0)
 		}
 	case *ast.BasicLit:
 		v, _ := strconv.ParseFloat(in.Value, 64)
 		return v
 	case *ast.ParenExpr:
-		return evalBinary(in.X)
+		return r.evalBinary(in.X)
 	case *ast.Ident:
 		switch in.Name {
 		case "coord":
@@ -123,32 +158,44 @@ func evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(inFunc)
 		case "nin":
 			return math.Float64frombits(ninFunc)
+		case "IF":
+			return math.Float64frombits(ifFunc)
 		default:
+			if len(in.Name) == 1 && in.Name[0] > 64 && in.Name[0] < 128 {
+				return r.args[in.Name[0]-64]
+			}
 		}
 	case *ast.CallExpr:
-		switch n := math.Float64bits(evalBinary(in.Fun)); n {
+		switch n := math.Float64bits(r.evalBinary(in.Fun)); n {
 		case geoHashFunc:
 			if len(in.Args) == 2 {
-				long := evalBinary(in.Args[0])
-				lat := evalBinary(in.Args[1])
+				long := r.evalBinary(in.Args[0])
+				lat := r.evalBinary(in.Args[1])
 				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
 			}
 		case geoHashLossyFunc:
 			if len(in.Args) == 2 {
-				h := uint64(evalBinary(in.Args[0]))
-				i := int(evalBinary(in.Args[1]))
+				h := uint64(r.evalBinary(in.Args[0]))
+				i := int(r.evalBinary(in.Args[1]))
 				lat, long := geohash.DecodeIntWithPrecision(h>>i, uint(52-i))
 				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
 			}
 		case intFunc:
 			if len(in.Args) == 1 {
-				return float64(int64(evalBinary(in.Args[0])))
+				return float64(int64(r.evalBinary(in.Args[0])))
+			}
+		case ifFunc:
+			if len(in.Args) == 3 {
+				if r.evalBinary(in.Args[0]) == 0 {
+					return r.evalBinary(in.Args[2])
+				}
+				return r.evalBinary(in.Args[1])
 			}
 		case inFunc, ninFunc:
 			if len(in.Args) > 2 {
-				a := evalBinary(in.Args[0])
+				a := r.evalBinary(in.Args[0])
 				for i := 1; i < len(in.Args); i++ {
-					if a == evalBinary(in.Args[i]) {
+					if a == r.evalBinary(in.Args[i]) {
 						return bton(n == inFunc)
 					}
 				}

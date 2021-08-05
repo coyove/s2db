@@ -14,6 +14,7 @@ import (
 
 func (s *Server) compactShard(shard int) error {
 	log := log.WithField("shard", strconv.Itoa(shard))
+	log.Info("STAGE 0: begin compaction")
 
 	x := &s.db[shard]
 	path := x.DB.Path()
@@ -79,7 +80,7 @@ func (s *Server) compactShard(shard int) error {
 	x.DB = roDB
 	log.Info("STAGE 3: make online database rw -> ro")
 
-	// STAGE 4: for any changes happened during STAGE 3 before readonly, write them to compactDB (should be few)
+	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
 	logs, err := s.responseLog(shard, ct+1)
 	if err != nil {
 		return err
@@ -111,23 +112,29 @@ func (s *Server) compactShard(shard int) error {
 }
 
 func (s *Server) schedPurge() {
-	if s.closed {
-		return
-	}
-	if s.SchedPurgeJob == "" {
-		time.AfterFunc(time.Minute, s.schedPurge)
-		return
-	}
-
-	ok, err := calc.Eval(s.SchedPurgeJob)
-	if err != nil {
-		log.Error("scheduled purgelog job string: ", err)
-	} else if ok != 0 {
-		log.Info("begin scheduled purging: ", s.SchedPurgeJob)
-		for i := 0; i < ShardNum; i++ {
-			remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
-			log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err, " compact=", s.compactShard(i))
+	for !s.closed {
+		if s.SchedPurgeJob == "" {
+			time.Sleep(time.Minute)
+			continue
 		}
+
+		oks := [ShardNum]bool{}
+		for i := 0; i < ShardNum; i++ {
+			ok, err := calc.Eval(s.SchedPurgeJob, 's', float64(i))
+			if err != nil {
+				log.Error("scheduled purgelog invalid job string: ", err)
+			} else if ok != 0 {
+				oks[i] = true
+			}
+		}
+		for i, ok := range oks {
+			if ok {
+				log.Info("begin scheduled shard #", i, " purging")
+				remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
+				log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err)
+				log.Info("scheduled compact shard ", i, " err=", s.compactShard(i))
+			}
+		}
+		time.Sleep(time.Minute)
 	}
-	time.AfterFunc(time.Minute, s.schedPurge)
 }

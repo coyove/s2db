@@ -376,10 +376,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		})
 		return w.WriteIntOrError(int64(c), err)
 	case "COMPACTSHARD":
-		err := s.compactShard(atoip(name))
-		if err != nil {
-			return w.WriteError(err.Error()) // keep shard readonly until we find the cause
-		}
+		go s.compactShard(atoip(name))
 		return w.WriteSimpleString("OK")
 
 		// -----------------------
@@ -404,19 +401,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
-	case "PURGELOG":
-		head := int64(atoi(command.Get(2)))
-		if strings.EqualFold(name, "ALL") {
-			for i := 0; i < ShardNum; i++ {
-				if _, _, err := s.purgeLog(i, head); err != nil {
-					return w.WriteError(err.Error())
-				}
-				log.Info("purgelog all finished: ", i)
-			}
-			return w.WriteSimpleString("OK")
-		}
-		c, _, err := s.purgeLog(atoip(name), head)
-		return w.WriteIntOrError(int64(c), err)
 
 		// -----------------------
 		//  Client space write commands

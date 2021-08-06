@@ -15,7 +15,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) compactShard(shard int) error {
+func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	log.Info("STAGE 0: begin compaction")
 
@@ -26,11 +26,13 @@ func (s *Server) compactShard(shard int) error {
 	os.Remove(path + ".compact")
 	compactDB, err := bbolt.Open(path+".compact", 0666, bboltOptions)
 	if err != nil {
-		return err
+		log.Error("open compactDB: ", err)
+		return
 	}
-	if err := s.defragdb(shard, x.DB, compactDB, s.CompactTxSize); err != nil {
+	if err := s.defragdb(shard, x.DB, compactDB); err != nil {
 		compactDB.Close()
-		return err
+		log.Error("defragdb: ", err)
+		return
 	}
 	log.Info("STAGE 1: point-in-time compaction finished, size: ", compactDB.Size())
 
@@ -51,24 +53,29 @@ func (s *Server) compactShard(shard int) error {
 	for {
 		ct, err = compactTail()
 		if err != nil {
-			return err
+			log.Error("get compactDB tail: ", err)
+			return
 		}
 		mt, err = s.myLogTail(shard)
 		if err != nil {
-			return err
+			log.Error("get shard tail: ", err)
+			return
 		}
 		if ct > mt {
-			return fmt.Errorf("fatal error: compact tail exceeds shard tail: %d>%d", ct, mt)
+			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d", ct, mt)
+			return
 		}
 		if mt-ct <= uint64(s.CompactTxSize*2) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 		logs, err := s.responseLog(shard, ct+1)
 		if err != nil {
-			return err
+			log.Error("responseLog: ", err)
+			return
 		}
 		if _, err := runLog(logs, compactDB); err != nil {
-			return err
+			log.Error("runLog: ", err)
+			return
 		}
 	}
 	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, size: %d", ct, mt, mt-ct, compactDB.Size())
@@ -78,7 +85,8 @@ func (s *Server) compactShard(shard int) error {
 	roDB, err := bbolt.Open(path, 0666, bboltReadonlyOptions)
 	if err != nil {
 		// Worst case, this shard goes offline completely
-		return err
+		log.Error("CAUTION: open roDB: ", err)
+		return
 	}
 	x.DB = roDB
 	log.Info("STAGE 3: make online database rw -> ro")
@@ -86,10 +94,12 @@ func (s *Server) compactShard(shard int) error {
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
 	logs, err := s.responseLog(shard, ct+1)
 	if err != nil {
-		return err
+		log.Error("responseLog: ", err)
+		return
 	}
 	if _, err := runLog(logs, compactDB); err != nil {
-		return err
+		log.Error("runLog: ", err)
+		return
 	}
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), roDB.Size(), compactDB.Size())
 
@@ -97,21 +107,23 @@ func (s *Server) compactShard(shard int) error {
 	compactDB.Close()
 	roDB.Close()
 
-	if err := os.Remove(path); err != nil {
-		return err
+	if err := os.Rename(path, path+".bak"); err != nil {
+		log.Error("backup original (online) DB: ", err)
+		return
 	}
 	if err := os.Rename(path+".compact", path); err != nil {
-		return err
+		log.Error("rename compactDB to online DB: ", err)
+		return
 	}
 
 	db, err := bbolt.Open(path, 0666, bboltOptions)
 	if err != nil {
-		return err
+		log.Error("open compactDB as online DB: ", err)
+		return
 	}
 	x.DB = db
 
 	log.Info("STAGE 5: swap compacted database to online")
-	return nil
 }
 
 func (s *Server) schedPurge() {
@@ -132,17 +144,17 @@ func (s *Server) schedPurge() {
 		}
 		for i, ok := range oks {
 			if ok {
-				log.Info("begin scheduled shard #", i, " purging")
-				remains, oldCount, err := s.purgeLog(i, -int64(s.SchedPurgeHead))
-				log.Info("scheduled purgelog shard ", i, " ", oldCount, ">", remains, " err=", err)
-				log.Info("scheduled compact shard ", i, " err=", s.compactShard(i))
+				log.Info("scheduleCompaction(", i, ")")
+				s.compactShard(i)
 			}
 		}
 		time.Sleep(time.Minute)
 	}
 }
 
-func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit int) error {
+func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
+	log := log.WithField("shard", strconv.Itoa(shard))
+
 	// open a tx on tmpdb for writes
 	tmptx, err := tmpdb.Begin(true)
 	if err != nil {
@@ -164,6 +176,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit in
 	c := tx.Cursor()
 
 	count := 0
+	total := 0
 	for next, _ := c.First(); next != nil; next, _ = c.Next() {
 		b := tx.Bucket(next)
 		if b == nil {
@@ -191,11 +204,11 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit in
 			if min != math.MaxUint64 {
 				// If master have any slaves, it can't purge logs which slaves don't have yet
 				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-				walStart = decUint64(min, uint64(walSize))
+				walStart = decUint64(min, uint64(s.SchedPurgeHead))
 			} else {
-				walStart = decUint64(b.Sequence(), uint64(walSize))
+				walStart = decUint64(b.Sequence(), uint64(s.SchedPurgeHead))
 			}
-			log.Info("truncate logs using start: ", walStart)
+			log.Infof("STAGE 0: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, min, b.Sequence())
 			walStartBuf = make([]byte, 8)
 			binary.BigEndian.PutUint64(walStartBuf, walStart)
 		}
@@ -205,7 +218,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit in
 				return nil
 			}
 			count++
-			if count > limit {
+			total++
+			if count > s.CompactTxSize {
 				err = tmptx.Commit()
 				if err != nil {
 					return err
@@ -222,6 +236,11 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit in
 			return tmpb.Put(k, v)
 		}); err != nil {
 			return err
+		}
+
+		if len(walStartBuf) > 0 {
+			k, _ := tmpb.Cursor().Last()
+			log.Infof("STAGE 0: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
 		}
 	}
 

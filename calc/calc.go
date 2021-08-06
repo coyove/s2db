@@ -20,6 +20,7 @@ func Eval(in string, args ...float64) (float64, error) {
 	}
 
 	old := in
+	now := time.Now().UTC()
 
 	in = strings.Replace(in, "\n", "", -1)
 	in = strings.Replace(in, "if(", "IF(", -1)
@@ -36,7 +37,6 @@ func Eval(in string, args ...float64) (float64, error) {
 		in = in + "))))))))))))))))))))))))))))))))"[:depth]
 	}
 
-	now := time.Now().UTC()
 	if strings.Contains(in, "now") {
 		in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
 		in = strings.Replace(in, "now", strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64), -1)
@@ -88,9 +88,11 @@ const (
 	intFunc = 0xffffffffffff0001 + iota
 	geoHashFunc
 	geoHashLossyFunc
+	utcAddFunc
 	inFunc
 	ninFunc
 	ifFunc
+	hrFunc
 )
 
 type runner struct {
@@ -109,6 +111,8 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return r.evalBinary(in.X) * r.evalBinary(in.Y)
 		case token.QUO:
 			return r.evalBinary(in.X) / r.evalBinary(in.Y)
+		case token.XOR:
+			return math.Pow(r.evalBinary(in.X), r.evalBinary(in.Y))
 		case token.REM:
 			x, y := r.evalBinary(in.X), r.evalBinary(in.Y)
 			if float64(int64(x)) == x && float64(int64(y)) == y {
@@ -142,7 +146,10 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return bton(r.evalBinary(in.X) == 0)
 		}
 	case *ast.BasicLit:
-		v, _ := strconv.ParseFloat(in.Value, 64)
+		v, err := strconv.ParseFloat(in.Value, 64)
+		if err != nil {
+			return math.NaN()
+		}
 		return v
 	case *ast.ParenExpr:
 		return r.evalBinary(in.X)
@@ -160,13 +167,16 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(ninFunc)
 		case "IF":
 			return math.Float64frombits(ifFunc)
+		case "hr":
+			return math.Float64frombits(hrFunc)
 		default:
 			if len(in.Name) == 1 && in.Name[0] > 64 && in.Name[0] < 128 {
 				return r.args[in.Name[0]-64]
 			}
 		}
 	case *ast.CallExpr:
-		switch n := math.Float64bits(r.evalBinary(in.Fun)); n {
+		x := r.evalBinary(in.Fun)
+		switch n := math.Float64bits(x); n {
 		case geoHashFunc:
 			if len(in.Args) == 2 {
 				long := r.evalBinary(in.Args[0])
@@ -200,6 +210,10 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 					}
 				}
 				return bton(n == ninFunc)
+			}
+		case hrFunc:
+			if len(in.Args) == 1 {
+				return float64((int64(r.evalBinary(in.Args[0])) + 24) % 24)
 			}
 		}
 	}

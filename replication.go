@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"math"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -209,86 +208,86 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 	return
 }
 
-func (s *Server) purgeLog(shard int, head int64) (int, int, error) {
-	if head == 0 {
-		return 0, 0, fmt.Errorf("head is zero")
-	}
-	if head < 0 && -head > 10000 {
-		return 0, 0, fmt.Errorf("neg-head is too large")
-	}
-	oldCount, count := 0, 0
-	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("wal"))
-		if bk == nil {
-			return nil
-		}
-
-		oldCount = bk.Stats().KeyN
-		if oldCount == 0 {
-			return nil
-		}
-		c := bk.Cursor()
-		last, _ := c.Last()
-		if len(last) != 8 {
-			return fmt.Errorf("invalid last key, fatal error")
-		}
-		tail := int64(binary.BigEndian.Uint64(last))
-		if head < 0 {
-			head = tail + head
-			if head < 1 {
-				head = 1
-			}
-		}
-		if head >= tail {
-			return fmt.Errorf("truncate head over tail")
-		}
-		if tail-head > 10000 {
-			return fmt.Errorf("too much gap, purging aborted")
-		}
-		var min uint64 = math.MaxUint64
-		for _, sv := range s.slaves.Take(time.Minute) {
-			si := &serverInfo{}
-			json.Unmarshal(sv.Data, si)
-			if si.LogTails[shard] < min {
-				min = si.LogTails[shard]
-			}
-		}
-		if min != math.MaxUint64 {
-			// If master have any slaves, it can't purge logs which slaves don't have yet
-			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-			if head > int64(min) {
-				return fmt.Errorf("truncate too much: %d (slave rejection: %d)", head, min)
-			}
-		}
-
-		keepLogs := [][2][]byte{}
-		for i := head; i <= tail; i++ {
-			k := intToBytes(uint64(i))
-			v := append([]byte{}, bk.Get(k)...)
-			keepLogs = append(keepLogs, [2][]byte{k, v})
-			count++
-		}
-		if len(keepLogs) == 0 {
-			return fmt.Errorf("keep zero logs, fatal error")
-		}
-		if err := tx.DeleteBucket([]byte("wal")); err != nil {
-			return err
-		}
-		bk, err := tx.CreateBucket([]byte("wal"))
-		if err != nil {
-			return err
-		}
-		for _, p := range keepLogs {
-			if err := bk.Put(p[0], p[1]); err != nil {
-				return err
-			}
-		}
-		return bk.SetSequence(uint64(tail))
-	}); err != nil {
-		return 0, 0, err
-	}
-	return count, oldCount, nil
-}
+// func (s *Server) purgeLog(shard int, head int64) (int, int, error) {
+// 	if head == 0 {
+// 		return 0, 0, fmt.Errorf("head is zero")
+// 	}
+// 	if head < 0 && -head > 10000 {
+// 		return 0, 0, fmt.Errorf("neg-head is too large")
+// 	}
+// 	oldCount, count := 0, 0
+// 	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
+// 		bk := tx.Bucket([]byte("wal"))
+// 		if bk == nil {
+// 			return nil
+// 		}
+//
+// 		oldCount = bk.Stats().KeyN
+// 		if oldCount == 0 {
+// 			return nil
+// 		}
+// 		c := bk.Cursor()
+// 		last, _ := c.Last()
+// 		if len(last) != 8 {
+// 			return fmt.Errorf("invalid last key, fatal error")
+// 		}
+// 		tail := int64(binary.BigEndian.Uint64(last))
+// 		if head < 0 {
+// 			head = tail + head
+// 			if head < 1 {
+// 				head = 1
+// 			}
+// 		}
+// 		if head >= tail {
+// 			return fmt.Errorf("truncate head over tail")
+// 		}
+// 		if tail-head > 10000 {
+// 			return fmt.Errorf("too much gap, purging aborted")
+// 		}
+// 		var min uint64 = math.MaxUint64
+// 		for _, sv := range s.slaves.Take(time.Minute) {
+// 			si := &serverInfo{}
+// 			json.Unmarshal(sv.Data, si)
+// 			if si.LogTails[shard] < min {
+// 				min = si.LogTails[shard]
+// 			}
+// 		}
+// 		if min != math.MaxUint64 {
+// 			// If master have any slaves, it can't purge logs which slaves don't have yet
+// 			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
+// 			if head > int64(min) {
+// 				return fmt.Errorf("truncate too much: %d (slave rejection: %d)", head, min)
+// 			}
+// 		}
+//
+// 		keepLogs := [][2][]byte{}
+// 		for i := head; i <= tail; i++ {
+// 			k := intToBytes(uint64(i))
+// 			v := append([]byte{}, bk.Get(k)...)
+// 			keepLogs = append(keepLogs, [2][]byte{k, v})
+// 			count++
+// 		}
+// 		if len(keepLogs) == 0 {
+// 			return fmt.Errorf("keep zero logs, fatal error")
+// 		}
+// 		if err := tx.DeleteBucket([]byte("wal")); err != nil {
+// 			return err
+// 		}
+// 		bk, err := tx.CreateBucket([]byte("wal"))
+// 		if err != nil {
+// 			return err
+// 		}
+// 		for _, p := range keepLogs {
+// 			if err := bk.Put(p[0], p[1]); err != nil {
+// 				return err
+// 			}
+// 		}
+// 		return bk.SetSequence(uint64(tail))
+// 	}); err != nil {
+// 		return 0, 0, err
+// 	}
+// 	return count, oldCount, nil
+// }
 
 type slaves struct {
 	sync.Mutex

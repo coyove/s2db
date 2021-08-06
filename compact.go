@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -25,7 +28,7 @@ func (s *Server) compactShard(shard int) error {
 	if err != nil {
 		return err
 	}
-	if err := bbolt.Compact(compactDB, x.DB, int64(s.CompactTxSize)); err != nil {
+	if err := s.defragdb(shard, x.DB, compactDB, s.CompactTxSize); err != nil {
 		compactDB.Close()
 		return err
 	}
@@ -137,4 +140,97 @@ func (s *Server) schedPurge() {
 		}
 		time.Sleep(time.Minute)
 	}
+}
+
+func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB, walSize int, limit int) error {
+	// open a tx on tmpdb for writes
+	tmptx, err := tmpdb.Begin(true)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			tmptx.Rollback()
+		}
+	}()
+
+	// open a tx on old db for read
+	tx, err := odb.Begin(false)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	c := tx.Cursor()
+
+	count := 0
+	for next, _ := c.First(); next != nil; next, _ = c.Next() {
+		b := tx.Bucket(next)
+		if b == nil {
+			return fmt.Errorf("backend: cannot defrag bucket %s", string(next))
+		}
+
+		tmpb, berr := tmptx.CreateBucketIfNotExists(next)
+		if berr != nil {
+			return berr
+		}
+		tmpb.FillPercent = 0.9 // for seq write in for each
+		tmpb.SetSequence(b.Sequence())
+
+		var walStartBuf []byte
+		if string(next) == "wal" {
+			var walStart uint64
+			var min uint64 = math.MaxUint64
+			for _, sv := range s.slaves.Take(time.Minute) {
+				si := &serverInfo{}
+				json.Unmarshal(sv.Data, si)
+				if si.LogTails[shard] < min {
+					min = si.LogTails[shard]
+				}
+			}
+			if min != math.MaxUint64 {
+				// If master have any slaves, it can't purge logs which slaves don't have yet
+				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
+				walStart = decUint64(min, uint64(walSize))
+			} else {
+				walStart = decUint64(b.Sequence(), uint64(walSize))
+			}
+			log.Info("truncate logs using start: ", walStart)
+			walStartBuf = make([]byte, 8)
+			binary.BigEndian.PutUint64(walStartBuf, walStart)
+		}
+
+		if err = b.ForEach(func(k, v []byte) error {
+			if len(walStartBuf) > 0 && bytes.Compare(k, walStartBuf) < 0 {
+				return nil
+			}
+			count++
+			if count > limit {
+				err = tmptx.Commit()
+				if err != nil {
+					return err
+				}
+				tmptx, err = tmpdb.Begin(true)
+				if err != nil {
+					return err
+				}
+				tmpb = tmptx.Bucket(next)
+				tmpb.FillPercent = 0.9 // for seq write in for each
+
+				count = 0
+			}
+			return tmpb.Put(k, v)
+		}); err != nil {
+			return err
+		}
+	}
+
+	return tmptx.Commit()
+}
+
+func decUint64(v uint64, d uint64) uint64 {
+	if v > d {
+		return v - d
+	}
+	return 0
 }

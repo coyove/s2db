@@ -1,6 +1,7 @@
 package calc
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mmcloughlin/geohash"
 )
@@ -22,20 +24,49 @@ func Eval(in string, args ...float64) (float64, error) {
 	old := in
 	now := time.Now().UTC()
 
-	in = strings.Replace(in, "\n", "", -1)
-	in = strings.Replace(in, "if(", "IF(", -1)
-
-	depth := 0
-	for _, r := range in {
-		if r == '(' {
+	var depth int
+	var buf bytes.Buffer
+	for i := 0; i < len(in); i++ {
+		r := in[i]
+		switch r {
+		case '(':
 			depth++
-		} else if r == ')' {
+		case ')':
 			depth--
+		case '\n', '\r':
+			continue
 		}
+		if (r == 'd' || r == 'm' || r == 's' || r == 'h') && i > 0 && unicode.IsDigit(rune(in[i-1])) {
+			conj := i < len(in)-1 && unicode.IsDigit(rune(in[i+1]))
+			switch r {
+			case 'd':
+				if conj {
+					buf.WriteString("+")
+				} else {
+					buf.WriteString("*86400")
+				}
+			case 'h':
+				if conj {
+					buf.WriteString("+")
+				} else {
+					buf.WriteString("*3600")
+				}
+			case 'm':
+				if conj {
+					buf.WriteString("+")
+				} else {
+					buf.WriteString("*60")
+				}
+			}
+			continue
+		}
+		buf.WriteByte(r)
 	}
-	if depth > 0 {
-		in = in + "))))))))))))))))))))))))))))))))"[:depth]
+	for ; depth > 0; depth-- {
+		buf.WriteByte(')')
 	}
+	in = buf.String()
+	fmt.Println(in)
 
 	if strings.Contains(in, "now") {
 		in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
@@ -165,7 +196,7 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(inFunc)
 		case "nin":
 			return math.Float64frombits(ninFunc)
-		case "IF":
+		case "when":
 			return math.Float64frombits(ifFunc)
 		case "hr":
 			return math.Float64frombits(hrFunc)

@@ -24,6 +24,10 @@ func TestEval(t *testing.T) {
 
 	now := time.Now().UTC()
 
+	assert(EvalZero("1d"), 86400)
+	assert(EvalZero("1d5h"), 86400+5*3600)
+	assert(EvalZero("1d-5h"), 86400-5*3600)
+	assert(EvalZero("1d-5h2.5m"), 86400-5*3600-2.5*60)
 	assert(EvalZero("1"), 1)
 	assert(EvalZero("+1"), 1)
 	assert(EvalZero("1+2"), 3)
@@ -44,10 +48,10 @@ func TestEval(t *testing.T) {
 	assert(EvalZero("nin(0, 1, 2, 3)"), 1)
 	assert(EvalZero("!nin(2, 1, 2, 3)"), 1)
 	assert(EvalZero("s == 1", 's', 1), 1)
-	assert(EvalZero("if(s == 20, s + 1, s -1", 's', 20), 21)
+	assert(EvalZero("when(s == 20, s + 1, s -1", 's', 20), 21)
 	assert(EvalZero("hr(10+8)"), 18)
 	assert(EvalZero("hr(18+8)"), 2)
-	assert(EvalZero("hr(2-10)"), 16)
+	assert(EvalZero("hr(2-10"), 16)
 
 	fmt.Println(Eval("(day.)+1"))
 	fmt.Println(Eval("now-hour"))

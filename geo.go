@@ -9,7 +9,6 @@ import (
 	"sort"
 
 	"github.com/mmcloughlin/geohash"
-	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
 )
@@ -131,17 +130,17 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		key = command.Get(2)
 		options = command.Argv[3:]
 	} else {
-		long, err = calc.Eval(command.Get(2))
+		long, err = atof(command.Get(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		lat, err = calc.Eval(command.Get(3))
+		lat, err = atof(command.Get(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 	}
 
-	radius, err := calc.Eval(string(options[0]))
+	radius, err := atof(string(options[0]))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}

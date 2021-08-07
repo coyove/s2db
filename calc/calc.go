@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/mmcloughlin/geohash"
 )
@@ -22,7 +21,6 @@ func Eval(in string, args ...float64) (float64, error) {
 	}
 
 	old := in
-	now := time.Now().UTC()
 
 	var depth int
 	var buf bytes.Buffer
@@ -36,27 +34,24 @@ func Eval(in string, args ...float64) (float64, error) {
 		case '\n', '\r':
 			continue
 		}
-		if (r == 'd' || r == 'm' || r == 's' || r == 'h') && i > 0 && unicode.IsDigit(rune(in[i-1])) {
-			conj := i < len(in)-1 && unicode.IsDigit(rune(in[i+1]))
+		if strings.ContainsRune("kdhms", rune(in[i])) && i > 0 && in[i-1] >= '0' && in[i-1] <= '9' {
 			switch r {
+			case 'k':
+				buf.WriteString("(1000)")
 			case 'd':
-				if conj {
-					buf.WriteString("+")
-				} else {
-					buf.WriteString("*86400")
-				}
+				buf.WriteString("(86400)")
 			case 'h':
-				if conj {
-					buf.WriteString("+")
-				} else {
-					buf.WriteString("*3600")
-				}
+				buf.WriteString("(3600)")
 			case 'm':
-				if conj {
-					buf.WriteString("+")
+				if i < len(in)-1 && in[i+1] == 's' {
+					buf.WriteString("(0.001)")
+					i++
 				} else {
-					buf.WriteString("*60")
+					buf.WriteString("(60)")
 				}
+			}
+			if i < len(in)-1 && in[i+1] >= '0' && in[i+1] <= '9' {
+				buf.WriteString("&")
 			}
 			continue
 		}
@@ -66,28 +61,7 @@ func Eval(in string, args ...float64) (float64, error) {
 		buf.WriteByte(')')
 	}
 	in = buf.String()
-	fmt.Println(in)
-
-	if strings.Contains(in, "now") {
-		in = strings.Replace(in, "now.", strconv.FormatInt(now.UnixNano()/1e6, 10), -1)
-		in = strings.Replace(in, "now", strconv.FormatFloat(float64(now.UnixNano())/1e9, 'f', -1, 64), -1)
-	}
-
-	in = replaceInt(in, "month.", 2592000000)
-	in = replaceInt(in, "month", 2592000)
-	in = replaceInt(in, "week.", 604800000)
-	in = replaceInt(in, "week", 604800)
-	in = replaceInt(in, "day.", 86400000)
-	in = replaceInt(in, "day", 86400)
-	in = replaceInt(in, "hour", 3600000)
-	in = replaceInt(in, "hour", 3600)
-
-	in = replaceInt(in, "MIN", now.Minute())
-	in = replaceInt(in, "HOUR", now.Hour())
-	in = replaceInt(in, "DOW", int(now.Weekday()))
-	in = replaceInt(in, "DOY", int(now.YearDay()))
-	in = replaceInt(in, "DOM", now.Day())
-	in = replaceInt(in, "MON", int(now.Month()))
+	// fmt.Println(in)
 
 	f, err := parser.ParseExpr(in)
 	if err != nil {
@@ -107,6 +81,7 @@ func Eval(in string, args ...float64) (float64, error) {
 			return 0, fmt.Errorf("invalid arguments")
 		}
 	}
+	r.now = time.Now().UTC()
 
 	v = r.evalBinary(f)
 	if math.IsNaN(v) {
@@ -121,20 +96,24 @@ const (
 	geoHashLossyFunc
 	utcAddFunc
 	inFunc
+	minFunc
+	maxFunc
 	ninFunc
 	ifFunc
 	hrFunc
 )
 
 type runner struct {
+	now  time.Time
 	args [64]float64
 }
 
 func (r *runner) evalBinary(in ast.Expr) float64 {
+	// fmt.Printf("%T", in)
 	switch in := in.(type) {
 	case *ast.BinaryExpr:
 		switch in.Op {
-		case token.ADD:
+		case token.ADD, token.AND:
 			return r.evalBinary(in.X) + r.evalBinary(in.Y)
 		case token.SUB:
 			return r.evalBinary(in.X) - r.evalBinary(in.Y)
@@ -200,6 +179,27 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(ifFunc)
 		case "hr":
 			return math.Float64frombits(hrFunc)
+		case "min":
+			return math.Float64frombits(minFunc)
+		case "max":
+			return math.Float64frombits(maxFunc)
+		case "now", "NOW":
+			return float64(r.now.UnixNano()/1e6) / 1e3
+		case "MIN":
+			return float64(r.now.Minute())
+		case "HOUR":
+			return float64(r.now.Hour())
+		case "DOW":
+			return float64(r.now.Weekday())
+		case "DOY":
+			return float64(r.now.YearDay())
+		case "DOM":
+			return float64(r.now.Day())
+		case "WOY":
+			_, w := r.now.ISOWeek()
+			return float64(w)
+		case "MON":
+			return float64(r.now.Month())
 		default:
 			if len(in.Name) == 1 && in.Name[0] > 64 && in.Name[0] < 128 {
 				return r.args[in.Name[0]-64]
@@ -246,9 +246,26 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			if len(in.Args) == 1 {
 				return float64((int64(r.evalBinary(in.Args[0])) + 24) % 24)
 			}
+		case minFunc, maxFunc:
+			if len(in.Args) >= 1 {
+				x := r.evalBinary(in.Args[0])
+				for i := 1; i < len(in.Args); i++ {
+					if n == minFunc {
+						x = math.Min(x, r.evalBinary(in.Args[i]))
+					} else {
+						x = math.Max(x, r.evalBinary(in.Args[i]))
+					}
+				}
+				return x
+			}
+		default:
+			if len(in.Args) == 1 {
+				return x * r.evalBinary(in.Args[0])
+			} else if len(in.Args) == 0 {
+				return x
+			}
 		}
 	}
-	// fmt.Printf("%T", in)
 	return math.NaN()
 }
 

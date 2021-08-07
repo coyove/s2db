@@ -107,6 +107,12 @@ func hashStr(s string) (h uint64) {
 func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	h = [2]uint64{0, 5381}
 	for _, buf := range in.Argv {
+		if len(buf) > 0 && buf[0] == '=' {
+			v, err := atof2(buf)
+			if err == nil {
+				buf = []byte(strconv.FormatFloat(v, 'f', -1, 64))
+			}
+		}
 		for _, b := range buf {
 			old := h[1]
 			h[1] = h[1]*33 + uint64(b)
@@ -119,9 +125,16 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	return h
 }
 
-func atof(a string) (float64, error) { return calc.Eval(a) }
+func atof(a string) (float64, error) {
+	if strings.HasPrefix(a, "=") {
+		return calc.Eval(a[1:])
+	}
+	return strconv.ParseFloat(a, 64)
+}
 
-func atof2(a []byte) (float64, error) { return atof(*(*string)(unsafe.Pointer(&a))) }
+func atof2(a []byte) (float64, error) {
+	return atof(*(*string)(unsafe.Pointer(&a)))
+}
 
 func atofp(a string) float64 {
 	f, err := atof(a)

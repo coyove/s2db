@@ -19,10 +19,6 @@ go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC
 mkdir -p slave_dir
 cp s2db slave_dir/
 
-if [[ "$1" == "upload" ]]; then
+if [[ "$1" == "linux" ]]; then
     env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC 
-    rm -rf s2db.7z
-    7z a s2db.7z s2db
-    scp s2db.7z root@8.212.30.157:/root
-    scp s2db.7z root@47.243.64.196:/data/zset/
 fi

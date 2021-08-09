@@ -108,7 +108,7 @@ func main() {
 	opened <- true
 
 	s.MasterAddr = *masterAddr
-	s.SetReadOnly(*readOnly || s.MasterAddr != "")
+	s.ReadOnly = *readOnly || s.MasterAddr != ""
 	s.Serve(*listenAddr)
 }
 

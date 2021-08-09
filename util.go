@@ -418,11 +418,12 @@ func (s *Server) saveConfig() error {
 	})
 }
 
-func (s *Server) updateConfig(key, value string) error {
-	if strings.HasPrefix(key, "readonly") {
-		s.db[atoip(key[8:])].readonly, _ = strconv.ParseBool(value)
-		return nil
+func (s *Server) updateConfig(key, value string) (bool, error) {
+	if strings.EqualFold(key, "readonly") {
+		s.ReadOnly, _ = strconv.ParseBool(value)
+		return false, nil
 	}
+	found := false
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.ToLower(f.Name) != key {
 			return nil
@@ -433,9 +434,10 @@ func (s *Server) updateConfig(key, value string) error {
 		case reflect.TypeOf(""):
 			fv.SetString(value)
 		}
+		found = true
 		return fmt.Errorf("exit")
 	})
-	return s.saveConfig()
+	return found, s.saveConfig()
 }
 
 func (s *Server) getConfig(key string) (v string, ok bool) {
@@ -448,16 +450,13 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 	return
 }
 
-func (s *Server) listConfig() (list []string) {
-	for _, b := range s.ReadOnly() {
-		list = append(list, strconv.Itoa(boolToInt(b)))
-	}
-	list = []string{"readonly", strings.Join(list, ",")}
+func (s *Server) listConfig() string {
+	list := []string{}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
+		list = append(list, strings.ToLower(f.Name)+":"+fmt.Sprint(fv.Interface()))
 		return nil
 	})
-	return
+	return strings.Join(list, "\r\n") + "\r\n"
 }
 
 func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {
@@ -487,6 +486,7 @@ func (s *Server) info() string {
 		fmt.Sprintf("servername:%v", s.ServerName),
 		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
 		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
+		fmt.Sprintf("readonly:%v", s.ReadOnly),
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("connections:%v", s.survey.connections),
 		fmt.Sprintf("db_size:%v", sz),
@@ -527,7 +527,6 @@ func (s *Server) shardInfo(shard int) string {
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
 		fmt.Sprintf("size:%v", fi.Size()),
-		fmt.Sprintf("readonly:%v", x.readonly),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
 	}
 	var myTail uint64

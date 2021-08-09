@@ -35,6 +35,7 @@ var (
 )
 
 type Server struct {
+	ReadOnly   bool
 	MasterAddr string
 	ServerConfig
 
@@ -59,7 +60,6 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		readonly          bool
 		writeWatermark    int64
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
@@ -109,19 +109,6 @@ func Open(path string) (*Server, error) {
 		d.batchTx = make(chan *batchTask, 101)
 	}
 	return x, nil
-}
-
-func (s *Server) SetReadOnly(v bool) {
-	for i := range s.db {
-		s.db[i].readonly = v
-	}
-}
-
-func (s *Server) ReadOnly() (x [ShardNum]bool) {
-	for i := range s.db {
-		x[i] = s.db[i].readonly
-	}
-	return
 }
 
 func (s *Server) Close() error {
@@ -255,7 +242,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteError("invalid name which is either empty, starts with 'score.' or contains '\\r\\n'")
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
-			if !isBulk && s.db[shardIndex(name)%ShardNum].readonly {
+			if !isBulk && s.ReadOnly {
 				return w.WriteError("readonly")
 			}
 			s.survey.sysWrite.Incr(1)
@@ -316,10 +303,15 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
 		case "SET":
-			s.updateConfig(command.Get(2), command.Get(3))
-			fallthrough
+			found, err := s.updateConfig(command.Get(2), command.Get(3))
+			if err != nil {
+				return w.WriteError(err.Error())
+			} else if found {
+				return w.WriteSimpleString("OK")
+			}
+			return w.WriteError("field not found")
 		default:
-			return w.WriteBulkStrings(s.listConfig())
+			return w.WriteError("invalid operation")
 		}
 	case "RESETCACHE":
 		weight := s.cache.curWeight + s.weakCache.Weight()
@@ -355,6 +347,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 				return w.WriteError(err.Error())
 			}
 			return w.WriteBulkString(m)
+		case n == "config":
+			return w.WriteBulkString(s.listConfig())
 		default:
 			return w.WriteBulkString(s.info())
 		}

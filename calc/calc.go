@@ -34,7 +34,7 @@ func Eval(in string, args ...float64) (float64, error) {
 		case '\n', '\r':
 			continue
 		}
-		if strings.ContainsRune("kdhms", rune(in[i])) && i > 0 && in[i-1] >= '0' && in[i-1] <= '9' {
+		if strings.ContainsRune("kdhms", rune(r)) && i > 0 && in[i-1] >= '0' && in[i-1] <= '9' {
 			switch r {
 			case 'k':
 				buf.WriteString("(1000)")
@@ -56,6 +56,9 @@ func Eval(in string, args ...float64) (float64, error) {
 			continue
 		}
 		buf.WriteByte(r)
+		if r >= 'a' && r <= 'z' && i < len(in)-1 && in[i+1] == '(' {
+			buf.WriteByte('_')
+		}
 	}
 	for ; depth > 0; depth-- {
 		buf.WriteByte(')')
@@ -164,6 +167,7 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 	case *ast.ParenExpr:
 		return r.evalBinary(in.X)
 	case *ast.Ident:
+		in.Name = strings.TrimRight(in.Name, "_")
 		switch in.Name {
 		case "coord":
 			return math.Float64frombits(geoHashFunc)
@@ -175,7 +179,7 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(inFunc)
 		case "nin":
 			return math.Float64frombits(ninFunc)
-		case "when":
+		case "if":
 			return math.Float64frombits(ifFunc)
 		case "hr":
 			return math.Float64frombits(hrFunc)

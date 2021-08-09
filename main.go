@@ -30,7 +30,7 @@ var (
 	showVersion     = flag.Bool("v", false, "print version")
 	readOnly        = flag.Bool("ro", false, "read only server")
 	calcShard       = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
-	benchmark       = flag.Bool("bench", false, "")
+	benchmark       = flag.String("bench", "", "")
 )
 
 func main() {
@@ -49,7 +49,7 @@ func main() {
 	log.SetReportCaller(true)
 	log.SetFormatter(&LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename:   "s2db.log",
+		Filename:   "x_s2db.log",
 		MaxSize:    100, // megabytes
 		MaxBackups: 16,
 		MaxAge:     28,   //days
@@ -62,7 +62,7 @@ func main() {
 	})
 
 	start := time.Now()
-	if *benchmark {
+	if *benchmark == "write" {
 		wg := sync.WaitGroup{}
 		ctx := context.TODO()
 		for i := 0; i < 100; i += 1 {
@@ -82,6 +82,24 @@ func main() {
 		}
 		wg.Wait()
 		fmt.Println(time.Since(start).Seconds())
+		return
+	}
+
+	if *benchmark != "" {
+		ctx := context.TODO()
+		for i := 0; i < 100; i += 1 {
+			go func(i int) {
+				fmt.Println("client #", i)
+				for {
+					start, end := rand.Intn(10), rand.Intn(10)+10
+					err := rdb.ZRevRange(ctx, *benchmark, int64(start), int64(end)).Err()
+					if err != nil {
+						fmt.Println(err)
+					}
+				}
+			}(i)
+		}
+		select {}
 		return
 	}
 

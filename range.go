@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -168,23 +169,27 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			return
 		}
 
-		startBuf, endBuf := floatToBytes(start.Float), floatToBytes(end.Float)
+		startBuf, endBuf := floatToInternalUint64(start.Float), floatToInternalUint64(end.Float)
 		opt.translateOffset(name, bk)
 
 		if !start.Inclusive {
-			startBuf = floatBytesStep(startBuf, 1)
+			startBuf++
 		}
 
 		if end.Inclusive {
-			endBuf = floatBytesStep(endBuf, 1)
+			endBuf++
 		}
 
 		c := bk.Cursor()
-		k, dataBuf := c.Seek(startBuf)
+		k, dataBuf := c.Seek(intToBytes(startBuf))
 
 		limit := opt.getLimit()
 		for i := 0; len(pairs) < limit; i++ {
-			if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
+			if len(k) < 8 {
+				break
+			}
+			x := binary.BigEndian.Uint64(k)
+			if x >= startBuf && x < endBuf {
 				if i >= opt.OffsetStart {
 					if i <= opt.OffsetEnd {
 						key := string(k[8:])

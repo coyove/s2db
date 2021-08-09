@@ -78,15 +78,19 @@ func bytesToFloat(b []byte) float64 {
 	return math.Float64frombits(x)
 }
 
-func floatToBytes(v float64) []byte {
+func floatToInternalUint64(v float64) uint64 {
 	x := math.Float64bits(v)
 	if v >= 0 {
 		x |= 1 << 63
 	} else {
 		x = ^x
 	}
+	return x
+}
+
+func floatToBytes(v float64) []byte {
 	tmp := [8]byte{}
-	binary.BigEndian.PutUint64(tmp[:8], x)
+	binary.BigEndian.PutUint64(tmp[:8], floatToInternalUint64(v))
 	return tmp[:]
 }
 

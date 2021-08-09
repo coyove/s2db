@@ -104,6 +104,7 @@ const (
 	ninFunc
 	ifFunc
 	hrFunc
+	unixFunc
 )
 
 type runner struct {
@@ -159,6 +160,14 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return bton(r.evalBinary(in.X) == 0)
 		}
 	case *ast.BasicLit:
+		if strings.HasPrefix(in.Value, "`") && strings.HasSuffix(in.Value, "`") {
+			s, _ := strconv.Unquote(in.Value)
+			h := uint64(5381)
+			for i := 0; i < len(s); i++ {
+				h = h*33 + uint64(s[i])
+			}
+			return float64(h % 32)
+		}
 		v, err := strconv.ParseFloat(in.Value, 64)
 		if err != nil {
 			return math.NaN()
@@ -187,6 +196,8 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 			return math.Float64frombits(minFunc)
 		case "max":
 			return math.Float64frombits(maxFunc)
+		case "ts":
+			return math.Float64frombits(unixFunc)
 		case "now", "NOW":
 			return float64(r.now.UnixNano()/1e6) / 1e3
 		case "MIN":
@@ -261,6 +272,11 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 					}
 				}
 				return x
+			}
+		case unixFunc:
+			if len(in.Args) == 1 {
+				x := time.Unix(0, int64(r.evalBinary(in.Args[0])*1e6)*1e3).UTC()
+				return float64(int64(x.Second()) + int64(x.Minute())*100 + int64(x.Hour())*1e4 + int64(x.Day())*1e6 + int64(x.Month())*1e8 + int64(x.Year())*1e10)
 			}
 		default:
 			if len(in.Args) == 1 {

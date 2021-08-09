@@ -296,6 +296,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			})
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
+		if name[0] == '=' {
+			v, err := atof(name)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			return w.WriteSimpleString(ftoa(v))
+		}
 		return w.WriteSimpleString(name)
 	case "CONFIG":
 		switch strings.ToUpper(name) {

@@ -27,8 +27,9 @@ var (
 	listenAddr      = flag.String("l", ":6379", "listen address")
 	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
 	dataDir         = flag.String("d", "test", "data directory")
-	showVersion     = flag.Bool("v", false, "print version")
-	readOnly        = flag.Bool("ro", false, "read only server")
+	showVersion     = flag.Bool("v", false, "print s2db version")
+	readOnly        = flag.Bool("ro", false, "start server as read-only")
+	masterMode      = flag.Bool("M", false, "tag server as master, even it may lose connections to slaves")
 	calcShard       = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark       = flag.String("bench", "", "")
 )
@@ -126,6 +127,7 @@ func main() {
 	opened <- true
 
 	s.MasterAddr = *masterAddr
+	s.MasterMode = *masterMode
 	s.ReadOnly = *readOnly || s.MasterAddr != ""
 	s.Serve(*listenAddr)
 }

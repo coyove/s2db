@@ -205,6 +205,9 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 				// If master have any slaves, it can't purge logs which slaves don't have yet
 				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
 				walStart = decUint64(min, uint64(s.SchedPurgeHead))
+			} else if s.MasterMode {
+				log.Info("STAGE 0: master failed to collect info from slaves, no log compaction will be made")
+				walStart = 0
 			} else {
 				walStart = decUint64(b.Sequence(), uint64(s.SchedPurgeHead))
 			}

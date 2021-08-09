@@ -36,6 +36,7 @@ var (
 
 type Server struct {
 	ReadOnly   bool
+	MasterMode bool
 	MasterAddr string
 	ServerConfig
 

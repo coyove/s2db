@@ -217,7 +217,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				break
 			}
 		} else {
-			ew = s.runCommand(writer, command, false)
+			ew = s.runCommand(writer, command)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -229,21 +229,24 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, isBulk bool) error {
+func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) error {
 	var (
 		cmd         = strings.ToUpper(command.Get(0))
+		isRev       = strings.HasPrefix(cmd, "ZREV")
 		name        = command.Get(1)
-		h           = hashCommands(command)
+		weak        = parseWeakFlag(command) // weak parsing comes first
+		h           = hashCommands(command)  // then hashCommands
 		wm          = s.cache.nextWatermark()
 		isReadWrite byte
 	)
+	cmd = strings.TrimSuffix(cmd, "WEAK")
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
 		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
 			return w.WriteError("invalid name which is either empty, starts with 'score.' or contains '\\r\\n'")
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
-			if !isBulk && s.ReadOnly {
+			if s.ReadOnly {
 				return w.WriteError("readonly")
 			}
 			s.survey.sysWrite.Incr(1)
@@ -277,6 +280,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 
 	var p []Pair
 	var err error
+
+	// General commands
 	switch cmd {
 	case "DIE":
 		sec := time.Now().Second()
@@ -366,10 +371,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 	case "COMPACTSHARD":
 		go s.compactShard(atoip(name))
 		return w.WriteSimpleString("OK")
+	}
 
-		// -----------------------
-		//  Log related commands
-		// -----------------------
+	// Log related commands
+	switch cmd {
 	case "LOGTAIL":
 		var c uint64
 		if name != "" {
@@ -389,10 +394,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		}
 		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
+	}
 
-		// -----------------------
-		//  Client space write commands
-		// -----------------------
+	// Client space write commands
+	switch cmd {
 	case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		return s.runPreparedTxAndWrite(name, false, parseDel(cmd, name, command), w)
 	case "ZADD":
@@ -400,10 +405,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, command), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
+	}
 
-		// -----------------------
-		//  Client space read commands
-		// -----------------------
+	// Client space read commands
+	switch cmd {
 	case "ZSCORE":
 		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -420,14 +425,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			data = append(data, ftob(s))
 		}
 		return w.WriteBulks(data...)
-	case "ZMDATA", "ZMDATAWEAK":
+	case "ZMDATA":
 		if v := s.getCache(h); v != nil {
 			return w.WriteBulks(v.([][]byte)...)
 		}
-		if cmd == "ZMDATAWEAK" {
-			if v := s.getWeakCache(h); v != nil {
-				return w.WriteBulks(v.([][]byte)...)
-			}
+		if v := s.getWeakCache(h, weak); v != nil {
+			return w.WriteBulks(v.([][]byte)...)
 		}
 		data, err := s.ZMData(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -442,14 +445,12 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		return w.WriteBulks(data...)
 	case "ZCARD":
 		return w.WriteIntOrError(s.ZCard(name))
-	case "ZCOUNT", "ZCOUNTWEAK":
+	case "ZCOUNT":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
-		if cmd == "ZCOUNTWEAK" {
-			if v := s.getWeakCache(h); v != nil {
-				return w.WriteInt(int64(v.(int)))
-			}
+		if v := s.getWeakCache(h, weak); v != nil {
+			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
 		match := command.Get(5) // maybe empty
@@ -460,41 +461,32 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.addCache(wm, name, h, c)
 		s.weakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
 		return w.WriteInt(int64(c))
-	case "ZRANK", "ZREVRANK", "ZRANKWEAK", "ZREVRANKWEAK":
+	case "ZRANK", "ZREVRANK":
 		var c int
 		if v := s.getCache(h); v != nil {
 			c = v.(int)
+		} else if v := s.getWeakCache(h, weak); v != nil {
+			c = v.(int)
 		} else {
-			if strings.HasSuffix(cmd, "WEAK") {
-				if v := s.getWeakCache(h); v != nil {
-					c = v.(int)
-					goto RANK_RES
-				}
-				cmd = cmd[:len(cmd)-4]
-			}
-			limit := atoi(command.Get(3))
-			c, err = s.ZRank(cmd == "ZREVRANK", name, command.Get(2), limit)
+			// ZRANK name key LIMIT X
+			limit := atoi(command.Get(4))
+			c, err = s.ZRank(isRev, name, command.Get(2), limit)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
 			s.addCache(wm, name, h, c)
 			s.weakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
 		}
-	RANK_RES:
 		if c == -1 {
 			return w.WriteBulk(nil)
 		}
 		return w.WriteInt(int64(c))
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE",
-		"ZRANGEWEAK", "ZREVRANGEWEAK", "ZRANGEBYLEXWEAK", "ZREVRANGEBYLEXWEAK", "ZRANGEBYSCOREWEAK", "ZREVRANGEBYSCOREWEAK":
+	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		if v := s.getCache(h); v != nil {
 			return writePairs(v.([]Pair), w, command)
 		}
-		if strings.HasSuffix(cmd, "WEAK") {
-			if v := s.getWeakCache(h); v != nil {
-				return writePairs(v.([]Pair), w, command)
-			}
-			cmd = cmd[:len(cmd)-4]
+		if v := s.getWeakCache(h, weak); v != nil {
+			return writePairs(v.([]Pair), w, command)
 		}
 		start, end := command.Get(2), command.Get(3)
 		limit, match, withData := -1, "", false
@@ -519,11 +511,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 
 		switch cmd {
 		case "ZRANGE", "ZREVRANGE":
-			p, err = s.ZRange(cmd == "ZREVRANGE", name, atoip(start), atoip(end), withData)
+			p, err = s.ZRange(isRev, name, atoip(start), atoip(end), withData)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			p, err = s.ZRangeByLex(cmd == "ZREVRANGEBYLEX", name, start, end, match, limit, withData)
+			p, err = s.ZRangeByLex(isRev, name, start, end, match, limit, withData)
 		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			p, err = s.ZRangeByScore(cmd == "ZREVRANGEBYSCORE", name, start, end, match, limit, withData)
+			p, err = s.ZRangeByScore(isRev, name, start, end, match, limit, withData)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -531,10 +523,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 		s.addCache(wm, name, h, p)
 		s.weakCache.AddWeight(h, &weakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
 		return writePairs(p, w, command)
-	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSWEAK":
-		return s.runGeoRadius(w, false, name, h, wm, strings.HasSuffix(cmd, "WEAK"), command)
-	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO", "GEORADIUSBYMEMBERWEAK":
-		return s.runGeoRadius(w, true, name, h, wm, strings.HasSuffix(cmd, "WEAK"), command)
+	case "GEORADIUS", "GEORADIUS_RO":
+		return s.runGeoRadius(w, false, name, h, wm, weak, command)
+	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
+		return s.runGeoRadius(w, true, name, h, wm, weak, command)
 	case "GEODIST":
 		return s.runGeoDist(w, name, command)
 	case "GEOPOS":

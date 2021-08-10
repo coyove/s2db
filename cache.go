@@ -204,12 +204,15 @@ func (s *Server) getCache(h [2]uint64) interface{} {
 	return v.Data
 }
 
-func (s *Server) getWeakCache(h [2]uint64) interface{} {
+func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
+	if ttl == 0 {
+		return nil
+	}
 	v, ok := s.weakCache.Get(h)
 	if !ok {
 		return nil
 	}
-	if i := v.(*weakCacheItem); time.Since(time.Unix(i.Time, 0)) <= time.Duration(s.WeakTTL)*time.Second {
+	if i := v.(*weakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
 		s.survey.weakCache.Incr(1)
 		return i.Data
 	}

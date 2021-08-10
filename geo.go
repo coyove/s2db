@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"time"
 
 	"github.com/mmcloughlin/geohash"
 	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
@@ -116,7 +117,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak bool, command *redisproto.Command) error {
+func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak time.Duration, command *redisproto.Command) error {
 	var p []Pair
 	var count = -1
 	var any bool
@@ -178,7 +179,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 
 	if v, ok := s.cache.Get(h); ok {
 		p = v.Data.([]Pair)
-	} else if x := s.getWeakCache(h); weak && x != nil {
+	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
 		p = x.([]Pair)
 	} else {
 		p, err = (s.geoRange(name, key, lat, long, radius, count, any, withData))

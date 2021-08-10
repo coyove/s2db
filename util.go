@@ -111,10 +111,10 @@ func hashStr(s string) (h uint64) {
 func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	h = [2]uint64{0, 5381}
 	for _, buf := range in.Argv {
-		if len(buf) > 0 && buf[0] == '=' {
+		if len(buf) > 0 && buf[0] == '=' { // argument may be a computable expression starting with '=', which should be calculated into numbers first
 			v, err := atof2(buf)
 			if err == nil {
-				buf = []byte(strconv.FormatFloat(v, 'f', -1, 64))
+				buf = []byte(ftoa(v))
 			}
 		}
 		for _, b := range buf {
@@ -156,7 +156,9 @@ func atof2p(a []byte) float64 {
 	return f
 }
 
-func ftoa(f float64) string { return strconv.FormatFloat(f, 'f', -1, 64) }
+func ftoa(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
 
 func ftob(f float64) []byte {
 	if math.IsNaN(f) {
@@ -352,7 +354,6 @@ type ServerConfig struct {
 	CacheSize          int
 	CacheKeyMaxLen     int
 	WeakCacheSize      int
-	WeakTTL            int // s
 	SlowLimit          int // ms
 	PurgeLogMaxRunTime int // s
 	PurgeLogRun        int
@@ -388,7 +389,6 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig() error {
-	ifZero(&s.WeakTTL, 300)
 	ifZero(&s.CacheSize, 1024)
 	ifZero(&s.CacheKeyMaxLen, 100)
 	ifZero(&s.WeakCacheSize, 1024)
@@ -611,4 +611,14 @@ func parseDeferFlag(in *redisproto.Command) bool {
 		return true
 	}
 	return false
+}
+
+func parseWeakFlag(in *redisproto.Command) time.Duration {
+	i := in.ArgCount() - 2
+	if i >= 2 && in.EqualFold(i, "WEAK") {
+		x := atof2p(in.Argv[i+1])
+		in.Argv = in.Argv[:i]
+		return time.Duration(int64(x*1e6) * 1e3)
+	}
+	return 0
 }

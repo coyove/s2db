@@ -474,7 +474,7 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 	return nil
 }
 
-func (s *Server) info() string {
+func (s *Server) info(section string) string {
 	p := s.slaves.Take(time.Minute)
 	sz := 0
 	for i := range s.db {
@@ -484,6 +484,7 @@ func (s *Server) info() string {
 		}
 		sz += int(fi.Size())
 	}
+	cwd, _ := os.Getwd()
 	data := []string{
 		"# server",
 		fmt.Sprintf("version:%v", Version),
@@ -491,34 +492,57 @@ func (s *Server) info() string {
 		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
 		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
 		fmt.Sprintf("readonly:%v", s.ReadOnly),
-		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("connections:%v", s.survey.connections),
+		"",
+		"# server_misc",
+		fmt.Sprintf("cwd:%v", cwd),
+		fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
+		fmt.Sprintf("death_scheduler:%v", s.dieKey),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
-		"", "# replication",
+		"",
+		"# replication",
+		fmt.Sprintf("master_mode:%v", s.MasterMode),
 		fmt.Sprintf("master:%v", s.MasterAddr),
 		fmt.Sprintf("master_name:%v", s.master.ServerName),
 		fmt.Sprintf("master_version:%v", s.master.Version),
 		fmt.Sprintf("slaves:%v", len(p)),
-		"", "# sys_rw_stats",
+		"",
+		"# sys_rw_stats",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
 		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
 		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
 		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
-		"", "# batch",
+		"",
+		"# batch",
 		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
 		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
 		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSv.MeanString()),
 		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSv.MeanString()),
-		"", "# cache",
+		"",
+		"# cache",
 		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
 		fmt.Sprintf("cache_obj_count:%v", s.cache.Len()),
 		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
 		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
 		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
 		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
+		"",
 	}
-	return strings.Join(data, "\r\n") + "\r\n"
+	data = append(data, s.logDiffSection()...)
+	data = append(data, s.slavesSection()...)
+	if section != "" {
+		for i, r := range data {
+			if strings.HasPrefix(r, "# ") && strings.HasSuffix(r, section) {
+				for j := i + 1; j < len(data); j++ {
+					if data[j] == "" {
+						return strings.Join(data[i:j+1], "\r\n")
+					}
+				}
+			}
+		}
+	}
+	return strings.Join(data, "\r\n")
 }
 
 func (s *Server) shardInfo(shard int) string {

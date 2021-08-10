@@ -42,11 +42,12 @@ func (s *Server) myLogTail(shard int) (total uint64, err error) {
 	return
 }
 
-func (s *Server) logDiff() (diff string, err error) {
+func (s *Server) logDiffSection() (diff []string) {
 	my, err := s.myLogTail(-1)
 	if err != nil {
-		return "", err
+		return []string{"error:" + err.Error()}
 	}
+	diff = []string{"# logdiff"}
 	for _, p := range s.slaves.Take(time.Minute) {
 		si := &serverInfo{}
 		json.Unmarshal(p.Data, si)
@@ -54,9 +55,18 @@ func (s *Server) logDiff() (diff string, err error) {
 		for _, t := range si.LogTails {
 			lt += int64(t)
 		}
-		diff += fmt.Sprintf("%s:%d\r\n", p.Key, int64(my)-lt)
+		diff = append(diff, fmt.Sprintf("logdiff_%s:%d", p.Key, int64(my)-lt))
 	}
+	diff = append(diff, "")
 	return
+}
+
+func (s *Server) slavesSection() (data []string) {
+	data = []string{"# slaves"}
+	for _, p := range s.slaves.Take(time.Minute) {
+		data = append(data, "slave_"+p.Key+":"+string(p.Data))
+	}
+	return append(data, "")
 }
 
 func (s *Server) requestLogPuller(shard int) {

@@ -332,33 +332,19 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command, i
 			return w.WriteBulkString(s.shardInfo(atoip(name[5:])))
 		case n == "bigkeys":
 			return w.WriteBulkString(s.bigKeys(atoip(command.Get(2))))
-		case n == "cache":
+		case n == "cachestat":
 			name = command.Get(2)
 			length, size, hits := s.cache.KeyInfo(name)
 			return w.WriteBulkString(fmt.Sprintf("# cache[%q]\r\nlength:%d\r\nsize:%d\r\nhits:%d\r\n", name, length, size, hits))
-		case n == "weakcache":
+		case n == "weakcachestat":
 			command.Argv = command.Argv[2:]
 			h := hashCommands(command)
 			hits, size, _ := s.weakCache.GetEx(h)
 			return w.WriteBulkString(fmt.Sprintf("# weakcache%x\r\nsize:%d\r\nhits:%d\r\n", h, size, hits))
-		case n == "slaves":
-			data := bytes.NewBufferString("# slaves\r\n")
-			for _, p := range s.slaves.Take(time.Minute) {
-				data.WriteString(p.Key + ":")
-				data.Write(p.Data)
-				data.WriteString("\r\n")
-			}
-			return w.WriteBulkString(data.String())
-		case n == "logtaildiff":
-			m, err := s.logDiff()
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			return w.WriteBulkString(m)
 		case n == "config":
 			return w.WriteBulkString(s.listConfig())
 		default:
-			return w.WriteBulkString(s.info())
+			return w.WriteBulkString(s.info(n))
 		}
 	case "DUMPSHARD":
 		x := &s.db[atoip(name)]

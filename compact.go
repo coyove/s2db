@@ -19,6 +19,11 @@ func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	log.Info("STAGE 0: begin compaction")
 
+	if shard == 0 {
+		s.configMu.Lock()
+		defer s.configMu.Unlock()
+	}
+
 	x := &s.db[shard]
 	path := x.DB.Path()
 
@@ -128,14 +133,14 @@ func (s *Server) compactShard(shard int) {
 
 func (s *Server) schedPurge() {
 	for !s.closed {
-		if s.SchedPurgeJob == "" {
+		if s.SchedCompactJob == "" {
 			time.Sleep(time.Minute)
 			continue
 		}
 
 		oks := [ShardNum]bool{}
 		for i := 0; i < ShardNum; i++ {
-			ok, err := calc.Eval(s.SchedPurgeJob, 's', float64(i))
+			ok, err := calc.Eval(s.SchedCompactJob, 's', float64(i))
 			if err != nil {
 				log.Error("scheduled purgelog invalid job string: ", err)
 			} else if ok != 0 {
@@ -204,12 +209,12 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			if min != math.MaxUint64 {
 				// If master have any slaves, it can't purge logs which slaves don't have yet
 				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-				walStart = decUint64(min, uint64(s.SchedPurgeHead))
+				walStart = decUint64(min, uint64(s.CompactLogHead))
 			} else if s.MasterMode {
 				log.Info("STAGE 0: master failed to collect info from slaves, no log compaction will be made")
 				walStart = 0
 			} else {
-				walStart = decUint64(b.Sequence(), uint64(s.SchedPurgeHead))
+				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
 			log.Infof("STAGE 0: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, min, b.Sequence())
 			walStartBuf = make([]byte, 8)

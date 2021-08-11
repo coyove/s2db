@@ -17,55 +17,62 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) myLogTail(shard int) (total uint64, err error) {
-	f := func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("wal"))
-		if bk != nil {
-			k, _ := bk.Cursor().Last()
-			if len(k) == 8 {
-				total += binary.BigEndian.Uint64(k)
+func (s *Server) myLogTails() (total [ShardNum]uint64, combined uint64, err error) {
+	for i := range s.db {
+		if err := s.db[i].View(func(tx *bbolt.Tx) error {
+			bk := tx.Bucket([]byte("wal"))
+			if bk != nil {
+				k, _ := bk.Cursor().Last()
+				if len(k) == 8 {
+					total[i] = binary.BigEndian.Uint64(k)
+					combined += total[i]
+				}
 			}
-		}
-		return nil
-	}
-	if shard == -1 {
-		for i := range s.db {
-			if err := s.db[i].View(f); err != nil {
-				return 0, err
-			}
-		}
-	} else {
-		if err := s.db[shard].View(f); err != nil {
-			return 0, err
+
+			return nil
+		}); err != nil {
+			return total, combined, err
 		}
 	}
 	return
 }
 
-func (s *Server) logDiffSection() (diff []string) {
-	my, err := s.myLogTail(-1)
+func (s *Server) myLogTail(shard int) (total uint64, err error) {
+	tails, combined, err := s.myLogTails()
+	if shard >= 0 {
+		return tails[shard], err
+	}
+	return combined, err
+}
+
+func (s *Server) slavesSection() (data []string) {
+	tails, combined, err := s.myLogTails()
 	if err != nil {
 		return []string{"error:" + err.Error()}
 	}
-	diff = []string{"# logdiff"}
+
+	data = []string{"# slaves", ""}
+	names := []string{}
+	diffs := [ShardNum]int64{}
 	for _, p := range s.slaves.Take(time.Minute) {
 		si := &serverInfo{}
 		json.Unmarshal(p.Data, si)
 		lt := int64(0)
-		for _, t := range si.LogTails {
+		for i, t := range si.LogTails {
 			lt += int64(t)
+			diffs[i] = int64(tails[i]) - int64(t)
 		}
-		diff = append(diff, fmt.Sprintf("logdiff_%s:%d", p.Key, int64(my)-lt))
+		data = append(data,
+			"slave_"+p.Key+"_name:"+si.ServerName,
+			"slave_"+p.Key+"_version:"+si.Version,
+			"slave_"+p.Key+"_listen:"+si.ListenAddr,
+			"slave_"+p.Key+"_logtail:"+joinArray(si.LogTails),
+			fmt.Sprintf("slave_%s_logtail_diff_sum:%d", p.Key, int64(combined)-lt),
+			fmt.Sprintf("slave_%s_logtail_diff:%v", p.Key, joinArray(diffs)),
+		)
+		names = append(names, p.Key)
 	}
-	diff = append(diff, "")
-	return
-}
-
-func (s *Server) slavesSection() (data []string) {
-	data = []string{"# slaves"}
-	for _, p := range s.slaves.Take(time.Minute) {
-		data = append(data, "slave_"+p.Key+":"+string(p.Data))
-	}
+	data[1] = "list:" + joinArray(names)
 	return append(data, "")
 }
 

@@ -19,7 +19,6 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
-	log "github.com/sirupsen/logrus"
 	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
@@ -350,20 +349,18 @@ func (o *RangeOptions) getLimit() int {
 }
 
 type ServerConfig struct {
-	ServerName         string
-	CacheSize          int
-	CacheKeyMaxLen     int
-	WeakCacheSize      int
-	SlowLimit          int // ms
-	PurgeLogMaxRunTime int // s
-	PurgeLogRun        int
-	ResponseLogRun     int
-	ResponseLogSize    int // kb
-	BatchMaxRun        int
-	SchedPurgeJob      string
-	SchedPurgeHead     int
-	CompactTxSize      int
-	FillPercent        int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
+	ServerName      string
+	CacheSize       int
+	CacheKeyMaxLen  int
+	WeakCacheSize   int
+	SlowLimit       int // ms
+	ResponseLogRun  int
+	ResponseLogSize int // kb
+	BatchMaxRun     int
+	SchedCompactJob string
+	CompactLogHead  int
+	CompactTxSize   int
+	FillPercent     int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
 }
 
 func (s *Server) loadConfig() error {
@@ -394,12 +391,10 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CacheKeyMaxLen, 100)
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
-	ifZero(&s.PurgeLogMaxRunTime, 1)
-	ifZero(&s.PurgeLogRun, 100)
 	ifZero(&s.ResponseLogRun, 200)
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
-	ifZero(&s.SchedPurgeHead, 1500)
+	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 50000)
 
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
@@ -530,7 +525,6 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
 		"",
 	}
-	data = append(data, s.logDiffSection()...)
 	data = append(data, s.slavesSection()...)
 	if section != "" {
 		for i, r := range data {
@@ -555,11 +549,11 @@ func (s *Server) shardInfo(shard int) string {
 	tmp := []string{
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
-		fmt.Sprintf("size:%v", fi.Size()),
+		fmt.Sprintf("db_size:%v", fi.Size()),
+		fmt.Sprintf("db_size_mb:%.2f", float64(fi.Size())/1024/1024),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
 	}
 	var myTail uint64
-	start := time.Now()
 	x.View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
@@ -578,7 +572,6 @@ func (s *Server) shardInfo(shard int) string {
 		myTail = bk.Sequence()
 		return nil
 	})
-	log.Info("shard", shard, " info in ", time.Since(start))
 	minTail := uint64(0)
 	for i, sv := range s.slaves.Take(time.Minute) {
 		si := &serverInfo{}
@@ -591,11 +584,11 @@ func (s *Server) shardInfo(shard int) string {
 		if i == 0 || tail < minTail {
 			minTail = tail
 		}
-		tmp = append(tmp, fmt.Sprintf("slave_%v_log_tail:%d", sv.Key, tail))
+		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", sv.Key, tail))
 	}
 	if minTail > 0 {
-		tmp = append(tmp, fmt.Sprintf("slave_min_log_tail:%d", minTail))
-		tmp = append(tmp, fmt.Sprintf("slave_log_tail_diff:%d", int64(myTail)-int64(minTail)))
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
 	}
 	return strings.Join(tmp, "\r\n") + "\r\n"
 }
@@ -622,4 +615,13 @@ func parseWeakFlag(in *redisproto.Command) time.Duration {
 		return time.Duration(int64(x*1e6) * 1e3)
 	}
 	return 0
+}
+
+func joinArray(v interface{}) string {
+	rv := reflect.ValueOf(v)
+	p := make([]string, 0, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		p = append(p, fmt.Sprint(rv.Index(i).Interface()))
+	}
+	return strings.Join(p, " ")
 }

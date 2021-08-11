@@ -38,7 +38,9 @@ type Server struct {
 	ReadOnly   bool
 	MasterMode bool
 	MasterAddr string
+
 	ServerConfig
+	configMu sync.Mutex
 
 	ln        net.Listener
 	cache     *keyedCache
@@ -316,6 +318,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
 		case "SET":
+			s.configMu.Lock()
+			defer s.configMu.Unlock()
 			found, err := s.updateConfig(command.Get(2), command.Get(3))
 			if err != nil {
 				return w.WriteError(err.Error())

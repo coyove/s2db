@@ -73,7 +73,7 @@ func (s *Server) compactShard(shard int) {
 			log.Error("responseLog: ", err)
 			return
 		}
-		if _, err := runLog(logs, compactDB); err != nil {
+		if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
 			log.Error("runLog: ", err)
 			return
 		}
@@ -97,7 +97,7 @@ func (s *Server) compactShard(shard int) {
 		log.Error("responseLog: ", err)
 		return
 	}
-	if _, err := runLog(logs, compactDB); err != nil {
+	if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
 		log.Error("runLog: ", err)
 		return
 	}

@@ -402,7 +402,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return s.runPreparedTxAndWrite(name, false, parseDel(cmd, name, command), w)
 	case "ZADD":
 		deferred := parseDeferFlag(command) // ZADD name --DEFER-- arg1 arg2 ...
-		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, s.FillPercent, command), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
 	}

@@ -86,6 +86,23 @@ func main() {
 		return
 	}
 
+	if *benchmark == "seqwrite" {
+		ctx := context.TODO()
+		for i := 0; i < 1000; i += 1 {
+			args := []interface{}{"ZADD", "seqbench"}
+			for c := 0; c < 100; c++ {
+				args = append(args, i*100+c, fmt.Sprintf("s%09d", i*100+c))
+			}
+			cmd := redis.NewStringCmd(ctx, args...)
+			rdb.Process(ctx, cmd)
+			if cmd.Err() != nil {
+				fmt.Println(i, cmd.Err())
+			}
+		}
+		fmt.Println(time.Since(start).Seconds())
+		return
+	}
+
 	if *benchmark != "" {
 		ctx := context.TODO()
 		for i := 0; i < 100; i += 1 {

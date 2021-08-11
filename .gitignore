@@ -1,6 +1,7 @@
 demo*
 test
 *.log
+*.log.gz
 redis
 slave_dir
 zset

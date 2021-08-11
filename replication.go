@@ -137,7 +137,7 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		start := time.Now()
-		names, err := runLog(cmds, s.db[shard].DB)
+		names, err := runLog(cmds, s.db[shard].DB, s.FillPercent)
 		if err != nil {
 			log.Error("bulkload: ", err)
 		} else {
@@ -153,7 +153,7 @@ func (s *Server) requestLogPuller(shard int) {
 	s.db[shard].pullerCloseSignal <- true
 }
 
-func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
+func runLog(cmds []string, db *bbolt.DB, fillPercent int) (names map[string]bool, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
 		for _, x := range cmds {
@@ -167,7 +167,7 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 				_, err = parseDel(cmd, name, command)(tx)
 			case "ZADD":
-				_, err = parseZAdd(cmd, name, command)(tx)
+				_, err = parseZAdd(cmd, name, fillPercent, command)(tx)
 			case "ZINCRBY":
 				_, err = parseZIncrBy(cmd, name, command)(tx)
 			default:

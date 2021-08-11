@@ -22,7 +22,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bkWal.Put(intToBytes(id), dd)
 }
 
-func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZAdd(cmd, name string, fillPercent int, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	var xx, nx, ch, data bool
 	var idx = 2
 	for ; ; idx++ {
@@ -55,7 +55,7 @@ func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (i
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: command.At(i + 2)})
 		}
 	}
-	return prepareZAdd(name, pairs, nx, xx, ch, dumpCommand(command))
+	return prepareZAdd(name, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
 }
 
 func parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {

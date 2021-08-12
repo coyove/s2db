@@ -421,7 +421,7 @@ func (s *Server) saveConfig() error {
 func (s *Server) updateConfig(key, value string) (bool, error) {
 	if strings.EqualFold(key, "readonly") {
 		s.ReadOnly, _ = strconv.ParseBool(value)
-		return false, nil
+		return true, nil
 	}
 	found := false
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
@@ -451,7 +451,7 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 }
 
 func (s *Server) listConfig() string {
-	list := []string{}
+	list := []string{"readonly:" + strconv.FormatBool(s.ReadOnly)}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		list = append(list, strings.ToLower(f.Name)+":"+fmt.Sprint(fv.Interface()))
 		return nil

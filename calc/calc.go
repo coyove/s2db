@@ -96,7 +96,6 @@ func Eval(in string, args ...float64) (float64, error) {
 const (
 	intFunc = 0xffffffffffff0001 + iota
 	geoHashFunc
-	geoHashLossyFunc
 	utcAddFunc
 	inFunc
 	minFunc
@@ -180,8 +179,6 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 		switch in.Name {
 		case "coord":
 			return math.Float64frombits(geoHashFunc)
-		case "coordLossy":
-			return math.Float64frombits(geoHashLossyFunc)
 		case "int":
 			return math.Float64frombits(intFunc)
 		case "in":
@@ -199,7 +196,9 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 		case "ts":
 			return math.Float64frombits(unixFunc)
 		case "now", "NOW":
-			return float64(r.now.UnixNano()/1e6) / 1e3
+			return float64(r.now.UnixNano()/1e3) / 1e6
+		case "inf":
+			return math.Inf(1)
 		case "MIN":
 			return float64(r.now.Minute())
 		case "HOUR":
@@ -224,17 +223,16 @@ func (r *runner) evalBinary(in ast.Expr) float64 {
 		x := r.evalBinary(in.Fun)
 		switch n := math.Float64bits(x); n {
 		case geoHashFunc:
-			if len(in.Args) == 2 {
+			if len(in.Args) >= 2 {
 				long := r.evalBinary(in.Args[0])
 				lat := r.evalBinary(in.Args[1])
-				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
-			}
-		case geoHashLossyFunc:
-			if len(in.Args) == 2 {
-				h := uint64(r.evalBinary(in.Args[0]))
-				i := int(r.evalBinary(in.Args[1]))
-				lat, long := geohash.DecodeIntWithPrecision(h>>i, uint(52-i))
-				return float64(geohash.EncodeIntWithPrecision(lat, long, 52))
+				h := geohash.EncodeIntWithPrecision(lat, long, 52)
+				if len(in.Args) >= 3 {
+					i := int(r.evalBinary(in.Args[2]))
+					lat, long := geohash.DecodeIntWithPrecision(h>>i, uint(52-i))
+					h = geohash.EncodeIntWithPrecision(lat, long, 52)
+				}
+				return float64(h)
 			}
 		case intFunc:
 			if len(in.Args) == 1 {

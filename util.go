@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
-	"encoding/json"
 	"fmt"
 	"math"
 	"math/rand"
@@ -471,7 +470,6 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 }
 
 func (s *Server) info(section string) string {
-	p := s.slaves.Take(time.Minute)
 	sz := 0
 	for i := range s.db {
 		fi, err := os.Stat(s.db[i].Path())
@@ -502,7 +500,7 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("master:%v", s.MasterAddr),
 		fmt.Sprintf("master_name:%v", s.master.ServerName),
 		fmt.Sprintf("master_version:%v", s.master.Version),
-		fmt.Sprintf("slaves:%v", len(p)),
+		fmt.Sprintf("slaves:%v", s.slaves.Len()),
 		"",
 		"# sys_rw_stats",
 		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
@@ -572,24 +570,17 @@ func (s *Server) shardInfo(shard int) string {
 		myTail = bk.Sequence()
 		return nil
 	})
-	minTail := uint64(0)
-	for i, sv := range s.slaves.Take(time.Minute) {
-		si := &serverInfo{}
-		json.Unmarshal(sv.Data, si)
+	minTail := uint64(math.MaxUint64)
+	tmp = append(tmp, "", "# slave_log", fmt.Sprintf("slave_queue:%d", len(s.slaves.q)))
+	s.slaves.Foreach(func(si *serverInfo) {
 		tail := si.LogTails[shard]
-		if i == 0 {
-			tmp = append(tmp, "", "# slave_log")
-			tmp = append(tmp, fmt.Sprintf("slave_queue:%d", len(s.slaves.Slaves)))
-		}
-		if i == 0 || tail < minTail {
+		if tail < minTail {
 			minTail = tail
 		}
-		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", sv.Key, tail))
-	}
-	if minTail > 0 {
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
-	}
+		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", si.RemoteAddr, tail))
+	})
+	tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
+	tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
 	return strings.Join(tmp, "\r\n") + "\r\n"
 }
 

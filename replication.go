@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,24 +52,23 @@ func (s *Server) slavesSection() (data []string) {
 	data = []string{"# slaves", ""}
 	names := []string{}
 	diffs := [ShardNum]int64{}
-	for _, p := range s.slaves.Take(time.Minute) {
-		si := &serverInfo{}
-		json.Unmarshal(p.Data, si)
+	s.slaves.Foreach(func(si *serverInfo) {
 		lt := int64(0)
 		for i, t := range si.LogTails {
 			lt += int64(t)
 			diffs[i] = int64(tails[i]) - int64(t)
 		}
 		data = append(data,
-			"slave_"+p.Key+"_name:"+si.ServerName,
-			"slave_"+p.Key+"_version:"+si.Version,
-			"slave_"+p.Key+"_listen:"+si.ListenAddr,
-			"slave_"+p.Key+"_logtail:"+joinArray(si.LogTails),
-			fmt.Sprintf("slave_%s_logtail_diff_sum:%d", p.Key, int64(combined)-lt),
-			fmt.Sprintf("slave_%s_logtail_diff:%v", p.Key, joinArray(diffs)),
+			"slave_"+si.RemoteAddr+"_name:"+si.ServerName,
+			"slave_"+si.RemoteAddr+"_version:"+si.Version,
+			"slave_"+si.RemoteAddr+"_ack_before:"+strconv.FormatInt(time.Now().Unix()-si.LastUpdateUnix, 10),
+			"slave_"+si.RemoteAddr+"_listen:"+si.ListenAddr,
+			"slave_"+si.RemoteAddr+"_logtail:"+joinArray(si.LogTails),
+			fmt.Sprintf("slave_%s_logtail_diff_sum:%d", si.RemoteAddr, int64(combined)-lt),
+			fmt.Sprintf("slave_%s_logtail_diff:%v", si.RemoteAddr, joinArray(diffs)),
 		)
-		names = append(names, p.Key)
-	}
+		names = append(names, si.RemoteAddr)
+	})
 	data[1] = "list:" + joinArray(names)
 	return append(data, "")
 }
@@ -106,6 +103,15 @@ func (s *Server) requestLogPuller(shard int) {
 		s.master = serverInfo{
 			ServerName: parts[1],
 			Version:    parts[2],
+		}
+		if s.master.ServerName == "" {
+			log.Error("master responded empty server name")
+			time.Sleep(time.Second * 10)
+			continue
+		}
+		if s.master.ServerName != s.MasterNameAssert {
+			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.master.ServerName)
+			break
 		}
 		// if s.master.Version > Version {
 		// 	log.Error("ping: master version too high: ", s.master.Version, ">", Version)
@@ -230,137 +236,73 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 	return
 }
 
-// func (s *Server) purgeLog(shard int, head int64) (int, int, error) {
-// 	if head == 0 {
-// 		return 0, 0, fmt.Errorf("head is zero")
-// 	}
-// 	if head < 0 && -head > 10000 {
-// 		return 0, 0, fmt.Errorf("neg-head is too large")
-// 	}
-// 	oldCount, count := 0, 0
-// 	if err := s.db[shard].Update(func(tx *bbolt.Tx) error {
-// 		bk := tx.Bucket([]byte("wal"))
-// 		if bk == nil {
-// 			return nil
-// 		}
-//
-// 		oldCount = bk.Stats().KeyN
-// 		if oldCount == 0 {
-// 			return nil
-// 		}
-// 		c := bk.Cursor()
-// 		last, _ := c.Last()
-// 		if len(last) != 8 {
-// 			return fmt.Errorf("invalid last key, fatal error")
-// 		}
-// 		tail := int64(binary.BigEndian.Uint64(last))
-// 		if head < 0 {
-// 			head = tail + head
-// 			if head < 1 {
-// 				head = 1
-// 			}
-// 		}
-// 		if head >= tail {
-// 			return fmt.Errorf("truncate head over tail")
-// 		}
-// 		if tail-head > 10000 {
-// 			return fmt.Errorf("too much gap, purging aborted")
-// 		}
-// 		var min uint64 = math.MaxUint64
-// 		for _, sv := range s.slaves.Take(time.Minute) {
-// 			si := &serverInfo{}
-// 			json.Unmarshal(sv.Data, si)
-// 			if si.LogTails[shard] < min {
-// 				min = si.LogTails[shard]
-// 			}
-// 		}
-// 		if min != math.MaxUint64 {
-// 			// If master have any slaves, it can't purge logs which slaves don't have yet
-// 			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-// 			if head > int64(min) {
-// 				return fmt.Errorf("truncate too much: %d (slave rejection: %d)", head, min)
-// 			}
-// 		}
-//
-// 		keepLogs := [][2][]byte{}
-// 		for i := head; i <= tail; i++ {
-// 			k := intToBytes(uint64(i))
-// 			v := append([]byte{}, bk.Get(k)...)
-// 			keepLogs = append(keepLogs, [2][]byte{k, v})
-// 			count++
-// 		}
-// 		if len(keepLogs) == 0 {
-// 			return fmt.Errorf("keep zero logs, fatal error")
-// 		}
-// 		if err := tx.DeleteBucket([]byte("wal")); err != nil {
-// 			return err
-// 		}
-// 		bk, err := tx.CreateBucket([]byte("wal"))
-// 		if err != nil {
-// 			return err
-// 		}
-// 		for _, p := range keepLogs {
-// 			if err := bk.Put(p[0], p[1]); err != nil {
-// 				return err
-// 			}
-// 		}
-// 		return bk.SetSequence(uint64(tail))
-// 	}); err != nil {
-// 		return 0, 0, err
-// 	}
-// 	return count, oldCount, nil
-// }
-
 type slaves struct {
-	sync.Mutex
-	Slaves []Pair
+	sync.RWMutex
+	q map[string]*serverInfo
 }
 
 type serverInfo struct {
-	LogTails   [ShardNum]uint64 `json:"logtails"`
-	ListenAddr string           `json:"listen"`
-	ServerName string           `json:"servername"`
-	Version    string           `json:"version"`
+	// RemoteAddr is the definitive identifier of a server
+	RemoteAddr string `json:"remoteaddr"`
+
+	ServerName     string           `json:"servername"`
+	ListenAddr     string           `json:"listen"`
+	LogTails       [ShardNum]uint64 `json:"logtails"`
+	Version        string           `json:"version"`
+	LastUpdateUnix int64            `json:"lastupdate"`
+
+	purgeTimer *time.Timer
 }
 
-func (s *slaves) Take(t time.Duration) []Pair {
+func (s *slaves) Get(serverName string) *serverInfo {
+	s.RLock()
+	defer s.RUnlock()
+	return s.q[serverName]
+}
+
+func (s *slaves) Foreach(cb func(*serverInfo)) {
+	s.RLock()
+	defer s.RUnlock()
+	for _, sv := range s.q {
+		cb(sv)
+	}
+}
+
+func (s *slaves) Len() (l int) {
+	s.RLock()
+	l = len(s.q)
+	s.RUnlock()
+	return
+}
+
+func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
 	s.Lock()
 	defer s.Unlock()
 
-	now := time.Now()
-	for i, sv := range s.Slaves {
-		if now.Sub(time.Unix(int64(sv.Score), 0)) > t {
-			return append([]Pair{}, s.Slaves[:i]...)
+	if s.q == nil {
+		s.q = map[string]*serverInfo{}
+	}
+
+	si := s.q[remoteAddr]
+	if si != nil {
+		cb(si)
+		si.purgeTimer.Stop()
+		si.purgeTimer.Reset(time.Minute)
+		si.LastUpdateUnix = time.Now().Unix()
+		return
+	}
+
+	p := &serverInfo{}
+	p.RemoteAddr = remoteAddr
+	p.LastUpdateUnix = time.Now().Unix()
+	p.purgeTimer = time.AfterFunc(time.Minute, func() {
+		s.Lock()
+		defer s.Unlock()
+		si := s.q[remoteAddr]
+		if si != nil && time.Now().Unix()-si.LastUpdateUnix > 50 {
+			delete(s.q, remoteAddr)
 		}
-	}
-	return append([]Pair{}, s.Slaves...)
-}
-
-func (s *slaves) Update(ip string, update func(*serverInfo)) {
-	p := Pair{Key: ip, Score: float64(time.Now().Unix())}
-
-	s.Lock()
-	defer s.Unlock()
-
-	found := false
-	for i, sv := range s.Slaves {
-		if sv.Key == p.Key {
-			info := &serverInfo{}
-			json.Unmarshal(sv.Data, info)
-			update(info)
-			p.Data, _ = json.Marshal(info)
-			s.Slaves[i] = p
-			found = true
-			break
-		}
-	}
-	if !found {
-		info := &serverInfo{}
-		update(info)
-		p.Data, _ = json.Marshal(info)
-		s.Slaves = append(s.Slaves, p)
-	}
-	sort.Slice(s.Slaves, func(i, j int) bool {
-		return s.Slaves[i].Score > s.Slaves[j].Score
 	})
+	cb(p)
+	s.q[remoteAddr] = p
 }

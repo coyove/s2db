@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,7 +119,6 @@ func main() {
 			}(i)
 		}
 		select {}
-		return
 	}
 
 	if rdb.Ping(context.TODO()).Err() == nil {
@@ -143,7 +143,15 @@ func main() {
 	}
 	opened <- true
 
-	s.MasterAddr = *masterAddr
+	if *masterAddr != "" {
+		parts := strings.Split(*masterAddr, "@")
+		if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
+			log.Error("invalid master address, form: master_name@ip:port")
+			return
+		}
+		s.MasterNameAssert = parts[0]
+		s.MasterAddr = parts[1]
+	}
 	s.MasterMode = *masterMode
 	s.ReadOnly = *readOnly || s.MasterAddr != ""
 	s.Serve(*listenAddr)

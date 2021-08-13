@@ -35,9 +35,10 @@ var (
 )
 
 type Server struct {
-	ReadOnly   bool
-	MasterMode bool
-	MasterAddr string
+	ReadOnly         bool
+	MasterMode       bool
+	MasterAddr       string
+	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
 
 	ServerConfig
 	configMu sync.Mutex
@@ -193,11 +194,11 @@ func (s *Server) Serve(addr string) error {
 			}
 			return err
 		}
-		go s.handleConnection(conn)
+		go s.handleConnection(conn, conn.RemoteAddr())
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
+func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) {
 	defer func() {
 		conn.Close()
 		atomic.AddInt64(&s.survey.connections, -1)
@@ -214,7 +215,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				ew = writer.WriteError(err.Error())
 			} else {
 				if err != io.EOF {
-					log.Info(err, " closed connection to ", conn.RemoteAddr())
+					log.Info(err, " closed connection to ", remoteAddr)
 				}
 				break
 			}
@@ -245,11 +246,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 
 	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
 		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
-			return w.WriteError("invalid name which is either empty, starts with 'score.' or contains '\\r\\n'")
+			return w.WriteError("invalid name which is either empty, starting with 'score.' or containing '\\r\\n'")
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if s.ReadOnly {
 				return w.WriteError("readonly")
+			} else if s.ServerName == "" {
+				return w.WriteError("null server name")
 			}
 			s.survey.sysWrite.Incr(1)
 			isReadWrite = 'w'

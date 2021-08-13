@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -199,13 +198,11 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		if string(next) == "wal" {
 			var walStart uint64
 			var min uint64 = math.MaxUint64
-			for _, sv := range s.slaves.Take(time.Minute) {
-				si := &serverInfo{}
-				json.Unmarshal(sv.Data, si)
+			s.slaves.Foreach(func(si *serverInfo) {
 				if si.LogTails[shard] < min {
 					min = si.LogTails[shard]
 				}
-			}
+			})
 			if min != math.MaxUint64 {
 				// If master have any slaves, it can't purge logs which slaves don't have yet
 				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge

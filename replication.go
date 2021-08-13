@@ -113,6 +113,10 @@ func (s *Server) requestLogPuller(shard int) {
 			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.master.ServerName)
 			break
 		}
+		if s.StopLogPull == 1 {
+			time.Sleep(time.Second)
+			continue
+		}
 		// if s.master.Version > Version {
 		// 	log.Error("ping: master version too high: ", s.master.Version, ">", Version)
 		// 	time.Sleep(time.Second * 10)

@@ -24,13 +24,13 @@ import (
 var (
 	Version = ""
 
-	masterAddr      = flag.String("master", "", "connect to master server")
+	masterAddr      = flag.String("master", "", "connect to master server, form: master_name@ip:port")
 	listenAddr      = flag.String("l", ":6379", "listen address")
 	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
 	dataDir         = flag.String("d", "test", "data directory")
 	showVersion     = flag.Bool("v", false, "print s2db version")
 	readOnly        = flag.Bool("ro", false, "start server as read-only")
-	masterMode      = flag.Bool("M", false, "tag server as master, even it may lose connections to slaves")
+	masterMode      = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
 	calcShard       = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark       = flag.String("bench", "", "")
 )

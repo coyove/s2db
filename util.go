@@ -360,6 +360,7 @@ type ServerConfig struct {
 	CompactLogHead  int
 	CompactTxSize   int
 	FillPercent     int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
+	StopLogPull     int
 }
 
 func (s *Server) loadConfig() error {

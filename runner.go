@@ -22,6 +22,7 @@ func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bb
 	t := &batchTask{f: f, out: make(chan interface{}, 1)}
 	s.db[shardIndex(name)].batchTx <- t
 	if deferred {
+		s.removeCache(name)
 		return w.WriteSimpleString("OK")
 	}
 	out := <-t.out

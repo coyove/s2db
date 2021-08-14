@@ -2,12 +2,10 @@ package main
 
 import (
 	"fmt"
-	"math/rand"
-	"sort"
+	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
-
-	"go.etcd.io/bbolt"
 )
 
 func TestMetrics(t *testing.T) {
@@ -23,22 +21,17 @@ func TestMetrics(t *testing.T) {
 	fmt.Println(s.data)
 }
 
-func BenchmarkChan(b *testing.B) {
-	x := make([]uint64, 1e4)
-	for i := range x {
-		x[i] = rand.Uint64()
-	}
+func BenchmarkGlobMatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		bbolt.SortU8(x)
+		filepath.Match("ab*e", "abccccccd")
 	}
 }
 
-func BenchmarkChan2(b *testing.B) {
-	x := make([]int, 1e4)
-	for i := range x {
-		x[i] = rand.Int()
-	}
+func BenchmarkRegexpMatch(b *testing.B) {
+	b.StopTimer()
+	rx := regexp.MustCompile("ab.*e")
+	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		sort.Ints(x)
+		rx.MatchString("abccccccd")
 	}
 }

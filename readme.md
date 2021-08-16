@@ -8,6 +8,7 @@
 1. Start the server by `s2db -l <Ip>:<Port> -master <MasterIp>:<MasterPort>`, listening at `Ip:Port`.
 2. `<MasterName>` must correspond to the actual master server's name you set earlier, otherwise no replication will happen.
 3. Set server name like master did.
+4. Replications are done asynchronously and passively, which means master won't request any info from slaves.
 
 # Configuration Fields
 - `ServerName`: server's name
@@ -25,4 +26,26 @@
 - `StopLogPull`: stop pulling logs from master
 
 # Commands
-WIP
+## `DEL key`
+Delete one key (ONE key only).
+
+## `ZADD key [--DEFER--] [NX|XX] [CH] score member [score member ...]`
+Behaviour exactly like redis. `--DEFER--` will make the addition asynchronized so the command will return `OK` immediately.
+
+## `ZADD key [--DEFER--] [NX|XX] [CH] DATA score member data [score member data ...]`
+Behaviour similar to the above command, but you can attach data to each member.
+
+## `ZINCRBY key increment memebr`
+Behaviour exactly like redis.
+
+## `ZREM key member [member ...]`
+Behaviour exactly like redis.
+
+## `ZSCORE key member`
+Behaviour exactly like redis.
+
+## `ZMSCORE key member [member ...]`
+Behaviour exactly like redis.
+
+## `ZMDATA key member [member ...]`
+Retrieve the data attached to the members.

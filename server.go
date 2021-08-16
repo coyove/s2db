@@ -340,8 +340,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteInt(int64(weight))
 	case "INFO":
 		switch n := strings.ToLower(name); {
-		case n >= "shard0" && n <= "shard9":
-			return w.WriteBulkString(s.shardInfo(atoip(name[5:])))
+		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
+			return w.WriteBulkString(s.shardInfo(atoip(n)))
 		case n == "bigkeys":
 			return w.WriteBulkString(s.bigKeys(atoip(command.Get(2))))
 		case n == "cachestat":

@@ -201,7 +201,7 @@ func runLog(cmds []string, db *bbolt.DB, fillPercent int) (names map[string]bool
 	return
 }
 
-func (s *Server) responseLog(shard int, start uint64) (logs []string, err error) {
+func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string, err error) {
 	sz := 0
 	masterWalIndex, err := s.myLogTail(shard)
 	if err != nil {
@@ -231,6 +231,9 @@ func (s *Server) responseLog(shard int, start uint64) (logs []string, err error)
 			data := bk.Get(intToBytes(uint64(i)))
 			logs = append(logs, string(data))
 			sz += len(data)
+			if full {
+				continue
+			}
 			if len(logs) >= s.ResponseLogRun || sz > s.ResponseLogSize*1024 {
 				break
 			}

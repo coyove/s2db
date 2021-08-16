@@ -69,10 +69,10 @@ func (s *Server) compactShard(shard int) {
 			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d", ct, mt)
 			return
 		}
-		if mt-ct <= uint64(s.CompactTxSize*2) {
+		if mt-ct <= uint64(s.CompactTxSize) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
-		logs, err := s.responseLog(shard, ct+1)
+		logs, err := s.responseLog(shard, ct+1, true)
 		if err != nil {
 			log.Error("responseLog: ", err)
 			return
@@ -96,7 +96,7 @@ func (s *Server) compactShard(shard int) {
 	log.Info("STAGE 3: make online database rw -> ro")
 
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
-	logs, err := s.responseLog(shard, ct+1)
+	logs, err := s.responseLog(shard, ct+1, true)
 	if err != nil {
 		log.Error("responseLog: ", err)
 		return

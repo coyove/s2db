@@ -395,7 +395,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.responseLog(atoip(name), start)
+		logs, err := s.responseLog(atoip(name), start, false)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

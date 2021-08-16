@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
+	"go.etcd.io/bbolt"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -28,6 +30,7 @@ var (
 	listenAddr      = flag.String("l", ":6379", "listen address")
 	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
 	dataDir         = flag.String("d", "test", "data directory")
+	showLogTail     = flag.String("logtail", "", "")
 	showVersion     = flag.Bool("v", false, "print s2db version")
 	readOnly        = flag.Bool("ro", false, "start server as read-only")
 	masterMode      = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
@@ -119,6 +122,29 @@ func main() {
 			}(i)
 		}
 		select {}
+	}
+
+	if *showLogTail != "" {
+		db, err := bbolt.Open(*showLogTail, 0666, bboltReadonlyOptions)
+		if err != nil {
+			fmt.Println(err.Error())
+			os.Exit(-1)
+		}
+		defer db.Close()
+		var tail, seq uint64
+		db.View(func(tx *bbolt.Tx) error {
+			bk := tx.Bucket([]byte("wal"))
+			if bk != nil {
+				k, _ := bk.Cursor().Last()
+				if len(k) == 8 {
+					tail = binary.BigEndian.Uint64(k)
+				}
+				seq = bk.Sequence()
+			}
+			return nil
+		})
+		fmt.Println(tail, seq)
+		return
 	}
 
 	if rdb.Ping(context.TODO()).Err() == nil {

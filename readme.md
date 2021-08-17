@@ -1,3 +1,6 @@
+# s2db
+s2db is a sorted set database who speaks redis protocol and stores data on disk.
+
 # Startup Sequence
 ## Master
 1. Start the server by `s2db -l <Ip>:<Port> -M`, listening at `Ip:Port`.
@@ -5,9 +8,9 @@
 3. Set server name: `CONFIG SET servername <ServerName>`.
 
 ## Slave
-1. Start the server by `s2db -l <Ip>:<Port> -master <MasterIp>:<MasterPort>`, listening at `Ip:Port`.
+1. Start the server by `s2db -l <Ip>:<Port> -master <MasterName>@<MasterIp>:<MasterPort>`, listening at `Ip:Port`.
 2. `<MasterName>` must correspond to the actual master server's name you set earlier, otherwise no replication will happen.
-3. Set server name like master did.
+3. Set slave's server name like master did.
 4. Replications are done asynchronously and passively, which means master won't request any info from slaves.
 
 # Configuration Fields
@@ -30,22 +33,68 @@
 Delete one key (ONE key only).
 
 ## `ZADD key [--DEFER--] [NX|XX] [CH] score member [score member ...]`
-Behaviour exactly like redis. `--DEFER--` will make the addition asynchronized so the command will return `OK` immediately.
+Behaves exactly like redis. `--DEFER--` makes the operation deferred so the command will return `OK` immediately.
 
 ## `ZADD key [--DEFER--] [NX|XX] [CH] DATA score member data [score member data ...]`
-Behaviour similar to the above command, but you can attach data to each member.
+Behaves similar to the above command, but you can attach data to each member.
 
 ## `ZINCRBY key increment memebr`
-Behaviour exactly like redis.
+Behaves exactly like redis.
 
 ## `ZREM key member [member ...]`
-Behaviour exactly like redis.
+Behaves exactly like redis.
+
+## `ZREMRANGEBY[LEX|SCORE|RANK] key left right`
+Behaves exactly like redis.
+
+## `ZCARD key`
+Behaves exactly like redis.
+
+## `ZCOUNT key min max`
+Behaves exactly like redis.
 
 ## `ZSCORE key member`
-Behaviour exactly like redis.
+Behaves exactly like redis.
 
 ## `ZMSCORE key member [member ...]`
-Behaviour exactly like redis.
+Behaves exactly like redis.
 
 ## `ZMDATA key member [member ...]`
 Retrieve the data attached to the members.
+
+## `Z[REV]RANK key member`
+Behaves exactly like redis.
+
+## `ZRANGEBY[LEX|SCORE] key left right [LIMIT 0 count]`
+Behaves similar to redis, except `offset` (if provided) must be 0.
+
+## `GEODIST key member1 member2 [m|km] `
+Behaves exactly like redis.
+
+## `GEOPOS key member [member ...]`
+Behaves exactly like redis.
+
+## `GEORADIUS[_RO] key longitude latitude radius m|km [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]`
+Readonly command and behaves exactly like redis.
+
+## `GEORADIUSBYMEMBER[_RO] key member radius m|km [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]`
+Readonly command and behaves exactly like redis.
+
+# Evaluable Numeric Arguments
+Numeric arguments like `start`, `min` can be expressions, say you record user liveness by using unix timestamp as their scores:
+```
+ZADD online_users 1629167398.356 <user_id>
+```
+and get recent active (1 hour) users by:
+```
+ZREVRANGEBYSCORE online_users 1629167398 1629163798
+```
+If you are hand writing this, it would be painful to query the current timestamp and do the calculation. Instead in s2db you can write:
+```
+ZADD online_users =now <user_id>
+ZREVRANGEBYSCORE online_users =now =now-1h
+```
+Furthermore, you may notice that s2db doesn't have `GEOADD` command, that's because it has the same concept of sorted set, so the command can be accomplished by `ZADD` + `coord`:
+```
+ZADD cities =coord(118.76667,32.049999) Nanjing
+```

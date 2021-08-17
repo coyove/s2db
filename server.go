@@ -359,25 +359,25 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			return w.WriteBulkString(s.info(n))
 		}
 	case "DUMPSHARD":
-		x := &s.db[atoip(name)]
-		path := command.Get(2)
-		if path == "" {
-			path = x.DB.Path() + ".bak"
+		if !strings.EqualFold(name, "ALL") {
+			path := command.Get(2)
+			if path == "" {
+				path = s.db[atoip(name)].DB.Path() + ".bak"
+			}
+			return w.WriteIntOrError(s.dumpShard(atoip(name), path))
 		}
-		of, err := os.Create(path)
-		if err != nil {
-			return w.WriteError(err.Error())
+		var total int64
+		for i := range s.db {
+			c, err := s.dumpShard(i, s.db[i].Path()+".bak")
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			total += c
 		}
-		defer of.Close()
-		var c int64
-		err = x.DB.View(func(tx *bbolt.Tx) error {
-			c, err = tx.WriteTo(of)
-			return err
-		})
-		return w.WriteIntOrError(int64(c), err)
+		return w.WriteInt(total)
 	case "COMPACTSHARD":
 		go s.compactShard(atoip(name))
-		return w.WriteSimpleString("OK")
+		return w.WriteSimpleString("STARTED")
 	}
 
 	// Log related commands

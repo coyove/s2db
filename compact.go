@@ -258,3 +258,17 @@ func decUint64(v uint64, d uint64) uint64 {
 	}
 	return 0
 }
+
+func (s *Server) dumpShard(shard int, path string) (int64, error) {
+	of, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer of.Close()
+	var c int64
+	err = s.db[shard].DB.View(func(tx *bbolt.Tx) error {
+		c, err = tx.WriteTo(of)
+		return err
+	})
+	return c, err
+}

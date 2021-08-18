@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 
 func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
-	log.Info("STAGE 0: begin compaction")
 
 	if shard == 0 {
 		s.configMu.Lock()
@@ -25,10 +25,16 @@ func (s *Server) compactShard(shard int) {
 
 	x := &s.db[shard]
 	path := x.DB.Path()
+	compactPath := path + ".compact"
+	if s.CompactTmpDir != "" {
+		compactPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.compact")
+	}
+
+	log.Info("STAGE 0: begin compaction, store at: ", compactPath)
 
 	// STAGE 1: open a temp database for compaction
-	os.Remove(path + ".compact")
-	compactDB, err := bbolt.Open(path+".compact", 0666, bboltOptions)
+	os.Remove(compactPath)
+	compactDB, err := bbolt.Open(compactPath, 0666, bboltOptions)
 	if err != nil {
 		log.Error("open compactDB: ", err)
 		return
@@ -108,16 +114,36 @@ func (s *Server) compactShard(shard int) {
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), roDB.Size(), compactDB.Size())
 
 	// STAGE 5: now compactDB and onlineDB are identical, swap them to make compactDB officially online
-	compactDB.Close()
 	roDB.Close()
-
 	if err := os.Rename(path, path+".bak"); err != nil {
 		log.Error("backup original (online) DB: ", err)
 		return
 	}
-	if err := os.Rename(path+".compact", path); err != nil {
-		log.Error("rename compactDB to online DB: ", err)
-		return
+
+	if s.CompactTmpDir != "" {
+		// Since we may write compactDB to another device, simple rename won't do thew work
+		of, err := os.Create(path)
+		if err != nil {
+			log.Error("open dump file for compactDB: ", err)
+			return
+		}
+		defer of.Close()
+		err = compactDB.View(func(tx *bbolt.Tx) error {
+			_, err := tx.WriteTo(of)
+			return err
+		})
+		if err != nil {
+			log.Error("dump compactDB to location: ", err)
+			return
+		}
+		compactDB.Close()
+		os.Remove(compactPath)
+	} else {
+		compactDB.Close()
+		if err := os.Rename(compactPath, path); err != nil {
+			log.Error("rename compactDB to online DB: ", err)
+			return
+		}
 	}
 
 	db, err := bbolt.Open(path, 0666, bboltOptions)

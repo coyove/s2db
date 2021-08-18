@@ -25,6 +25,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `SchedCompactJob`: scheduled compaction job config
 - `CompactLogHead`: number of log entries preserved during compaction
 - `CompactTxSize`: max transaction size during compaction
+- `CompactTmpDir`: temporal location for the compacted database, by default it is located in the data directory
 - `FillPercent`: database filling rate, 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
 - `StopLogPull`: stop pulling logs from master
 
@@ -98,3 +99,22 @@ Furthermore, you may notice that s2db doesn't have `GEOADD` command, that's beca
 ```
 ZADD cities =coord(118.76667,32.049999) Nanjing
 ```
+
+# Compaction
+To enable compaction, execute: `CONFIG SET SchedCompactJob <Expression>`, where `<Expression>` is a boolean expression (0 means false and 1 means true), e.g.:
+```
+HOUR == 1 && MIN == 30  
+// start at 1:30 UTC everyday
+
+HOUR == 1 && in(DOW, 0, 3, 5)
+// start at 1:00 UTC every Wed, Fri and Sun
+
+HOUR == 1 && (s % 2 + DOY % 2) != 0
+// even numbered shards start compaction at 1:00 UTC in even days
+// odd numbered shards start at the same time in odd days
+// odd and even days are calculated based on DOY (Day Of Year)
+```
+
+Compactions are done in the background without hanging the incoming requests, this reqiures enough disk space to store the temporal compacted database file. When done compacting, s2db will use this file to replace the online one, causing denial of service temporarily (writes only, reads won't be affected).
+
+Compaction consumes a lot of disk resources. By default it is written to the data directory, therefore, same device as the online one, to minimize the impaction to online requests and maximize the compacting speed, you can set a temporal location on another device for s2db to dump the compacted database into by setting `CompactTmpDir`.

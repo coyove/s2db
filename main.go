@@ -156,18 +156,17 @@ func main() {
 	go func() {
 		select {
 		case <-opened:
-		case <-time.After(time.Second * 2):
+		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
 		log.Info("serving pprof at ", *pprofListenAddr)
 		log.Error("pprof: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()
 
-	s, err := Open(*dataDir)
+	s, err := Open(*dataDir, opened)
 	if err != nil {
 		log.Panic(err)
 	}
-	opened <- true
 
 	if *masterAddr != "" {
 		parts := strings.Split(*masterAddr, "@")

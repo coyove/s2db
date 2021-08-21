@@ -365,7 +365,7 @@ type ServerConfig struct {
 }
 
 func (s *Server) loadConfig() error {
-	if err := s.db[0].Update(func(tx *bbolt.Tx) error {
+	if err := s.configDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
 			return err
@@ -401,7 +401,7 @@ func (s *Server) saveConfig() error {
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	return s.db[0].Update(func(tx *bbolt.Tx) error {
+	return s.configDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
 			return err
@@ -420,6 +420,7 @@ func (s *Server) saveConfig() error {
 }
 
 func (s *Server) updateConfig(key, value string) (bool, error) {
+	key = strings.ToLower(key)
 	if strings.EqualFold(key, "readonly") {
 		s.ReadOnly, _ = strconv.ParseBool(value)
 		return true, nil

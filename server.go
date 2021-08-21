@@ -69,9 +69,10 @@ type Server struct {
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
 	}
+	configDB *bbolt.DB
 }
 
-func Open(path string) (*Server, error) {
+func Open(path string, out chan bool) (*Server, error) {
 	var shards [ShardNum]string
 	if idx := strings.Index(path, ":"); idx > 0 {
 		parts := strings.Split(path, ":")
@@ -96,15 +97,24 @@ func Open(path string) (*Server, error) {
 		}
 	}
 
-	if err := os.MkdirAll(path, 0777); err != nil {
+	err := os.MkdirAll(path, 0777)
+	if err != nil {
 		return nil, err
 	}
 
 	x := &Server{}
+	x.configDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
+	if err != nil {
+		return nil, err
+	}
 	for i := range x.db {
 		db, err := bbolt.Open(shards[i], 0666, bboltOptions)
 		if err != nil {
 			return nil, err
+		}
+		log.Info("open shard #", i)
+		if i == 0 && out != nil {
+			out <- true // indicate the opening process is running normally
 		}
 		d := &x.db[i]
 		d.DB = db
@@ -244,7 +254,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	)
 	cmd = strings.TrimSuffix(cmd, "WEAK")
 
-	if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
+	if cmd == "UNLINK" || cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
 		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
 			return w.WriteError("invalid name which is either empty, starting with 'score.' or containing '\\r\\n'")
 		}
@@ -401,6 +411,31 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		s.slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
 		return w.WriteBulkStrings(logs)
+	}
+
+	// Special
+	switch cmd {
+	case "UNLINK":
+		if err := s.pick(name).Update(func(tx *bbolt.Tx) error {
+			bk, err := tx.CreateBucketIfNotExists([]byte("unlink"))
+			if err != nil {
+				return err
+			}
+			return bk.Put([]byte(name), []byte("unlink"))
+		}); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteSimpleString("OK")
+	case "UNLINKP":
+		var names []string
+		for i := 0; i < 32; i++ {
+			n, err := s.getPendingUnlinks(i)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			names = append(names, n...)
+		}
+		return w.WriteBulkStrings(names)
 	}
 
 	// Client space write commands

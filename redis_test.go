@@ -36,7 +36,7 @@ func z(s float64, m string) *redis.Z {
 }
 
 func TestZSet(t *testing.T) {
-	s, _ := Open("test")
+	s, _ := Open("test", nil)
 	go s.Serve(":6666")
 	time.Sleep(time.Second)
 
@@ -44,6 +44,8 @@ func TestZSet(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 
 	assert(rdb.Ping(ctx).Err())
+
+	fmt.Println(rdb.ConfigSet(ctx, "SERVERNAME", "TEST").Err())
 
 	rdb.Del(ctx, "ztmp")
 	rdb.ZAdd(ctx, "ztmp", z(10, "x"))
@@ -308,7 +310,7 @@ func TestZSet(t *testing.T) {
 }
 
 func TestGeo(t *testing.T) {
-	s, _ := Open("test")
+	s, _ := Open("test", nil)
 	go s.Serve(":6666")
 
 	ctx := context.TODO()
@@ -452,7 +454,7 @@ func TestZSetCache(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 	ctx := context.TODO()
 
-	s, _ := Open("test")
+	s, _ := Open("test", nil)
 	go s.Serve(":6666")
 	time.Sleep(time.Second)
 

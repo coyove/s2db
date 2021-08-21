@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -185,6 +186,15 @@ func (s *Server) schedPurge() {
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
+	tmp, err := s.getPendingUnlinks(shard)
+	if err != nil {
+		return err
+	}
+	unlinkp := make(map[string]bool, len(tmp))
+	for _, n := range tmp {
+		unlinkp[n] = true
+	}
+
 	// open a tx on tmpdb for writes
 	tmptx, err := tmpdb.Begin(true)
 	if err != nil {
@@ -208,6 +218,15 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	count := 0
 	total := 0
 	for next, _ := c.First(); next != nil; next, _ = c.Next() {
+		nextStr := string(next)
+		if nextStr == "unlink" { // pending unlinks will be cleared during every compaction
+			continue
+		}
+		if strings.HasPrefix(nextStr, "zset.score.") && unlinkp[string(next[11:])] ||
+			strings.HasPrefix(nextStr, "zset.") && unlinkp[string(next[5:])] {
+			continue
+		}
+
 		b := tx.Bucket(next)
 		if b == nil {
 			return fmt.Errorf("backend: cannot defrag bucket %s", string(next))
@@ -297,4 +316,23 @@ func (s *Server) dumpShard(shard int, path string) (int64, error) {
 		return err
 	})
 	return c, err
+}
+
+func (s *Server) getPendingUnlinks(shard int) (names []string, err error) {
+	if err := s.db[shard].View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("unlink"))
+		if bk == nil {
+			return nil
+		}
+		bk.ForEach(func(k, v []byte) error {
+			if bytes.Equal(v, []byte("unlink")) {
+				names = append(names, string(k))
+			}
+			return nil
+		})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return
 }

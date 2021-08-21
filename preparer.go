@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"math"
 
 	"go.etcd.io/bbolt"
@@ -12,6 +13,9 @@ func prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, e
 		bkScore := tx.Bucket([]byte("zset.score." + name))
 		if bkName == nil || bkScore == nil {
 			return 0, nil
+		}
+		if bkName.KeyN() > 65536 {
+			return 0, fmt.Errorf("too many members to delete, use 'unlink' instead")
 		}
 		if err := tx.DeleteBucket([]byte("zset." + name)); err != nil {
 			return 0, err

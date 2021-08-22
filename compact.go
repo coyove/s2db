@@ -79,7 +79,7 @@ func (s *Server) compactShard(shard int) {
 		if mt-ct <= uint64(s.CompactTxSize) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
-		logs, err := s.responseLog(shard, ct+1, true)
+		logs, err := s.responseLog(shard, ct+1, false)
 		if err != nil {
 			log.Error("responseLog: ", err)
 			return

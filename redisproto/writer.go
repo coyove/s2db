@@ -21,19 +21,19 @@ var (
 )
 
 type Writer struct {
-	w      io.Writer
+	Conn   io.Writer
 	Logger *logrus.Logger
 }
 
 func NewWriter(sink io.Writer, logger *logrus.Logger) *Writer {
 	return &Writer{
-		w:      sink,
+		Conn:   sink,
 		Logger: logger,
 	}
 }
 
 func (w *Writer) RemoteIP() net.IP {
-	addr := w.w.(net.Conn).RemoteAddr()
+	addr := w.Conn.(net.Conn).RemoteAddr()
 	tcp, _ := addr.(*net.TCPAddr)
 	if tcp == nil {
 		return net.IPv4bcast
@@ -42,11 +42,11 @@ func (w *Writer) RemoteIP() net.IP {
 }
 
 func (w *Writer) Write(data []byte) (int, error) {
-	return w.w.Write(data)
+	return w.Conn.Write(data)
 }
 
 func (w *Writer) Flush() error {
-	if f, ok := w.w.(*bufio.Writer); ok {
+	if f, ok := w.Conn.(*bufio.Writer); ok {
 		return f.Flush()
 	}
 	return nil

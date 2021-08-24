@@ -371,6 +371,19 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "DUMPSHARD":
 		if !strings.EqualFold(name, "ALL") {
 			path := command.Get(2)
+			if path == "RAW" {
+				var c int64
+				err := s.db[atoip(name)].View(func(tx *bbolt.Tx) error {
+					c, err = tx.WriteTo(w.Conn)
+					return err
+				})
+				if err != nil {
+					w.Conn.Write([]byte("--------" + err.Error()))
+				} else {
+					w.Conn.Write([]byte("++++++++" + strconv.Itoa(int(c))))
+				}
+				return io.EOF
+			}
 			if path == "" {
 				path = s.db[atoip(name)].DB.Path() + ".bak"
 			}

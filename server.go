@@ -485,8 +485,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		s.addCache(wm, name, h, data)
 		s.weakCache.AddWeight(h, &weakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
 		return w.WriteBulks(data...)
-	case "ZCARD":
-		return w.WriteIntOrError(s.ZCard(name))
+	case "ZCARD", "ZCARDMATCH":
+		return w.WriteIntOrError(s.ZCard(name, cmd == "ZCARDMATCH"))
 	case "ZCOUNT":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))
@@ -531,6 +531,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			return writePairs(v.([]Pair), w, command)
 		}
 		start, end := command.Get(2), command.Get(3)
+		if end == "" {
+			end = start
+		}
 		limit, match, withData := -1, "", false
 
 		// Parse command flags and remove "LIMIT 0 X" and "MATCH X"

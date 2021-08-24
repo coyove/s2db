@@ -2,9 +2,11 @@ package redisproto
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
+	"unicode/utf8"
 	"unsafe"
 )
 
@@ -69,9 +71,15 @@ func (c *Command) String() string {
 	}
 	buf := bytes.NewBufferString(c.Get(0))
 	for i := 1; i < c.ArgCount(); i++ {
-		buf.WriteString(" '")
-		buf.Write(c.At(i))
-		buf.WriteString("'")
+		msg := c.At(i)
+		if utf8.Valid(msg) {
+			buf.WriteString(" '")
+			buf.Write(msg)
+			buf.WriteString("'")
+		} else {
+			buf.WriteString(" 0x")
+			hex.NewEncoder(buf).Write(msg)
+		}
 	}
 	return buf.String()
 }

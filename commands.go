@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"strings"
+	"unsafe"
 
 	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
 	"go.etcd.io/bbolt"
@@ -18,6 +20,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	if err != nil {
 		return err
 	}
+	bkWal.FillPercent = 0.9
 	id, _ := bkWal.NextSequence()
 	return bkWal.Put(intToBytes(id), dd)
 }
@@ -84,17 +87,32 @@ func parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx)
 	return prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
 }
 
-func (s *Server) ZCard(name string) (int64, error) {
-	count := 0
-	err := s.pick(name).View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("zset." + name))
-		if bk == nil {
-			return nil
+func (s *Server) ZCard(name string, match bool) (count int64, err error) {
+	if match {
+		for i := range s.db {
+			err = s.db[i].View(func(tx *bbolt.Tx) error {
+				return tx.ForEach(func(k []byte, bk *bbolt.Bucket) error {
+					x := *(*string)(unsafe.Pointer(&k))
+					if strings.HasPrefix(x, "zset.score.") {
+						if m, _ := filepath.Match(name, x[11:]); m {
+							count += int64(bk.KeyN())
+						}
+					}
+					return nil
+				})
+			})
 		}
-		count = bk.KeyN()
-		return nil
-	})
-	return int64(count), err
+	} else {
+		err = s.pick(name).View(func(tx *bbolt.Tx) error {
+			bk := tx.Bucket([]byte("zset." + name))
+			if bk == nil {
+				return nil
+			}
+			count = int64(bk.KeyN())
+			return nil
+		})
+	}
+	return
 }
 
 func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err error) {

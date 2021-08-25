@@ -186,7 +186,7 @@ func (s *Server) schedPurge() {
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	tmp, err := s.getPendingUnlinks(shard)
+	tmp, err := getPendingUnlinks(odb)
 	if err != nil {
 		return err
 	}
@@ -318,8 +318,8 @@ func (s *Server) dumpShard(shard int, path string) (int64, error) {
 	return c, err
 }
 
-func (s *Server) getPendingUnlinks(shard int) (names []string, err error) {
-	if err := s.db[shard].View(func(tx *bbolt.Tx) error {
+func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {
+	if err := db.View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("unlink"))
 		if bk == nil {
 			return nil

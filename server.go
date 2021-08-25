@@ -371,16 +371,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "DUMPSHARD":
 		if !strings.EqualFold(name, "ALL") {
 			path := command.Get(2)
-			if path == "RAW" {
+			if path == "WIRE" {
 				var c int64
 				err := s.db[atoip(name)].View(func(tx *bbolt.Tx) error {
 					c, err = tx.WriteTo(w.Conn)
 					return err
 				})
 				if err != nil {
-					w.Conn.Write([]byte("--------" + err.Error()))
+					log.Error("dump shard over wire: ", err)
+					w.Conn.Write([]byte("-HALT\r\n"))
 				} else {
-					w.Conn.Write([]byte("++++++++" + strconv.Itoa(int(c))))
+					w.Conn.Write([]byte(":" + strconv.Itoa(int(c)) + "\r\n"))
 				}
 				return io.EOF
 			}
@@ -442,7 +443,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "UNLINKP":
 		var names []string
 		for i := 0; i < 32; i++ {
-			n, err := s.getPendingUnlinks(i)
+			n, err := getPendingUnlinks(s.db[i].DB)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}

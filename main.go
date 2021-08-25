@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -26,16 +27,18 @@ import (
 var (
 	Version = ""
 
-	masterAddr      = flag.String("master", "", "connect to master server, form: master_name@ip:port")
-	listenAddr      = flag.String("l", ":6379", "listen address")
-	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
-	dataDir         = flag.String("d", "test", "data directory")
-	showLogTail     = flag.String("logtail", "", "")
-	showVersion     = flag.Bool("v", false, "print s2db version")
-	readOnly        = flag.Bool("ro", false, "start server as read-only")
-	masterMode      = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
-	calcShard       = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
-	benchmark       = flag.String("bench", "", "")
+	masterAddr        = flag.String("master", "", "connect to master server, form: master_name@ip:port")
+	listenAddr        = flag.String("l", ":6379", "listen address")
+	pprofListenAddr   = flag.String("pprof", ":16379", "pprof listen address")
+	dataDir           = flag.String("d", "test", "data directory")
+	showLogTail       = flag.String("logtail", "", "")
+	dumpOverWire      = flag.String("dow", "", "")
+	checkDumpOverWire = flag.String("check-dow", "", "")
+	showVersion       = flag.Bool("v", false, "print s2db version")
+	readOnly          = flag.Bool("ro", false, "start server as read-only")
+	masterMode        = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
+	calcShard         = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
+	benchmark         = flag.String("bench", "", "")
 )
 
 func main() {
@@ -60,6 +63,21 @@ func main() {
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
 	}))
+
+	if *dumpOverWire != "" {
+		parts := strings.Split(*dumpOverWire, "->")
+		if len(parts) != 3 {
+			log.Panic("dump over wire format: server_address->shard->local_path")
+		}
+		shard, _ := strconv.Atoi(parts[1])
+		requestDumpShardOverWire(parts[0], parts[2], shard)
+		return
+	}
+
+	if *checkDumpOverWire != "" {
+		checkDumpWireFile(*checkDumpOverWire)
+		return
+	}
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        *listenAddr,
@@ -204,4 +222,116 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
+}
+
+func requestDumpShardOverWire(remote, output string, shard int) {
+	log.Infof("request dumping shard #%d from %s to %s", shard, remote, output)
+
+	of, err := os.Create(output)
+	if err != nil {
+		log.Panic("output: ", err)
+	}
+	defer of.Close()
+
+	conn, err := net.Dial("tcp", remote)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(fmt.Sprintf("DUMPSHARD %d WIRE\r\n", shard)))
+	if err != nil {
+		log.Panic("write command: ", err)
+	}
+
+	buf := make([]byte, 32*1024)
+	written := 0
+	for {
+		nr, er := conn.Read(buf)
+		if nr > 0 {
+			nw, ew := of.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = fmt.Errorf("write output invalid")
+				}
+			}
+			written += nw
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	if err != nil {
+		log.Panic("failed to dump: ", err)
+	}
+	log.Info("dumping finished")
+}
+
+func checkDumpWireFile(path string) {
+	log.Info("check dump-over-wire file: ", path)
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		log.Error("open: ", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	_, err = f.Seek(-32, 2)
+	if err != nil {
+		log.Error("seek: ", err)
+		os.Exit(1)
+	}
+	buf := make([]byte, 32)
+	n, err := io.ReadFull(f, buf)
+	if n != 32 {
+		log.Error("read: ", n, " ", err)
+		os.Exit(1)
+	}
+
+	if buf[30] != '\r' || buf[31] != '\n' {
+		log.Errorf("invalid tail: %q", buf)
+		os.Exit(1)
+	}
+
+	if bytes.HasSuffix(buf, []byte("-HALT\r\n")) {
+		log.Errorf("remote reported error, dumping failed")
+		os.Exit(2)
+	}
+
+	idx := bytes.LastIndexByte(buf, ':')
+	if idx == -1 {
+		log.Errorf("invalid tail: %q", buf)
+		os.Exit(1)
+	}
+
+	sz, _ := strconv.ParseInt(string(buf[idx+1:30]), 10, 64)
+	log.Info("reported shard size: ", sz)
+
+	fsz, err := f.Seek(-int64(32-idx), 2)
+	if err != nil {
+		log.Error("seek2: ", err)
+		os.Exit(1)
+	}
+
+	if fsz != sz {
+		log.Error("unmatched size: %d and %d", fsz, sz)
+		os.Exit(3)
+	}
+
+	if err := f.Truncate(fsz); err != nil {
+		log.Error("failed to truncate: ", err)
+		os.Exit(4)
+	}
+	log.Info("checking finished")
 }

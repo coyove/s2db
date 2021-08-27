@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math"
 
@@ -97,9 +98,6 @@ func prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (inte
 			}
 			pairs = append(pairs, Pair{Key: key, Score: bytesToFloat(scoreBuf)})
 		}
-		if len(pairs) == 0 {
-			return 0, nil
-		}
 		return len(pairs), deletePair(tx, name, pairs, dd)
 	}
 }
@@ -190,5 +188,48 @@ func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx 
 			DeleteLog:   dd,
 		})(tx)
 		return c, err
+	}
+}
+
+func prepareQAppend(name string, value []byte, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	return func(tx *bbolt.Tx) (interface{}, error) {
+		bk, err := tx.CreateBucketIfNotExists([]byte("q." + name))
+		if err != nil {
+			return nil, err
+		}
+		id, err := bk.NextSequence()
+		if err != nil {
+			return nil, err
+		}
+		bk.FillPercent = 0.9
+		if err := bk.Put(intToBytes(id), value); err != nil {
+			return nil, err
+		}
+		return int64(id), writeLog(tx, dd)
+	}
+}
+
+func prepareQSet(name string, idx int64, value []byte, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+	return func(tx *bbolt.Tx) (interface{}, error) {
+		bk, err := tx.CreateBucketIfNotExists([]byte("q." + name))
+		if err != nil {
+			return nil, err
+		}
+		c := bk.Cursor()
+		first, _ := c.First()
+		last, _ := c.Last()
+		if len(first) == 0 || len(last) == 0 {
+			return idx, nil
+		}
+		firstId := int64(binary.BigEndian.Uint64(first))
+		lastId := int64(binary.BigEndian.Uint64(last))
+		if idx < firstId || idx > lastId {
+			return idx, nil
+		}
+		bk.FillPercent = 0.9
+		if err := bk.Put(intToBytes(uint64(idx)), value); err != nil {
+			return nil, err
+		}
+		return idx, writeLog(tx, dd)
 	}
 }

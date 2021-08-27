@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -166,11 +166,8 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 
 func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + name))
-	if bkName == nil {
-		return nil
-	}
 	bkScore := tx.Bucket([]byte("zset.score." + name))
-	if bkScore == nil {
+	if bkScore == nil || bkName == nil {
 		return nil
 	}
 	for _, p := range pairs {

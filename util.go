@@ -18,8 +18,8 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
-	"gitlab.litatom.com/zhangzezhong/zset/calc"
-	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
+	"github.com/coyove/s2db/calc"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 

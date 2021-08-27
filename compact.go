@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coyove/s2db/calc"
 	log "github.com/sirupsen/logrus"
-	"gitlab.litatom.com/zhangzezhong/zset/calc"
 	"go.etcd.io/bbolt"
 )
 

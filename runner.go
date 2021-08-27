@@ -6,7 +6,7 @@ import (
 	"time"
 
 	log "github.com/sirupsen/logrus"
-	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 

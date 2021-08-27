@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"flag"
@@ -245,9 +246,13 @@ func requestDumpShardOverWire(remote, output string, shard int) {
 	}
 
 	buf := make([]byte, 32*1024)
+	rd, err := gzip.NewReader(conn)
+	if err != nil {
+		log.Panic("read gzip header: ", err)
+	}
 	written := 0
 	for {
-		nr, er := conn.Read(buf)
+		nr, er := rd.Read(buf)
 		if nr > 0 {
 			nw, ew := of.Write(buf[0:nr])
 			if nw < 0 || nr < nw {
@@ -325,7 +330,7 @@ func checkDumpWireFile(path string) {
 	}
 
 	if fsz != sz {
-		log.Error("unmatched size: %d and %d", fsz, sz)
+		log.Errorf("unmatched size: %d and %d", fsz, sz)
 		os.Exit(3)
 	}
 

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mmcloughlin/geohash"
-	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 

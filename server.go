@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
@@ -18,7 +19,7 @@ import (
 	"github.com/coyove/common/sched"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
-	"gitlab.litatom.com/zhangzezhong/zset/redisproto"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -129,6 +130,7 @@ func (s *Server) Close() error {
 	s.closed = true
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
+	errs <- s.configDB.Close()
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
 	}
@@ -260,9 +262,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
 			if s.ReadOnly {
-				return w.WriteError("readonly")
+				return w.WriteError("server is read-only")
 			} else if s.ServerName == "" {
-				return w.WriteError("null server name")
+				return w.WriteError("server name not set, writes are omitted")
 			}
 			s.survey.sysWrite.Incr(1)
 			isReadWrite = 'w'
@@ -372,17 +374,19 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if !strings.EqualFold(name, "ALL") {
 			path := command.Get(2)
 			if path == "WIRE" {
+				gw := gzip.NewWriter(w.Conn)
 				var c int64
 				err := s.db[atoip(name)].View(func(tx *bbolt.Tx) error {
-					c, err = tx.WriteTo(w.Conn)
+					c, err = tx.WriteTo(gw)
 					return err
 				})
 				if err != nil {
 					log.Error("dump shard over wire: ", err)
-					w.Conn.Write([]byte("-HALT\r\n"))
+					gw.Write([]byte("-HALT\r\n"))
 				} else {
-					w.Conn.Write([]byte(":" + strconv.Itoa(int(c)) + "\r\n"))
+					gw.Write([]byte(":" + strconv.Itoa(int(c)) + "\r\n"))
 				}
+				gw.Close()
 				return io.EOF
 			}
 			if path == "" {

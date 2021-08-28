@@ -116,9 +116,18 @@ func (s *Server) compactShard(shard int) {
 
 	// STAGE 5: now compactDB and onlineDB are identical, swap them to make compactDB officially online
 	roDB.Close()
-	if err := os.Rename(path, path+".bak"); err != nil {
-		log.Error("backup original (online) DB: ", err)
-		return
+
+	if s.CompactNoBackup == 1 {
+		log.Info("CAUTION: compact no backup")
+		if err := os.Remove(path); err != nil {
+			log.Error("delete original (online) DB: ", err)
+			return
+		}
+	} else {
+		if err := os.Rename(path, path+".bak"); err != nil {
+			log.Error("backup original (online) DB: ", err)
+			return
+		}
 	}
 
 	if s.CompactTmpDir != "" {

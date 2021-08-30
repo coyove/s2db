@@ -17,9 +17,9 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
+	"github.com/coyove/s2db/redisproto"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
-	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -40,6 +40,7 @@ type Server struct {
 	MasterMode       bool
 	MasterAddr       string
 	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
+	MasterPassword   string
 
 	ServerConfig
 	configMu sync.Mutex
@@ -186,7 +187,8 @@ func (s *Server) Serve(addr string) error {
 	if s.MasterAddr != "" {
 		log.Info("contacting master ", s.MasterAddr)
 		s.rdb = redis.NewClient(&redis.Options{
-			Addr: s.MasterAddr,
+			Addr:     s.MasterAddr,
+			Password: s.MasterPassword,
 		})
 		for i := range s.db {
 			go s.requestLogPuller(i)
@@ -219,7 +221,7 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 	parser := redisproto.NewParser(conn)
 	writer := redisproto.NewWriter(conn, log.StandardLogger())
 	var ew error
-	for {
+	for auth := false; ; {
 		command, err := parser.ReadCommand()
 		if err != nil {
 			_, ok := err.(*redisproto.ProtocolError)
@@ -232,6 +234,16 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 				break
 			}
 		} else {
+			if s.Password != "" && !auth {
+				if command.EqualFold(0, "AUTH") && command.Get(1) == s.Password {
+					auth = true
+					writer.WriteSimpleString("OK")
+				} else {
+					writer.WriteError("NOAUTH")
+				}
+				writer.Flush()
+				continue
+			}
 			ew = s.runCommand(writer, command)
 		}
 		if command.IsLast() {
@@ -307,6 +319,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		s.dieKey.Reschedule(func() { log.Panic(s.Close()) }, time.Duration(59-sec)*time.Second)
 		return w.WriteInt(59 - int64(sec))
+	case "AUTH":
+		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "PING":
 		if name == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)

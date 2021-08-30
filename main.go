@@ -29,6 +29,7 @@ var (
 	Version = ""
 
 	masterAddr        = flag.String("master", "", "connect to master server, form: master_name@ip:port")
+	masterPassword    = flag.String("mp", "", "")
 	listenAddr        = flag.String("l", ":6379", "listen address")
 	pprofListenAddr   = flag.String("pprof", ":16379", "pprof listen address")
 	dataDir           = flag.String("d", "test", "data directory")
@@ -197,6 +198,7 @@ func main() {
 		s.MasterAddr = parts[1]
 	}
 	s.MasterMode = *masterMode
+	s.MasterPassword = *masterPassword
 	s.ReadOnly = *readOnly || s.MasterAddr != ""
 	s.Serve(*listenAddr)
 }

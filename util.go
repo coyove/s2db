@@ -349,6 +349,7 @@ func (o *RangeOptions) getLimit() int {
 
 type ServerConfig struct {
 	ServerName      string
+	Password        string
 	CacheSize       int
 	CacheKeyMaxLen  int
 	WeakCacheSize   int

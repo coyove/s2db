@@ -49,12 +49,12 @@ func parseZAdd(cmd, name string, fillPercent int, command *redisproto.Command) f
 	pairs := []Pair{}
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			s := atof2p(command.At(i))
+			s := atofPatchBytesPanic(&command.Argv[i])
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			s := atof2p(command.At(i))
+			s := atofPatchBytesPanic(&command.Argv[i])
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: command.At(i + 2)})
 		}
 	}
@@ -83,7 +83,7 @@ func parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (in
 }
 
 func parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	by := atof2p(command.At(2))
+	by := atofPatchBytesPanic(&command.Argv[2])
 	return prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
 }
 

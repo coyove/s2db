@@ -154,6 +154,23 @@ func atof2p(a []byte) float64 {
 	return f
 }
 
+func atofPatchBytesPanic(a *[]byte) float64 {
+	v := *(*string)(unsafe.Pointer(a))
+	if strings.HasPrefix(v, "=") {
+		f, err := calc.Eval(v[1:])
+		if err != nil {
+			panic(err)
+		}
+		*a = []byte(ftoa(f))
+		return f
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		panic(err)
+	}
+	return f
+}
+
 func ftoa(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }

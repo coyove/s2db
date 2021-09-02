@@ -180,3 +180,9 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 	}
 	return writeLog(tx, dd)
 }
+
+func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+	msec := atofPatchBytesPanic(&command.Argv[2])
+	value := command.At(3)
+	return prepareQAppend(name, msec, value, dumpCommand(command))
+}

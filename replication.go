@@ -187,6 +187,8 @@ func runLog(cmds []string, db *bbolt.DB, fillPercent int) (names map[string]bool
 				_, err = parseZAdd(cmd, name, fillPercent, command)(tx)
 			case "ZINCRBY":
 				_, err = parseZIncrBy(cmd, name, command)(tx)
+			case "QAPPEND":
+				_, err = parseQAppend(cmd, name, command)(tx)
 			default:
 				return fmt.Errorf("fatal: not a write command: %q", cmd)
 			}

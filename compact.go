@@ -232,7 +232,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			continue
 		}
 		if strings.HasPrefix(nextStr, "zset.score.") && unlinkp[string(next[11:])] ||
-			strings.HasPrefix(nextStr, "zset.") && unlinkp[string(next[5:])] {
+			strings.HasPrefix(nextStr, "zset.") && unlinkp[string(next[5:])] ||
+			strings.HasPrefix(nextStr, "q.") && unlinkp[string(next[2:])] {
 			continue
 		}
 

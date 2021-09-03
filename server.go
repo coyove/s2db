@@ -272,7 +272,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
 			return w.WriteError("invalid name which is either empty, starting with 'score.' or containing '\\r\\n'")
 		}
-		if cmd == "DEL" || strings.HasPrefix(cmd, "ZADD") || cmd == "ZINCRBY" || strings.HasPrefix(cmd, "ZREM") {
+		// UNLINK can be applied on slaves
+		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") {
 			if s.ReadOnly {
 				return w.WriteError("server is read-only")
 			} else if s.ServerName == "" {
@@ -479,6 +480,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, s.FillPercent, command), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
+	case "QAPPEND":
+		return s.runPreparedTxAndWrite(name, false, parseQAppend(cmd, name, command), w)
 	}
 
 	// Client space read commands
@@ -637,6 +640,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 		}
 		return w.WriteObjects(next, keys)
+	case "QLEN":
+		return w.WriteIntOrError(s.qLength(name))
 	default:
 		return w.WriteError("Command not support: " + cmd)
 	}

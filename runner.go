@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	log "github.com/sirupsen/logrus"
 	"github.com/coyove/s2db/redisproto"
+	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -33,10 +33,12 @@ func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bb
 	switch res := out.(type) {
 	case int:
 		return w.WriteInt(int64(res))
+	case int64:
+		return w.WriteInt(res)
 	case float64:
 		return w.WriteBulkString(ftoa(res))
 	default:
-		panic(-1)
+		panic(-99)
 	}
 }
 

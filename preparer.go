@@ -13,7 +13,17 @@ func prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, e
 		bkName := tx.Bucket([]byte("zset." + name))
 		bkScore := tx.Bucket([]byte("zset.score." + name))
 		if bkName == nil || bkScore == nil {
-			return 0, nil
+			bkQ := tx.Bucket([]byte("q." + name))
+			if bkQ == nil {
+				return 0, writeLog(tx, dd)
+			}
+			if bkQ.KeyN() > 65536 {
+				return 0, fmt.Errorf("too many members to delete, use 'unlink' instead")
+			}
+			if err := tx.DeleteBucket([]byte("q." + name)); err != nil {
+				return 0, err
+			}
+			return 1, writeLog(tx, dd)
 		}
 		if bkName.KeyN() > 65536 {
 			return 0, fmt.Errorf("too many members to delete, use 'unlink' instead")
@@ -88,7 +98,7 @@ func prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (inte
 	return func(tx *bbolt.Tx) (count interface{}, err error) {
 		bkName := tx.Bucket([]byte("zset." + name))
 		if bkName == nil {
-			return 0, nil
+			return 0, writeLog(tx, dd)
 		}
 		pairs := []Pair{}
 		for _, key := range keys {
@@ -191,7 +201,7 @@ func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx 
 	}
 }
 
-func prepareQAppend(name string, msec float64, value []byte, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bk, err := tx.CreateBucketIfNotExists([]byte("q." + name))
 		if err != nil {
@@ -202,13 +212,29 @@ func prepareQAppend(name string, msec float64, value []byte, dd []byte) func(tx 
 			return nil, err
 		}
 
-		key := make([]byte, 16)
-		binary.BigEndian.PutUint64(key, id)
-		binary.BigEndian.PutUint64(key[8:], floatToInternalUint64(msec))
-
 		bk.FillPercent = 0.9
-		if err := bk.Put(key, value); err != nil {
+		if err := bk.Put(intToBytes(id), value); err != nil {
 			return nil, err
+		}
+
+		if max > 0 {
+			c := bk.Cursor()
+			firstKey, _ := c.First()
+			lastKey, _ := c.Last()
+			if len(lastKey) == 8 && len(firstKey) == 8 {
+				first := binary.BigEndian.Uint64(firstKey)
+				last := binary.BigEndian.Uint64(lastKey)
+				if last < first {
+					panic(-2)
+				}
+				if n := int64(last - first + 1); n > max {
+					for i := int64(0); i < n-max; i++ {
+						if err := bk.Delete(intToBytes(first + uint64(i))); err != nil {
+							return nil, err
+						}
+					}
+				}
+			}
 		}
 		return int64(id), writeLog(tx, dd)
 	}

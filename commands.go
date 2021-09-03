@@ -168,7 +168,7 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + name))
 	bkScore := tx.Bucket([]byte("zset.score." + name))
 	if bkScore == nil || bkName == nil {
-		return nil
+		return writeLog(tx, dd)
 	}
 	for _, p := range pairs {
 		if err := bkName.Delete([]byte(p.Key)); err != nil {
@@ -182,7 +182,7 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 }
 
 func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	msec := atofPatchBytesPanic(&command.Argv[2])
-	value := command.At(3)
-	return prepareQAppend(name, msec, value, dumpCommand(command))
+	value := command.At(2)
+	max := int64(atoi(command.Get(3)))
+	return prepareQAppend(name, value, max, dumpCommand(command))
 }

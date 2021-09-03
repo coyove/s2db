@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
+
+	"go.etcd.io/bbolt"
 )
 
 func TestCommandJoinSplit(t *testing.T) {
@@ -52,21 +55,33 @@ func TestCommandJoinSplit(t *testing.T) {
 	}
 }
 
-func TestCache(t *testing.T) {
-	// c := NewCache(100)
-	// c.Add(&CacheItem{CmdHash: [2]uint64{1}, Key: "a"})
-	// c.Add(&CacheItem{CmdHash: [2]uint64{1}, Key: "a"})
-	// c.Add(&CacheItem{CmdHash: [2]uint64{2}, Key: "b"})
-	// c.Add(&CacheItem{CmdHash: [2]uint64{3}, Key: "a"})
+func TestBBolt(t *testing.T) {
+	data := func() []byte {
+		n := rand.Intn(32) + 32
+		return make([]byte, n)
+	}
+	const N = 1e5
+	const B = 1000
 
-	// c.Remove("a")
-	// if c.ll.Len() != 1 {
-	// 	t.Fatal(c.ll.Len())
-	// }
-
-	// for i := c.ll.Front(); i != nil; i = i.Next() {
-	// 	fmt.Println(i.Value.(*entry).value)
-	// }
+	{
+		os.Remove("s.db")
+		db, _ := bbolt.Open("s.db", 0666, bboltOptions)
+		for z := 0; z < N; z += B {
+			db.Update(func(tx *bbolt.Tx) error {
+				off := 1000
+				bk, _ := tx.CreateBucketIfNotExists([]byte("a"))
+				bk.FillPercent = 0.9
+				for i := 0; i < B; i++ {
+					bk.Put(intToBytes(uint64(z+i)), data())
+					bk.Delete(intToBytes(uint64(z + i - off)))
+				}
+				return nil
+			})
+		}
+		db.Close()
+		fi, _ := os.Stat("s.db")
+		fmt.Println("0.9 seq", fi.Size())
+	}
 }
 
 func TestFloatBytesComparison(t *testing.T) {

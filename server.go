@@ -642,6 +642,14 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteObjects(next, keys)
 	case "QLEN":
 		return w.WriteIntOrError(s.qLength(name))
+	case "QSCAN":
+		start := int64(atoip(command.Get(2)))
+		n := int64(atoip(command.Get(3)))
+		data, err := s.qScan(name, start, n)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulksSlice(data)
 	default:
 		return w.WriteError("Command not support: " + cmd)
 	}

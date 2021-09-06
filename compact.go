@@ -231,9 +231,10 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		if nextStr == "unlink" { // pending unlinks will be cleared during every compaction
 			continue
 		}
+		isQueue := strings.HasPrefix(nextStr, "q.")
 		if strings.HasPrefix(nextStr, "zset.score.") && unlinkp[string(next[11:])] ||
 			strings.HasPrefix(nextStr, "zset.") && unlinkp[string(next[5:])] ||
-			strings.HasPrefix(nextStr, "q.") && unlinkp[string(next[2:])] {
+			isQueue && unlinkp[string(next[2:])] {
 			continue
 		}
 
@@ -250,7 +251,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		tmpb.SetSequence(b.Sequence())
 
 		var walStartBuf []byte
-		if string(next) == "wal" {
+		if nextStr == "wal" {
 			var walStart uint64
 			var min uint64 = math.MaxUint64
 			s.slaves.Foreach(func(si *serverInfo) {
@@ -273,10 +274,18 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			binary.BigEndian.PutUint64(walStartBuf, walStart)
 		}
 
+		now := time.Now().UnixNano()
 		if err = b.ForEach(func(k, v []byte) error {
 			if len(walStartBuf) > 0 && bytes.Compare(k, walStartBuf) < 0 {
 				return nil
 			}
+			if isQueue && len(k) == 16 && s.QueueTTLSec > 0 {
+				ts := int64(binary.BigEndian.Uint64(k[8:]))
+				if (now-ts)/1e9 > int64(s.QueueTTLSec) {
+					return nil
+				}
+			}
+
 			count++
 			total++
 			if count > s.CompactTxSize {

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"time"
 
 	"go.etcd.io/bbolt"
 )
@@ -213,26 +214,24 @@ func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bb
 		}
 
 		bk.FillPercent = 0.9
-		if err := bk.Put(intToBytes(id), value); err != nil {
+
+		key := make([]byte, 16)
+		binary.BigEndian.PutUint64(key, id)
+		binary.BigEndian.PutUint64(key[8:], uint64(time.Now().UnixNano()))
+
+		if err := bk.Put(key, value); err != nil {
 			return nil, err
 		}
 
 		if max > 0 {
 			c := bk.Cursor()
-			firstKey, _ := c.First()
-			lastKey, _ := c.Last()
-			if len(lastKey) == 8 && len(firstKey) == 8 {
-				first := binary.BigEndian.Uint64(firstKey)
-				last := binary.BigEndian.Uint64(lastKey)
-				if last < first {
-					panic(-2)
+			for _, _, n := qLenImpl(bk); n > max; n-- {
+				k, _ := c.First()
+				if len(k) != 16 {
+					break
 				}
-				if n := int64(last - first + 1); n > max {
-					for i := int64(0); i < n-max; i++ {
-						if err := bk.Delete(intToBytes(first + uint64(i))); err != nil {
-							return nil, err
-						}
-					}
+				if err := bk.Delete(k); err != nil {
+					return nil, err
 				}
 			}
 		}

@@ -167,7 +167,7 @@ func main() {
 		return
 	}
 
-	if rdb.Ping(context.TODO()).Err() == nil {
+	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), "NOAUTH") {
 		return
 	}
 

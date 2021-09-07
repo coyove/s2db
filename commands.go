@@ -182,7 +182,7 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 }
 
 func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	value := command.At(2)
+	value := append([]byte{}, command.At(2)...)
 	max := int64(atoi(command.Get(3)))
 	return prepareQAppend(name, value, max, dumpCommand(command))
 }

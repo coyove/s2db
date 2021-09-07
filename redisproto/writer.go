@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -84,7 +85,9 @@ func (w *Writer) WriteSimpleString(s string) error {
 }
 
 func (w *Writer) WriteError(s string) error {
-	logrus.Error("redisproto: ", s)
+	if !strings.Contains(s, "NOAUTH") {
+		logrus.Error("redisproto: ", s)
+	}
 	w.Write(subs)
 	w.Write([]byte(s))
 	_, err := w.Write(newLine)

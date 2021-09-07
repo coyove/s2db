@@ -105,7 +105,7 @@ func Open(path string, out chan bool) (*Server, error) {
 	}
 
 	x := &Server{}
-	x.configDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
+	x.configDB, err = bbolt.Open(filepath.Join(filepath.Dir(shards[0]), "_config"), 0666, bboltOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -481,7 +481,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
 	case "QAPPEND":
-		return s.runPreparedTxAndWrite(name, false, parseQAppend(cmd, name, command), w)
+		deferred := parseDeferFlag(command) // ZADD name --DEFER-- arg1 arg2 ...
+		return s.runPreparedTxAndWrite(name, deferred, parseQAppend(cmd, name, command), w)
 	}
 
 	// Client space read commands

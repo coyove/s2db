@@ -15,7 +15,8 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) myLogTails() (total [ShardNum]uint64, combined uint64, err error) {
+func (s *Server) myLogTails() (total [ShardNum]uint64, combined uint64, errors [ShardNum]error, err error) {
+	var oneError error
 	for i := range s.db {
 		if err := s.db[i].View(func(tx *bbolt.Tx) error {
 			bk := tx.Bucket([]byte("wal"))
@@ -29,22 +30,24 @@ func (s *Server) myLogTails() (total [ShardNum]uint64, combined uint64, err erro
 
 			return nil
 		}); err != nil {
-			return total, combined, err
+			errors[i] = err
+			oneError = fmt.Errorf("%v -> %v", oneError, err)
 		}
 	}
+	err = oneError
 	return
 }
 
 func (s *Server) myLogTail(shard int) (total uint64, err error) {
-	tails, combined, err := s.myLogTails()
+	tails, combined, errors, err := s.myLogTails()
 	if shard >= 0 {
-		return tails[shard], err
+		return tails[shard], errors[shard]
 	}
 	return combined, err
 }
 
 func (s *Server) slavesSection() (data []string) {
-	tails, combined, err := s.myLogTails()
+	tails, combined, _, err := s.myLogTails()
 	if err != nil {
 		return []string{"error:" + err.Error()}
 	}

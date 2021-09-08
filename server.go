@@ -481,7 +481,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(name, false, parseZIncrBy(cmd, name, command), w)
 	case "QAPPEND":
-		deferred := parseDeferFlag(command) // ZADD name --DEFER-- arg1 arg2 ...
+		deferred := parseDeferFlag(command) // QAPPEND name --DEFER-- arg1 arg2 ...
 		return s.runPreparedTxAndWrite(name, deferred, parseQAppend(cmd, name, command), w)
 	}
 
@@ -643,15 +643,25 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteObjects(next, keys)
 	case "QLEN":
 		return w.WriteIntOrError(s.qLength(name))
+	case "QINDEX":
+		v, err := s.qGet(name, int64(atoip(command.Get(2))))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulk(v)
 	case "QSCAN":
+		if c := s.getCache(h); c != nil {
+			return w.WriteBulksSlice(c.([][]byte))
+		}
 		start := int64(atoip(command.Get(2)))
 		n := int64(atoip(command.Get(3)))
 		data, err := s.qScan(name, start, n)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.addCache(wm, name, h, data)
 		return w.WriteBulksSlice(data)
 	default:
-		return w.WriteError("Command not support: " + cmd)
+		return w.WriteError("unknown command: " + cmd)
 	}
 }

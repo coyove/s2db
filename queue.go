@@ -38,6 +38,14 @@ func (s *Server) qLength(name string) (int64, error) {
 
 func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
 	var data [][]byte
+	desc := false
+	if n < 0 {
+		n = -n
+		desc = true
+	}
+	if n > int64(HardLimit) {
+		n = int64(HardLimit)
+	}
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("q." + name))
 		if bk == nil {
@@ -47,22 +55,22 @@ func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
 		if count == 0 {
 			return nil
 		}
+
 		if start <= 0 {
 			start = last + start
+		} else {
+			start = first + start - 1
 		}
+
 		if start < first || start > last {
 			return nil
 		}
+
 		c := bk.Cursor()
 		startBuf := intToBytes(uint64(start))
 		k, v := c.Seek(startBuf)
 		if !bytes.HasPrefix(k, startBuf) {
 			return fmt.Errorf("fatal: missing key")
-		}
-		desc := false
-		if n < 0 {
-			n = -n
-			desc = true
 		}
 		for len(data) < int(n) && len(k) == 16 {
 			data = append(data, v)
@@ -72,6 +80,37 @@ func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
 				k, v = c.Next()
 			}
 		}
+		return nil
+	})
+	return data, err
+}
+
+func (s *Server) qGet(name string, idx int64) ([]byte, error) {
+	var data []byte
+	err := s.pick(name).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("q." + name))
+		if bk == nil {
+			return nil
+		}
+		first, last, count := qLenImpl(bk)
+		if count == 0 {
+			return nil
+		}
+
+		if idx <= 0 {
+			idx += last
+		}
+		if idx < first || idx > last {
+			return nil
+		}
+
+		c := bk.Cursor()
+		startBuf := intToBytes(uint64(idx))
+		k, v := c.Seek(startBuf)
+		if !bytes.HasPrefix(k, startBuf) {
+			return fmt.Errorf("fatal: missing key")
+		}
+		data = v
 		return nil
 	})
 	return data, err

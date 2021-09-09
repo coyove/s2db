@@ -286,17 +286,21 @@ func (s *Server) scan(cursor string, match string, shard int, count int) (pairs 
 			c := tx.Cursor()
 			k, _ := c.First()
 			if cursor != "" {
-				k, _ = c.Seek([]byte("zset." + cursor))
+				k, _ = c.Seek([]byte("q." + cursor))
 			}
 
 			for ; len(k) > 0; k, _ = c.Next() {
 				if bytes.HasPrefix(k, []byte("zset.score")) {
 					continue
 				}
-				if !bytes.HasPrefix(k, []byte("zset.")) {
+				var key string
+				if bytes.HasPrefix(k, []byte("zset.")) {
+					key = string(k[5:])
+				} else if bytes.HasPrefix(k, []byte("q.")) {
+					key = string(k[2:])
+				} else {
 					continue
 				}
-				key := string(k[5:])
 				if match != "" {
 					m, err := filepath.Match(match, key)
 					if err != nil {

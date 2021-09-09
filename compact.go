@@ -35,7 +35,7 @@ func (s *Server) compactShard(shard int) {
 
 	log.Info("STAGE 0: begin compaction, compactDB=", compactPath, ", dumpDB=", dumpPath)
 
-	// STAGE 1: open a temp database for compaction
+	// STAGE 1: dump the shard, open a temp database for compaction
 	os.Remove(compactPath)
 	dumpFile, err := os.Create(dumpPath)
 	if err != nil {
@@ -267,7 +267,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		b := tx.Bucket(next)
 		if b == nil {
-			return fmt.Errorf("backend: cannot defrag bucket %s", string(next))
+			return fmt.Errorf("backend: cannot defrag bucket %q", string(next))
 		}
 
 		tmpb, berr := tmptx.CreateBucketIfNotExists(next)
@@ -291,12 +291,12 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
 				walStart = decUint64(min, uint64(s.CompactLogHead))
 			} else if s.MasterMode {
-				log.Info("STAGE 0: master failed to collect info from slaves, no log compaction will be made")
+				log.Info("STAGE 0.1: master failed to collect info from slaves, no log compaction will be made")
 				walStart = 0
 			} else {
 				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
-			log.Infof("STAGE 0: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, min, b.Sequence())
+			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, min, b.Sequence())
 			walStartBuf = make([]byte, 8)
 			binary.BigEndian.PutUint64(walStartBuf, walStart)
 		}
@@ -336,7 +336,14 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		if len(walStartBuf) > 0 {
 			k, _ := tmpb.Cursor().Last()
-			log.Infof("STAGE 0: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
+			log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
+		}
+
+		if isQueue {
+			k, _ := tmpb.Cursor().Last()
+			if len(k) == 0 {
+				tmptx.DeleteBucket(next)
+			}
 		}
 	}
 

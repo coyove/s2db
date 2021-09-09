@@ -416,7 +416,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.CompactLogHead, 1500)
-	ifZero(&s.CompactTxSize, 50000)
+	ifZero(&s.CompactTxSize, 20000)
 
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)

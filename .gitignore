@@ -13,3 +13,4 @@ s2db.7z
 s2db.log
 *.rdb
 deploy.sh
+s.db

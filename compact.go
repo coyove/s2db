@@ -27,25 +27,52 @@ func (s *Server) compactShard(shard int) {
 	x := &s.db[shard]
 	path := x.DB.Path()
 	compactPath := path + ".compact"
+	dumpPath := path + ".dump"
 	if s.CompactTmpDir != "" {
 		compactPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.compact")
+		dumpPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
 	}
 
-	log.Info("STAGE 0: begin compaction, store at: ", compactPath)
+	log.Info("STAGE 0: begin compaction, compactDB=", compactPath, ", dumpDB=", dumpPath)
 
 	// STAGE 1: open a temp database for compaction
 	os.Remove(compactPath)
+	dumpFile, err := os.Create(dumpPath)
+	if err != nil {
+		log.Error("open dump file: ", err)
+		return
+	}
+	if err := x.DB.View(func(tx *bbolt.Tx) error {
+		_, err := tx.WriteTo(dumpFile)
+		return err
+	}); err != nil {
+		dumpFile.Close()
+		log.Error("dump DB: ", err)
+		return
+	}
+	dumpSize, _ := dumpFile.Seek(0, 2)
+	log.Info("STAGE 0: dump finished: ", dumpSize)
+	dumpFile.Close()
+
 	compactDB, err := bbolt.Open(compactPath, 0666, bboltOptions)
 	if err != nil {
 		log.Error("open compactDB: ", err)
 		return
 	}
-	if err := s.defragdb(shard, x.DB, compactDB); err != nil {
+	dumpDB, err := bbolt.Open(dumpPath, 0666, bboltReadonlyOptions)
+	if err != nil {
+		log.Error("open dumpDB: ", err)
+		return
+	}
+	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
+		dumpDB.Close()
 		compactDB.Close()
 		log.Error("defragdb: ", err)
 		return
 	}
-	log.Info("STAGE 1: point-in-time compaction finished, size: ", compactDB.Size())
+	dumpDB.Close()
+	removeDumpErr := os.Remove(dumpPath)
+	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, removeDumpErr=%v", compactDB.Size(), removeDumpErr)
 
 	// STAGE 2: for any changes happened during the compaction, write them into compactDB
 	compactTail := func() (tail uint64, err error) {
@@ -89,7 +116,7 @@ func (s *Server) compactShard(shard int) {
 			return
 		}
 	}
-	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, size: %d", ct, mt, mt-ct, compactDB.Size())
+	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
 
 	// STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
 	x.DB.Close()

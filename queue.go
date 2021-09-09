@@ -73,7 +73,7 @@ func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
 			return fmt.Errorf("fatal: missing key")
 		}
 		for len(data) < int(n) && len(k) == 16 {
-			data = append(data, v)
+			data = append(data, append([]byte{}, v...))
 			if desc {
 				k, v = c.Prev()
 			} else {
@@ -111,6 +111,19 @@ func (s *Server) qGet(name string, idx int64) ([]byte, error) {
 			return fmt.Errorf("fatal: missing key")
 		}
 		data = v
+		return nil
+	})
+	return data, err
+}
+
+func (s *Server) qHead(name string) (int64, error) {
+	var data int64
+	err := s.pick(name).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("q." + name))
+		if bk == nil {
+			return nil
+		}
+		data, _, _ = qLenImpl(bk)
 		return nil
 	})
 	return data, err

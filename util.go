@@ -239,6 +239,14 @@ func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) er
 	return w.WriteBulkStrings(data)
 }
 
+func sizeBytes(in [][]byte) int {
+	sz := 1
+	for _, p := range in {
+		sz += len(p)
+	}
+	return sz
+}
+
 func sizePairs(in []Pair) int {
 	sz := 1
 	for _, p := range in {

@@ -64,6 +64,9 @@ func (c *keyedCache) Add(value *cacheItem, keyMaxLen int) error {
 	if p, ok := value.Data.([]Pair); ok {
 		weight = int64(sizePairs(p))
 	}
+	if p, ok := value.Data.([][]byte); ok {
+		weight = int64(sizeBytes(p))
+	}
 
 	if weight > c.maxWeight || weight < 1 {
 		return lru.ErrWeightTooBig

@@ -514,12 +514,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		sz := int64(1)
-		for _, b := range data {
-			sz += int64(len(b))
-		}
 		s.addCache(wm, name, h, data)
-		s.weakCache.AddWeight(h, &weakCacheItem{Data: data, Time: time.Now().Unix()}, sz)
+		s.weakCache.AddWeight(h, &weakCacheItem{Data: data, Time: time.Now().Unix()}, int64(sizeBytes(data)))
 		return w.WriteBulks(data...)
 	case "ZCARD", "ZCARDMATCH":
 		return w.WriteIntOrError(s.ZCard(name, cmd == "ZCARDMATCH"))
@@ -643,6 +639,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteObjects(next, keys)
 	case "QLEN":
 		return w.WriteIntOrError(s.qLength(name))
+	case "QHEAD":
+		return w.WriteIntOrError(s.qHead(name))
 	case "QINDEX":
 		v, err := s.qGet(name, int64(atoip(command.Get(2))))
 		if err != nil {

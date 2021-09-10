@@ -309,6 +309,28 @@ func TestZSet(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
+func TestQueue(t *testing.T) {
+	s, _ := Open("test", nil)
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "q")
+
+	for i := 1; i <= 100; i++ {
+		rdb.Do(ctx, "QAPPEND", "q", i, "10")
+	}
+
+	v, _ := rdb.Do(ctx, "QSCAN", "q", 2, 4).Result()
+	assertEqual(v, []string{"92", "93", "94", "95"})
+	v, _ = rdb.Do(ctx, "QSCAN", "q", -2, -4).Result()
+	assertEqual(v, []string{"98", "97", "96", "95"})
+
+	rdb.Do(ctx, "QAPPEND", "q", "--TRIM--", 8)
+	v, _ = rdb.Do(ctx, "QSCAN", "q", 2, 4).Result()
+	assertEqual(v, []string{"94", "95", "96", "97"})
+}
+
 func TestGeo(t *testing.T) {
 	s, _ := Open("test", nil)
 	go s.Serve(":6666")

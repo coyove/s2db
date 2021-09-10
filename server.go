@@ -269,10 +269,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	cmd = strings.TrimSuffix(cmd, "WEAK")
 
 	if cmd == "UNLINK" || cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
-		if name == "" || strings.HasPrefix(name, "score.") || strings.Contains(name, "\r\n") {
-			return w.WriteError("invalid name which is either empty, starting with 'score.' or containing '\\r\\n'")
+		if name == "" || strings.HasPrefix(name, "score.") || strings.HasPrefix(name, "--") || strings.Contains(name, "\r\n") {
+			return w.WriteError("invalid name which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
-		// UNLINK can be applied on slaves
+		// UNLINK can be executed on slaves because it's a maintenance command
 		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") {
 			if s.ReadOnly {
 				return w.WriteError("server is read-only")

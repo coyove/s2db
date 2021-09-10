@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -208,19 +209,27 @@ func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bb
 		if err != nil {
 			return nil, err
 		}
-		id, err := bk.NextSequence()
-		if err != nil {
-			return nil, err
-		}
 
-		bk.FillPercent = 0.9
+		var xid uint64
+		if bytes.EqualFold(value, []byte("--TRIM--")) {
+			// QAPPEND <Name> --TRIM-- <Max> is a trick to trim the head of a queue
+			xid = bk.Sequence()
+		} else {
+			id, err := bk.NextSequence()
+			if err != nil {
+				return nil, err
+			}
 
-		key := make([]byte, 16)
-		binary.BigEndian.PutUint64(key, id)
-		binary.BigEndian.PutUint64(key[8:], uint64(time.Now().UnixNano()))
+			xid = id
+			bk.FillPercent = 0.9
 
-		if err := bk.Put(key, value); err != nil {
-			return nil, err
+			key := make([]byte, 16)
+			binary.BigEndian.PutUint64(key, id)
+			binary.BigEndian.PutUint64(key[8:], uint64(time.Now().UnixNano()))
+
+			if err := bk.Put(key, value); err != nil {
+				return nil, err
+			}
 		}
 
 		if max > 0 {
@@ -235,6 +244,6 @@ func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bb
 				}
 			}
 		}
-		return int64(id), writeLog(tx, dd)
+		return int64(xid), writeLog(tx, dd)
 	}
 }

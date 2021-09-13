@@ -99,24 +99,27 @@ func Open(path string, out chan bool) (*Server, error) {
 		}
 	}
 
-	err := os.MkdirAll(path, 0777)
-	if err != nil {
-		return nil, err
+	for _, p := range shards {
+		os.MkdirAll(filepath.Dir(p), 0777)
 	}
 
+	var err error
 	x := &Server{}
 	x.configDB, err = bbolt.Open(filepath.Join(filepath.Dir(shards[0]), "_config"), 0666, bboltOptions)
 	if err != nil {
 		return nil, err
 	}
+	if out != nil {
+		out <- true // indicate the opening process is running normally
+	}
 	for i := range x.db {
+		start := time.Now()
 		db, err := bbolt.Open(shards[i], 0666, bboltOptions)
 		if err != nil {
 			return nil, err
 		}
-		log.Info("open shard #", i)
-		if i == 0 && out != nil {
-			out <- true // indicate the opening process is running normally
+		if time.Since(start).Seconds() > 1 {
+			log.Info("open slow shard #", i)
 		}
 		d := &x.db[i]
 		d.DB = db

@@ -286,9 +286,8 @@ func splitCommand(in string) (*redisproto.Command, error) {
 
 func joinCommand(cmd ...[]byte) []byte {
 	buf := &bytes.Buffer{}
-	enc := base64.NewEncoder(base64.URLEncoding, buf)
-	gob.NewEncoder(enc).Encode(cmd)
-	enc.Close()
+	buf.WriteByte(0x93)
+	gob.NewEncoder(buf).Encode(cmd)
 	return buf.Bytes()
 }
 

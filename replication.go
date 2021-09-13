@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"runtime/debug"
@@ -234,7 +235,11 @@ func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string,
 
 		for i := start; i <= masterWalIndex; i++ {
 			data := bk.Get(intToBytes(uint64(i)))
-			logs = append(logs, string(data))
+			if data[0] == 0x93 {
+				logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))
+			} else {
+				logs = append(logs, string(data))
+			}
 			sz += len(data)
 			if full {
 				continue

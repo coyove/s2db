@@ -329,6 +329,8 @@ func TestQueue(t *testing.T) {
 	rdb.Do(ctx, "QAPPEND", "q", "--TRIM--", 8)
 	v, _ = rdb.Do(ctx, "QSCAN", "q", 2, 4).Result()
 	assertEqual(v, []string{"94", "95", "96", "97"})
+
+	s.Close()
 }
 
 func TestGeo(t *testing.T) {

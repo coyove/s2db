@@ -145,6 +145,10 @@ func (s *Server) Close() error {
 		go func(i int) {
 			defer wg.Done()
 			db := &s.db[i]
+			if db.NoFreelistSync {
+				db.NoFreelistSync = false
+				db.Update(func(tx *bbolt.Tx) error { return nil })
+			}
 			errs <- db.Close()
 			if s.rdb != nil {
 				<-db.pullerCloseSignal

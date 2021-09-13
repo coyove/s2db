@@ -59,8 +59,8 @@ func (s *Server) batchWorker(shard int) {
 
 	x := &s.db[shard]
 	tasks := []*batchTask{}
-	blocking := false
 
+	blocking := false
 	for {
 		tasks = tasks[:0]
 
@@ -95,34 +95,38 @@ func (s *Server) batchWorker(shard int) {
 			continue
 		}
 
-		start := time.Now()
-		outs := make([]interface{}, len(tasks))
-		err := x.Update(func(tx *bbolt.Tx) error {
-			var err error
-			for i, t := range tasks {
-				outs[i], err = t.f(tx)
-				if err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
-		}
-		for i, t := range tasks {
-			if err != nil {
-				t.out <- err
-			} else {
-				t.out <- outs[i]
-			}
-		}
-
-		s.survey.batchLat.Incr(time.Since(start).Milliseconds())
-		s.survey.batchSize.Incr(int64(len(tasks)))
+		s.runTasks(tasks, shard)
 	}
 
 EXIT:
 	log.Info("batch worker exited")
 	x.batchCloseSignal <- true
+}
+
+func (s *Server) runTasks(tasks []*batchTask, shard int) {
+	start := time.Now()
+	outs := make([]interface{}, len(tasks))
+	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
+		var err error
+		for i, t := range tasks {
+			outs[i], err = t.f(tx)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
+	}
+	for i, t := range tasks {
+		if err != nil {
+			t.out <- err
+		} else {
+			t.out <- outs[i]
+		}
+	}
+
+	s.survey.batchLat.Incr(time.Since(start).Milliseconds())
+	s.survey.batchSize.Incr(int64(len(tasks)))
 }

@@ -55,7 +55,7 @@ func parseZAdd(cmd, name string, fillPercent int, command *redisproto.Command) f
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
 			s := atofPatchBytesPanic(&command.Argv[i])
-			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: command.At(i + 2)})
+			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
 		}
 	}
 	return prepareZAdd(name, pairs, nx, xx, ch, fillPercent, dumpCommand(command))

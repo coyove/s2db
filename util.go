@@ -291,6 +291,23 @@ func joinCommand(cmd ...[]byte) []byte {
 	return buf.Bytes()
 }
 
+func joinCommandSmall(cmd ...[]byte) []byte {
+	buf := &bytes.Buffer{}
+	buf.WriteByte(0x94)
+	for _, c := range cmd {
+		encodeUint(buf, uint(len(c)))
+		buf.Write(c)
+	}
+	return buf.Bytes()
+}
+
+func encodeUint(p *bytes.Buffer, v uint) {
+	p.WriteString("          ") // 10
+	buf := p.Bytes()
+	n := binary.PutUvarint(buf[len(buf)-10:], uint64(v))
+	p.Truncate(p.Len() - 10 + n)
+}
+
 func joinCommandString(cmd ...string) []byte {
 	tmp := make([]struct {
 		v   string
@@ -300,7 +317,7 @@ func joinCommandString(cmd ...string) []byte {
 		tmp[i].v = cmd[i]
 		tmp[i].cap = len(cmd[i])
 	}
-	res := joinCommand(*(*[][]byte)(unsafe.Pointer(&tmp))...)
+	res := joinCommandSmall(*(*[][]byte)(unsafe.Pointer(&tmp))...)
 	runtime.KeepAlive(tmp)
 	return res
 }

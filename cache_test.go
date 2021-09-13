@@ -2,7 +2,7 @@ package main
 
 import (
 	"bytes"
-	"compress/flate"
+	"compress/gzip"
 	"fmt"
 	"math"
 	"math/rand"
@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
@@ -58,13 +57,15 @@ func TestCommandJoinSplit(t *testing.T) {
 }
 
 func TestBBolt(t *testing.T) {
-	c := dumpCommand(&redisproto.Command{
-		Argv: [][]byte{
-			[]byte("QAPPEND 'love130421010922294:love131163602688147' '4SjC3qQOJSfE_0FJF-O9Jv7wldWydVAScbX2_4YekwhodpJKYHo_Idm2TpfEgleC8jLq4JTXkqO5bBC0jzFgkLYECL3qeyPVN7EP393AKZ7f8YOgn0WABZLT6nrBKaEdEoxzsqq6Vcmhx9CidR8Kkqco8SPABuYDLBI4YTLAVKZYKng75bMZgaFiJhrbGfaHGnJxJ5CbLk4nYXRN6Brl7vtJFrUkVqPPsZ7BRd0MAbTB0_oYWtb8EufI3OGxsCzirZ1udZ9BwSjqRp352tc=' '10000'"),
-		},
-	})
+	xxx := []string{
+		"QAPPEND",
+		"love130421010922294:love131163602688147",
+		"4SjC3qQOJSfE_0FJF-O9Jv7wldWydVAScbX2_4YekwhodpJKYHo_Idm2TpfEgleC8jLq4JTXkqO5bBC0jzFgkLYECL3qeyPVN7EP393AKZ7f8YOgn0WABZLT6nrBKaEdEoxzsqq6Vcmhx9CidR8Kkqco8SPABuYDLBI4YTLAVKZYKng75bMZgaFiJhrbGfaHGnJxJ5CbLk4nYXRN6Brl7vtJFrUkVqPPsZ7BRd0MAbTB0_oYWtb8EufI3OGxsCzirZ1udZ9BwSjqRp352tc=",
+		"10000",
+	}
+	c := joinCommandString(xxx...)
 	p := &bytes.Buffer{}
-	w, _ := flate.NewWriter(p, flate.HuffmanOnly)
+	w := gzip.NewWriter(p)
 	w.Write(c)
 	w.Flush()
 	fmt.Println(p.Len(), len(c))

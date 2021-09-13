@@ -483,6 +483,9 @@ func (tx *Tx) checkBucket(b *Bucket, reachable map[pgid]*page, freed map[pgid]bo
 		}
 	})
 
+	// Fast path: s2db don't use nested buckets
+	return
+
 	// Check each bucket within this bucket.
 	_ = b.ForEach(func(k, v []byte) error {
 		if child := b.Bucket(k); child != nil {

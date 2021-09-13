@@ -39,12 +39,15 @@ var (
 	showVersion       = flag.Bool("v", false, "print s2db version")
 	readOnly          = flag.Bool("ro", false, "start server as read-only")
 	masterMode        = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
+	noFreelistSync    = flag.Bool("F", false, "")
 	calcShard         = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark         = flag.String("bench", "", "")
 )
 
 func main() {
 	flag.Parse()
+	rand.Seed(time.Now().Unix())
+
 	if *calcShard != "" {
 		fmt.Print(shardIndex(*calcShard))
 		return
@@ -53,8 +56,7 @@ func main() {
 		fmt.Println("s2db", Version)
 		return
 	}
-
-	rand.Seed(time.Now().Unix())
+	bboltOptions.NoFreelistSync = *noFreelistSync
 
 	log.SetReportCaller(true)
 	log.SetFormatter(&LogFormatter{})

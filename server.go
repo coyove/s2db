@@ -70,6 +70,7 @@ type Server struct {
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
+		compactReplacing  bool
 	}
 	configDB *bbolt.DB
 }

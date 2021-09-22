@@ -119,6 +119,9 @@ func (s *Server) compactShard(shard int) {
 	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
 
 	// STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
+	x.compactReplacing = true
+	defer func() { x.compactReplacing = false }()
+
 	x.DB.Close()
 	roDB, err := bbolt.Open(path, 0666, bboltReadonlyOptions)
 	if err != nil {
@@ -266,7 +269,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			slaveMinWal = min
 			useSlaveWal = true
 		} else if s.MasterMode {
-			log.Info("STAGE 0.1: master failed to collect info from slaves, no log compaction will be made")
+			log.Info("STAGE 0.1: master mode: failed to collect info from slaves, no log compaction will be made")
 			slaveMinWal = 0
 			useSlaveWal = true
 		}

@@ -105,6 +105,10 @@ EXIT:
 
 func (s *Server) runTasks(tasks []*batchTask, shard int) {
 	start := time.Now()
+	for ; s.db[shard].compactReplacing && time.Since(start).Seconds() < float64(s.CompactRunWait); time.Sleep(100 * time.Millisecond) {
+		// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
+		// so we wait CompactRunWait seconds for its recovery
+	}
 	outs := make([]interface{}, len(tasks))
 	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		var err error

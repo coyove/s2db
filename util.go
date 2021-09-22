@@ -403,6 +403,7 @@ type ServerConfig struct {
 	CompactTxSize   int
 	CompactTmpDir   string
 	CompactNoBackup int // disable backup files when compacting, dangerous when you are master
+	CompactRunWait  int // see runTask()
 	FillPercent     int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
 	StopLogPull     int
 	QueueTTLSec     int
@@ -441,6 +442,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 20000)
+	ifZero(&s.CompactRunWait, 1)
 
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)

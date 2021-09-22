@@ -251,6 +251,27 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	c := tx.Cursor()
 
+	var slaveMinWal uint64
+	var useSlaveWal bool
+	{
+		var min uint64 = math.MaxUint64
+		s.slaves.Foreach(func(si *serverInfo) {
+			if si.LogTails[shard] < min {
+				min = si.LogTails[shard]
+			}
+		})
+		if min != math.MaxUint64 {
+			// If master have any slaves, it can't purge logs which slaves don't have yet
+			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
+			slaveMinWal = min
+			useSlaveWal = true
+		} else if s.MasterMode {
+			log.Info("STAGE 0.1: master failed to collect info from slaves, no log compaction will be made")
+			slaveMinWal = 0
+			useSlaveWal = true
+		}
+	}
+
 	count := 0
 	total := 0
 	for next, _ := c.First(); next != nil; next, _ = c.Next() {
@@ -279,24 +300,14 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		var walStartBuf []byte
 		if nextStr == "wal" {
-			var walStart uint64
-			var min uint64 = math.MaxUint64
-			s.slaves.Foreach(func(si *serverInfo) {
-				if si.LogTails[shard] < min {
-					min = si.LogTails[shard]
-				}
-			})
-			if min != math.MaxUint64 {
-				// If master have any slaves, it can't purge logs which slaves don't have yet
-				// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-				walStart = decUint64(min, uint64(s.CompactLogHead))
-			} else if s.MasterMode {
-				log.Info("STAGE 0.1: master failed to collect info from slaves, no log compaction will be made")
-				walStart = 0
-			} else {
+			walStart := decUint64(slaveMinWal, uint64(s.CompactLogHead))
+			if !useSlaveWal {
+				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
+			} else if walStart >= b.Sequence() {
+				log.Infof("STAGE 0.1: dumping took too long, slave logs surpass dumped logs: slave log: %d, log tail: %d", slaveMinWal, b.Sequence())
 				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
-			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, min, b.Sequence())
+			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, slaveMinWal, b.Sequence())
 			walStartBuf = make([]byte, 8)
 			binary.BigEndian.PutUint64(walStartBuf, walStart)
 		}
@@ -336,7 +347,12 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		if len(walStartBuf) > 0 {
 			k, _ := tmpb.Cursor().Last()
-			log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
+			if len(k) != 8 {
+				log.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", walStartBuf, k, tmpb.Sequence(), total)
+				return fmt.Errorf("FATAL")
+			} else {
+				log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
+			}
 		}
 
 		if isQueue {

@@ -1,10 +1,13 @@
 package bbolt
 
 import (
+	"flag"
 	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 )
+
+var bboltNoSortCheck = flag.Bool("bbolt-no-sort-check", false, "")
 
 // KeyN is a shortcut of Bucket.Stats().KeyN, which assumes there is no nested buckets
 func (b *Bucket) KeyN() (n int) {

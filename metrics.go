@@ -30,13 +30,16 @@ func (h *bigKeysHeap) Pop() interface{} {
 	return x
 }
 
-func (s *Server) bigKeys(n int) string {
+func (s *Server) bigKeys(n, shard int) string {
 	if n <= 0 {
 		n = 10
 	}
 	h := &bigKeysHeap{}
 	heap.Init(h)
-	for _, db := range s.db {
+	for i, db := range s.db {
+		if shard != -1 && i != shard {
+			continue
+		}
 		db.View(func(tx *bbolt.Tx) error {
 			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
 				if bytes.HasPrefix(name, []byte("zset.score.")) {
@@ -44,9 +47,12 @@ func (s *Server) bigKeys(n int) string {
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
 					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.KeyN())})
-					if h.Len() > n {
-						heap.Pop(h)
-					}
+				}
+				if bytes.HasPrefix(name, []byte("q.")) {
+					heap.Push(h, Pair{Key: string(name[2:]), Score: float64(bk.KeyN())})
+				}
+				if h.Len() > n {
+					heap.Pop(h)
 				}
 				return nil
 			})

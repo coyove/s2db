@@ -154,9 +154,12 @@ func (f *freelist) init(pgids []pgid) {
 	size := uint64(1)
 	start := pgids[0]
 
-	//  if !sort.SliceIsSorted([]pgid(pgids), func(i, j int) bool { return pgids[i] < pgids[j] }) {
-	if IsSortedU8(*(*[]uint64)(unsafe.Pointer(&pgids))) != 0 {
-		panic("pgids not sorted")
+	if *bboltNoSortCheck {
+	} else {
+		//  if !sort.SliceIsSorted([]pgid(pgids), func(i, j int) bool { return pgids[i] < pgids[j] }) {
+		if IsSortedU8(*(*[]uint64)(unsafe.Pointer(&pgids))) != 0 {
+			panic("pgids not sorted")
+		}
 	}
 
 	f.freemaps = make(map[uint64]pidSet)

@@ -377,7 +377,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
 			return w.WriteBulkString(s.shardInfo(atoip(n)))
 		case n == "bigkeys":
-			return w.WriteBulkString(s.bigKeys(atoip(command.Get(2))))
+			if command.Get(3) == "" {
+				return w.WriteBulkString(s.bigKeys(atoip(command.Get(2)), -1))
+			}
+			return w.WriteBulkString(s.bigKeys(atoip(command.Get(2)), atoip(command.Get(3))))
 		case n == "cachestat":
 			name = command.Get(2)
 			length, size, hits := s.cache.KeyInfo(name)

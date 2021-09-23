@@ -302,9 +302,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				buf := "[slow log] " + diff.String() + " " + command.String()
-				if diff := len(buf) - 512; diff > 0 {
-					buf = buf[:512] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
+				buf := "slowLog(" + strconv.Itoa(shardIndex(name)) + "): " + diff.String() + " " + command.String()
+				if diff := len(buf) - 256; diff > 0 {
+					buf = buf[:256] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
 				}
 				log.Info(buf)
 			}

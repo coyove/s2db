@@ -1,7 +1,9 @@
 package bbolt
 
 import (
+	"bytes"
 	"flag"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
@@ -17,6 +19,26 @@ func (b *Bucket) KeyN() (n int) {
 		}
 	})
 	return
+}
+
+func (b *DB) FreelistSize() int {
+	var c int
+	b.Update(func(tx *Tx) error {
+		c = b.freelist.size()
+		return nil
+	})
+	return c
+}
+
+func (b *DB) FreelistDistribution() string {
+	var c bytes.Buffer
+	b.Update(func(tx *Tx) error {
+		for size, bm := range b.freelist.freemaps {
+			c.WriteString(strconv.Itoa(int(size)) + ":" + strconv.Itoa(len(bm)) + " ")
+		}
+		return nil
+	})
+	return c.String()
 }
 
 func (b *DB) Size() int64 {

@@ -389,24 +389,25 @@ func (o *RangeOptions) getLimit() int {
 }
 
 type ServerConfig struct {
-	ServerName      string
-	Password        string
-	CacheSize       int
-	CacheKeyMaxLen  int
-	WeakCacheSize   int
-	SlowLimit       int // ms
-	ResponseLogRun  int
-	ResponseLogSize int // kb
-	BatchMaxRun     int
-	SchedCompactJob string
-	CompactLogHead  int
-	CompactTxSize   int
-	CompactTmpDir   string
-	CompactNoBackup int // disable backup files when compacting, dangerous when you are master
-	CompactRunWait  int // see runTask()
-	FillPercent     int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
-	StopLogPull     int
-	QueueTTLSec     int
+	ServerName           string
+	Password             string
+	CacheSize            int
+	CacheKeyMaxLen       int
+	WeakCacheSize        int
+	SlowLimit            int // ms
+	ResponseLogRun       int
+	ResponseLogSize      int // kb
+	BatchMaxRun          int
+	SchedCompactJob      string
+	CompactLogHead       int
+	CompactTxSize        int
+	CompactTmpDir        string
+	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
+	CompactRunWait       int // see runTask()
+	CompactFreelistLimit int // compact when freelist is too large
+	FillPercent          int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
+	StopLogPull          int
+	QueueTTLSec          int
 }
 
 func (s *Server) loadConfig() error {
@@ -442,7 +443,6 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 20000)
-	ifZero(&s.CompactRunWait, 1)
 
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
@@ -520,12 +520,14 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 
 func (s *Server) info(section string) string {
 	sz := 0
+	fls := []string{}
 	for i := range s.db {
 		fi, err := os.Stat(s.db[i].Path())
 		if err != nil {
 			panic(err)
 		}
 		sz += int(fi.Size())
+		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()))
 	}
 	cwd, _ := os.Getwd()
 	data := []string{
@@ -541,6 +543,7 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("cwd:%v", cwd),
 		fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
 		fmt.Sprintf("death_scheduler:%v", s.dieKey),
+		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
 		"",
@@ -596,6 +599,8 @@ func (s *Server) shardInfo(shard int) string {
 	tmp := []string{
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
+		fmt.Sprintf("freelist_size:%v", x.FreelistSize()),
+		fmt.Sprintf("freelist_dist_debug:%v", x.FreelistDistribution()),
 		fmt.Sprintf("db_size:%v", fi.Size()),
 		fmt.Sprintf("db_size_mb:%.2f", float64(fi.Size())/1024/1024),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),

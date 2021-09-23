@@ -218,6 +218,22 @@ func (s *Server) schedPurge() {
 				s.compactShard(i)
 			}
 		}
+
+		// Do compaction on shard with large freelist
+		maxFreelistSize := 0
+		maxFreelistDB := -1
+		for i := range s.db {
+			sz := s.db[i].FreelistSize()
+			if sz > maxFreelistSize {
+				maxFreelistSize = sz
+				maxFreelistDB = i
+			}
+		}
+		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
+			log.Info("freelistCompaction(", maxFreelistDB, ")")
+			s.compactShard(maxFreelistDB)
+		}
+
 		time.Sleep(time.Minute)
 	}
 }

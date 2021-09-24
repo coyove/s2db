@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/base64"
 	"fmt"
 	"math"
 	"math/rand"
@@ -26,10 +27,7 @@ func TestCommandJoinSplit(t *testing.T) {
 			b = append(b, x)
 		}
 		x := joinCommand(b...)
-		if x[0] == 1 {
-			t.FailNow()
-		}
-		cmd2, _ := splitCommand(string(x))
+		cmd2, _ := splitCommand(base64.URLEncoding.EncodeToString(x[1:]))
 		for i := 0; i < cmd2.ArgCount(); i++ {
 			if !bytes.Equal(cmd2.At(i), b[i]) {
 				t.FailNow()

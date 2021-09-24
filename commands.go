@@ -184,5 +184,19 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	value := append([]byte{}, command.At(2)...)
 	max := int64(atoi(command.Get(3)))
-	return prepareQAppend(name, value, max, dumpCommand(command))
+
+	var m func(string) bool
+	switch appender := strings.ToUpper(command.Get(4)); appender {
+	case "MATCH", "NOTMATCH":
+		v := command.Get(5)
+		m = func(a string) bool {
+			ok, err := filepath.Match(v, a)
+			if err != nil {
+				panic(err)
+			}
+			return ok != (appender == "NOTMATCH")
+		}
+	}
+
+	return prepareQAppend(name, value, max, m, dumpCommand(command))
 }

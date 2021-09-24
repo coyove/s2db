@@ -246,12 +246,15 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 				if command.EqualFold(0, "AUTH") && command.Get(1) == s.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
+				} else if command.EqualFold(0, "INFO") {
+					goto RUN
 				} else {
 					writer.WriteError("NOAUTH")
 				}
 				writer.Flush()
 				continue
 			}
+		RUN:
 			ew = s.runCommand(writer, command)
 		}
 		if command.IsLast() {
@@ -366,7 +369,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 			return w.WriteError("field not found")
 		default:
-			return w.WriteError("invalid operation")
+			return w.WriteBulkStrings(s.listConfig())
 		}
 	case "RESETCACHE":
 		weight := s.cache.curWeight + s.weakCache.Weight()
@@ -391,8 +394,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			h := hashCommands(command)
 			hits, size, _ := s.weakCache.GetEx(h)
 			return w.WriteBulkString(fmt.Sprintf("# weakcache%x\r\nsize:%d\r\nhits:%d\r\n", h, size, hits))
-		case n == "config":
-			return w.WriteBulkString(s.listConfig())
 		default:
 			return w.WriteBulkString(s.info(n))
 		}

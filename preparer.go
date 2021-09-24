@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"time"
+	"unsafe"
 
 	"go.etcd.io/bbolt"
 )
@@ -203,7 +204,7 @@ func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx 
 	}
 }
 
-func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareQAppend(name string, value []byte, max int64, appender func(string) bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bk, err := tx.CreateBucketIfNotExists([]byte("q." + name))
 		if err != nil {
@@ -215,6 +216,12 @@ func prepareQAppend(name string, value []byte, max int64, dd []byte) func(tx *bb
 			// QAPPEND <Name> --TRIM-- <Max> is a trick to trim the head of a queue
 			xid = bk.Sequence()
 		} else {
+			if appender != nil {
+				if _, v := bk.Cursor().Last(); len(v) > 0 && !appender(*(*string)(unsafe.Pointer(&v))) {
+					return int64(0), nil
+				}
+			}
+
 			id, err := bk.NextSequence()
 			if err != nil {
 				return nil, err

@@ -317,7 +317,7 @@ func joinCommandString(cmd ...string) []byte {
 		tmp[i].v = cmd[i]
 		tmp[i].cap = len(cmd[i])
 	}
-	res := joinCommandSmall(*(*[][]byte)(unsafe.Pointer(&tmp))...)
+	res := joinCommand(*(*[][]byte)(unsafe.Pointer(&tmp))...)
 	runtime.KeepAlive(tmp)
 	return res
 }
@@ -498,13 +498,13 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 	return
 }
 
-func (s *Server) listConfig() string {
+func (s *Server) listConfig() []string {
 	list := []string{"readonly:" + strconv.FormatBool(s.ReadOnly)}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		list = append(list, strings.ToLower(f.Name)+":"+fmt.Sprint(fv.Interface()))
 		return nil
 	})
-	return strings.Join(list, "\r\n") + "\r\n"
+	return list
 }
 
 func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {

@@ -22,12 +22,13 @@ func (b *Bucket) KeyN() (n int) {
 }
 
 func (b *DB) FreelistSize() int {
-	var c int
-	b.Update(func(tx *Tx) error {
-		c = b.freelist.size()
-		return nil
-	})
-	return c
+	if b.freelistSize == 0 {
+		b.Update(func(tx *Tx) error {
+			b.freelistSize = b.freelist.size()
+			return nil
+		})
+	}
+	return b.freelistSize
 }
 
 func (b *DB) FreelistDistribution() string {

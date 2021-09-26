@@ -176,6 +176,7 @@ func (tx *Tx) Commit() error {
 		if err != nil {
 			return err
 		}
+		tx.db.freelistSize = tx.db.freelist.size()
 	} else {
 		tx.meta.freelist = pgidNoFreelist
 	}

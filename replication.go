@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -271,10 +272,10 @@ type serverInfo struct {
 	purgeTimer *time.Timer
 }
 
-func (s *slaves) Get(serverName string) *serverInfo {
+func (s *slaves) Get(ip string) *serverInfo {
 	s.RLock()
 	defer s.RUnlock()
-	return s.q[serverName]
+	return s.q[ip]
 }
 
 func (s *slaves) Foreach(cb func(*serverInfo)) {
@@ -322,4 +323,20 @@ func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
 	})
 	cb(p)
 	s.q[remoteAddr] = p
+}
+
+func (si *serverInfo) Info(commands [][]byte) (string, error) {
+	_, port, err := net.SplitHostPort(si.ListenAddr)
+	if err != nil {
+		return "", err
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: si.RemoteAddr + ":" + port})
+	args := make([]interface{}, len(commands))
+	for i := range args {
+		args[i] = commands[i]
+	}
+	defer rdb.Close()
+	cmd := redis.NewStringCmd(context.TODO(), args...)
+	rdb.Process(context.TODO(), cmd)
+	return cmd.Result()
 }

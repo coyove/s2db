@@ -12,7 +12,7 @@ else
 fi
 
 VERSION=$(date -u +%y)
-VERSION=$VERSION$MONTH$(date -u +%d%H%M | cut -c 1-5)
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(printf "%X" "$(date -u +%H)")$(date -u +%M)
 echo 'building' $VERSION
 
 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC

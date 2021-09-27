@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -72,6 +73,7 @@ func (s *Server) bigKeys(n, shard int) string {
 const SurveyRange = 900
 
 type Survey struct {
+	tick  sync.Once
 	data  [SurveyRange]int64
 	count [SurveyRange]int32
 	ts    [SurveyRange]uint32
@@ -90,7 +92,22 @@ func (s *Survey) _decr(x uint64) uint64 {
 	return x
 }
 
+func (s *Survey) dotick() {
+	idx, _ := s._i()
+	next := (idx + 1) % SurveyRange
+	s.data[next] = 0
+	s.count[next] = 0
+}
+
 func (s *Survey) Incr(c int64) {
+	s.tick.Do(func() {
+		go func() {
+			s.dotick()
+			for range time.Tick(time.Second) {
+				s.dotick()
+			}
+		}()
+	})
 	idx, ts := s._i()
 	next := (idx + 1) % SurveyRange
 	s.data[next] = 0

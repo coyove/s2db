@@ -644,6 +644,16 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
+func parseSlaveFlag(in *redisproto.Command) string {
+	i := in.ArgCount() - 2
+	if in.EqualFold(i, "SLAVE") {
+		x := in.Argv[i+1]
+		in.Argv = in.Argv[:i]
+		return string(x)
+	}
+	return ""
+}
+
 func parseDeferFlag(in *redisproto.Command) bool {
 	if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
 		in.Argv = append(in.Argv[:2], in.Argv[3:]...)

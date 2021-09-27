@@ -377,6 +377,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
 	case "INFO":
+		if sl := s.slaves.Get(parseSlaveFlag(command)); sl != nil {
+			v, err := sl.Info(command.Argv)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			return w.WriteBulkString(v)
+		}
 		switch n := strings.ToLower(name); {
 		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
 			return w.WriteBulkString(s.shardInfo(atoip(n)))

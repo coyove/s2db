@@ -28,20 +28,26 @@ import (
 var (
 	Version = ""
 
-	masterAddr        = flag.String("master", "", "connect to master server, form: master_name@ip:port")
-	masterPassword    = flag.String("mp", "", "")
-	listenAddr        = flag.String("l", ":6379", "listen address")
-	pprofListenAddr   = flag.String("pprof", ":16379", "pprof listen address")
-	dataDir           = flag.String("d", "test", "data directory")
+	masterAddr     = flag.String("master", "", "connect to master server, form: master_name@ip:port")
+	masterPassword = flag.String("mp", "", "")
+
+	listenAddr      = flag.String("l", ":6379", "listen address")
+	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
+	serverName      = flag.String("n", "", "same as: CONFIG SET servername <Name>")
+	dataDir         = flag.String("d", "test", "data directory")
+
 	showLogTail       = flag.String("logtail", "", "")
 	dumpOverWire      = flag.String("dow", "", "")
 	checkDumpOverWire = flag.String("check-dow", "", "")
-	showVersion       = flag.Bool("v", false, "print s2db version")
-	readOnly          = flag.Bool("ro", false, "start server as read-only")
-	masterMode        = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
-	noFreelistSync    = flag.Bool("F", false, "")
-	calcShard         = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
-	benchmark         = flag.String("bench", "", "")
+
+	readOnly   = flag.Bool("ro", false, "start server as read-only")
+	masterMode = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
+
+	showVersion = flag.Bool("v", false, "print s2db version")
+	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
+	benchmark   = flag.String("bench", "", "")
+
+	noFreelistSync = flag.Bool("F", false, "DEBUG flag, do not use")
 )
 
 func main() {
@@ -188,6 +194,14 @@ func main() {
 	s, err := Open(*dataDir, opened)
 	if err != nil {
 		log.Panic(err)
+	}
+
+	if *serverName != "" {
+		old, _ := s.getConfig("servername")
+		log.Infof("update server name from %q to %q", old, *serverName)
+		if _, err := s.updateConfig("servername", *serverName); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	if *masterAddr != "" {

@@ -161,7 +161,7 @@ func (s *Server) compactShard(shard int) {
 	}
 
 	if s.CompactTmpDir != "" {
-		// Since we may write compactDB to another device, simple rename won't do thew work
+		// Since we may write compactDB to another device, simple rename won't do the work
 		of, err := os.Create(path)
 		if err != nil {
 			log.Error("open dump file for compactDB: ", err)

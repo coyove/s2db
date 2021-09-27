@@ -11,7 +11,7 @@ else
     MONTH=$(echo $MONTH | cut -c 2-2)
 fi
 
-VERSION=$(date -u +%y)
+VERSION=$(($(date -u +%y)-20))
 VERSION=${VERSION}.${MONTH}$(date -u +%d).$(printf "%X" "$(date -u +%H)")$(date -u +%M)
 echo 'building' $VERSION
 

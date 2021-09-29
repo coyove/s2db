@@ -6,9 +6,11 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strconv"
@@ -519,7 +521,7 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 }
 
 func (s *Server) info(section string) string {
-	sz := 0
+	sz, dataSize := 0, 0
 	fls := []string{}
 	for i := range s.db {
 		fi, err := os.Stat(s.db[i].Path())
@@ -528,6 +530,10 @@ func (s *Server) info(section string) string {
 		}
 		sz += int(fi.Size())
 		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()))
+	}
+	dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.configDB.Path()))
+	for _, fi := range dataFiles {
+		dataSize += int(fi.Size())
 	}
 	cwd, _ := os.Getwd()
 	data := []string{
@@ -546,6 +552,7 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
+		fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 		"",
 		"# replication",
 		fmt.Sprintf("master_mode:%v", s.MasterMode),

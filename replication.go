@@ -275,7 +275,16 @@ type serverInfo struct {
 func (s *slaves) Get(ip string) *serverInfo {
 	s.RLock()
 	defer s.RUnlock()
-	return s.q[ip]
+	si := s.q[ip]
+	if si != nil {
+		return si
+	}
+	for _, si := range s.q {
+		if si.ServerName == ip {
+			return si
+		}
+	}
+	return nil
 }
 
 func (s *slaves) Foreach(cb func(*serverInfo)) {

@@ -646,7 +646,7 @@ func ifZero(v *int, v2 int) {
 
 func parseSlaveFlag(in *redisproto.Command) string {
 	i := in.ArgCount() - 2
-	if in.EqualFold(i, "SLAVE") {
+	if in.EqualFold(i, "AT") {
 		x := in.Argv[i+1]
 		in.Argv = in.Argv[:i]
 		return string(x)

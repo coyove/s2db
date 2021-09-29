@@ -377,7 +377,13 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		s.weakCache.Clear()
 		return w.WriteInt(int64(weight))
 	case "INFO":
-		if sl := s.slaves.Get(parseSlaveFlag(command)); sl != nil {
+		dst := parseSlaveFlag(command)
+		sl := s.slaves.Get(dst)
+		if sl == nil && strings.HasPrefix(dst, "tcp://") {
+			host, port, _ := net.SplitHostPort(dst[6:])
+			sl = &serverInfo{RemoteAddr: host, ListenAddr: ":" + port}
+		}
+		if sl != nil {
 			v, err := sl.Info(command.Argv)
 			if err != nil {
 				return w.WriteError(err.Error())

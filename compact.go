@@ -16,7 +16,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) compactShard(shard int) {
+func (s *Server) compactShard(shard int, newPath string) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
 	if shard == 0 {
@@ -160,8 +160,15 @@ func (s *Server) compactShard(shard int) {
 		}
 	}
 
-	if s.CompactTmpDir != "" {
-		// Since we may write compactDB to another device, simple rename won't do the work
+	if s.CompactTmpDir != "" || newPath != "" {
+		// We may need to copy compactDB bytes by bytes because:
+		// 1. compactDB is on another block device, simple rename won't do the work
+		// 2. newPath is provided, so we need to write compactDB to the new location
+		if newPath != "" {
+			old := path
+			path = filepath.Join(newPath, "shard"+strconv.Itoa(shard))
+			log.Infof("remap: write compactDB to %s, old: %s", path, old)
+		}
 		of, err := os.Create(path)
 		if err != nil {
 			log.Error("open dump file for compactDB: ", err)
@@ -215,7 +222,7 @@ func (s *Server) schedPurge() {
 		for i, ok := range oks {
 			if ok {
 				log.Info("scheduleCompaction(", i, ")")
-				s.compactShard(i)
+				s.compactShard(i, "")
 			}
 		}
 
@@ -231,7 +238,7 @@ func (s *Server) schedPurge() {
 		}
 		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
 			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.compactShard(maxFreelistDB)
+			s.compactShard(maxFreelistDB, "")
 		}
 
 		time.Sleep(time.Minute)

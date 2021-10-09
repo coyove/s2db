@@ -76,38 +76,13 @@ type Server struct {
 }
 
 func Open(path string, out chan bool) (*Server, error) {
-	var shards [ShardNum]string
-	if idx := strings.Index(path, ":"); idx > 0 {
-		parts := strings.Split(path, ":")
-		for i := range shards {
-			shards[i] = filepath.Join(parts[0], "shard"+strconv.Itoa(i))
-		}
-		for i := 1; i < len(parts); i++ {
-			p := strings.Split(parts[i], "=")
-			if len(p) == 1 {
-				return nil, fmt.Errorf("invalid mapping path: %q", parts[i])
-			}
-			si := atoi(p[0])
-			if si == 0 || si > 31 {
-				return nil, fmt.Errorf("invalid mapping index: %v", si)
-			}
-			shards[si] = filepath.Join(p[1], "shard"+strconv.Itoa(si))
-			log.Infof("shard data %d remapped to %q", si, shards[si])
-		}
-	} else {
-		for i := range shards {
-			shards[i] = filepath.Join(path, "shard"+strconv.Itoa(i))
-		}
-	}
-
-	for _, p := range shards {
-		os.MkdirAll(filepath.Dir(p), 0777)
-	}
-
 	var err error
 	x := &Server{}
-	x.configDB, err = bbolt.Open(filepath.Join(filepath.Dir(shards[0]), "_config"), 0666, bboltOptions)
+	x.configDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
 	if err != nil {
+		return nil, err
+	}
+	if err := x.loadConfig(); err != nil {
 		return nil, err
 	}
 	if out != nil {
@@ -115,7 +90,15 @@ func Open(path string, out chan bool) (*Server, error) {
 	}
 	for i := range x.db {
 		start := time.Now()
-		db, err := bbolt.Open(shards[i], 0666, bboltOptions)
+		var shardPath string
+		if remap, _ := x.getConfig("ShardPath" + strconv.Itoa(i)); remap != "" {
+			os.MkdirAll(remap, 0777)
+			shardPath = filepath.Join(remap, "shard"+strconv.Itoa(i))
+			log.Info("remap shard #", i, " to ", shardPath)
+		} else {
+			shardPath = filepath.Join(path, "shard"+strconv.Itoa(i))
+		}
+		db, err := bbolt.Open(shardPath, 0666, bboltOptions)
 		if err != nil {
 			return nil, err
 		}
@@ -177,11 +160,6 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) Serve(addr string) error {
-	if err := s.loadConfig(); err != nil {
-		log.Error(err)
-		return err
-	}
-
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		log.Error(err)
@@ -279,7 +257,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	)
 	cmd = strings.TrimSuffix(cmd, "WEAK")
 
-	if cmd == "UNLINK" || cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
+	if cmd == "UNLINK" || cmd == "DEL" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
 		if name == "" || strings.HasPrefix(name, "score.") || strings.HasPrefix(name, "--") || strings.Contains(name, "\r\n") {
 			return w.WriteError("invalid name which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
@@ -368,6 +346,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 				return w.WriteSimpleString("OK")
 			}
 			return w.WriteError("field not found")
+		case "LOGS":
+			return w.WriteBulkStrings(s.listConfigLogs(10))
 		default:
 			return w.WriteBulkStrings(s.listConfig())
 		}
@@ -444,7 +424,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteInt(total)
 	case "COMPACTSHARD":
-		go s.compactShard(atoip(name))
+		go s.compactShard(atoip(name), command.Get(2))
 		return w.WriteSimpleString("STARTED")
 	}
 
@@ -678,7 +658,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		start := int64(atoip(command.Get(2)))
 		n := int64(atoip(command.Get(3)))
-		data, err := s.qScan(name, start, n)
+		withIndexes := command.EqualFold(4, "WITHINDEXES")
+		data, err := s.qScan(name, start, n, withIndexes)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

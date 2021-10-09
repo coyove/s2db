@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"strconv"
 
 	"go.etcd.io/bbolt"
 )
@@ -36,7 +37,7 @@ func (s *Server) qLength(name string) (int64, error) {
 	return count, err
 }
 
-func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
+func (s *Server) qScan(name string, start, n int64, withIndexes bool) ([][]byte, error) {
 	var data [][]byte
 	desc := false
 	if n < 0 {
@@ -74,6 +75,9 @@ func (s *Server) qScan(name string, start, n int64) ([][]byte, error) {
 		}
 		for len(data) < int(n) && len(k) == 16 {
 			data = append(data, append([]byte{}, v...))
+			if withIndexes {
+				data = append(data, []byte(strconv.FormatUint(binary.BigEndian.Uint64(k[:8]), 10)))
+			}
 			if desc {
 				k, v = c.Prev()
 			} else {

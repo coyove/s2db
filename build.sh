@@ -1,4 +1,4 @@
-SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go geo.go preparer.go runner.go compact.go queue.go'
+SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go geo.go preparer.go runner.go compact.go queue.go config.go'
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then
@@ -12,7 +12,7 @@ else
 fi
 
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(printf "%X" "$(date -u +%H)")$(date -u +%M)
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 * 1000 / 86400)) 
 echo 'building' $VERSION
 
 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC

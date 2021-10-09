@@ -75,17 +75,30 @@ func main() {
 	}))
 
 	if *dumpOverWire != "" {
-		parts := strings.Split(*dumpOverWire, "->")
+		parts := strings.SplitN(*dumpOverWire, "/", 3)
 		if len(parts) != 3 {
-			log.Panic("dump over wire format: server_address->shard->local_path")
+			log.Panic("dump over wire format: server_address/shard/local_path")
 		}
-		shard, _ := strconv.Atoi(parts[1])
-		requestDumpShardOverWire(parts[0], parts[2], shard)
+		addr, path := parts[0], parts[2]
+		if strings.EqualFold(parts[1], "ALL") {
+			os.MkdirAll(path, 0777)
+			for i := 0; i < ShardNum; i++ {
+				requestDumpShardOverWire(addr, filepath.Join(path, "shard"+strconv.Itoa(i)), i)
+			}
+		} else {
+			requestDumpShardOverWire(addr, path, atoip(parts[1]))
+		}
 		return
 	}
 
 	if *checkDumpOverWire != "" {
-		checkDumpWireFile(*checkDumpOverWire)
+		if fi, _ := os.Stat(*checkDumpOverWire); fi != nil && fi.IsDir() {
+			for i := 0; i < ShardNum; i++ {
+				checkDumpWireFile(filepath.Join(*checkDumpOverWire, "shard"+strconv.Itoa(i)))
+			}
+		} else {
+			checkDumpWireFile(*checkDumpOverWire)
+		}
 		return
 	}
 
@@ -244,7 +257,9 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 }
 
 func requestDumpShardOverWire(remote, output string, shard int) {
+	// TODO: password auth
 	log.Infof("request dumping shard #%d from %s to %s", shard, remote, output)
+	start := time.Now()
 
 	of, err := os.Create(output)
 	if err != nil {
@@ -299,11 +314,12 @@ func requestDumpShardOverWire(remote, output string, shard int) {
 	if err != nil {
 		log.Panic("failed to dump: ", err)
 	}
-	log.Info("dumping finished")
+	log.Info("dumping finished in ", time.Since(start), ", acquired ", written, "b")
 }
 
 func checkDumpWireFile(path string) {
 	log.Info("check dump-over-wire file: ", path)
+
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		log.Error("open: ", err)

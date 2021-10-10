@@ -76,6 +76,7 @@ type Server struct {
 }
 
 func Open(path string, out chan bool) (*Server, error) {
+	os.MkdirAll(path, 0777)
 	var err error
 	x := &Server{}
 	x.configDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
@@ -424,7 +425,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteInt(total)
 	case "COMPACTSHARD":
-		go s.compactShard(atoip(name), command.Get(2))
+		go s.compactShard(atoip(name))
 		return w.WriteSimpleString("STARTED")
 	}
 

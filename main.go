@@ -2,14 +2,12 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -193,18 +191,50 @@ func main() {
 	}
 
 	log.Info("version: ", Version)
-	opened := make(chan bool)
+
+	var s *Server
+	var err error
+	var opened = make(chan bool)
 	go func() {
 		select {
 		case <-opened:
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		log.Info("serving pprof at ", *pprofListenAddr)
-		log.Error("pprof: ", http.ListenAndServe(*pprofListenAddr, nil))
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Content-Type", "text/html")
+			section := r.URL.Query().Get("section")
+			shard := r.URL.Query().Get("shard")
+			w.Write([]byte("<meta charset='utf-8'><style>*{font-family:monospace}</style><h1>" + s.ServerName + "</h1><a href='/debug/pprof'>pprof</a><br><br>"))
+			if shard != "" {
+				start := time.Now()
+				w.Write([]byte("<a href='/'>&laquo; index</a><title>Shard #" + shard + "</title>"))
+				w.Write([]byte("<pre>" + s.shardInfo(atoip(shard)) + "</pre>"))
+				w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
+			} else {
+				for i := 0; i < ShardNum; i++ {
+					w.Write([]byte(fmt.Sprintf("<a href='?shard=%d'>shard #%02d &raquo;</a>&nbsp;", i, i)))
+					if i%4 == 3 {
+						w.Write([]byte("<br>"))
+					}
+				}
+				w.Write([]byte("<br><br>pprof port: <input id=port value='16379'/><br>"))
+				s.slaves.Foreach(func(si *serverInfo) {
+					w.Write([]byte(fmt.Sprintf(`<a href='javascript:location.href="http://%s:"+port.value'>[S] %s (%s)</a>
+                    <a href='javascript:location.href="http://%s:"+port.value+"/debug/pprof"'>pprof</a><br>`,
+						si.RemoteAddr, si.RemoteAddr, si.ServerName, si.RemoteAddr)))
+				})
+				if s.MasterAddr != "" {
+					w.Write([]byte(fmt.Sprintf(`<a href='javascript:location.href="http://%s:"+port.value'>[M] %s (%s)</a>`, s.MasterAddr, s.MasterAddr, s.MasterNameAssert)))
+				}
+				w.Write([]byte("<br>"))
+				w.Write([]byte("<pre>" + s.info(section) + "</pre><title>Server Status</title>"))
+			}
+		})
+		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
+		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()
-
-	s, err := Open(*dataDir, opened)
+	s, err = Open(*dataDir, opened)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -254,123 +284,4 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
-}
-
-func requestDumpShardOverWire(remote, output string, shard int) {
-	// TODO: password auth
-	log.Infof("request dumping shard #%d from %s to %s", shard, remote, output)
-	start := time.Now()
-
-	of, err := os.Create(output)
-	if err != nil {
-		log.Panic("output: ", err)
-	}
-	defer of.Close()
-
-	conn, err := net.Dial("tcp", remote)
-	if err != nil {
-		log.Panic(err)
-	}
-	defer conn.Close()
-
-	_, err = conn.Write([]byte(fmt.Sprintf("DUMPSHARD %d WIRE\r\n", shard)))
-	if err != nil {
-		log.Panic("write command: ", err)
-	}
-
-	buf := make([]byte, 32*1024)
-	rd, err := gzip.NewReader(conn)
-	if err != nil {
-		log.Panic("read gzip header: ", err)
-	}
-	written := 0
-	for {
-		nr, er := rd.Read(buf)
-		if nr > 0 {
-			nw, ew := of.Write(buf[0:nr])
-			if nw < 0 || nr < nw {
-				nw = 0
-				if ew == nil {
-					ew = fmt.Errorf("write output invalid")
-				}
-			}
-			written += nw
-			if ew != nil {
-				err = ew
-				break
-			}
-			if nr != nw {
-				err = io.ErrShortWrite
-				break
-			}
-		}
-		if er != nil {
-			if er != io.EOF {
-				err = er
-			}
-			break
-		}
-	}
-	if err != nil {
-		log.Panic("failed to dump: ", err)
-	}
-	log.Info("dumping finished in ", time.Since(start), ", acquired ", written, "b")
-}
-
-func checkDumpWireFile(path string) {
-	log.Info("check dump-over-wire file: ", path)
-
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		log.Error("open: ", err)
-		os.Exit(1)
-	}
-	defer f.Close()
-	_, err = f.Seek(-32, 2)
-	if err != nil {
-		log.Error("seek: ", err)
-		os.Exit(1)
-	}
-	buf := make([]byte, 32)
-	n, err := io.ReadFull(f, buf)
-	if n != 32 {
-		log.Error("read: ", n, " ", err)
-		os.Exit(1)
-	}
-
-	if buf[30] != '\r' || buf[31] != '\n' {
-		log.Errorf("invalid tail: %q", buf)
-		os.Exit(1)
-	}
-
-	if bytes.HasSuffix(buf, []byte("-HALT\r\n")) {
-		log.Errorf("remote reported error, dumping failed")
-		os.Exit(2)
-	}
-
-	idx := bytes.LastIndexByte(buf, ':')
-	if idx == -1 {
-		log.Errorf("invalid tail: %q", buf)
-		os.Exit(1)
-	}
-
-	sz, _ := strconv.ParseInt(string(buf[idx+1:30]), 10, 64)
-	log.Info("reported shard size: ", sz)
-
-	fsz, err := f.Seek(-int64(32-idx), 2)
-	if err != nil {
-		log.Error("seek2: ", err)
-		os.Exit(1)
-	}
-
-	if fsz != sz {
-		log.Errorf("unmatched size: %d and %d", fsz, sz)
-		os.Exit(3)
-	}
-
-	if err := f.Truncate(fsz); err != nil {
-		log.Error("failed to truncate: ", err)
-		os.Exit(4)
-	}
-	log.Info("checking finished")
 }

@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,7 +19,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) compactShard(shard int, newPath string) {
+func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
 	if shard == 0 {
@@ -160,15 +163,7 @@ func (s *Server) compactShard(shard int, newPath string) {
 		}
 	}
 
-	if s.CompactTmpDir != "" || newPath != "" {
-		// We may need to copy compactDB bytes by bytes because:
-		// 1. compactDB is on another block device, simple rename won't do the work
-		// 2. newPath is provided, so we need to write compactDB to the new location
-		if newPath != "" {
-			old := path
-			path = filepath.Join(newPath, "shard"+strconv.Itoa(shard))
-			log.Infof("remap: write compactDB to %s, old: %s", path, old)
-		}
+	if s.CompactTmpDir != "" {
 		of, err := os.Create(path)
 		if err != nil {
 			log.Error("open dump file for compactDB: ", err)
@@ -222,7 +217,7 @@ func (s *Server) schedPurge() {
 		for i, ok := range oks {
 			if ok {
 				log.Info("scheduleCompaction(", i, ")")
-				s.compactShard(i, "")
+				s.compactShard(i)
 			}
 		}
 
@@ -238,7 +233,7 @@ func (s *Server) schedPurge() {
 		}
 		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
 			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.compactShard(maxFreelistDB, "")
+			s.compactShard(maxFreelistDB)
 		}
 
 		time.Sleep(time.Minute)
@@ -430,4 +425,123 @@ func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {
 		return nil, err
 	}
 	return
+}
+
+func requestDumpShardOverWire(remote, output string, shard int) {
+	// TODO: password auth
+	log.Infof("request dumping shard #%d from %s to %s", shard, remote, output)
+	start := time.Now()
+
+	of, err := os.Create(output)
+	if err != nil {
+		log.Panic("output: ", err)
+	}
+	defer of.Close()
+
+	conn, err := net.Dial("tcp", remote)
+	if err != nil {
+		log.Panic(err)
+	}
+	defer conn.Close()
+
+	_, err = conn.Write([]byte(fmt.Sprintf("DUMPSHARD %d WIRE\r\n", shard)))
+	if err != nil {
+		log.Panic("write command: ", err)
+	}
+
+	buf := make([]byte, 32*1024)
+	rd, err := gzip.NewReader(conn)
+	if err != nil {
+		log.Panic("read gzip header: ", err)
+	}
+	written := 0
+	for {
+		nr, er := rd.Read(buf)
+		if nr > 0 {
+			nw, ew := of.Write(buf[0:nr])
+			if nw < 0 || nr < nw {
+				nw = 0
+				if ew == nil {
+					ew = fmt.Errorf("write output invalid")
+				}
+			}
+			written += nw
+			if ew != nil {
+				err = ew
+				break
+			}
+			if nr != nw {
+				err = io.ErrShortWrite
+				break
+			}
+		}
+		if er != nil {
+			if er != io.EOF {
+				err = er
+			}
+			break
+		}
+	}
+	if err != nil {
+		log.Panic("failed to dump: ", err)
+	}
+	log.Info("dumping finished in ", time.Since(start), ", acquired ", written, "b")
+}
+
+func checkDumpWireFile(path string) {
+	log.Info("check dump-over-wire file: ", path)
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		log.Error("open: ", err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	_, err = f.Seek(-32, 2)
+	if err != nil {
+		log.Error("seek: ", err)
+		os.Exit(1)
+	}
+	buf := make([]byte, 32)
+	n, err := io.ReadFull(f, buf)
+	if n != 32 {
+		log.Error("read: ", n, " ", err)
+		os.Exit(1)
+	}
+
+	if buf[30] != '\r' || buf[31] != '\n' {
+		log.Errorf("invalid tail: %q", buf)
+		os.Exit(1)
+	}
+
+	if bytes.HasSuffix(buf, []byte("-HALT\r\n")) {
+		log.Errorf("remote reported error, dumping failed")
+		os.Exit(2)
+	}
+
+	idx := bytes.LastIndexByte(buf, ':')
+	if idx == -1 {
+		log.Errorf("invalid tail: %q", buf)
+		os.Exit(1)
+	}
+
+	sz, _ := strconv.ParseInt(string(buf[idx+1:30]), 10, 64)
+	log.Info("reported shard size: ", sz)
+
+	fsz, err := f.Seek(-int64(32-idx), 2)
+	if err != nil {
+		log.Error("seek2: ", err)
+		os.Exit(1)
+	}
+
+	if fsz != sz {
+		log.Errorf("unmatched size: %d and %d", fsz, sz)
+		os.Exit(3)
+	}
+
+	if err := f.Truncate(fsz); err != nil {
+		log.Error("failed to truncate: ", err)
+		os.Exit(4)
+	}
+	log.Info("checking finished")
 }

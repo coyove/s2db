@@ -174,6 +174,29 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			return
 		}
 
+		c := bk.Cursor()
+		do := func(k, dataBuf []byte) error {
+			key := string(k[8:])
+			if opt.LexMatch != "" {
+				m, err := filepath.Match(opt.LexMatch, key)
+				if err != nil {
+					return err
+				}
+				if !m {
+					return nil
+				}
+			}
+			if !opt.CountOnly {
+				p := Pair{Key: key, Score: bytesToFloat(k[:8])}
+				if opt.WithData {
+					p.Data = append([]byte{}, dataBuf...)
+				}
+				pairs = append(pairs, p)
+			}
+			count++
+			return nil
+		}
+
 		startBuf, endBuf := floatToInternalUint64(start.Float), floatToInternalUint64(end.Float)
 		opt.translateOffset(name, bk)
 
@@ -185,49 +208,21 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			endBuf++
 		}
 
-		c := bk.Cursor()
 		k, dataBuf := c.Seek(intToBytes(startBuf))
-
-		limit := opt.getLimit()
-		for i := 0; len(pairs) < limit; i++ {
-			if len(k) < 8 {
-				break
-			}
+		for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
 			x := binary.BigEndian.Uint64(k)
 			if x >= startBuf && x < endBuf {
-				if i >= opt.OffsetStart {
-					if i <= opt.OffsetEnd {
-						key := string(k[8:])
-						if opt.LexMatch != "" {
-							m, err := filepath.Match(opt.LexMatch, key)
-							if err != nil {
-								return nil, 0, err
-							}
-							if !m {
-								k, dataBuf = c.Next()
-								continue
-							}
-						}
-						if !opt.CountOnly {
-							p := Pair{
-								Key:   key,
-								Score: bytesToFloat(k[:8]),
-							}
-							if opt.WithData {
-								p.Data = append([]byte{}, dataBuf...)
-							}
-							pairs = append(pairs, p)
-						}
-						count++
-					} else {
-						break
+				if i >= opt.OffsetStart && i <= opt.OffsetEnd {
+					if err := do(k, dataBuf); err != nil {
+						return nil, 0, err
 					}
 				}
+				k, dataBuf = c.Next()
 			} else {
 				break
 			}
-			k, dataBuf = c.Next()
 		}
+
 		if len(opt.DeleteLog) > 0 {
 			return pairs, count, deletePair(tx, name, pairs, opt.DeleteLog)
 		}

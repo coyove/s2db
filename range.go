@@ -52,23 +52,11 @@ func (s *Server) ZRange(rev bool, name string, start, end int, withData bool) ([
 }
 
 func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
-	var rangeStart, rangeEnd RangeLimit
-	if rev {
-		rangeStart = rangeStart.fromString(end)
-		rangeEnd = rangeEnd.fromString(start)
-	} else {
-		rangeStart = rangeStart.fromString(start)
-		rangeEnd = rangeEnd.fromString(end)
-	}
-	p, _, err := s.runPreparedRangeTx(name, rangeLex(name, rangeStart, rangeEnd, RangeOptions{
-		OffsetStart: 0,
-		OffsetEnd:   math.MaxInt64,
-		LexMatch:    match,
-		Limit:       limit,
+	p, _, err := s.runPreparedRangeTx(name, rangeLex(name, (RangeLimit{}).fromString(start), (RangeLimit{}).fromString(end), RangeOptions{
+		Rev:      rev,
+		LexMatch: match,
+		Limit:    limit,
 	}))
-	if rev {
-		p = reversePairs(p)
-	}
 	if withData {
 		err = s.fillPairsData(name, p)
 	}
@@ -110,49 +98,66 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 			return
 		}
 
-		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
-		opt.translateOffset(name, bk)
-
-		if !start.Inclusive {
-			startBuf = append(startBuf, 0)
-		}
-
-		endFlag := 0
-		if !end.Inclusive {
-			endFlag = -1
-		}
-
 		c := bk.Cursor()
-		k, sc := c.Seek(startBuf)
-
-		limit := opt.getLimit()
-		for i := 0; len(pairs) < limit; i++ {
-			if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
-				if i >= opt.OffsetStart {
-					if i <= opt.OffsetEnd {
-						if opt.LexMatch != "" {
-							m, err := filepath.Match(opt.LexMatch, string(k))
-							if err != nil {
-								return nil, 0, err
-							}
-							if !m {
-								k, sc = c.Next()
-								continue
-							}
-						}
-
-						if !opt.CountOnly {
-							pairs = append(pairs, Pair{Key: string(k), Score: bytesToFloat(sc)})
-						}
-						count++
-					} else {
-						break
-					}
+		do := func(k, sc []byte) error {
+			if opt.LexMatch != "" {
+				m, err := filepath.Match(opt.LexMatch, string(k))
+				if err != nil {
+					return err
 				}
-			} else {
-				break
+				if !m {
+					return nil
+				}
 			}
-			k, sc = c.Next()
+
+			if !opt.CountOnly {
+				pairs = append(pairs, Pair{Key: string(k), Score: bytesToFloat(sc)})
+			}
+			count++
+			return nil
+		}
+
+		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
+		if opt.Rev {
+			endFlag := 0
+			if !end.Inclusive {
+				endFlag = 1
+			}
+			k, sc := c.Seek(startBuf)
+			if start.LexLast {
+				k, sc = c.Last()
+			} else if !start.Inclusive && bytes.Equal(k, startBuf) {
+				k, sc = c.Prev()
+			}
+			for i := 0; len(pairs) < opt.getLimit(); i++ {
+				if len(sc) > 0 && bytes.Compare(k, startBuf) <= 0 && bytes.Compare(k, endBuf) >= endFlag {
+					if err := do(k, sc); err != nil {
+						return nil, 0, err
+					}
+					k, sc = c.Prev()
+				} else {
+					break
+				}
+			}
+		} else {
+			if !start.Inclusive {
+				startBuf = append(startBuf, 0)
+			}
+			endFlag := 0
+			if !end.Inclusive {
+				endFlag = -1
+			}
+			k, sc := c.Seek(startBuf)
+			for i := 0; len(pairs) < opt.getLimit(); i++ {
+				if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
+					if err := do(k, sc); err != nil {
+						return nil, 0, err
+					}
+					k, sc = c.Next()
+				} else {
+					break
+				}
+			}
 		}
 
 		if len(opt.DeleteLog) > 0 {

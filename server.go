@@ -43,7 +43,6 @@ type Server struct {
 	MasterPassword   string
 
 	ServerConfig
-	configMu sync.Mutex
 
 	ln        net.Listener
 	cache     *keyedCache
@@ -66,6 +65,7 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
+		compactLock       sync.Mutex
 		writeWatermark    int64
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
@@ -338,15 +338,18 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
 		case "SET":
-			s.configMu.Lock()
-			defer s.configMu.Unlock()
-			found, err := s.updateConfig(command.Get(2), command.Get(3))
+			found, err := s.updateConfig(command.Get(2), command.Get(3), false)
 			if err != nil {
 				return w.WriteError(err.Error())
 			} else if found {
 				return w.WriteSimpleString("OK")
 			}
 			return w.WriteError("field not found")
+		case "COPY":
+			if err := s.duplicateConfig(command.Get(2)); err != nil {
+				return w.WriteError(err.Error())
+			}
+			return w.WriteSimpleString("OK")
 		case "LOGS":
 			return w.WriteBulkStrings(s.listConfigLogs(10))
 		default:
@@ -425,8 +428,17 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteInt(total)
 	case "COMPACTSHARD":
-		go s.compactShard(atoip(name))
+		shard := atoip(name)
+		if isLocked(&s.db[shard].compactLock) {
+			return w.WriteSimpleString("RUNNING")
+		}
+		go s.compactShard(shard)
 		return w.WriteSimpleString("STARTED")
+	case "REMAPSHARD":
+		if err := s.remapShard(atoip(name), command.Get(2)); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteSimpleString("OK")
 	}
 
 	// Log related commands

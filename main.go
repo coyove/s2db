@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -201,36 +203,7 @@ func main() {
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Add("Content-Type", "text/html")
-			section := r.URL.Query().Get("section")
-			shard := r.URL.Query().Get("shard")
-			w.Write([]byte("<meta charset='utf-8'><style>*{font-family:monospace}</style><h1>" + s.ServerName + "</h1><a href='/debug/pprof'>pprof</a><br><br>"))
-			if shard != "" {
-				start := time.Now()
-				w.Write([]byte("<a href='/'>&laquo; index</a><title>Shard #" + shard + "</title>"))
-				w.Write([]byte("<pre>" + s.shardInfo(atoip(shard)) + "</pre>"))
-				w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
-			} else {
-				for i := 0; i < ShardNum; i++ {
-					w.Write([]byte(fmt.Sprintf("<a href='?shard=%d'>shard #%02d &raquo;</a>&nbsp;", i, i)))
-					if i%4 == 3 {
-						w.Write([]byte("<br>"))
-					}
-				}
-				w.Write([]byte("<br><br>pprof port: <input id=port value='16379'/><br>"))
-				s.slaves.Foreach(func(si *serverInfo) {
-					w.Write([]byte(fmt.Sprintf(`<a href='javascript:location.href="http://%s:"+port.value'>[S] %s (%s)</a>
-                    <a href='javascript:location.href="http://%s:"+port.value+"/debug/pprof"'>pprof</a><br>`,
-						si.RemoteAddr, si.RemoteAddr, si.ServerName, si.RemoteAddr)))
-				})
-				if s.MasterAddr != "" {
-					w.Write([]byte(fmt.Sprintf(`<a href='javascript:location.href="http://%s:"+port.value'>[M] %s (%s)</a>`, s.MasterAddr, s.MasterAddr, s.MasterNameAssert)))
-				}
-				w.Write([]byte("<br>"))
-				w.Write([]byte("<pre>" + s.info(section) + "</pre><title>Server Status</title>"))
-			}
-		})
+		http.HandleFunc("/", webInfo(&s))
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
 		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()
@@ -242,7 +215,7 @@ func main() {
 	if *serverName != "" {
 		old, _ := s.getConfig("servername")
 		log.Infof("update server name from %q to %q", old, *serverName)
-		if _, err := s.updateConfig("servername", *serverName); err != nil {
+		if _, err := s.updateConfig("servername", *serverName, false); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -284,4 +257,79 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
+}
+
+func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s := *ps
+		section := r.URL.Query().Get("section")
+		shard := r.URL.Query().Get("shard")
+		password := r.URL.Query().Get("p")
+
+		w.Header().Add("Content-Type", "text/html")
+		w.Write([]byte("<meta name='viewport' content='width=device-width, initial-scale=1'><meta charset='utf-8'>"))
+		w.Write([]byte("<style>body{line-height:1.5}*{font-family:monospace}pre{white-space:pre-wrap;width:100%}td{padding:0.2em}</style><h1>" + s.ServerName + "</h1>"))
+		if s.Password != "" && s.Password != password {
+			w.Write([]byte("* password required"))
+			return
+		}
+
+		if shard != "" {
+			start := time.Now()
+			w.Write([]byte("<a href='/'>&laquo; index</a><title>Shard #" + shard + "</title>"))
+			w.Write([]byte("<pre>" + s.shardInfo(atoip(shard)) + "</pre>"))
+			w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
+		} else {
+			cpu, disk := getOSUsage()
+			w.Write([]byte("<pre>cpu: " + cpu + "%<br><br>" + disk + "</pre><br>"))
+			w.Write([]byte("golang pprof: <button onclick='location.href=\"/debug/pprof\"'>open</button><br>"))
+			w.Write([]byte("view shard info: <select onchange='location.href=\"?shard=\"+this.value'><option value=''>-</option>"))
+			for i := 0; i < ShardNum; i++ {
+				w.Write([]byte("<option value=" + strconv.Itoa(i) + ">#" + strconv.Itoa(i) + "</option>"))
+			}
+			w.Write([]byte("</select> (performance may degrade)<br>remote pprof port: <input type=number id=port value='16379'/><br>"))
+			w.Write([]byte("<table border=1 style='margin-top:0.5em'><tr><td>role</td><td>address</td><td>name</td></tr>"))
+			const row = `<tr><td>%s</td><td>%s</td><td>%s</td><td><button onclick='location.href="http://%s:"+port.value'>view</button></td></tr>`
+			slavesInfo := s.slavesSection()
+			s.slaves.Foreach(func(si *serverInfo) {
+				w.Write([]byte(fmt.Sprintf(row, "slave", si.RemoteAddr, si.ServerName, si.RemoteAddr)))
+				w.Write([]byte(fmt.Sprintf("<tr><td colspan=4><pre>%s</pre></td></tr>", extractSlaveSections(slavesInfo, si.RemoteAddr))))
+			})
+			if s.MasterAddr != "" {
+				host, _, _ := net.SplitHostPort(s.MasterAddr)
+				w.Write([]byte(fmt.Sprintf(row, "master", host, s.MasterNameAssert, host)))
+			}
+			w.Write([]byte("</table><br><title>Server Status</title>"))
+			w.Write([]byte("<pre>" + s.info(section) + "\n# config\n" + strings.Join(s.listConfig(), "\n") + "</pre>"))
+		}
+	}
+}
+
+func getOSUsage() (cpu, disk string) {
+	buf, _ := exec.Command("ps", "aux").Output()
+	pid := []byte(" " + strconv.Itoa(os.Getpid()) + " ")
+	for _, line := range bytes.Split(buf, []byte("\n")) {
+		if bytes.Contains(line, pid) {
+			line = bytes.TrimSpace(line[bytes.Index(line, pid)+len(pid):])
+			end := bytes.IndexByte(line, ' ')
+			if end == -1 {
+				break
+			}
+			cpu = string(line[:end])
+			break
+		}
+	}
+	buf, _ = exec.Command("df", "-h").Output()
+	disk = string(bytes.TrimSpace(buf))
+	return
+}
+
+func extractSlaveSections(in []string, addr string) string {
+	x := []string{}
+	for _, row := range in {
+		if strings.HasPrefix(row, "slave_"+addr) {
+			x = append(x, row[len(addr)+6:])
+		}
+	}
+	return strings.Join(x, "\n")
 }

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -327,9 +328,11 @@ type RangeLimit struct {
 	Value     string
 	Float     float64
 	Inclusive bool
+	LexLast   bool
 }
 
 type RangeOptions struct {
+	Rev         bool
 	OffsetStart int
 	OffsetEnd   int
 	CountOnly   bool
@@ -348,7 +351,8 @@ func (r RangeLimit) fromString(v string) RangeLimit {
 		r.Value = r.Value[1:]
 		r.Inclusive = false
 	} else if v == "+" {
-		r.Value = "\xff" // TODO
+		r.Value = "\xff"
+		r.LexLast = true
 	} else if v == "-" {
 		r.Value = ""
 	}
@@ -436,7 +440,9 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
 		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
 		"",
-		"# batch",
+	}
+	data = append(data, s.slavesSection()...)
+	data = append(data, "# batch",
 		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
 		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
 		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSv.MeanString()),
@@ -449,9 +455,7 @@ func (s *Server) info(section string) string {
 		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
 		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
 		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
-		"",
-	}
-	data = append(data, s.slavesSection()...)
+		"")
 	if section != "" {
 		for i, r := range data {
 			if strings.HasPrefix(r, "# ") && strings.HasSuffix(r, section) {
@@ -555,4 +559,8 @@ func joinArray(v interface{}) string {
 		p = append(p, fmt.Sprint(rv.Index(i).Interface()))
 	}
 	return strings.Join(p, " ")
+}
+
+func isLocked(m *sync.Mutex) bool {
+	return reflect.ValueOf(m).Elem().FieldByName("state").Int()&1 == 1
 }

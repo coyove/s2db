@@ -22,12 +22,10 @@ import (
 func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	if shard == 0 {
-		s.configMu.Lock()
-		defer s.configMu.Unlock()
-	}
-
 	x := &s.db[shard]
+	x.compactLock.Lock()
+	defer x.compactLock.Unlock()
+
 	path := x.DB.Path()
 	compactPath := path + ".compact"
 	dumpPath := path + ".dump"

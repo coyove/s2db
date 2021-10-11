@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/go-redis/redis/v8"
 	"go.etcd.io/bbolt"
 )
 
@@ -97,11 +102,14 @@ func (s *Server) saveConfig() error {
 	})
 }
 
-func (s *Server) updateConfig(key, value string) (bool, error) {
+func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 	key = strings.ToLower(key)
 	if strings.EqualFold(key, "readonly") {
 		s.ReadOnly, _ = strconv.ParseBool(value)
 		return true, nil
+	}
+	if strings.HasPrefix(key, "shardpath") && !force {
+		return false, fmt.Errorf("shard path cannot be changed directly")
 	}
 	found := false
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
@@ -183,5 +191,90 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *Server) duplicateConfig(remoteAddr string) error {
+	config := &redis.Options{Addr: remoteAddr}
+	if strings.Contains(remoteAddr, "@") {
+		parts := strings.SplitN(remoteAddr, "@", 2)
+		config.Password = parts[0]
+		config.Addr = parts[1]
+	}
+	if strings.EqualFold(remoteAddr, "MASTER") {
+		config.Addr = s.MasterAddr
+		config.Password = s.MasterPassword
+	}
+	rdb := redis.NewClient(config)
+	defer rdb.Close()
+
+	errBuf := bytes.Buffer{}
+	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
+		if strings.HasPrefix(rf.Name, "ShardPath") || rf.Name == "ServerName" {
+			return nil
+		}
+		cmd := redis.NewStringCmd(context.TODO(), "CONFIG", "GET", rf.Name)
+		rdb.Process(context.TODO(), cmd)
+		if cmd.Err() != nil {
+			errBuf.WriteString(fmt.Sprintf("get(%q): %v ", rf.Name, cmd.Err()))
+			return nil
+		}
+		v := cmd.Val()
+		_, err := s.updateConfig(rf.Name, v, false)
+		if err != nil {
+			errBuf.WriteString(fmt.Sprintf("update(%q): %v ", rf.Name, err))
+			return nil
+		}
+		return nil
+	})
+	if errBuf.Len() > 0 {
+		return fmt.Errorf(errBuf.String())
+	}
+	return nil
+}
+
+func (s *Server) remapShard(shard int, newPath string) error {
+	if newPath == "" {
+		return fmt.Errorf("empty new path")
+	}
+
+	os.MkdirAll(newPath, 0777)
+	of, err := os.Create(filepath.Join(newPath, "shard"+strconv.Itoa(shard)))
+	if err != nil {
+		return err
+	}
+
+	x := &s.db[shard]
+	x.compactLock.Lock()
+	defer x.compactLock.Unlock()
+	path := x.Path()
+
+	x.DB.Close()
+	roDB, err := bbolt.Open(path, 0666, bboltReadonlyOptions)
+	if err != nil {
+		of.Close()
+		return err
+	}
+	x.DB = roDB
+
+	if err := roDB.View(func(tx *bbolt.Tx) error {
+		_, err := tx.WriteTo(of)
+		return err
+	}); err != nil {
+		of.Close()
+		return err
+	}
+	of.Close()
+	// Finish dumping shard to the new location
+
+	if _, err := s.updateConfig("ShardPath"+strconv.Itoa(shard), newPath, true); err != nil {
+		return err
+	}
+
+	rwDB, err := bbolt.Open(of.Name(), 0666, bboltOptions)
+	if err != nil {
+		return err
+	}
+	x.DB = rwDB
 	return nil
 }

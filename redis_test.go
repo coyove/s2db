@@ -331,6 +331,19 @@ func TestZSet(t *testing.T) {
 	assertEqual([]string{}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "[elez", Min: "[elex"}).Val())  // \[elez \[elex]
 	assertEqual([]string{}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "(hill", Min: "(omega"}).Val()) //(hill (omega]
 
+	rdb.Del(ctx, "zset")
+	fmt.Println(rdb.ZAdd(ctx, "zset", z(math.Inf(-1), "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(math.Inf(1), "g")).Err())
+	assertEqual([]string{"b", "c"}, rdb.ZRangeByScore(ctx, "zset", &redis.ZRangeBy{Min: "0", Max: "10", Count: 2}).Val())
+	assertEqual([]string{"f", "e"}, rdb.ZRevRangeByScore(ctx, "zset", &redis.ZRangeBy{Max: "10", Min: "0", Count: 2}).Val())
+
+	rdb.Del(ctx, "zset")
+	rdb.ZAdd(ctx, "zset", z(0, "alpha"), z(0, "bar"), z(0, "cool"), z(0, "down"), z(0, "elephant"), z(0, "foo"), z(0, "great"), z(0, "hill"), z(0, "omega"))
+	assertEqual([]string{"alpha", "bar"}, rdb.ZRangeByLex(ctx, "zset", &redis.ZRangeBy{Min: "-", Max: "[cool", Count: 2}).Val())
+	assertEqual([]string{"bar"}, rdb.ZRangeByLex(ctx, "zset", &redis.ZRangeBy{Min: "[bar", Max: "[down", Count: 1}).Val())
+	assertEqual([]string{"bar", "cool", "down"}, rdb.ZRangeByLex(ctx, "zset", &redis.ZRangeBy{Min: "[bar", Max: "[down", Count: 100}).Val())
+	assertEqual([]string{"omega", "hill", "great", "foo", "elephant"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "[d", Count: 5}).Val())
+	assertEqual([]string{"omega", "hill", "great", "foo"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "[d", Count: 4}).Val())
+
 	s.Close()
 	time.Sleep(time.Second)
 }

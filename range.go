@@ -36,12 +36,13 @@ func (s *Server) ZCount(name string, start, end string, match string) (int, erro
 
 func (s *Server) ZRange(rev bool, name string, start, end int, withData bool) ([]Pair, error) {
 	if rev {
-		p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
-			OffsetStart: -end - 1,
-			OffsetEnd:   -start - 1,
+		p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MaxScoreRange, MinScoreRange, RangeOptions{
+			Rev:         true,
+			OffsetStart: start,
+			OffsetEnd:   end,
 			WithData:    withData,
 		}))
-		return reversePairs(p), err
+		return p, err
 	}
 	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
 		OffsetStart: start,
@@ -64,30 +65,22 @@ func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match str
 }
 
 func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match string, limit int, withData bool) (p []Pair, err error) {
-	var rangeStart, rangeEnd RangeLimit
-	var err1, err2 error
-	if rev {
-		rangeStart, err1 = rangeStart.fromFloatString(end)
-		rangeEnd, err2 = rangeEnd.fromFloatString(start)
-	} else {
-		rangeStart, err1 = rangeStart.fromFloatString(start)
-		rangeEnd, err2 = rangeEnd.fromFloatString(end)
+	rangeStart, err := (RangeLimit{}).fromFloatString(start)
+	if err != nil {
+		return nil, err
 	}
-	if err1 != nil {
-		return nil, err1
-	} else if err2 != nil {
-		return nil, err2
+	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
+	if err != nil {
+		return nil, err
 	}
 	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+		Rev:         rev,
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		Limit:       limit,
 		WithData:    withData,
 		LexMatch:    match,
 	}))
-	if rev {
-		reversePairs(p)
-	}
 	return p, err
 }
 
@@ -173,6 +166,7 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 		if bk == nil {
 			return
 		}
+		opt.translateOffset(name, bk)
 
 		c := bk.Cursor()
 		do := func(k, dataBuf []byte) error {
@@ -197,29 +191,53 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			return nil
 		}
 
-		startBuf, endBuf := floatToInternalUint64(start.Float), floatToInternalUint64(end.Float)
-		opt.translateOffset(name, bk)
-
-		if !start.Inclusive {
-			startBuf++
-		}
-
-		if end.Inclusive {
-			endBuf++
-		}
-
-		k, dataBuf := c.Seek(intToBytes(startBuf))
-		for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
-			x := binary.BigEndian.Uint64(k)
-			if x >= startBuf && x < endBuf {
-				if i >= opt.OffsetStart && i <= opt.OffsetEnd {
-					if err := do(k, dataBuf); err != nil {
-						return nil, 0, err
-					}
-				}
-				k, dataBuf = c.Next()
+		startInt, endInt := floatToInternalUint64(start.Float), floatToInternalUint64(end.Float)
+		if opt.Rev {
+			if start.Inclusive {
+				startInt++
+			}
+			if !end.Inclusive {
+				endInt++
+			}
+			k, dataBuf := c.Seek(intToBytes(startInt))
+			if len(k) == 0 {
+				k, dataBuf = c.Last()
 			} else {
-				break
+				k, dataBuf = c.Prev()
+			}
+			for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
+				x := binary.BigEndian.Uint64(k)
+				if x <= startInt && x >= endInt {
+					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
+						if err := do(k, dataBuf); err != nil {
+							return nil, 0, err
+						}
+					}
+					k, dataBuf = c.Prev()
+				} else {
+					break
+				}
+			}
+		} else {
+			if !start.Inclusive {
+				startInt++
+			}
+			if end.Inclusive {
+				endInt++
+			}
+			k, dataBuf := c.Seek(intToBytes(startInt))
+			for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
+				x := binary.BigEndian.Uint64(k)
+				if x >= startInt && x < endInt {
+					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
+						if err := do(k, dataBuf); err != nil {
+							return nil, 0, err
+						}
+					}
+					k, dataBuf = c.Next()
+				} else {
+					break
+				}
 			}
 		}
 

@@ -37,6 +37,7 @@ type ServerConfig struct {
 	FillPercent          int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
 	StopLogPull          int
 	QueueTTLSec          int
+	InspectorSource      string
 	ShardPath0, ShardPath1, ShardPath2, ShardPath3,
 	ShardPath4, ShardPath5, ShardPath6, ShardPath7,
 	ShardPath8, ShardPath9, ShardPath10, ShardPath11,
@@ -194,7 +195,7 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 	return nil
 }
 
-func (s *Server) duplicateConfig(remoteAddr string) error {
+func (s *Server) duplicateConfig(remoteAddr, key string) error {
 	config := &redis.Options{Addr: remoteAddr}
 	if strings.Contains(remoteAddr, "@") {
 		parts := strings.SplitN(remoteAddr, "@", 2)
@@ -211,6 +212,9 @@ func (s *Server) duplicateConfig(remoteAddr string) error {
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
 		if strings.HasPrefix(rf.Name, "ShardPath") || rf.Name == "ServerName" {
+			return nil
+		}
+		if key != "" && !strings.EqualFold(rf.Name, key) {
 			return nil
 		}
 		cmd := redis.NewStringCmd(context.TODO(), "CONFIG", "GET", rf.Name)
@@ -245,8 +249,10 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	}
 
 	x := &s.db[shard]
-	x.compactLock.Lock()
-	defer x.compactLock.Unlock()
+	if v, ok := s.compactLock.lock(int32(shard)); !ok {
+		return fmt.Errorf("previous compaction in the way #%d", v)
+	}
+	defer s.compactLock.unlock()
 	path := x.Path()
 
 	x.DB.Close()

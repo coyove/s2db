@@ -2,17 +2,18 @@ SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replicat
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then
-    MONTH=O
+    MONTH=A
 elif [[ "$MONTH" == "11" ]]; then
-    MONTH=X
+    MONTH=B
 elif [[ "$MONTH" == "12" ]]; then
-    MONTH=Z
+    MONTH=C
 else
     MONTH=$(echo $MONTH | cut -c 2-2)
 fi
 
+COMMIT=$(git log --pretty=format:'%h' -n 1)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 * 900 / 86400 + 100)) 
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 960 + 10)).$COMMIT
 echo 'building' $VERSION
 
 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC

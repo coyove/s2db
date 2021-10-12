@@ -15,7 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -393,7 +393,7 @@ func (o *RangeOptions) getLimit() int {
 	return limit
 }
 
-func (s *Server) info(section string) string {
+func (s *Server) Info(section string) string {
 	sz, dataSize := 0, 0
 	fls := []string{}
 	for i := range s.db {
@@ -561,6 +561,17 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-func isLocked(m *sync.Mutex) bool {
-	return reflect.ValueOf(m).Elem().FieldByName("state").Int()&1 == 1
+type locker int32
+
+func (l *locker) lock(v int32) (int32, bool) {
+	if v == 0 {
+		panic(0)
+	} else if atomic.CompareAndSwapInt32((*int32)(l), 0, v) {
+		return v, true
+	}
+	return atomic.LoadInt32((*int32)(l)), false
+}
+
+func (l *locker) unlock() {
+	atomic.StoreInt32((*int32)(l), 0)
 }

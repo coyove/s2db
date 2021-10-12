@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -46,6 +47,8 @@ var (
 	showVersion = flag.Bool("v", false, "print s2db version")
 	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark   = flag.String("bench", "", "")
+
+	inspector = flag.String("I", "", "inspector script file")
 
 	noFreelistSync = flag.Bool("F", false, "DEBUG flag, do not use")
 )
@@ -229,6 +232,16 @@ func main() {
 		s.MasterNameAssert = parts[0]
 		s.MasterAddr = parts[1]
 	}
+
+	if *inspector != "" {
+		buf, err := ioutil.ReadFile(*inspector)
+		if err != nil {
+			log.Error("invalid inspector file path")
+			return
+		}
+		s.updateConfig("InspectorSource", string(buf), false)
+	}
+
 	s.MasterMode = *masterMode
 	s.MasterPassword = *masterPassword
 	s.ReadOnly = *readOnly || s.MasterAddr != ""
@@ -268,6 +281,7 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 
 		w.Header().Add("Content-Type", "text/html")
 		w.Write([]byte("<meta name='viewport' content='width=device-width, initial-scale=1'><meta charset='utf-8'>"))
+		w.Write([]byte("<title>s2db - " + s.ServerName + "</title>"))
 		w.Write([]byte("<style>body{line-height:1.5}*{font-family:monospace}pre{white-space:pre-wrap;width:100%}td{padding:0.2em}</style><h1>" + s.ServerName + "</h1>"))
 		if s.Password != "" && s.Password != password {
 			w.Write([]byte("* password required"))
@@ -276,7 +290,7 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 
 		if shard != "" {
 			start := time.Now()
-			w.Write([]byte("<a href='/'>&laquo; index</a><title>Shard #" + shard + "</title>"))
+			w.Write([]byte("<a href='/'>&laquo; index</a>"))
 			w.Write([]byte("<pre>" + s.shardInfo(atoip(shard)) + "</pre>"))
 			w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
 		} else {
@@ -299,8 +313,8 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 				host, _, _ := net.SplitHostPort(s.MasterAddr)
 				w.Write([]byte(fmt.Sprintf(row, "master", host, s.MasterNameAssert, host)))
 			}
-			w.Write([]byte("</table><br><title>Server Status</title>"))
-			w.Write([]byte("<pre>" + s.info(section) + "\n# config\n" + strings.Join(s.listConfig(), "\n") + "</pre>"))
+			w.Write([]byte("</table><br>"))
+			w.Write([]byte("<pre>" + s.Info(section) + "\n# config\n" + strings.Join(s.listConfig(), "\n") + "</pre>"))
 		}
 	}
 }

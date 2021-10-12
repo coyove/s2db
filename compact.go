@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/calc"
+	"github.com/coyove/script"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -22,9 +23,13 @@ import (
 func (s *Server) compactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
+	if v, ok := s.compactLock.lock(int32(shard)); !ok {
+		log.Info("STAGE -1: previous compaction in the way #", v)
+		return
+	}
+	defer s.compactLock.unlock()
+
 	x := &s.db[shard]
-	x.compactLock.Lock()
-	defer x.compactLock.Unlock()
 
 	path := x.DB.Path()
 	compactPath := path + ".compact"
@@ -235,6 +240,28 @@ func (s *Server) schedPurge() {
 		}
 
 		time.Sleep(time.Minute)
+	}
+}
+
+func (s *Server) schedInspector() {
+	for ; !s.closed; time.Sleep(time.Minute) {
+		if s.InspectorSource == "" {
+			continue
+		}
+		p, err := script.LoadString(s.InspectorSource, &script.CompileOptions{
+			GlobalKeyValues: map[string]interface{}{"server": s},
+		})
+		if err != nil {
+			log.Error("[inspector] LoadString error: ", err)
+			continue
+		}
+		v, err := p.Run()
+		if err != nil {
+			log.Error("[inspector] Run error: ", err)
+		}
+		if v != script.Nil {
+			log.Info("[inspector] debug result: ", v)
+		}
 	}
 }
 

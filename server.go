@@ -18,6 +18,8 @@ import (
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
 	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/script"
+	_ "github.com/coyove/script/lib"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -41,17 +43,18 @@ type Server struct {
 	MasterAddr       string
 	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
 	MasterPassword   string
-
+	Cookie           script.Value
 	ServerConfig
 
-	ln        net.Listener
-	cache     *keyedCache
-	weakCache *lru.Cache
-	rdb       *redis.Client
-	closed    bool
-	slaves    slaves
-	master    serverInfo
-	dieKey    sched.SchedKey
+	ln          net.Listener
+	cache       *keyedCache
+	weakCache   *lru.Cache
+	rdb         *redis.Client
+	closed      bool
+	slaves      slaves
+	master      serverInfo
+	dieKey      sched.SchedKey
+	compactLock locker
 
 	survey struct {
 		startAt                 time.Time
@@ -65,7 +68,6 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		compactLock       sync.Mutex
 		writeWatermark    int64
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
@@ -185,7 +187,8 @@ func (s *Server) Serve(addr string) error {
 	for i := range s.db {
 		go s.batchWorker(i)
 	}
-	go s.schedPurge() // TODO: close signal
+	go s.schedPurge()     // TODO: close signal
+	go s.schedInspector() // TODO: close signal
 
 	for {
 		conn, err := listener.Accept()
@@ -312,6 +315,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteInt(59 - int64(sec))
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
+	case "EVAL":
+		p, err := script.LoadString(name, &script.CompileOptions{GlobalKeyValues: map[string]interface{}{"server": s}})
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		v, err := p.Run()
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulkString(v.String())
 	case "PING":
 		if name == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
@@ -346,7 +359,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 			return w.WriteError("field not found")
 		case "COPY":
-			if err := s.duplicateConfig(command.Get(2)); err != nil {
+			if err := s.duplicateConfig(command.Get(2), command.Get(3)); err != nil {
 				return w.WriteError(err.Error())
 			}
 			return w.WriteSimpleString("OK")
@@ -392,7 +405,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			hits, size, _ := s.weakCache.GetEx(h)
 			return w.WriteBulkString(fmt.Sprintf("# weakcache%x\r\nsize:%d\r\nhits:%d\r\n", h, size, hits))
 		default:
-			return w.WriteBulkString(s.info(n))
+			return w.WriteBulkString(s.Info(n))
 		}
 	case "DUMPSHARD":
 		if !strings.EqualFold(name, "ALL") {
@@ -429,7 +442,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteInt(total)
 	case "COMPACTSHARD":
 		shard := atoip(name)
-		if isLocked(&s.db[shard].compactLock) {
+		if s.compactLock != 0 {
 			return w.WriteSimpleString("RUNNING")
 		}
 		go s.compactShard(shard)

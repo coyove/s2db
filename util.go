@@ -54,13 +54,6 @@ func intToBytes(i uint64) []byte {
 	return v[:]
 }
 
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
 func bytesToFloatZero(b []byte) float64 {
 	if len(b) != 8 {
 		return 0
@@ -92,12 +85,6 @@ func floatToBytes(v float64) []byte {
 	tmp := [8]byte{}
 	binary.BigEndian.PutUint64(tmp[:8], floatToInternalUint64(v))
 	return tmp[:]
-}
-
-func floatBytesStep(buf []byte, s int64) []byte {
-	v := binary.BigEndian.Uint64(buf)
-	binary.BigEndian.PutUint64(buf, uint64(int64(v)+s))
-	return buf
 }
 
 func hashStr(s string) (h uint64) {
@@ -138,14 +125,6 @@ func atof(a string) (float64, error) {
 
 func atof2(a []byte) (float64, error) {
 	return atof(*(*string)(unsafe.Pointer(&a)))
-}
-
-func atofp(a string) float64 {
-	f, err := atof(a)
-	if err != nil {
-		panic(err)
-	}
-	return f
 }
 
 func atof2p(a []byte) float64 {
@@ -212,14 +191,6 @@ func restCommandsToKeys(i int, command *redisproto.Command) []string {
 		keys = append(keys, string(command.At(i)))
 	}
 	return keys
-}
-
-func reversePairs(in []Pair) []Pair {
-	for i := 0; i < len(in)/2; i++ {
-		j := len(in) - 1 - i
-		in[i], in[j] = in[j], in[i]
-	}
-	return in
 }
 
 func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
@@ -291,23 +262,6 @@ func joinCommand(cmd ...[]byte) []byte {
 	buf.WriteByte(0x93)
 	gob.NewEncoder(buf).Encode(cmd)
 	return buf.Bytes()
-}
-
-func joinCommandSmall(cmd ...[]byte) []byte {
-	buf := &bytes.Buffer{}
-	buf.WriteByte(0x94)
-	for _, c := range cmd {
-		encodeUint(buf, uint(len(c)))
-		buf.Write(c)
-	}
-	return buf.Bytes()
-}
-
-func encodeUint(p *bytes.Buffer, v uint) {
-	p.WriteString("          ") // 10
-	buf := p.Bytes()
-	n := binary.PutUvarint(buf[len(buf)-10:], uint64(v))
-	p.Truncate(p.Len() - 10 + n)
 }
 
 func joinCommandString(cmd ...string) []byte {
@@ -425,6 +379,7 @@ func (s *Server) Info(section string) string {
 		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
+		fmt.Sprintf("configdb_size_mb:%.2f", float64(s.configDB.Size())/1024/1024),
 		fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 		"",
 		"# replication",

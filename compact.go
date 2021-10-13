@@ -15,21 +15,21 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/calc"
-	"github.com/coyove/script"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) compactShard(shard int) {
+func (s *Server) CompactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	if v, ok := s.compactLock.lock(int32(shard)); !ok {
-		log.Info("STAGE -1: previous compaction in the way #", v)
+	if v, ok := s.compactLock.lock(int32(shard) + 1); !ok {
+		log.Info("STAGE -1: previous compaction in the way #", v-1)
 		return
 	}
 	defer s.compactLock.unlock()
 
 	x := &s.db[shard]
+	s.runInspectFunc("compactonstart", shard)
 
 	path := x.DB.Path()
 	compactPath := path + ".compact"
@@ -46,6 +46,7 @@ func (s *Server) compactShard(shard int) {
 	dumpFile, err := os.Create(dumpPath)
 	if err != nil {
 		log.Error("open dump file: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	if err := x.DB.View(func(tx *bbolt.Tx) error {
@@ -54,6 +55,7 @@ func (s *Server) compactShard(shard int) {
 	}); err != nil {
 		dumpFile.Close()
 		log.Error("dump DB: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	dumpSize, _ := dumpFile.Seek(0, 2)
@@ -63,17 +65,20 @@ func (s *Server) compactShard(shard int) {
 	compactDB, err := bbolt.Open(compactPath, 0666, bboltOptions)
 	if err != nil {
 		log.Error("open compactDB: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	dumpDB, err := bbolt.Open(dumpPath, 0666, bboltReadonlyOptions)
 	if err != nil {
 		log.Error("open dumpDB: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
 		dumpDB.Close()
 		compactDB.Close()
 		log.Error("defragdb: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	dumpDB.Close()
@@ -98,15 +103,18 @@ func (s *Server) compactShard(shard int) {
 		ct, err = compactTail()
 		if err != nil {
 			log.Error("get compactDB tail: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		mt, err = s.myLogTail(shard)
 		if err != nil {
 			log.Error("get shard tail: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		if ct > mt {
 			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d", ct, mt)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		if mt-ct <= uint64(s.CompactTxSize) {
@@ -115,10 +123,12 @@ func (s *Server) compactShard(shard int) {
 		logs, err := s.responseLog(shard, ct+1, false)
 		if err != nil {
 			log.Error("responseLog: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
 			log.Error("runLog: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 	}
@@ -133,6 +143,7 @@ func (s *Server) compactShard(shard int) {
 	if err != nil {
 		// Worst case, this shard goes offline completely
 		log.Error("CAUTION: open roDB: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	x.DB = roDB
@@ -142,10 +153,12 @@ func (s *Server) compactShard(shard int) {
 	logs, err := s.responseLog(shard, ct+1, true)
 	if err != nil {
 		log.Error("responseLog: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
 		log.Error("runLog: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), roDB.Size(), compactDB.Size())
@@ -157,11 +170,13 @@ func (s *Server) compactShard(shard int) {
 		log.Info("CAUTION: compact no backup")
 		if err := os.Remove(path); err != nil {
 			log.Error("delete original (online) DB: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 	} else {
 		if err := os.Rename(path, path+".bak"); err != nil {
 			log.Error("backup original (online) DB: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 	}
@@ -170,6 +185,7 @@ func (s *Server) compactShard(shard int) {
 		of, err := os.Create(path)
 		if err != nil {
 			log.Error("open dump file for compactDB: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		defer of.Close()
@@ -179,6 +195,7 @@ func (s *Server) compactShard(shard int) {
 		})
 		if err != nil {
 			log.Error("dump compactDB to location: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		compactDB.Close()
@@ -187,6 +204,7 @@ func (s *Server) compactShard(shard int) {
 		compactDB.Close()
 		if err := os.Rename(compactPath, path); err != nil {
 			log.Error("rename compactDB to online DB: ", err)
+			s.runInspectFunc("compactonerror", err)
 			return
 		}
 	}
@@ -194,11 +212,13 @@ func (s *Server) compactShard(shard int) {
 	db, err := bbolt.Open(path, 0666, bboltOptions)
 	if err != nil {
 		log.Error("open compactDB as online DB: ", err)
+		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	x.DB = db
 
 	log.Info("STAGE 5: swap compacted database to online")
+	s.runInspectFunc("compactonfinish", shard)
 }
 
 func (s *Server) schedPurge() {
@@ -220,7 +240,7 @@ func (s *Server) schedPurge() {
 		for i, ok := range oks {
 			if ok {
 				log.Info("scheduleCompaction(", i, ")")
-				s.compactShard(i)
+				s.CompactShard(i)
 			}
 		}
 
@@ -236,33 +256,22 @@ func (s *Server) schedPurge() {
 		}
 		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
 			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.compactShard(maxFreelistDB)
+			s.CompactShard(maxFreelistDB)
 		}
 
 		time.Sleep(time.Minute)
 	}
 }
 
-func (s *Server) schedInspector() {
-	for ; !s.closed; time.Sleep(time.Minute) {
-		if s.InspectorSource == "" {
-			continue
-		}
-		p, err := script.LoadString(s.InspectorSource, &script.CompileOptions{
-			GlobalKeyValues: map[string]interface{}{"server": s},
-		})
-		if err != nil {
-			log.Error("[inspector] LoadString error: ", err)
-			continue
-		}
-		v, err := p.Run()
-		if err != nil {
-			log.Error("[inspector] Run error: ", err)
-		}
-		if v != script.Nil {
-			log.Info("[inspector] debug result: ", v)
+func (s *Server) startCronjobs() {
+	run := func(d time.Duration) {
+		for ; !s.closed; time.Sleep(d - time.Second) {
+			s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
 		}
 	}
+	go run(time.Second * 30)
+	go run(time.Second * 60)
+	go run(time.Second * 300)
 }
 
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {

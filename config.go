@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/script"
+	"github.com/coyove/script/typ"
 	"github.com/go-redis/redis/v8"
+	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -85,6 +88,25 @@ func (s *Server) saveConfig() error {
 	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
+	script.AddGlobalValue("print", func(env *script.Env) {
+		x := bytes.Buffer{}
+		for _, a := range env.Stack() {
+			x.WriteString(a.String() + " ")
+		}
+		log.Info("[logIO] ", x.String())
+	})
+	p, err := script.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), &script.CompileOptions{
+		GlobalKeyValues: map[string]interface{}{"server": s},
+	})
+	if err != nil {
+		log.Error("saveConfig inspector: ", err)
+	} else if _, err = p.Run(); err != nil {
+		log.Error("saveConfig inspector: ", err)
+	} else {
+		log.Info("opcode: ", p.PrettyCode())
+		s.Inspector = p
+	}
+
 	return s.configDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
@@ -113,11 +135,15 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		return false, fmt.Errorf("shard path cannot be changed directly")
 	}
 	found := false
+	old := s.ServerConfig
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.ToLower(f.Name) != key {
 			return nil
 		}
 		old := fmt.Sprint(fv.Interface())
+		if old == value {
+			return fmt.Errorf("exit")
+		}
 		switch f.Type {
 		case reflect.TypeOf(0):
 			fv.SetInt(int64(atoi(value)))
@@ -135,7 +161,13 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		})
 		return fmt.Errorf("exit")
 	})
-	return found, s.saveConfig()
+	if found {
+		if err := s.saveConfig(); err != nil {
+			s.ServerConfig = old
+			return false, err
+		}
+	}
+	return found, nil
 }
 
 func (s *Server) getConfig(key string) (v string, ok bool) {
@@ -159,6 +191,9 @@ func (s *Server) listConfig() []string {
 		value := fmt.Sprint(fv.Interface())
 		if strings.HasPrefix(name, "shardpath") && value == "" {
 			return nil
+		}
+		if c := strings.Count(value, "\n"); c > 0 {
+			value = strings.TrimSpace(value[:strings.Index(value, "\n")]) + " ...[" + strconv.Itoa(c) + " lines]..."
 		}
 		list = append(list, name+":"+value)
 		return nil
@@ -195,7 +230,7 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 	return nil
 }
 
-func (s *Server) duplicateConfig(remoteAddr, key string) error {
+func (s *Server) CopyConfig(remoteAddr, key string) error {
 	config := &redis.Options{Addr: remoteAddr}
 	if strings.Contains(remoteAddr, "@") {
 		parts := strings.SplitN(remoteAddr, "@", 2)
@@ -249,8 +284,8 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	}
 
 	x := &s.db[shard]
-	if v, ok := s.compactLock.lock(int32(shard)); !ok {
-		return fmt.Errorf("previous compaction in the way #%d", v)
+	if v, ok := s.compactLock.lock(int32(shard) + 1); !ok {
+		return fmt.Errorf("previous compaction in the way #%d", v-1)
 	}
 	defer s.compactLock.unlock()
 	path := x.Path()
@@ -283,4 +318,22 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	}
 	x.DB = rwDB
 	return nil
+}
+
+func (s *Server) runInspectFunc(name string, args ...interface{}) {
+	if s.Inspector == nil {
+		return
+	}
+	defer func() { recover() }()
+	f := s.Inspector.GLoad(name)
+	if f.Type() != typ.Func {
+		return
+	}
+	v, err := f.Func().CallSimple(args...)
+	if err != nil {
+		log.Error("[inspector] run ", name, " err=", err)
+	}
+	if v != script.Nil {
+		log.Info("[inspector] debug ", name, " result=", v)
+	}
 }

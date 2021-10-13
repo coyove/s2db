@@ -2,11 +2,11 @@ SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replicat
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then
-    MONTH=A
+    MONTH=a
 elif [[ "$MONTH" == "11" ]]; then
-    MONTH=B
+    MONTH=b
 elif [[ "$MONTH" == "12" ]]; then
-    MONTH=C
+    MONTH=c
 else
     MONTH=$(echo $MONTH | cut -c 2-2)
 fi

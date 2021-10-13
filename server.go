@@ -43,7 +43,7 @@ type Server struct {
 	MasterAddr       string
 	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
 	MasterPassword   string
-	Cookie           script.Value
+	Inspector        *script.Program
 	ServerConfig
 
 	ln          net.Listener
@@ -184,11 +184,11 @@ func (s *Server) Serve(addr string) error {
 		}
 	}
 
+	s.startCronjobs()
 	for i := range s.db {
 		go s.batchWorker(i)
 	}
-	go s.schedPurge()     // TODO: close signal
-	go s.schedInspector() // TODO: close signal
+	go s.schedPurge() // TODO: close signal
 
 	for {
 		conn, err := listener.Accept()
@@ -359,7 +359,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 			return w.WriteError("field not found")
 		case "COPY":
-			if err := s.duplicateConfig(command.Get(2), command.Get(3)); err != nil {
+			if err := s.CopyConfig(command.Get(2), command.Get(3)); err != nil {
 				return w.WriteError(err.Error())
 			}
 			return w.WriteSimpleString("OK")
@@ -445,7 +445,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if s.compactLock != 0 {
 			return w.WriteSimpleString("RUNNING")
 		}
-		go s.compactShard(shard)
+		go s.CompactShard(shard)
 		return w.WriteSimpleString("STARTED")
 	case "REMAPSHARD":
 		if err := s.remapShard(atoip(name), command.Get(2)); err != nil {
@@ -669,11 +669,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteObjects(next, keys)
 	case "QLEN":
-		return w.WriteIntOrError(s.qLength(name))
+		return w.WriteIntOrError(s.QLength(name))
 	case "QHEAD":
-		return w.WriteIntOrError(s.qHead(name))
+		return w.WriteIntOrError(s.QHead(name))
 	case "QINDEX":
-		v, err := s.qGet(name, int64(atoip(command.Get(2))))
+		v, err := s.QGet(name, int64(atoip(command.Get(2))))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -685,7 +685,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		start := int64(atoip(command.Get(2)))
 		n := int64(atoip(command.Get(3)))
 		withIndexes := command.EqualFold(4, "WITHINDEXES")
-		data, err := s.qScan(name, start, n, withIndexes)
+		data, err := s.QScan(name, start, n, withIndexes)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

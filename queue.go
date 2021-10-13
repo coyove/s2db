@@ -24,7 +24,7 @@ func qLenImpl(bk *bbolt.Bucket) (int64, int64, int64) {
 	return 0, 0, 0
 }
 
-func (s *Server) qLength(name string) (int64, error) {
+func (s *Server) QLength(name string) (int64, error) {
 	var count int64
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("q." + name))
@@ -37,7 +37,7 @@ func (s *Server) qLength(name string) (int64, error) {
 	return count, err
 }
 
-func (s *Server) qScan(name string, start, n int64, withIndexes bool) ([][]byte, error) {
+func (s *Server) QScan(name string, start, n int64, withIndexes bool) ([][]byte, error) {
 	var data [][]byte
 	desc := false
 	if n < 0 {
@@ -89,7 +89,7 @@ func (s *Server) qScan(name string, start, n int64, withIndexes bool) ([][]byte,
 	return data, err
 }
 
-func (s *Server) qGet(name string, idx int64) ([]byte, error) {
+func (s *Server) QGet(name string, idx int64) ([]byte, error) {
 	var data []byte
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("q." + name))
@@ -120,7 +120,7 @@ func (s *Server) qGet(name string, idx int64) ([]byte, error) {
 	return data, err
 }
 
-func (s *Server) qHead(name string) (int64, error) {
+func (s *Server) QHead(name string) (int64, error) {
 	var data int64
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("q." + name))

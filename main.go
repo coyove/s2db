@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net"
 	"net/http"
@@ -47,8 +46,6 @@ var (
 	showVersion = flag.Bool("v", false, "print s2db version")
 	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark   = flag.String("bench", "", "")
-
-	inspector = flag.String("I", "", "inspector script file")
 
 	noFreelistSync = flag.Bool("F", false, "DEBUG flag, do not use")
 )
@@ -233,15 +230,6 @@ func main() {
 		s.MasterAddr = parts[1]
 	}
 
-	if *inspector != "" {
-		buf, err := ioutil.ReadFile(*inspector)
-		if err != nil {
-			log.Error("invalid inspector file path")
-			return
-		}
-		s.updateConfig("InspectorSource", string(buf), false)
-	}
-
 	s.MasterMode = *masterMode
 	s.MasterPassword = *masterPassword
 	s.ReadOnly = *readOnly || s.MasterAddr != ""
@@ -274,19 +262,29 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 
 func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s := *ps
-		section := r.URL.Query().Get("section")
-		shard := r.URL.Query().Get("shard")
-		password := r.URL.Query().Get("p")
+		s, q := *ps, r.URL.Query()
+		section := q.Get("section")
+		shard := q.Get("shard")
+		password := q.Get("p")
+		ins := q.Get("inspector")
+
+		if s.Password != "" && s.Password != password {
+			w.Header().Add("Content-Type", "text/html")
+			w.WriteHeader(400)
+			w.Write([]byte("* password required"))
+			return
+		}
+
+		if ins != "" {
+			s.updateConfig("InspectorSource", ins, false)
+			http.Redirect(w, r, "/?p="+password, 302)
+			return
+		}
 
 		w.Header().Add("Content-Type", "text/html")
 		w.Write([]byte("<meta name='viewport' content='width=device-width, initial-scale=1'><meta charset='utf-8'>"))
 		w.Write([]byte("<title>s2db - " + s.ServerName + "</title>"))
 		w.Write([]byte("<style>body{line-height:1.5}*{font-family:monospace}pre{white-space:pre-wrap;width:100%}td{padding:0.2em}</style><h1>" + s.ServerName + "</h1>"))
-		if s.Password != "" && s.Password != password {
-			w.Write([]byte("* password required"))
-			return
-		}
 
 		if shard != "" {
 			start := time.Now()
@@ -315,6 +313,9 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 			}
 			w.Write([]byte("</table><br>"))
 			w.Write([]byte("<pre>" + s.Info(section) + "\n# config\n" + strings.Join(s.listConfig(), "\n") + "</pre>"))
+			w.Write([]byte("<form method=GET>inspector:<br>"))
+			w.Write([]byte("<textarea style='width:100%' rows=20 name=inspector>" + s.InspectorSource + "</textarea>"))
+			w.Write([]byte("<input type=hidden name=p value='" + s.Password + "'><input type=submit value=save></form>"))
 		}
 	}
 }

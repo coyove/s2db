@@ -18,6 +18,8 @@ github.com/coyove/script v0.0.0-20211014094428-8ca840ce386d h1:xcea23CwnSupjXDpC
 github.com/coyove/script v0.0.0-20211014094428-8ca840ce386d/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
 github.com/coyove/script v0.0.0-20211014110555-9c2877923234 h1:iskPE1va1HKQ7D4+NquEXWMHRTaLeMtb27L6cljHrZY=
 github.com/coyove/script v0.0.0-20211014110555-9c2877923234/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
+github.com/coyove/script v0.0.0-20211014115920-6a942d659e7c h1:dJEvGNZuE7rGuswPB4QAGZZ+ULZTlt1VGZcqjRT89oU=
+github.com/coyove/script v0.0.0-20211014115920-6a942d659e7c/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

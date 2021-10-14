@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -57,7 +56,7 @@ func (s *Server) slavesSection() (data []string) {
 	data = []string{"# slaves", ""}
 	names := []string{}
 	diffs := [ShardNum]int64{}
-	s.slaves.Foreach(func(si *serverInfo) {
+	s.Slaves.Foreach(func(si *serverInfo) {
 		lt := int64(0)
 		for i, t := range si.LogTails {
 			lt += int64(t)
@@ -90,7 +89,7 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 	}()
 
-	for !s.closed {
+	for !s.Closed {
 		ping := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
 		s.rdb.Process(ctx, ping)
 		parts := strings.Split(ping.Val(), " ")
@@ -105,17 +104,17 @@ func (s *Server) requestLogPuller(shard int) {
 			time.Sleep(time.Second * 10)
 			continue
 		}
-		s.master = serverInfo{
+		s.Master = serverInfo{
 			ServerName: parts[1],
 			Version:    parts[2],
 		}
-		if s.master.ServerName == "" {
+		if s.Master.ServerName == "" {
 			log.Error("master responded empty server name")
 			time.Sleep(time.Second * 10)
 			continue
 		}
-		if s.master.ServerName != s.MasterNameAssert {
-			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.master.ServerName)
+		if s.Master.ServerName != s.MasterNameAssert {
+			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
 			break
 		}
 		if s.StopLogPull == 1 {
@@ -159,15 +158,15 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		start := time.Now()
-		names, err := runLog(cmds, s.db[shard].DB, s.FillPercent)
+		names, err := runLog(cmds, s.db[shard].DB)
 		if err != nil {
 			log.Error("bulkload: ", err)
 		} else {
 			for n := range names {
 				s.removeCache(n)
 			}
-			s.survey.batchLatSv.Incr(time.Since(start).Milliseconds())
-			s.survey.batchSizeSv.Incr(int64(len(names)))
+			s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
+			s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		}
 	}
 
@@ -175,7 +174,7 @@ func (s *Server) requestLogPuller(shard int) {
 	s.db[shard].pullerCloseSignal <- true
 }
 
-func runLog(cmds []string, db *bbolt.DB, fillPercent int) (names map[string]bool, err error) {
+func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
 		for _, x := range cmds {
@@ -189,7 +188,7 @@ func runLog(cmds []string, db *bbolt.DB, fillPercent int) (names map[string]bool
 			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 				_, err = parseDel(cmd, name, command)(tx)
 			case "ZADD":
-				_, err = parseZAdd(cmd, name, fillPercent, command)(tx)
+				_, err = parseZAdd(cmd, name, command)(tx)
 			case "ZINCRBY":
 				_, err = parseZIncrBy(cmd, name, command)(tx)
 			case "QAPPEND":
@@ -332,20 +331,4 @@ func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
 	})
 	cb(p)
 	s.q[remoteAddr] = p
-}
-
-func (si *serverInfo) Info(commands [][]byte) (string, error) {
-	_, port, err := net.SplitHostPort(si.ListenAddr)
-	if err != nil {
-		return "", err
-	}
-	rdb := redis.NewClient(&redis.Options{Addr: si.RemoteAddr + ":" + port})
-	args := make([]interface{}, len(commands))
-	for i := range args {
-		args[i] = commands[i]
-	}
-	defer rdb.Close()
-	cmd := redis.NewStringCmd(context.TODO(), args...)
-	rdb.Process(context.TODO(), cmd)
-	return cmd.Result()
 }

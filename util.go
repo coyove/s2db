@@ -286,14 +286,15 @@ type RangeLimit struct {
 }
 
 type RangeOptions struct {
-	Rev         bool
-	OffsetStart int
-	OffsetEnd   int
-	CountOnly   bool
-	WithData    bool
-	DeleteLog   []byte
-	LexMatch    string
-	Limit       int
+	Rev            bool
+	OffsetStart    int
+	OffsetEnd      int
+	CountOnly      bool
+	WithData       bool
+	DeleteLog      []byte
+	LexMatch       string
+	ScoreMatchData string
+	Limit          int
 }
 
 func (r RangeLimit) fromString(v string) RangeLimit {
@@ -358,7 +359,7 @@ func (s *Server) Info(section string) string {
 		sz += int(fi.Size())
 		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()))
 	}
-	dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.configDB.Path()))
+	dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.ConfigDB.Path()))
 	for _, fi := range dataFiles {
 		dataSize += int(fi.Size())
 	}
@@ -368,48 +369,48 @@ func (s *Server) Info(section string) string {
 		fmt.Sprintf("version:%v", Version),
 		fmt.Sprintf("servername:%v", s.ServerName),
 		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
-		fmt.Sprintf("uptime:%v", time.Since(s.survey.startAt)),
+		fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 		fmt.Sprintf("readonly:%v", s.ReadOnly),
-		fmt.Sprintf("connections:%v", s.survey.connections),
+		fmt.Sprintf("connections:%v", s.Survey.Connections),
 		"",
 		"# server_misc",
 		fmt.Sprintf("cwd:%v", cwd),
 		fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
-		fmt.Sprintf("death_scheduler:%v", s.dieKey),
+		fmt.Sprintf("death_scheduler:%v", s.DieKey),
 		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
-		fmt.Sprintf("configdb_size_mb:%.2f", float64(s.configDB.Size())/1024/1024),
+		fmt.Sprintf("configdb_size_mb:%.2f", float64(s.ConfigDB.Size())/1024/1024),
 		fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 		"",
 		"# replication",
 		fmt.Sprintf("master_mode:%v", s.MasterMode),
 		fmt.Sprintf("master:%v", s.MasterAddr),
-		fmt.Sprintf("master_name:%v", s.master.ServerName),
-		fmt.Sprintf("master_version:%v", s.master.Version),
-		fmt.Sprintf("slaves:%v", s.slaves.Len()),
+		fmt.Sprintf("master_name:%v", s.Master.ServerName),
+		fmt.Sprintf("master_version:%v", s.Master.Version),
+		fmt.Sprintf("slaves:%v", s.Slaves.Len()),
 		"",
 		"# sys_rw_stats",
-		fmt.Sprintf("sys_read_qps:%v", s.survey.sysRead),
-		fmt.Sprintf("sys_read_avg_lat:%v", s.survey.sysReadLat.MeanString()),
-		fmt.Sprintf("sys_write_qps:%v", s.survey.sysWrite),
-		fmt.Sprintf("sys_write_avg_lat:%v", s.survey.sysWriteLat.MeanString()),
+		fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead),
+		fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysReadLat.MeanString()),
+		fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite),
+		fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWriteLat.MeanString()),
 		"",
 	}
 	data = append(data, s.slavesSection()...)
 	data = append(data, "# batch",
-		fmt.Sprintf("batch_size:%v", s.survey.batchSize.MeanString()),
-		fmt.Sprintf("batch_lat:%v", s.survey.batchLat.MeanString()),
-		fmt.Sprintf("batch_size_slave:%v", s.survey.batchSizeSv.MeanString()),
-		fmt.Sprintf("batch_lat_slave:%v", s.survey.batchLatSv.MeanString()),
+		fmt.Sprintf("batch_size:%v", s.Survey.BatchSize.MeanString()),
+		fmt.Sprintf("batch_lat:%v", s.Survey.BatchLat.MeanString()),
+		fmt.Sprintf("batch_size_slave:%v", s.Survey.BatchSizeSv.MeanString()),
+		fmt.Sprintf("batch_lat_slave:%v", s.Survey.BatchLatSv.MeanString()),
 		"",
 		"# cache",
-		fmt.Sprintf("cache_hit_qps:%v", s.survey.cache),
-		fmt.Sprintf("cache_obj_count:%v", s.cache.Len()),
-		fmt.Sprintf("cache_size:%v", s.cache.curWeight),
-		fmt.Sprintf("weak_cache_hit_qps:%v", s.survey.weakCache),
-		fmt.Sprintf("weak_cache_obj_count:%v", s.weakCache.Len()),
-		fmt.Sprintf("weak_cache_size:%v", s.weakCache.Weight()),
+		fmt.Sprintf("cache_hit_qps:%v", s.Survey.Cache),
+		fmt.Sprintf("cache_obj_count:%v", s.Cache.Len()),
+		fmt.Sprintf("cache_size:%v", s.Cache.curWeight),
+		fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCache),
+		fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
+		fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
 		"")
 	if section != "" {
 		for i, r := range data {
@@ -460,8 +461,8 @@ func (s *Server) shardInfo(shard int) string {
 		return nil
 	})
 	minTail := uint64(math.MaxUint64)
-	tmp = append(tmp, "", "# slave_log", fmt.Sprintf("slave_queue:%d", len(s.slaves.q)))
-	s.slaves.Foreach(func(si *serverInfo) {
+	tmp = append(tmp, "", "# slave_log", fmt.Sprintf("slave_queue:%d", len(s.Slaves.q)))
+	s.Slaves.Foreach(func(si *serverInfo) {
 		tail := si.LogTails[shard]
 		if tail < minTail {
 			minTail = tail
@@ -490,7 +491,7 @@ func parseSlaveFlag(in *redisproto.Command) string {
 }
 
 func parseDeferFlag(in *redisproto.Command) bool {
-	if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
+	if len(in.Argv) > 2 && bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
 		in.Argv = append(in.Argv[:2], in.Argv[3:]...)
 		return true
 	}

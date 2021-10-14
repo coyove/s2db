@@ -1,3 +1,4 @@
+# go get -u github.com/coyove/script@master
 SRC='main.go util.go server.go cache.go commands.go range.go metrics.go replication.go geo.go preparer.go runner.go compact.go queue.go config.go'
 
 MONTH=$(date -u +%m)
@@ -12,8 +13,9 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
+SCRIPT_COMMIT=$(cat go.mod | grep 'coyove/script' | rev | cut -c1-7 | rev)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 960 + 10)).$COMMIT
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))-${COMMIT}-${SCRIPT_COMMIT}
 echo 'building' $VERSION
 
 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC

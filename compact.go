@@ -22,11 +22,11 @@ import (
 func (s *Server) CompactShard(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	if v, ok := s.compactLock.lock(int32(shard) + 1); !ok {
+	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
 		log.Info("STAGE -1: previous compaction in the way #", v-1)
 		return
 	}
-	defer s.compactLock.unlock()
+	defer s.CompactLock.unlock()
 
 	x := &s.db[shard]
 	s.runInspectFunc("compactonstart", shard)
@@ -126,7 +126,7 @@ func (s *Server) CompactShard(shard int) {
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
-		if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
+		if _, err := runLog(logs, compactDB); err != nil {
 			log.Error("runLog: ", err)
 			s.runInspectFunc("compactonerror", err)
 			return
@@ -156,7 +156,7 @@ func (s *Server) CompactShard(shard int) {
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
-	if _, err := runLog(logs, compactDB, s.FillPercent); err != nil {
+	if _, err := runLog(logs, compactDB); err != nil {
 		log.Error("runLog: ", err)
 		s.runInspectFunc("compactonerror", err)
 		return
@@ -222,7 +222,7 @@ func (s *Server) CompactShard(shard int) {
 }
 
 func (s *Server) schedPurge() {
-	for !s.closed {
+	for !s.Closed {
 		if s.SchedCompactJob == "" {
 			time.Sleep(time.Minute)
 			continue
@@ -265,7 +265,7 @@ func (s *Server) schedPurge() {
 
 func (s *Server) startCronjobs() {
 	run := func(d time.Duration) {
-		for ; !s.closed; time.Sleep(d - time.Second) {
+		for ; !s.Closed; time.Sleep(d - time.Second) {
 			s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
 		}
 	}
@@ -310,7 +310,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	var useSlaveWal bool
 	{
 		var min uint64 = math.MaxUint64
-		s.slaves.Foreach(func(si *serverInfo) {
+		s.Slaves.Foreach(func(si *serverInfo) {
 			if si.LogTails[shard] < min {
 				min = si.LogTails[shard]
 			}

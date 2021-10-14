@@ -12,6 +12,12 @@ github.com/coyove/script v0.0.0-20211012053052-11966f5bd5b6 h1:70SVqqAquRBNXluj6
 github.com/coyove/script v0.0.0-20211012053052-11966f5bd5b6/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
 github.com/coyove/script v0.0.0-20211013031610-2fa26fe6357b h1:7c1eji0MyhxkXfvjQkB5v/6plFK7AqoMKlKMqUYev6Q=
 github.com/coyove/script v0.0.0-20211013031610-2fa26fe6357b/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
+github.com/coyove/script v0.0.0-20211014055531-4b947fd22ac0 h1:FQqcohgvH+fydKfdXsfza9nua1jW1pWiKHt6Kz8AULg=
+github.com/coyove/script v0.0.0-20211014055531-4b947fd22ac0/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
+github.com/coyove/script v0.0.0-20211014094428-8ca840ce386d h1:xcea23CwnSupjXDpCIO8vhg7urEDi6HjzYGViaYtUkA=
+github.com/coyove/script v0.0.0-20211014094428-8ca840ce386d/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
+github.com/coyove/script v0.0.0-20211014110555-9c2877923234 h1:iskPE1va1HKQ7D4+NquEXWMHRTaLeMtb27L6cljHrZY=
+github.com/coyove/script v0.0.0-20211014110555-9c2877923234/go.mod h1:eB8ChGz4kg59bDJVPiwertKxGFQ59te1VAUFImT2RX4=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

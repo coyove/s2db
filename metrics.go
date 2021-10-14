@@ -31,7 +31,7 @@ func (h *bigKeysHeap) Pop() interface{} {
 	return x
 }
 
-func (s *Server) bigKeys(n, shard int) string {
+func (s *Server) BigKeys(n, shard int) []string {
 	if n <= 0 {
 		n = 10
 	}
@@ -59,15 +59,12 @@ func (s *Server) bigKeys(n, shard int) string {
 			})
 		})
 	}
-	x := bytes.NewBufferString("# big_keys\r\n")
+	x := []string{}
 	for h.Len() > 0 {
 		p := heap.Pop(h).(Pair)
-		x.WriteString(strconv.Itoa(int(p.Score)))
-		x.WriteString(":")
-		x.WriteString(p.Key)
-		x.WriteString("\r\n")
+		x = append(x, strconv.Itoa(int(p.Score))+":"+p.Key)
 	}
-	return x.String()
+	return x
 }
 
 const SurveyRange = 900

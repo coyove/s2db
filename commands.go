@@ -25,8 +25,10 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bkWal.Put(intToBytes(id), dd)
 }
 
-func parseZAdd(cmd, name string, fillPercent int, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	var xx, nx, ch, data bool
+	var fillPercent float64
+	var err error
 	var idx = 2
 	for ; ; idx++ {
 		switch strings.ToUpper(command.Get(idx)) {
@@ -41,6 +43,13 @@ func parseZAdd(cmd, name string, fillPercent int, command *redisproto.Command) f
 			continue
 		case "DATA":
 			data = true
+			continue
+		case "FILL":
+			fillPercent, err = atof(command.Get(idx + 1))
+			if err != nil {
+				panic(err)
+			}
+			idx++
 			continue
 		}
 		break

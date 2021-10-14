@@ -131,6 +131,6 @@ func (s *Server) runTasks(tasks []*batchTask, shard int) {
 		}
 	}
 
-	s.survey.batchLat.Incr(time.Since(start).Milliseconds())
-	s.survey.batchSize.Incr(int64(len(tasks)))
+	s.Survey.BatchLat.Incr(time.Since(start).Milliseconds())
+	s.Survey.BatchSize.Incr(int64(len(tasks)))
 }

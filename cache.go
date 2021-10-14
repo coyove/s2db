@@ -55,6 +55,10 @@ func (c *keyedCache) Clear() {
 	c.Unlock()
 }
 
+func (c *keyedCache) Weight() int64 {
+	return c.curWeight
+}
+
 func (c *keyedCache) nextWatermark() int64 {
 	return atomic.AddInt64(&c.watermark, 1)
 }
@@ -159,7 +163,7 @@ func (c *keyedCache) KeyInfo(key string) (ln, size, hits int) {
 }
 
 func (s *Server) removeCache(key string) {
-	c := s.cache
+	c := s.Cache
 	c.Lock()
 	for _, e := range c.keyed[key] {
 		c.remove(e, false)
@@ -199,11 +203,11 @@ func (s *Server) canUpdateCache(key string, wm int64) bool {
 }
 
 func (s *Server) getCache(h [2]uint64) interface{} {
-	v, ok := s.cache.Get(h)
+	v, ok := s.Cache.Get(h)
 	if !ok {
 		return nil
 	}
-	s.survey.cache.Incr(1)
+	s.Survey.Cache.Incr(1)
 	return v.Data
 }
 
@@ -211,12 +215,12 @@ func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
 	if ttl == 0 {
 		return nil
 	}
-	v, ok := s.weakCache.Get(h)
+	v, ok := s.WeakCache.Get(h)
 	if !ok {
 		return nil
 	}
 	if i := v.(*weakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
-		s.survey.weakCache.Incr(1)
+		s.Survey.WeakCache.Incr(1)
 		return i.Data
 	}
 	return nil
@@ -226,7 +230,7 @@ func (s *Server) addCache(watermark int64, key string, h [2]uint64, data interfa
 	if !s.canUpdateCache(key, watermark) {
 		return nil
 	}
-	return s.cache.Add(&cacheItem{
+	return s.Cache.Add(&cacheItem{
 		Key:     key,
 		CmdHash: h,
 		Data:    data,

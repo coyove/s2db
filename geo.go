@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/mmcloughlin/geohash"
 	"github.com/coyove/s2db/redisproto"
+	"github.com/mmcloughlin/geohash"
 	"go.etcd.io/bbolt"
 )
 
@@ -177,7 +177,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		}
 	}
 
-	if v, ok := s.cache.Get(h); ok {
+	if v, ok := s.Cache.Get(h); ok {
 		p = v.Data.([]Pair)
 	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
 		p = x.([]Pair)
@@ -200,7 +200,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		}
 
 		s.addCache(wm, name, h, p)
-		s.weakCache.AddWeight(name, p, int64(sizePairs(p)))
+		s.WeakCache.AddWeight(name, p, int64(sizePairs(p)))
 	}
 
 	if !withHash && !withCoord && !withDist && !withData {

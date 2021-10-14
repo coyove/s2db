@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"unsafe"
 
 	"go.etcd.io/bbolt"
 )
@@ -64,7 +65,7 @@ func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match str
 	return p, err
 }
 
-func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match string, limit int, withData bool) (p []Pair, err error) {
+func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match, matchData string, limit int, withData bool) (p []Pair, err error) {
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
 		return nil, err
@@ -74,12 +75,13 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match s
 		return nil, err
 	}
 	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
-		Rev:         rev,
-		OffsetStart: 0,
-		OffsetEnd:   math.MaxInt64,
-		Limit:       limit,
-		WithData:    withData,
-		LexMatch:    match,
+		Rev:            rev,
+		OffsetStart:    0,
+		OffsetEnd:      math.MaxInt64,
+		Limit:          limit,
+		WithData:       withData,
+		LexMatch:       match,
+		ScoreMatchData: matchData,
 	}))
 	return p, err
 }
@@ -172,12 +174,21 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 		do := func(k, dataBuf []byte) error {
 			key := string(k[8:])
 			if opt.LexMatch != "" {
-				m, err := filepath.Match(opt.LexMatch, key)
-				if err != nil {
+				if m, err := filepath.Match(opt.LexMatch, key); err != nil {
 					return err
-				}
-				if !m {
+				} else if !m {
 					return nil
+				}
+			}
+			if opt.ScoreMatchData != "" {
+				if m, err := filepath.Match(opt.ScoreMatchData, key); err != nil {
+					return err
+				} else if !m {
+					if m, err := filepath.Match(opt.ScoreMatchData, *(*string)(unsafe.Pointer(&dataBuf))); err != nil {
+						return err
+					} else if !m {
+						return nil
+					}
 				}
 			}
 			if !opt.CountOnly {
@@ -284,7 +295,7 @@ func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err err
 	return
 }
 
-func (s *Server) scan(cursor string, match string, shard int, count int) (pairs []Pair, nextCursor string, err error) {
+func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []Pair, nextCursor string, err error) {
 	if count > HardLimit {
 		count = HardLimit
 	}

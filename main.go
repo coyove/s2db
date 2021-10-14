@@ -303,7 +303,7 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("<table border=1 style='margin-top:0.5em'><tr><td>role</td><td>address</td><td>name</td></tr>"))
 			const row = `<tr><td>%s</td><td>%s</td><td>%s</td><td><button onclick='location.href="http://%s:"+port.value'>view</button></td></tr>`
 			slavesInfo := s.slavesSection()
-			s.slaves.Foreach(func(si *serverInfo) {
+			s.Slaves.Foreach(func(si *serverInfo) {
 				w.Write([]byte(fmt.Sprintf(row, "slave", si.RemoteAddr, si.ServerName, si.RemoteAddr)))
 				w.Write([]byte(fmt.Sprintf("<tr><td colspan=4><pre>%s</pre></td></tr>", extractSlaveSections(slavesInfo, si.RemoteAddr))))
 			})

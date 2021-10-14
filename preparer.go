@@ -41,7 +41,7 @@ func prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, e
 	}
 }
 
-func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -52,10 +52,9 @@ func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent int, dd
 			return nil, err
 		}
 
-		if fillPercent > 0 && fillPercent <= 10 {
-			x := float64(fillPercent) / 10
-			bkName.FillPercent = x
-			bkScore.FillPercent = x
+		if fillPercent > 0 && fillPercent < 1 {
+			bkName.FillPercent = fillPercent
+			bkScore.FillPercent = fillPercent
 		}
 
 		added, updated := 0, 0

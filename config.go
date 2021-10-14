@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/script"
 	"github.com/coyove/script/typ"
 	"github.com/go-redis/redis/v8"
@@ -37,7 +39,6 @@ type ServerConfig struct {
 	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
 	CompactRunWait       int // see runTask()
 	CompactFreelistLimit int // compact when freelist is too large
-	FillPercent          int // 1~10 will be translated to 0.1~1.0 and 0 means bbolt default (0.5)
 	StopLogPull          int
 	QueueTTLSec          int
 	InspectorSource      string
@@ -52,7 +53,7 @@ type ServerConfig struct {
 }
 
 func (s *Server) loadConfig() error {
-	if err := s.configDB.Update(func(tx *bbolt.Tx) error {
+	if err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
 			return err
@@ -85,8 +86,8 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 20000)
 
-	s.cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
-	s.weakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
+	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
 	script.AddGlobalValue("print", func(env *script.Env) {
 		x := bytes.Buffer{}
@@ -95,9 +96,7 @@ func (s *Server) saveConfig() error {
 		}
 		log.Info("[logIO] ", x.String())
 	})
-	p, err := script.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), &script.CompileOptions{
-		GlobalKeyValues: map[string]interface{}{"server": s},
-	})
+	p, err := script.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getCompileOptions())
 	if err != nil {
 		log.Error("saveConfig inspector: ", err)
 	} else if _, err = p.Run(); err != nil {
@@ -107,7 +106,7 @@ func (s *Server) saveConfig() error {
 		s.Inspector = p
 	}
 
-	return s.configDB.Update(func(tx *bbolt.Tx) error {
+	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
 		if err != nil {
 			return err
@@ -142,6 +141,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		}
 		old := fmt.Sprint(fv.Interface())
 		if old == value {
+			found = true
 			return fmt.Errorf("exit")
 		}
 		switch f.Type {
@@ -151,7 +151,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 			fv.SetString(value)
 		}
 		found = true
-		s.configDB.Update(func(tx *bbolt.Tx) error {
+		s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 			bk, err := tx.CreateBucketIfNotExists([]byte("_configlog"))
 			if err != nil {
 				return err
@@ -202,7 +202,7 @@ func (s *Server) listConfig() []string {
 }
 
 func (s *Server) listConfigLogs(n int) (logs []string) {
-	s.configDB.View(func(tx *bbolt.Tx) error {
+	s.ConfigDB.View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("_configlog"))
 		if bk == nil {
 			return nil
@@ -230,18 +230,33 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 	return nil
 }
 
-func (s *Server) CopyConfig(remoteAddr, key string) error {
-	config := &redis.Options{Addr: remoteAddr}
-	if strings.Contains(remoteAddr, "@") {
-		parts := strings.SplitN(remoteAddr, "@", 2)
+func (s *Server) getRedis(addr string) *redis.Client {
+	config := &redis.Options{Addr: addr}
+	if addr == "" {
+		config.Addr = *listenAddr
+		config.Password = s.Password
+		return redis.NewClient(config)
+	}
+	si := s.Slaves.Get(addr)
+	if si != nil {
+		_, port, _ := net.SplitHostPort(si.ListenAddr)
+		config.Addr = si.RemoteAddr + ":" + port
+		return redis.NewClient(config)
+	}
+	if strings.Contains(addr, "@") {
+		parts := strings.SplitN(addr, "@", 2)
 		config.Password = parts[0]
 		config.Addr = parts[1]
 	}
-	if strings.EqualFold(remoteAddr, "MASTER") {
+	if strings.EqualFold(addr, "MASTER") {
 		config.Addr = s.MasterAddr
 		config.Password = s.MasterPassword
 	}
-	rdb := redis.NewClient(config)
+	return redis.NewClient(config)
+}
+
+func (s *Server) CopyConfig(remoteAddr, key string) error {
+	rdb := s.getRedis(remoteAddr)
 	defer rdb.Close()
 
 	errBuf := bytes.Buffer{}
@@ -284,10 +299,10 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	}
 
 	x := &s.db[shard]
-	if v, ok := s.compactLock.lock(int32(shard) + 1); !ok {
+	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
 		return fmt.Errorf("previous compaction in the way #%d", v-1)
 	}
-	defer s.compactLock.unlock()
+	defer s.CompactLock.unlock()
 	path := x.Path()
 
 	x.DB.Close()
@@ -335,5 +350,39 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 	}
 	if v != script.Nil {
 		log.Info("[inspector] debug ", name, " result=", v)
+	}
+}
+
+func (s *Server) getCompileOptions() *script.CompileOptions {
+	return &script.CompileOptions{
+		GlobalKeyValues: map[string]interface{}{
+			"server": s,
+			"shardCalc": func(in string) int {
+				return shardIndex(in)
+			},
+			"hashCommands": func(in ...string) [2]uint64 {
+				v := make([][]byte, len(in))
+				for i := range v {
+					v[i] = []byte(in[i])
+				}
+				return hashCommands(&redisproto.Command{Argv: v})
+			},
+			"getPendingUnlinks": func(shard int) []string {
+				v, err := getPendingUnlinks(s.db[shard].DB)
+				if err != nil {
+					panic(err)
+				}
+				return v
+			},
+			"cmd": func(addr string, args ...interface{}) interface{} {
+				rdb := s.getRedis(addr)
+				defer rdb.Close()
+				v, err := rdb.Do(context.TODO(), args...).Result()
+				if err != nil {
+					panic(err)
+				}
+				return v
+			},
+		},
 	}
 }

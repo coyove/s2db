@@ -40,7 +40,6 @@ type ServerConfig struct {
 	CompactRunWait       int // see runTask()
 	CompactFreelistLimit int // compact when freelist is too large
 	StopLogPull          int
-	QueueTTLSec          int
 	InspectorSource      string
 	ShardPath0, ShardPath1, ShardPath2, ShardPath3,
 	ShardPath4, ShardPath5, ShardPath6, ShardPath7,
@@ -351,6 +350,22 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 	if v != script.Nil {
 		log.Info("[inspector] debug ", name, " result=", v)
 	}
+}
+
+func (s *Server) runInspectFuncRet(name string, args ...interface{}) (script.Value, error) {
+	if s.Inspector == nil {
+		return script.Nil, nil
+	}
+	defer func() { recover() }()
+	f := s.Inspector.GLoad(name)
+	if f.Type() != typ.Func {
+		return f, nil
+	}
+	in := make([]script.Value, len(args))
+	for i := range in {
+		in[i] = script.Val(args[i])
+	}
+	return f.Func().Call(in...)
 }
 
 func (s *Server) getCompileOptions() *script.CompileOptions {

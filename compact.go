@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/calc"
+	"github.com/coyove/script/typ"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -341,6 +342,14 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			continue
 		}
 
+		queueTTL := 0
+		if isQueue {
+			res, err := s.runInspectFuncRet("queuettl", nextStr[2:])
+			if err == nil && res.Type() == typ.Number {
+				queueTTL = int(res.Int())
+			}
+		}
+
 		b := tx.Bucket(next)
 		if b == nil {
 			return fmt.Errorf("backend: cannot defrag bucket %q", string(next))
@@ -372,9 +381,9 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			if len(walStartBuf) > 0 && bytes.Compare(k, walStartBuf) < 0 {
 				return nil
 			}
-			if isQueue && len(k) == 16 && s.QueueTTLSec > 0 {
+			if isQueue && len(k) == 16 && queueTTL > 0 {
 				ts := int64(binary.BigEndian.Uint64(k[8:]))
-				if (now-ts)/1e9 > int64(s.QueueTTLSec) {
+				if (now-ts)/1e9 > int64(queueTTL) {
 					return nil
 				}
 			}

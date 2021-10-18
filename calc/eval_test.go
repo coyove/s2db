@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coyove/script"
 	"github.com/mmcloughlin/geohash"
 )
 
@@ -65,5 +66,12 @@ func TestEval(t *testing.T) {
 func BenchmarkEval(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		Eval("HOUR == a + 1h", 'a', 1)
+	}
+}
+
+func BenchmarkScript(b *testing.B) {
+	p, err := script.LoadString("(a + 1)", &script.CompileOptions{GlobalKeyValues: map[string]interface{}{"a": 1}})
+	for i := 0; i < b.N; i++ {
+		script.MustRun(p, err)
 	}
 }

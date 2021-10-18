@@ -401,3 +401,40 @@ func (s *Server) getCompileOptions() *script.CompileOptions {
 		},
 	}
 }
+
+type LocalStorage struct{ db *bbolt.DB }
+
+func (s *Server) LocalStorage() *LocalStorage {
+	return &LocalStorage{db: s.ConfigDB}
+}
+
+func (s *LocalStorage) Get(k string) (v string, err error) {
+	err = s.db.View(func(tx *bbolt.Tx) error {
+		if bk := tx.Bucket([]byte("_local")); bk != nil {
+			v = string(bk.Get([]byte(k)))
+		}
+		return nil
+	})
+	return
+}
+
+func (s *LocalStorage) Set(k string, v interface{}) (err error) {
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		if bk, err := tx.CreateBucketIfNotExists([]byte("_local")); err != nil {
+			return err
+		} else {
+			return bk.Put([]byte(k), []byte(fmt.Sprint(v)))
+		}
+	})
+	return
+}
+
+func (s *LocalStorage) Delete(k string) (err error) {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		if bk := tx.Bucket([]byte("_local")); bk == nil {
+			return nil
+		} else {
+			return bk.Delete([]byte(k))
+		}
+	})
+}

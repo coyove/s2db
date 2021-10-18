@@ -190,6 +190,10 @@ func (s *Server) Serve(addr string) error {
 	}
 	go s.schedPurge() // TODO: close signal
 
+	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
+		s.runInspectFuncRet("compactonresume", atoip(v))
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {

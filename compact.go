@@ -27,7 +27,12 @@ func (s *Server) CompactShard(shard int) {
 		log.Info("STAGE -1: previous compaction in the way #", v-1)
 		return
 	}
-	defer s.CompactLock.unlock()
+
+	s.LocalStorage().Set("compact_lock", shard)
+	defer func() {
+		s.CompactLock.unlock()
+		s.LocalStorage().Delete("compact_lock")
+	}()
 
 	x := &s.db[shard]
 	s.runInspectFunc("compactonstart", shard)

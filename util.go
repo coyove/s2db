@@ -282,7 +282,7 @@ type RangeLimit struct {
 	Value     string
 	Float     float64
 	Inclusive bool
-	LexLast   bool
+	LexEnd    bool
 }
 
 type RangeOptions struct {
@@ -307,7 +307,7 @@ func (r RangeLimit) fromString(v string) RangeLimit {
 		r.Inclusive = false
 	} else if v == "+" {
 		r.Value = "\xff"
-		r.LexLast = true
+		r.LexEnd = true
 	} else if v == "-" {
 		r.Value = ""
 	}

@@ -414,11 +414,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteInt(total)
 	case "COMPACTSHARD":
-		shard := atoip(name)
-		if s.CompactLock != 0 {
-			return w.WriteSimpleString("RUNNING")
+		if err := s.CompactShardAsync(atoip(name)); err != nil {
+			return w.WriteError(err.Error())
 		}
-		go s.CompactShard(shard)
 		return w.WriteSimpleString("STARTED")
 	case "REMAPSHARD":
 		if err := s.remapShard(atoip(name), command.Get(2)); err != nil {

@@ -20,13 +20,24 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) CompactShard(shard int) {
+func (s *Server) CompactShardAsync(shard int) error {
+	out := make(chan int, 1)
+	go s.compactShard(shard, out)
+	if p := <-out; p != shard {
+		return fmt.Errorf("wait previous compaction on shard%d", p)
+	}
+	return nil
+}
+
+func (s *Server) compactShard(shard int, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
 	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
+		out <- int(v - 1)
 		log.Info("STAGE -1: previous compaction in the way #", v-1)
 		return
 	}
+	out <- shard
 
 	s.LocalStorage().Set("compact_lock", shard)
 	defer func() {
@@ -228,6 +239,7 @@ func (s *Server) CompactShard(shard int) {
 }
 
 func (s *Server) schedPurge() {
+	out := make(chan int, 1)
 	for !s.Closed {
 		if s.SchedCompactJob == "" {
 			time.Sleep(time.Minute)
@@ -246,7 +258,8 @@ func (s *Server) schedPurge() {
 		for i, ok := range oks {
 			if ok {
 				log.Info("scheduleCompaction(", i, ")")
-				s.CompactShard(i)
+				s.compactShard(i, out)
+				<-out
 			}
 		}
 
@@ -262,7 +275,8 @@ func (s *Server) schedPurge() {
 		}
 		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
 			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.CompactShard(maxFreelistDB)
+			s.compactShard(maxFreelistDB, out)
+			<-out
 		}
 
 		time.Sleep(time.Minute)
@@ -335,6 +349,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	count := 0
 	total := 0
+	queueDrops := 0
 	for next, _ := c.First(); next != nil; next, _ = c.Next() {
 		nextStr := string(next)
 		if nextStr == "unlink" { // pending unlinks will be cleared during every compaction
@@ -389,6 +404,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			if isQueue && len(k) == 16 && queueTTL > 0 {
 				ts := int64(binary.BigEndian.Uint64(k[8:]))
 				if (now-ts)/1e9 > int64(queueTTL) {
+					queueDrops++
 					return nil
 				}
 			}
@@ -432,6 +448,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		}
 	}
 
+	log.Infof("STAGE 0.3: queue drops: %d", queueDrops)
 	return tmptx.Commit()
 }
 

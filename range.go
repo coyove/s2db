@@ -118,10 +118,17 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 			if !end.Inclusive {
 				endFlag = 1
 			}
+			if start.Inclusive && !start.LexEnd {
+				for i := len(startBuf) - 1; i >= 0; i-- {
+					if startBuf[i]++; startBuf[i] <= 255 {
+						break
+					}
+				}
+			}
 			k, sc := c.Seek(startBuf)
-			if start.LexLast {
+			if len(k) == 0 {
 				k, sc = c.Last()
-			} else if !start.Inclusive && bytes.Equal(k, startBuf) {
+			} else {
 				k, sc = c.Prev()
 			}
 			for i := 0; len(pairs) < opt.getLimit(); i++ {

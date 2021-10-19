@@ -101,7 +101,6 @@ func (s *Server) saveConfig() error {
 	} else if _, err = p.Run(); err != nil {
 		log.Error("saveConfig inspector: ", err)
 	} else {
-		log.Info("opcode: ", p.PrettyCode())
 		s.Inspector = p
 	}
 

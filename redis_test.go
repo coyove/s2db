@@ -321,6 +321,7 @@ func TestZSet(t *testing.T) {
 	assertEqual([]string{"cool"}, rdb.ZRangeByLex(ctx, "zset", &redis.ZRangeBy{Min: "(bar", Max: "(down"}).Val())           // (bar (down]
 	assertEqual([]string{"hill", "omega"}, rdb.ZRangeByLex(ctx, "zset", &redis.ZRangeBy{Min: "(great", Max: "+"}).Val())    // (great +]
 	assertEqual([]string{"bar", "alpha"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "(cool", Min: "-"}).Val())   // (cool -]
+	assertEqual([]string{"bar", "alpha"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "(bas", Min: "-"}).Val())    // (cool -]
 	assertEqual([]string{"cool"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "(down", Min: "(bar"}).Val())        // (down (bar]
 	assertEqual([]string{"omega", "hill"}, rdb.ZRevRangeByLex(ctx, "zset", &redis.ZRangeBy{Max: "+", Min: "(great"}).Val()) // + (great]
 

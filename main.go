@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coyove/script"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -203,7 +204,9 @@ func main() {
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		http.HandleFunc("/", webInfo(&s))
+		sp := uuid()
+		http.HandleFunc("/", webInfo(sp, &s))
+		http.HandleFunc("/"+sp, script.WebREPLHandler(func(code string) (*script.Program, error) { return script.LoadString(code, s.getCompileOptions()) }))
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
 		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()
@@ -260,7 +263,7 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
+func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, q := *ps, r.URL.Query()
 		section := q.Get("section")
@@ -293,6 +296,7 @@ func webInfo(ps **Server) func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
 		} else {
 			cpu, disk := getOSUsage()
+			w.Write([]byte("<button onclick='location.href=\"/" + evalPath + "\"'>open repl</button>"))
 			w.Write([]byte("<pre>cpu: " + cpu + "%<br><br>" + disk + "</pre><br>"))
 			w.Write([]byte("golang pprof: <button onclick='location.href=\"/debug/pprof\"'>open</button><br>"))
 			w.Write([]byte("view shard info: <select onchange='location.href=\"?shard=\"+this.value'><option value=''>-</option>"))

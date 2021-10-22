@@ -512,7 +512,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return w.WriteBulks(data...)
 	case "ZCARD", "ZCARDMATCH":
 		return w.WriteIntOrError(s.ZCard(name, cmd == "ZCARDMATCH"))
-	case "ZCOUNT":
+	case "ZCOUNT", "ZCOUNTBYLEX":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
@@ -521,7 +521,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		// ZCOUNT name start end [MATCH X]
 		match := command.Get(5) // maybe empty
-		c, err := s.ZCount(name, command.Get(2), command.Get(3), match)
+		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", name, command.Get(2), command.Get(3), match)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

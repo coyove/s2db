@@ -16,7 +16,16 @@ var (
 	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
 )
 
-func (s *Server) ZCount(name string, start, end string, match string) (int, error) {
+func (s *Server) ZCount(lex bool, name string, start, end string, match string) (int, error) {
+	if lex {
+		_, c, err := s.runPreparedRangeTx(name, rangeLex(name, (RangeLimit{}).fromString(start), (RangeLimit{}).fromString(end), RangeOptions{
+			OffsetStart: 0,
+			OffsetEnd:   math.MaxInt64,
+			CountOnly:   true,
+			LexMatch:    match,
+		}))
+		return c, err
+	}
 	rangeStart, err := (RangeLimit{}).fromFloatString(start)
 	if err != nil {
 		return 0, err

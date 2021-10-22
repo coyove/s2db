@@ -75,3 +75,10 @@ func BenchmarkScript(b *testing.B) {
 		script.MustRun(p, err)
 	}
 }
+
+func BenchmarkScript2(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		p, err := script.LoadString("(a + 1)", &script.CompileOptions{GlobalKeyValues: map[string]interface{}{"a": 1}})
+		script.MustRun(p, err)
+	}
+}

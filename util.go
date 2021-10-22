@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
+	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -46,6 +47,12 @@ func checkScore(s float64) error {
 		return fmt.Errorf("score is NaN")
 	}
 	return nil
+}
+
+func uuid() string {
+	buf := make([]byte, 16)
+	rand.Read(buf)
+	return hex.EncodeToString(buf)
 }
 
 func intToBytes(i uint64) []byte {

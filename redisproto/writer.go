@@ -88,6 +88,8 @@ func (w *Writer) WriteError(s string) error {
 	if !strings.Contains(s, "NOAUTH") {
 		logrus.Error("redisproto: ", s)
 	}
+	s = strings.Replace(s, "\n", " ", -1)
+	s = strings.Replace(s, "\r", " ", -1)
 	w.Write(subs)
 	w.Write([]byte(s))
 	_, err := w.Write(newLine)

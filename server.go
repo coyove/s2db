@@ -38,8 +38,8 @@ var (
 )
 
 type Server struct {
-	ln  net.Listener
-	rdb *redis.Client
+	ln, lnLocal net.Listener
+	rdb         *redis.Client
 
 	ServerConfig
 	ReadOnly         bool
@@ -48,6 +48,7 @@ type Server struct {
 	MasterAddr       string
 	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
 	MasterPassword   string
+	DataPath         string
 	Inspector        *script.Program
 	DieKey           sched.SchedKey
 	Cache            *keyedCache
@@ -91,6 +92,7 @@ func Open(path string, out chan bool) (*Server, error) {
 	if out != nil {
 		out <- true // indicate the opening process is running normally
 	}
+	x.DataPath = path
 	for i := range x.db {
 		start := time.Now()
 		var shardPath string
@@ -121,6 +123,7 @@ func (s *Server) Close() error {
 	s.Closed = true
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
+	errs <- s.lnLocal.Close()
 	errs <- s.ConfigDB.Close()
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
@@ -132,10 +135,6 @@ func (s *Server) Close() error {
 		go func(i int) {
 			defer wg.Done()
 			db := &s.db[i]
-			if db.NoFreelistSync {
-				db.NoFreelistSync = false
-				db.Update(func(tx *bbolt.Tx) error { return nil })
-			}
 			errs <- db.Close()
 			if s.rdb != nil {
 				<-db.pullerCloseSignal
@@ -169,10 +168,17 @@ func (s *Server) Serve(addr string) error {
 		return err
 	}
 
+	listenerLocal, err := net.Listen("unix", filepath.Join(os.TempDir(), "_s2db_"+strconv.Itoa(int(time.Now().Unix()))+".sock"))
+	if err != nil {
+		log.Error(err)
+		return err
+	}
+
 	s.ln = listener
+	s.lnLocal = listenerLocal
 	s.Survey.StartAt = time.Now()
 
-	log.Info("listening on ", addr)
+	log.Info("listening on ", listener.Addr(), " and ", listenerLocal.Addr())
 	if s.MasterAddr != "" {
 		log.Info("contacting master ", s.MasterAddr)
 		s.rdb = redis.NewClient(&redis.Options{
@@ -194,16 +200,21 @@ func (s *Server) Serve(addr string) error {
 		s.runInspectFuncRet("compactonresume", atoip(v))
 	}
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if !s.Closed {
-				log.Error("accept: ", err)
+	runner := func(ln net.Listener) {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				if !s.Closed {
+					log.Error("accept: ", err)
+				}
+				return
 			}
-			return err
+			go s.handleConnection(conn, conn.RemoteAddr())
 		}
-		go s.handleConnection(conn, conn.RemoteAddr())
 	}
+	go runner(s.ln)
+	go runner(s.lnLocal)
+	select {}
 }
 
 func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) {
@@ -259,7 +270,6 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		isRev       = strings.HasPrefix(cmd, "ZREV")
 		name        = command.Get(1)
 		weak        = parseWeakFlag(command) // weak parsing comes first
-		h           = hashCommands(command)  // then hashCommands
 		wm          = s.Cache.nextWatermark()
 		isReadWrite byte
 	)
@@ -312,11 +322,15 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	// General commands
 	switch cmd {
 	case "DIE":
+		quit := func() {
+			log.Info(s.Close())
+			os.Exit(100)
+		}
 		sec := time.Now().Second()
 		if sec > 58 || strings.EqualFold(name, "now") {
-			log.Panic(s.Close())
+			quit()
 		}
-		s.DieKey.Reschedule(func() { log.Panic(s.Close()) }, time.Duration(59-sec)*time.Second)
+		s.DieKey.Reschedule(quit, time.Duration(59-sec)*time.Second)
 		return w.WriteInt(59 - int64(sec))
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
@@ -328,7 +342,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 			return w.WriteSimpleString(ftoa(v))
 		}
-		p, err := script.LoadString(name, s.getCompileOptions())
+		p, err := script.LoadString(name, s.getCompileOptions(command.Argv[2:]...))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -478,6 +492,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		return s.runPreparedTxAndWrite(name, deferred, parseQAppend(cmd, name, command), w)
 	}
 
+	h := hashCommands(command)
 	// Client space read commands
 	switch cmd {
 	case "ZSCORE":

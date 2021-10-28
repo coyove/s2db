@@ -127,12 +127,11 @@ func (s *Server) requestLogPuller(shard int) {
 		// 	continue
 		// }
 
-	AGAIN:
 		myWalIndex, err := s.myLogTail(shard)
 		if err != nil {
 			if err == bbolt.ErrDatabaseNotOpen {
 				time.Sleep(time.Second * 5)
-				goto AGAIN
+				continue
 			}
 			log.Error("read local log index: ", err)
 			break

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -18,7 +19,35 @@ import (
 	"github.com/coyove/script/typ"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
+	"golang.org/x/time/rate"
 )
+
+// fujiwara/shapeio
+type limitedWriter struct {
+	w       io.Writer
+	limiter *rate.Limiter
+}
+
+func (s *limitedWriter) init(bps float64) *limitedWriter {
+	limit := 1024 * 1024 * 1024 // 1gb
+	s.limiter = rate.NewLimiter(rate.Limit(bps), limit)
+	s.limiter.AllowN(time.Now(), limit)
+	return s
+}
+
+func (s *limitedWriter) Write(p []byte) (int, error) {
+	if s.limiter == nil {
+		return s.w.Write(p)
+	}
+	n, err := s.w.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if err := s.limiter.WaitN(context.TODO(), n); err != nil {
+		return n, err
+	}
+	return n, err
+}
 
 func (s *Server) CompactShardAsync(shard int) error {
 	out := make(chan int, 1)
@@ -67,7 +96,11 @@ func (s *Server) compactShard(shard int, out chan int) {
 		return
 	}
 	if err := x.DB.View(func(tx *bbolt.Tx) error {
-		_, err := tx.WriteTo(dumpFile)
+		w := &limitedWriter{w: dumpFile}
+		if s.CompactFreelistLimit > 0 {
+			w.init(float64(s.CompactDumpSpeed * 1024 * 1024))
+		}
+		_, err := tx.WriteTo(w)
 		return err
 	}); err != nil {
 		dumpFile.Close()

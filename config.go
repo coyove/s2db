@@ -39,6 +39,7 @@ type ServerConfig struct {
 	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
 	CompactRunWait       int // see runTask()
 	CompactFreelistLimit int // compact when freelist is too large
+	CompactDumpSpeed     int // megabytes per second
 	StopLogPull          int
 	InspectorSource      string
 	ShardPath0, ShardPath1, ShardPath2, ShardPath3,
@@ -230,9 +231,9 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 
 func (s *Server) getRedis(addr string) *redis.Client {
 	config := &redis.Options{Addr: addr}
-	if addr == "" {
-		config.Addr = *listenAddr
-		config.Password = s.Password
+	if addr == "" || strings.EqualFold(addr, "local") {
+		config.Network = "unix"
+		config.Addr = s.lnLocal.Addr().String()
 		return redis.NewClient(config)
 	}
 	si := s.Slaves.Get(addr)
@@ -367,10 +368,15 @@ func (s *Server) runInspectFuncRet(name string, args ...interface{}) (script.Val
 	return f.Func().Call(in...)
 }
 
-func (s *Server) getCompileOptions() *script.CompileOptions {
+func (s *Server) getCompileOptions(args ...[]byte) *script.CompileOptions {
+	var a []script.Value
+	for _, arg := range args {
+		a = append(a, script.Bytes(arg))
+	}
 	return &script.CompileOptions{
 		GlobalKeyValues: map[string]interface{}{
 			"server": s,
+			"args":   script.Array(a...),
 			"shardCalc": func(in string) int {
 				return shardIndex(in)
 			},
@@ -393,6 +399,9 @@ func (s *Server) getCompileOptions() *script.CompileOptions {
 				defer rdb.Close()
 				v, err := rdb.Do(context.TODO(), args...).Result()
 				if err != nil {
+					if err == redis.Nil {
+						return nil
+					}
 					panic(err)
 				}
 				return v

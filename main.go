@@ -206,7 +206,10 @@ func main() {
 		}
 		sp := uuid()
 		http.HandleFunc("/", webInfo(sp, &s))
-		http.HandleFunc("/"+sp, script.WebREPLHandler(func(code string) (*script.Program, error) { return script.LoadString(code, s.getCompileOptions()) }))
+		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
+			script.WebREPLHandler(s.getCompileOptions(), func(p *script.Program) {
+			})(w, r)
+		})
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
 		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
 	}()

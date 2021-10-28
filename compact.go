@@ -100,6 +100,7 @@ func (s *Server) compactShard(shard int, out chan int) {
 		if s.CompactFreelistLimit > 0 {
 			w.init(float64(s.CompactDumpSpeed * 1024 * 1024))
 		}
+		tx.WriteFlag = 0x4000
 		_, err := tx.WriteTo(w)
 		return err
 	}); err != nil {

@@ -37,9 +37,7 @@ var (
 	serverName      = flag.String("n", "", "same as: CONFIG SET servername <Name>")
 	dataDir         = flag.String("d", "test", "data directory")
 
-	showLogTail       = flag.String("logtail", "", "")
-	dumpOverWire      = flag.String("dow", "", "")
-	checkDumpOverWire = flag.String("check-dow", "", "")
+	showLogTail = flag.String("logtail", "", "")
 
 	readOnly   = flag.Bool("ro", false, "start server as read-only")
 	masterMode = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
@@ -74,34 +72,6 @@ func main() {
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
 	}))
-
-	if *dumpOverWire != "" {
-		parts := strings.SplitN(*dumpOverWire, "/", 3)
-		if len(parts) != 3 {
-			log.Panic("dump over wire format: server_address/shard/local_path")
-		}
-		addr, path := parts[0], parts[2]
-		if strings.EqualFold(parts[1], "ALL") {
-			os.MkdirAll(path, 0777)
-			for i := 0; i < ShardNum; i++ {
-				requestDumpShardOverWire(addr, filepath.Join(path, "shard"+strconv.Itoa(i)), i)
-			}
-		} else {
-			requestDumpShardOverWire(addr, path, atoip(parts[1]))
-		}
-		return
-	}
-
-	if *checkDumpOverWire != "" {
-		if fi, _ := os.Stat(*checkDumpOverWire); fi != nil && fi.IsDir() {
-			for i := 0; i < ShardNum; i++ {
-				checkDumpWireFile(filepath.Join(*checkDumpOverWire, "shard"+strconv.Itoa(i)))
-			}
-		} else {
-			checkDumpWireFile(*checkDumpOverWire)
-		}
-		return
-	}
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        *listenAddr,

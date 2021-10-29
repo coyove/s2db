@@ -2,13 +2,11 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -119,6 +117,8 @@ func Open(path string, out chan bool) (*Server, error) {
 	return x, nil
 }
 
+func (s *Server) GetDB(shard int) *bbolt.DB { return s.db[shard].DB }
+
 func (s *Server) Close() error {
 	s.Closed = true
 	errs := make(chan error, 100)
@@ -168,7 +168,8 @@ func (s *Server) Serve(addr string) error {
 		return err
 	}
 
-	listenerLocal, err := net.Listen("unix", filepath.Join(os.TempDir(), "_s2db_"+strconv.Itoa(int(time.Now().Unix()))+".sock"))
+	listenerLocal, err := net.Listen("unix", filepath.Join(os.TempDir(),
+		fmt.Sprintf("_s2db_%d_%d.sock", os.Getpid(), time.Now().Unix())))
 	if err != nil {
 		log.Error(err)
 		return err
@@ -297,8 +298,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
-			log.Error(r, string(debug.Stack()))
-			w.WriteError("fatal error: " + fmt.Sprint(r))
+			// log.Error(r, string(debug.Stack()))
+			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(name), r))
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
@@ -395,38 +396,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			return w.WriteBulkString(s.Info(n))
 		}
 	case "DUMPSHARD":
-		if !strings.EqualFold(name, "ALL") {
-			path := command.Get(2)
-			if path == "WIRE" {
-				gw := gzip.NewWriter(w.Conn)
-				var c int64
-				err := s.db[atoip(name)].View(func(tx *bbolt.Tx) error {
-					c, err = tx.WriteTo(gw)
-					return err
-				})
-				if err != nil {
-					log.Error("dump shard over wire: ", err)
-					gw.Write([]byte("-HALT\r\n"))
-				} else {
-					gw.Write([]byte(":" + strconv.Itoa(int(c)) + "\r\n"))
-				}
-				gw.Close()
-				return io.EOF
-			}
-			if path == "" {
-				path = s.db[atoip(name)].DB.Path() + ".bak"
-			}
-			return w.WriteIntOrError(s.db[atoip(name)].DB.Dump(path))
+		path := command.Get(2)
+		if path == "" {
+			path = s.db[atoip(name)].DB.Path() + ".bak"
 		}
-		var total int64
-		for i := range s.db {
-			c, err := s.db[i].DB.Dump(s.db[i].Path() + ".bak")
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			total += c
-		}
-		return w.WriteInt(total)
+		return w.WriteIntOrError(s.db[atoip(name)].DB.Dump(path))
 	case "COMPACTSHARD":
 		if err := s.CompactShardAsync(atoip(name)); err != nil {
 			return w.WriteError(err.Error())

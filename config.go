@@ -39,7 +39,6 @@ type ServerConfig struct {
 	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
 	CompactRunWait       int // see runTask()
 	CompactFreelistLimit int // compact when freelist is too large
-	CompactDumpSpeed     int // megabytes per second
 	StopLogPull          int
 	InspectorSource      string
 	ShardPath0, ShardPath1, ShardPath2, ShardPath3,

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"runtime/debug"
 	"strconv"
 	"time"
@@ -20,6 +21,10 @@ func (s *Server) runPreparedRangeTx(name string, f func(tx *bbolt.Tx) ([]Pair, i
 
 func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
 	t := &batchTask{f: f, out: make(chan interface{}, 1)}
+	if s.Closed {
+		return fmt.Errorf("server closing stage")
+	}
+
 	s.db[shardIndex(name)].batchTx <- t
 	if deferred {
 		s.removeCache(name)

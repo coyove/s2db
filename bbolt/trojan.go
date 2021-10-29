@@ -3,6 +3,7 @@ package bbolt
 import (
 	"bytes"
 	"flag"
+	"os"
 	"strconv"
 	"sync/atomic"
 
@@ -49,6 +50,22 @@ func (b *DB) Size() int64 {
 		return -1
 	}
 	return fi.Size()
+}
+
+func (b *DB) Dump(path string) (int64, error) {
+	dumpFile, err := os.Create(path)
+	if err != nil {
+		return 0, err
+	}
+	defer dumpFile.Close()
+	if err := b.View(func(tx *Tx) error {
+		tx.WriteFlag = 0x4000
+		_, err := tx.WriteTo(dumpFile)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	return dumpFile.Seek(0, 2)
 }
 
 /*	Copyright (c) 2019, Serhat Şevki Dinçer.

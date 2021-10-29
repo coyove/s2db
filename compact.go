@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -19,35 +18,7 @@ import (
 	"github.com/coyove/script/typ"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
-	"golang.org/x/time/rate"
 )
-
-// fujiwara/shapeio
-type limitedWriter struct {
-	w       io.Writer
-	limiter *rate.Limiter
-}
-
-func (s *limitedWriter) init(bps float64) *limitedWriter {
-	limit := 1024 * 1024 * 1024 // 1gb
-	s.limiter = rate.NewLimiter(rate.Limit(bps), limit)
-	s.limiter.AllowN(time.Now(), limit)
-	return s
-}
-
-func (s *limitedWriter) Write(p []byte) (int, error) {
-	if s.limiter == nil {
-		return s.w.Write(p)
-	}
-	n, err := s.w.Write(p)
-	if err != nil {
-		return n, err
-	}
-	if err := s.limiter.WaitN(context.TODO(), n); err != nil {
-		return n, err
-	}
-	return n, err
-}
 
 func (s *Server) CompactShardAsync(shard int) error {
 	out := make(chan int, 1)
@@ -78,8 +49,7 @@ func (s *Server) compactShard(shard int, out chan int) {
 	s.runInspectFunc("compactonstart", shard)
 
 	path := x.DB.Path()
-	compactPath := path + ".compact"
-	dumpPath := path + ".dump"
+	compactPath, dumpPath := path+".compact", path+".dump"
 	if s.CompactTmpDir != "" {
 		compactPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.compact")
 		dumpPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
@@ -89,29 +59,15 @@ func (s *Server) compactShard(shard int, out chan int) {
 
 	// STAGE 1: dump the shard, open a temp database for compaction
 	os.Remove(compactPath)
-	dumpFile, err := os.Create(dumpPath)
+	os.Remove(dumpPath)
+
+	dumpSize, err := x.DB.Dump(dumpPath)
 	if err != nil {
-		log.Error("open dump file: ", err)
-		s.runInspectFunc("compactonerror", err)
-		return
-	}
-	if err := x.DB.View(func(tx *bbolt.Tx) error {
-		w := &limitedWriter{w: dumpFile}
-		if s.CompactFreelistLimit > 0 {
-			w.init(float64(s.CompactDumpSpeed * 1024 * 1024))
-		}
-		tx.WriteFlag = 0x4000
-		_, err := tx.WriteTo(w)
-		return err
-	}); err != nil {
-		dumpFile.Close()
 		log.Error("dump DB: ", err)
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
-	dumpSize, _ := dumpFile.Seek(0, 2)
 	log.Info("STAGE 0: dump finished: ", dumpSize)
-	dumpFile.Close()
 
 	compactDB, err := bbolt.Open(compactPath, 0666, bboltOptions)
 	if err != nil {
@@ -137,21 +93,16 @@ func (s *Server) compactShard(shard int, out chan int) {
 	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, removeDumpErr=%v", compactDB.Size(), removeDumpErr)
 
 	// STAGE 2: for any changes happened during the compaction, write them into compactDB
-	compactTail := func() (tail uint64, err error) {
+	var ct, mt uint64
+	for {
 		err = compactDB.View(func(tx *bbolt.Tx) error {
-			bk := tx.Bucket([]byte("wal"))
-			if bk != nil {
+			if bk := tx.Bucket([]byte("wal")); bk != nil {
 				if k, _ := bk.Cursor().Last(); len(k) == 8 {
-					tail = binary.BigEndian.Uint64(k)
+					ct = binary.BigEndian.Uint64(k)
 				}
 			}
 			return nil
 		})
-		return
-	}
-	var ct, mt uint64
-	for {
-		ct, err = compactTail()
 		if err != nil {
 			log.Error("get compactDB tail: ", err)
 			s.runInspectFunc("compactonerror", err)

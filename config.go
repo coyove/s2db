@@ -35,7 +35,7 @@ type ServerConfig struct {
 	SchedCompactJob      string
 	CompactLogHead       int
 	CompactTxSize        int
-	CompactTmpDir        string
+	CompactDumpTmpDir    string
 	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
 	CompactRunWait       int // see runTask()
 	CompactFreelistLimit int // compact when freelist is too large

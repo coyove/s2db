@@ -416,11 +416,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			if path == "" {
 				path = s.db[atoip(name)].DB.Path() + ".bak"
 			}
-			return w.WriteIntOrError(s.dumpShard(atoip(name), path))
+			return w.WriteIntOrError(s.db[atoip(name)].DB.Dump(path))
 		}
 		var total int64
 		for i := range s.db {
-			c, err := s.dumpShard(i, s.db[i].Path()+".bak")
+			c, err := s.db[i].DB.Dump(s.db[i].Path() + ".bak")
 			if err != nil {
 				return w.WriteError(err.Error())
 			}

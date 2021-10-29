@@ -50,9 +50,8 @@ func (s *Server) compactShard(shard int, out chan int) {
 
 	path := x.DB.Path()
 	compactPath, dumpPath := path+".compact", path+".dump"
-	if s.CompactTmpDir != "" {
-		compactPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.compact")
-		dumpPath = filepath.Join(s.CompactTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
+	if s.ServerConfig.CompactDumpTmpDir != "" {
+		dumpPath = filepath.Join(s.CompactDumpTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
 	}
 
 	log.Info("STAGE 0: begin compaction, compactDB=", compactPath, ", dumpDB=", dumpPath)
@@ -89,21 +88,19 @@ func (s *Server) compactShard(shard int, out chan int) {
 		return
 	}
 	dumpDB.Close()
-	removeDumpErr := os.Remove(dumpPath)
-	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, removeDumpErr=%v", compactDB.Size(), removeDumpErr)
+	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, removeDumpErr=%v", compactDB.Size(), os.Remove(dumpPath))
 
 	// STAGE 2: for any changes happened during the compaction, write them into compactDB
 	var ct, mt uint64
 	for {
-		err = compactDB.View(func(tx *bbolt.Tx) error {
+		if err = compactDB.View(func(tx *bbolt.Tx) error {
 			if bk := tx.Bucket([]byte("wal")); bk != nil {
 				if k, _ := bk.Cursor().Last(); len(k) == 8 {
 					ct = binary.BigEndian.Uint64(k)
 				}
 			}
 			return nil
-		})
-		if err != nil {
+		}); err != nil {
 			log.Error("get compactDB tail: ", err)
 			s.runInspectFunc("compactonerror", err)
 			return
@@ -183,32 +180,11 @@ func (s *Server) compactShard(shard int, out chan int) {
 		}
 	}
 
-	if s.CompactTmpDir != "" {
-		of, err := os.Create(path)
-		if err != nil {
-			log.Error("open dump file for compactDB: ", err)
-			s.runInspectFunc("compactonerror", err)
-			return
-		}
-		defer of.Close()
-		err = compactDB.View(func(tx *bbolt.Tx) error {
-			_, err := tx.WriteTo(of)
-			return err
-		})
-		if err != nil {
-			log.Error("dump compactDB to location: ", err)
-			s.runInspectFunc("compactonerror", err)
-			return
-		}
-		compactDB.Close()
-		os.Remove(compactPath)
-	} else {
-		compactDB.Close()
-		if err := os.Rename(compactPath, path); err != nil {
-			log.Error("rename compactDB to online DB: ", err)
-			s.runInspectFunc("compactonerror", err)
-			return
-		}
+	compactDB.Close()
+	if err := os.Rename(compactPath, path); err != nil {
+		log.Error("rename compactDB to online DB: ", err)
+		s.runInspectFunc("compactonerror", err)
+		return
 	}
 
 	db, err := bbolt.Open(path, 0666, bboltOptions)
@@ -442,20 +418,6 @@ func decUint64(v uint64, d uint64) uint64 {
 		return v - d
 	}
 	return 0
-}
-
-func (s *Server) dumpShard(shard int, path string) (int64, error) {
-	of, err := os.Create(path)
-	if err != nil {
-		return 0, err
-	}
-	defer of.Close()
-	var c int64
-	err = s.db[shard].DB.View(func(tx *bbolt.Tx) error {
-		c, err = tx.WriteTo(of)
-		return err
-	})
-	return c, err
 }
 
 func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {

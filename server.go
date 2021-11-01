@@ -38,6 +38,7 @@ var (
 type Server struct {
 	ln, lnLocal net.Listener
 	rdb         *redis.Client
+	rdbCache    *lru.Cache
 
 	ServerConfig
 	ReadOnly         bool
@@ -47,6 +48,7 @@ type Server struct {
 	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
 	MasterPassword   string
 	DataPath         string
+	RedirectWrites   string
 	Inspector        *script.Program
 	DieKey           sched.SchedKey
 	Cache            *keyedCache
@@ -114,6 +116,7 @@ func Open(path string, out chan bool) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
+	x.rdbCache = lru.NewCache(2)
 	return x, nil
 }
 
@@ -128,6 +131,7 @@ func (s *Server) Close() error {
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
 	}
+	s.rdbCache.Info(func(k lru.Key, v interface{}, a, b int64) { errs <- v.(*redis.Client).Close() })
 
 	wg := sync.WaitGroup{}
 	for i := range s.db {
@@ -283,7 +287,10 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		// UNLINK can be executed on slaves because it's a maintenance command,
 		// but it will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
 		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") {
-			if s.ReadOnly {
+			if s.RedirectWrites != "" {
+				//out := &bytes.Buffer{}
+				//redisproto.NewWriter(out, log.StandardLogger()).WriteBulksSlice(command.Argv)
+			} else if s.ReadOnly {
 				return w.WriteError("server is read-only")
 			} else if s.ServerName == "" {
 				return w.WriteError("server name not set, writes are omitted")

@@ -228,7 +228,13 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 	return nil
 }
 
-func (s *Server) getRedis(addr string) *redis.Client {
+func (s *Server) getRedis(addr string) (cli *redis.Client) {
+	if c, ok := s.rdbCache.Get(addr); ok {
+		cli = c.(*redis.Client)
+		return
+	}
+	defer func() { s.rdbCache.Add(addr, cli) }()
+
 	config := &redis.Options{Addr: addr}
 	if addr == "" || strings.EqualFold(addr, "local") {
 		config.Network = "unix"
@@ -255,7 +261,6 @@ func (s *Server) getRedis(addr string) *redis.Client {
 
 func (s *Server) CopyConfig(remoteAddr, key string) error {
 	rdb := s.getRedis(remoteAddr)
-	defer rdb.Close()
 
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
@@ -395,7 +400,6 @@ func (s *Server) getCompileOptions(args ...[]byte) *script.CompileOptions {
 			},
 			"cmd": func(addr string, args ...interface{}) interface{} {
 				rdb := s.getRedis(addr)
-				defer rdb.Close()
 				v, err := rdb.Do(context.TODO(), args...).Result()
 				if err != nil {
 					if err == redis.Nil {

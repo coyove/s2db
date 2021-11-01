@@ -65,6 +65,14 @@ func (c *Command) IsLast() bool {
 	return c.last
 }
 
+func (c *Command) Args() []interface{} {
+	a := make([]interface{}, len(c.Argv))
+	for i := range c.Argv {
+		a[i] = c.Argv[i]
+	}
+	return a
+}
+
 func (c *Command) String() string {
 	if len(c.Argv) == 0 {
 		return "<empty command>"

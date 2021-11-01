@@ -88,7 +88,7 @@ func (s *Server) saveConfig() error {
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	script.AddGlobalValue("print", func(env *script.Env) {
+	script.AddGlobalValue("log", func(env *script.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
 			x.WriteString(a.String() + " ")

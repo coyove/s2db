@@ -89,6 +89,14 @@ func (s *Survey) _decr(x uint64) uint64 {
 	return x
 }
 
+func (s *Survey) _incr(x uint64) uint64 {
+	x++
+	if x >= SurveyRange {
+		return 0
+	}
+	return x
+}
+
 func (s *Survey) dotick() {
 	idx, _ := s._i()
 	next := (idx + 1) % SurveyRange
@@ -135,7 +143,7 @@ func (s Survey) QPS() (q1, q5, q15 float64) {
 			sec = append(sec, 0)
 		}
 		idx = s._decr(idx)
-		if idx == startIdx+1 {
+		if idx == s._incr(startIdx) {
 			break
 		}
 	}
@@ -171,7 +179,7 @@ func (s Survey) Mean() (q1, q5, q15 float64) {
 			q5 = total / count
 		}
 		idx = s._decr(idx)
-		if idx == startIdx+1 {
+		if idx == s._incr(startIdx) {
 			break
 		}
 	}

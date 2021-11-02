@@ -402,6 +402,9 @@ func (s *Server) Info(section string) string {
 		fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysReadLat.MeanString()),
 		fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite),
 		fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWriteLat.MeanString()),
+		fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
+		fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy),
+		fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.ProxyLat.MeanString()),
 		"",
 	}
 	data = append(data, s.slavesSection()...)
@@ -479,6 +482,29 @@ func (s *Server) shardInfo(shard int) string {
 	tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
 	tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
 	return strings.Join(tmp, "\r\n") + "\r\n"
+}
+
+func (s *Server) WaitFirstSlaveCatchUp(timeout float64) (*serverInfo, error) {
+	_, mine, _, err := s.myLogTails()
+	if err != nil {
+		return nil, err
+	}
+	for start := time.Now(); time.Since(start).Seconds() < timeout; {
+		var first *serverInfo
+		s.Slaves.Foreach(func(si *serverInfo) {
+			var total uint64
+			for _, v := range si.LogTails {
+				total += v
+			}
+			if total == mine {
+				first = si
+			}
+		})
+		if first != nil {
+			return first, nil
+		}
+	}
+	return nil, nil
 }
 
 func ifZero(v *int, v2 int) {

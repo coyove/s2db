@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strings"
 
 	"github.com/sirupsen/logrus"
@@ -101,6 +102,17 @@ func (w *Writer) WriteIntOrError(v int64, err error) error {
 		return w.WriteError(err.Error())
 	}
 	return w.WriteInt(v)
+}
+
+func (w *Writer) WriteObject(v interface{}) error {
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return w.WriteInt(rv.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return w.WriteInt(int64(rv.Uint()))
+	default:
+		return w.WriteBulkString(rv.String())
+	}
 }
 
 func (w *Writer) WriteObjects(objs ...interface{}) error {

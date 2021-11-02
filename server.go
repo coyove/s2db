@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -61,10 +62,12 @@ type Server struct {
 		StartAt                 time.Time
 		Connections             int64
 		SysRead, SysWrite       Survey
+		SysWriteDiscards        Survey
 		SysReadLat, SysWriteLat Survey
 		Cache, WeakCache        Survey
 		BatchSize, BatchLat     Survey
 		BatchSizeSv, BatchLatSv Survey
+		Proxy, ProxyLat         Survey
 	}
 
 	db [ShardNum]struct {
@@ -288,10 +291,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		// but it will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
 		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") {
 			if s.RedirectWrites != "" {
-				//out := &bytes.Buffer{}
-				//redisproto.NewWriter(out, log.StandardLogger()).WriteBulksSlice(command.Argv)
+				start := time.Now()
+				v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
+				s.Survey.Proxy.Incr(1)
+				s.Survey.ProxyLat.Incr(int64(time.Since(start).Milliseconds()))
+				if err != nil {
+					return w.WriteError(err.Error())
+				}
+				return w.WriteObject(v)
 			} else if s.ReadOnly {
-				return w.WriteError("server is read-only")
+				return w.WriteError("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
 			} else if s.ServerName == "" {
 				return w.WriteError("server name not set, writes are omitted")
 			}

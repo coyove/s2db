@@ -10,6 +10,8 @@ github.com/coyove/common v0.0.0-20210601082815-1e7f2ca0bb84 h1:mGg/OgoAZ3dCq1QsR
 github.com/coyove/common v0.0.0-20210601082815-1e7f2ca0bb84/go.mod h1:bIbVAcnjT5l9qn1415bnkVhdoNNoFeObP4fhbrLmryE=
 github.com/coyove/script v0.0.0-20211027075731-977abb6ee810 h1:oUvS7KXZ8jmLvJEnjHbnSiy07vIX+Ct/RDO1JQbGJ8o=
 github.com/coyove/script v0.0.0-20211027075731-977abb6ee810/go.mod h1:xJ5HiM+BCfI7uC4ZJDy+EaIcVrbY7byYSUw6S1K5bkY=
+github.com/coyove/script v0.0.0-20211102055722-62a2b4985eb9 h1:CilLWzEsUdX/vph4owmOfCbZYoG8AWYr6q/qfXMgAD0=
+github.com/coyove/script v0.0.0-20211102055722-62a2b4985eb9/go.mod h1:xJ5HiM+BCfI7uC4ZJDy+EaIcVrbY7byYSUw6S1K5bkY=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -56,6 +58,8 @@ github.com/stretchr/testify v1.6.1 h1:hDPOHmpOpP40lSULcqw7IrRb/u7w6RpDC9399XyoNd
 github.com/stretchr/testify v1.6.1/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
 github.com/tidwall/gjson v1.10.2 h1:APbLGOM0rrEkd8WBw9C24nllro4ajFuJu0Sc9hRz8Bo=
 github.com/tidwall/gjson v1.10.2/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
+github.com/tidwall/gjson v1.11.0 h1:C16pk7tQNiH6VlCrtIXL1w8GaOsi1X3W8KDkE1BuYd4=
+github.com/tidwall/gjson v1.11.0/go.mod h1:/wbyibRr2FHMks5tjHJ5F8dMZh3AcwJEMf5vlfC0lxk=
 github.com/tidwall/match v1.1.1 h1:+Ho715JplO36QYgwN9PGYNhgZvoUSc9X2c80KVTi+GA=
 github.com/tidwall/match v1.1.1/go.mod h1:eRSPERbgtNPcGhD8UCthc6PmLEQXEWd3PRB5JTxsfmM=
 github.com/tidwall/pretty v1.2.0 h1:RWIZEg2iJ8/g6fDDYzMpobmaoGh5OLl4AXtGUGPcqCs=

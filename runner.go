@@ -126,6 +126,7 @@ func (s *Server) runTasks(tasks []*batchTask, shard int) {
 		return nil
 	})
 	if err != nil {
+		s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
 		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
 	}
 	for i, t := range tasks {

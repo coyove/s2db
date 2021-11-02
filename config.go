@@ -124,10 +124,6 @@ func (s *Server) saveConfig() error {
 
 func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 	key = strings.ToLower(key)
-	if strings.EqualFold(key, "readonly") {
-		s.ReadOnly, _ = strconv.ParseBool(value)
-		return true, nil
-	}
 	if strings.HasPrefix(key, "shardpath") && !force {
 		return false, fmt.Errorf("shard path cannot be changed directly")
 	}

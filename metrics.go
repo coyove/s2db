@@ -132,6 +132,10 @@ func (s Survey) MeanString() string {
 	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
 }
 
+func (s Survey) GoString() string {
+	return "qps: " + s.String() + " mean: " + s.MeanString()
+}
+
 func (s Survey) QPS() (q1, q5, q15 float64) {
 	idx, ts := s._i()
 	sec := []int64{}

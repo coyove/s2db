@@ -339,11 +339,11 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 		return
 	}
 	defer func() { recover() }()
-	f := s.Inspector.GLoad(name)
+	f, _ := s.Inspector.Get(name)
 	if f.Type() != typ.Func {
 		return
 	}
-	v, err := f.Func().CallSimple(args...)
+	v, err := f.Func().CallVal(args...)
 	if err != nil {
 		log.Error("[inspector] run ", name, " err=", err)
 	}
@@ -357,7 +357,7 @@ func (s *Server) runInspectFuncRet(name string, args ...interface{}) (script.Val
 		return script.Nil, nil
 	}
 	defer func() { recover() }()
-	f := s.Inspector.GLoad(name)
+	f, _ := s.Inspector.Get(name)
 	if f.Type() != typ.Func {
 		return f, nil
 	}

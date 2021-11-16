@@ -364,7 +364,7 @@ func (s *Server) Info(section string) string {
 			panic(err)
 		}
 		sz += int(fi.Size())
-		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()))
+		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
 	}
 	dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.ConfigDB.Path()))
 	for _, fi := range dataFiles {

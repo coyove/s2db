@@ -13,7 +13,7 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
-SCRIPT_COMMIT=$(cat go.mod | grep 'coyove/script' | rev | cut -c1-7 | rev)
+SCRIPT_COMMIT=$(cat go.mod | grep 'coyove/script' | rev | cut -c5-12 | rev)
 VERSION=$(($(date -u +%y)-20))
 VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))-${COMMIT}-${SCRIPT_COMMIT}
 echo 'building' $VERSION

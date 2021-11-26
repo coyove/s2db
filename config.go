@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -126,6 +127,9 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 	key = strings.ToLower(key)
 	if strings.HasPrefix(key, "shardpath") && !force {
 		return false, fmt.Errorf("shard path cannot be changed directly")
+	}
+	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
+		return false, fmt.Errorf("invalid char in server name")
 	}
 	found := false
 	old := s.ServerConfig

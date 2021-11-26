@@ -2,6 +2,8 @@ package bbolt
 
 import (
 	"unsafe"
+
+	"github.com/sirupsen/logrus"
 )
 
 // hashmapFreeCount returns count of free pages(hashmap version)
@@ -91,14 +93,32 @@ func (f *freelist) hashmapGetFreePageIDs() []pgid {
 
 // hashmapMergeSpans try to merge list of pages(represented by pgids) with existing spans
 func (f *freelist) hashmapMergeSpans(ids pgids) {
+	noMoreNewSpans := false
+	if *bboltLimitFreeCountSize > 0 && len(ids) > 0 {
+		if fcnt := f.free_count() * int(unsafe.Sizeof(pgid(0))); fcnt > *bboltLimitFreeCountSize*1024 {
+			noMoreNewSpans = true
+		}
+	}
+
+	drops := 0
 	for _, id := range ids {
 		// try to see if we can merge and update
-		f.mergeWithExistingSpan(id)
+		if !f.mergeWithExistingSpan(id, noMoreNewSpans) {
+			drops++
+		}
+	}
+
+	if drops > 0 {
+		path := ""
+		if f.db != nil {
+			path = f.db.path
+		}
+		logrus.Infof("[MergeSpans] %q: drop %d ids out of %d due to limit: %d", path, drops, len(ids), *bboltLimitFreeCountSize*1024)
 	}
 }
 
 // mergeWithExistingSpan merges pid to the existing free spans, try to merge it backward and forward
-func (f *freelist) mergeWithExistingSpan(pid pgid) {
+func (f *freelist) mergeWithExistingSpan(pid pgid, noMoreNewSpans bool) bool {
 	prev := pid - 1
 	next := pid + 1
 
@@ -122,7 +142,14 @@ func (f *freelist) mergeWithExistingSpan(pid pgid) {
 		newSize += nextSize
 	}
 
+	if !mergeWithNext && !mergeWithPrev {
+		if noMoreNewSpans {
+			return false
+		}
+	}
+
 	f.addSpan(newStart, newSize)
+	return true
 }
 
 func (f *freelist) addSpan(start pgid, size uint64) {

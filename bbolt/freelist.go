@@ -20,6 +20,7 @@ type pidSet map[pgid]struct{}
 // freelist represents a list of all pages that are available for allocation.
 // It also tracks pages that have been freed but are still in use by open transactions.
 type freelist struct {
+	db             *DB
 	freelistType   FreelistType                // freelist type
 	ids            []pgid                      // all free and available free page ids.
 	allocs         map[pgid]txid               // mapping of txid that allocated a pgid.
@@ -36,8 +37,9 @@ type freelist struct {
 }
 
 // newFreelist returns an empty, initialized freelist.
-func newFreelist(freelistType FreelistType) *freelist {
+func newFreelist(db *DB, freelistType FreelistType) *freelist {
 	f := &freelist{
+		db:           db,
 		freelistType: freelistType,
 		allocs:       make(map[pgid]txid),
 		pending:      make(map[txid]*txPending),

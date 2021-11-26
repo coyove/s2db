@@ -316,7 +316,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 // concurrent accesses being made to the freelist.
 func (db *DB) loadFreelist() {
 	db.freelistLoad.Do(func() {
-		db.freelist = newFreelist(db.FreelistType)
+		db.freelist = newFreelist(db, db.FreelistType)
 		if !db.hasSyncedFreelist() {
 			// Reconstruct free list by scanning the DB.
 			db.freelist.readIDs(db.freepages())

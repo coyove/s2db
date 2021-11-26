@@ -406,7 +406,7 @@ func Test_freelist_mergeWithExist(t *testing.T) {
 		}
 		f.readIDs(tt.ids)
 
-		f.mergeWithExistingSpan(tt.pgid)
+		f.mergeWithExistingSpan(tt.pgid, false)
 
 		if got := f.getFreePageIDs(); !reflect.DeepEqual(tt.want, got) {
 			t.Fatalf("name %s; exp=%v; got=%v", tt.name, tt.want, got)
@@ -430,5 +430,5 @@ func newTestFreelist() *freelist {
 		freelistType = FreelistMapType
 	}
 
-	return newFreelist(freelistType)
+	return newFreelist(nil, freelistType)
 }

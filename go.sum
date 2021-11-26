@@ -12,6 +12,8 @@ github.com/coyove/script v0.0.0-20211102055722-62a2b4985eb9 h1:CilLWzEsUdX/vph4o
 github.com/coyove/script v0.0.0-20211102055722-62a2b4985eb9/go.mod h1:xJ5HiM+BCfI7uC4ZJDy+EaIcVrbY7byYSUw6S1K5bkY=
 github.com/coyove/script v0.0.0-20211116113200-f63e336a9e4d h1:enA1czk51gsP8ls9gUDMfmr4ymc3E3V+/Se3CFtKxp0=
 github.com/coyove/script v0.0.0-20211116113200-f63e336a9e4d/go.mod h1:3xjyCJJWppboxO51LJiaf4UpqYitDJEcknRMOI+BwHA=
+github.com/coyove/script v0.0.0-20211117063405-15b16c4d0ba7 h1:FzQJnRoCF15CHJpny1HSo3rJdUgo9pTNS4wH6D+HrMs=
+github.com/coyove/script v0.0.0-20211117063405-15b16c4d0ba7/go.mod h1:3xjyCJJWppboxO51LJiaf4UpqYitDJEcknRMOI+BwHA=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

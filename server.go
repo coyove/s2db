@@ -16,9 +16,9 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/common/sched"
+	"github.com/coyove/nj"
+	_ "github.com/coyove/nj/lib"
 	"github.com/coyove/s2db/redisproto"
-	"github.com/coyove/script"
-	_ "github.com/coyove/script/lib"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -50,7 +50,7 @@ type Server struct {
 	MasterPassword   string
 	DataPath         string
 	RedirectWrites   string
-	Inspector        *script.Program
+	Inspector        *nj.Program
 	DieKey           sched.SchedKey
 	Cache            *keyedCache
 	WeakCache        *lru.Cache
@@ -359,7 +359,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			}
 			return w.WriteSimpleString(ftoa(v))
 		}
-		p, err := script.LoadString(name, s.getCompileOptions(command.Argv[2:]...))
+		p, err := nj.LoadString(name, s.getCompileOptions(command.Argv[2:]...))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

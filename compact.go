@@ -11,8 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coyove/s2db/calc"
-	"github.com/coyove/script/typ"
+	"github.com/coyove/nj/typ"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -199,25 +198,43 @@ func (s *Server) compactShard(shard int, out chan int) {
 func (s *Server) schedPurge() {
 	out := make(chan int, 1)
 	for !s.Closed {
-		if s.SchedCompactJob == "" {
-			time.Sleep(time.Minute)
-			continue
-		}
-
-		oks := [ShardNum]bool{}
-		for i := 0; i < ShardNum; i++ {
-			ok, err := calc.Eval(s.SchedCompactJob, 's', float64(i))
-			if err != nil {
-				log.Error("scheduled purgelog invalid job string: ", err)
-			} else if ok != 0 {
-				oks[i] = true
+		now := time.Now().UTC()
+		if s.CompactJobType == 0 { // disabled
+		} else if 100 <= s.CompactJobType && s.CompactJobType <= 123 { // start at exact hour per day
+			if now.Hour() == s.CompactJobType-100 {
+				key := "last_compact_1xx_ts"
+				if last, _ := s.LocalStorage().GetInt64(key); now.Unix()-last < 86400 {
+					log.Info("last_compact_1xx_ts: skipped")
+				} else {
+					for i := 0; i < ShardNum; i++ {
+						log.Info("scheduleCompaction(", i, ")")
+						s.compactShard(i, out)
+						<-out
+					}
+					log.Info("update last_compact_1xx_ts: ", s.LocalStorage().Set(key, time.Now().Unix()))
+				}
 			}
-		}
-		for i, ok := range oks {
-			if ok {
-				log.Info("scheduleCompaction(", i, ")")
-				s.compactShard(i, out)
-				<-out
+		} else if 200 <= s.CompactJobType && s.CompactJobType <= 223 { // each shard starts at interval of 30min
+			hr := s.CompactJobType - 200
+			for idx, sh := range [16]int{
+				(hr + 0) % 24, (hr + 1) % 24, (hr + 2) % 24, (hr + 3) % 24, (hr + 4) % 24, (hr + 5) % 24, (hr + 6) % 24, (hr + 7) % 24,
+				(hr + 8) % 24, (hr + 9) % 24, (hr + 10) % 24, (hr + 11) % 24, (hr + 12) % 24, (hr + 13) % 24, (hr + 14) % 24, (hr + 15) % 24,
+			} {
+				if now.Hour() == sh {
+					key := "last_compact_2xx_ts"
+					if last, _ := s.LocalStorage().GetInt64(key); now.Unix()/1800-last < 1 {
+						log.Info("last_compact_2xx_ts: skipped")
+					} else {
+						log.Info("update last_compact_2xx_ts: ", s.LocalStorage().Set(key, now.Unix()/1800))
+						shardIdx := idx * 2
+						if now.Minute() >= 30 {
+							shardIdx++
+						}
+						log.Info("scheduleCompaction(", shardIdx, ")")
+						s.compactShard(shardIdx, out)
+						<-out
+					}
+				}
 			}
 		}
 

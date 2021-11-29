@@ -211,7 +211,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		return w.WriteBulkStrings(data)
 	}
 
-	data := []interface{}{}
+	var data []interface{}
 	for _, p := range p {
 		tmp := []interface{}{p.Key}
 		if withHash {

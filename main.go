@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/script"
+	"github.com/coyove/nj"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -177,7 +177,7 @@ func main() {
 		sp := uuid()
 		http.HandleFunc("/", webInfo(sp, &s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			script.WebREPLHandler(s.getCompileOptions(), func(p *script.Program) {
+			nj.WebREPLHandler(s.getCompileOptions(), func(p *nj.Program) {
 			})(w, r)
 		})
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)

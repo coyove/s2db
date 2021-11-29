@@ -15,9 +15,8 @@ import (
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/nj"
 	"github.com/coyove/s2db/redisproto"
-	"github.com/coyove/script"
-	"github.com/coyove/script/typ"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -33,7 +32,7 @@ type ServerConfig struct {
 	ResponseLogRun       int
 	ResponseLogSize      int // kb
 	BatchMaxRun          int
-	SchedCompactJob      string
+	CompactJobType       int
 	CompactLogHead       int
 	CompactTxSize        int
 	CompactDumpTmpDir    string
@@ -89,14 +88,14 @@ func (s *Server) saveConfig() error {
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	script.AddGlobalValue("log", func(env *script.Env) {
+	nj.AddGlobalValue("log", func(env *nj.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
 			x.WriteString(a.String() + " ")
 		}
 		log.Info("[logIO] ", x.String())
 	})
-	p, err := script.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getCompileOptions())
+	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getCompileOptions())
 	if err != nil {
 		log.Error("saveConfig inspector: ", err)
 	} else if _, err = p.Run(); err != nil {
@@ -344,43 +343,47 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 	}
 	defer func() { recover() }()
 	f, _ := s.Inspector.Get(name)
-	if f.Type() != typ.Func {
+	if !f.IsObject() {
 		return
 	}
-	v, err := f.Func().CallVal(args...)
+	in := make([]nj.Value, len(args))
+	for i := range in {
+		in[i] = nj.Val(args[i])
+	}
+	v, err := f.Object().Call(in...)
 	if err != nil {
 		log.Error("[inspector] run ", name, " err=", err)
 	}
-	if v != script.Nil {
+	if v != nj.Nil {
 		log.Info("[inspector] debug ", name, " result=", v)
 	}
 }
 
-func (s *Server) runInspectFuncRet(name string, args ...interface{}) (script.Value, error) {
+func (s *Server) runInspectFuncRet(name string, args ...interface{}) (nj.Value, error) {
 	if s.Inspector == nil {
-		return script.Nil, nil
+		return nj.Nil, nil
 	}
 	defer func() { recover() }()
 	f, _ := s.Inspector.Get(name)
-	if f.Type() != typ.Func {
+	if !f.IsObject() {
 		return f, nil
 	}
-	in := make([]script.Value, len(args))
+	in := make([]nj.Value, len(args))
 	for i := range in {
-		in[i] = script.Val(args[i])
+		in[i] = nj.Val(args[i])
 	}
-	return f.Func().Call(in...)
+	return f.Object().Call(in...)
 }
 
-func (s *Server) getCompileOptions(args ...[]byte) *script.CompileOptions {
-	var a []script.Value
+func (s *Server) getCompileOptions(args ...[]byte) *nj.CompileOptions {
+	var a []nj.Value
 	for _, arg := range args {
-		a = append(a, script.Bytes(arg))
+		a = append(a, nj.UnsafeStr(arg))
 	}
-	return &script.CompileOptions{
+	return &nj.CompileOptions{
 		GlobalKeyValues: map[string]interface{}{
 			"server": s,
-			"args":   script.Array(a...),
+			"args":   nj.Array(a...),
 			"shardCalc": func(in string) int {
 				return shardIndex(in)
 			},
@@ -427,6 +430,14 @@ func (s *LocalStorage) Get(k string) (v string, err error) {
 		return nil
 	})
 	return
+}
+
+func (s *LocalStorage) GetInt64(k string) (v int64, err error) {
+	vs, err := s.Get(k)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(vs, 10, 64)
 }
 
 func (s *LocalStorage) Set(k string, v interface{}) (err error) {

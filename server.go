@@ -202,7 +202,7 @@ func (s *Server) Serve(addr string) error {
 	for i := range s.db {
 		go s.batchWorker(i)
 	}
-	go s.schedPurge() // TODO: close signal
+	go s.schedCompactionJob() // TODO: close signal
 
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
 		s.runInspectFuncRet("compactonresume", atoip(v))
@@ -418,7 +418,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteIntOrError(s.db[atoip(name)].DB.Dump(path))
 	case "COMPACTSHARD":
-		if err := s.CompactShardAsync(atoip(name)); err != nil {
+		if err := s.CompactShard(atoip(name), true); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("STARTED")

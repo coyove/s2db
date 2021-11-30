@@ -16,16 +16,20 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) CompactShardAsync(shard int) error {
+func (s *Server) CompactShard(shard int, async bool) error {
 	out := make(chan int, 1)
-	go s.compactShard(shard, out)
+	if async {
+		go s.compactShardImpl(shard, out)
+	} else {
+		s.compactShardImpl(shard, out)
+	}
 	if p := <-out; p != shard {
 		return fmt.Errorf("wait previous compaction on shard%d", p)
 	}
 	return nil
 }
 
-func (s *Server) compactShard(shard int, out chan int) {
+func (s *Server) compactShardImpl(shard int, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
 	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
@@ -195,45 +199,47 @@ func (s *Server) compactShard(shard int, out chan int) {
 	s.runInspectFunc("compactonfinish", shard)
 }
 
-func (s *Server) schedPurge() {
+func (s *Server) schedCompactionJob() {
 	out := make(chan int, 1)
 	for !s.Closed {
 		now := time.Now().UTC()
-		if s.CompactJobType == 0 { // disabled
-		} else if 100 <= s.CompactJobType && s.CompactJobType <= 123 { // start at exact hour per day
-			if now.Hour() == s.CompactJobType-100 {
-				key := "last_compact_1xx_ts"
-				if last, _ := s.LocalStorage().GetInt64(key); now.Unix()-last < 86400 {
-					log.Info("last_compact_1xx_ts: skipped")
-				} else {
-					for i := 0; i < ShardNum; i++ {
+		if cjt := s.CompactJobType; cjt == 0 { // disabled
+		} else if (100 <= cjt && cjt <= 123) || (10000 <= cjt && cjt <= 12359) { // start at exact time per day
+			pass := cjt <= 123 && now.Hour() == cjt-100
+			pass2 := cjt >= 10000 && now.Hour() == (cjt-10000)/100 && now.Minute() == (cjt-10000)%100
+			if pass || pass2 {
+				for i := 0; i < ShardNum; i++ {
+					ts := now.Unix() / 86400
+					key := fmt.Sprintf("last_compact_1xx_%d_ts", i)
+					if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
+						log.Info("last_compact_1xx_ts: skip #", i, " last=", time.Unix(last*86400, 0))
+					} else {
 						log.Info("scheduleCompaction(", i, ")")
-						s.compactShard(i, out)
+						s.compactShardImpl(i, out)
 						<-out
+						log.Info("update last_compact_1xx_ts: ", i, " err=", s.LocalStorage().Set(key, ts))
 					}
-					log.Info("update last_compact_1xx_ts: ", s.LocalStorage().Set(key, time.Now().Unix()))
 				}
 			}
-		} else if 200 <= s.CompactJobType && s.CompactJobType <= 223 { // each shard starts at interval of 30min
-			hr := s.CompactJobType - 200
-			for idx, sh := range [16]int{
-				(hr + 0) % 24, (hr + 1) % 24, (hr + 2) % 24, (hr + 3) % 24, (hr + 4) % 24, (hr + 5) % 24, (hr + 6) % 24, (hr + 7) % 24,
-				(hr + 8) % 24, (hr + 9) % 24, (hr + 10) % 24, (hr + 11) % 24, (hr + 12) % 24, (hr + 13) % 24, (hr + 14) % 24, (hr + 15) % 24,
-			} {
-				if now.Hour() == sh {
-					key := "last_compact_2xx_ts"
-					if last, _ := s.LocalStorage().GetInt64(key); now.Unix()/1800-last < 1 {
-						log.Info("last_compact_2xx_ts: skipped")
-					} else {
-						log.Info("update last_compact_2xx_ts: ", s.LocalStorage().Set(key, now.Unix()/1800))
-						shardIdx := idx * 2
-						if now.Minute() >= 30 {
-							shardIdx++
-						}
-						log.Info("scheduleCompaction(", shardIdx, ")")
-						s.compactShard(shardIdx, out)
-						<-out
+		} else if 200 <= cjt && cjt <= 223 { // even shards start at __:00, odd shards start at __:30
+			hr := cjt - 200
+			for idx := 0; idx < 16; idx++ {
+				if now.Hour() == (hr+idx)%24 {
+					shardIdx := idx * 2
+					if now.Minute() >= 30 {
+						shardIdx++
 					}
+					key := "last_compact_2xx_ts"
+					ts := now.Unix() / 1800
+					if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
+						log.Info("last_compact_2xx_ts: skip #", shardIdx, " last=", time.Unix(last*1800, 0))
+					} else {
+						log.Info("scheduleCompaction(", shardIdx, ")")
+						s.compactShardImpl(shardIdx, out)
+						<-out
+						log.Info("update last_compact_2xx_ts: ", shardIdx, " err=", s.LocalStorage().Set(key, ts))
+					}
+					break
 				}
 			}
 		}
@@ -250,7 +256,7 @@ func (s *Server) schedPurge() {
 		}
 		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
 			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.compactShard(maxFreelistDB, out)
+			s.compactShardImpl(maxFreelistDB, out)
 			<-out
 		}
 

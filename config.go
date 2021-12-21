@@ -88,13 +88,13 @@ func (s *Server) saveConfig() error {
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	nj.AddGlobalValue("log", func(env *nj.Env) {
+	nj.Globals.SetMethod("log", func(env *nj.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
 			x.WriteString(a.String() + " ")
 		}
 		log.Info("[logIO] ", x.String())
-	})
+	}, "")
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getCompileOptions())
 	if err != nil {
 		log.Error("saveConfig inspector: ", err)
@@ -348,9 +348,9 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 	}
 	in := make([]nj.Value, len(args))
 	for i := range in {
-		in[i] = nj.Val(args[i])
+		in[i] = nj.ValueOf(args[i])
 	}
-	v, err := f.Object().Call(in...)
+	v, err := nj.Call2(f.Object(), in...)
 	if err != nil {
 		log.Error("[inspector] run ", name, " err=", err)
 	}
@@ -370,49 +370,52 @@ func (s *Server) runInspectFuncRet(name string, args ...interface{}) (nj.Value, 
 	}
 	in := make([]nj.Value, len(args))
 	for i := range in {
-		in[i] = nj.Val(args[i])
+		in[i] = nj.ValueOf(args[i])
 	}
-	return f.Object().Call(in...)
+	return nj.Call2(f.Object(), in...)
 }
 
-func (s *Server) getCompileOptions(args ...[]byte) *nj.CompileOptions {
+func (s *Server) getCompileOptions(args ...[]byte) *nj.Environment {
 	var a []nj.Value
 	for _, arg := range args {
 		a = append(a, nj.UnsafeStr(arg))
 	}
-	return &nj.CompileOptions{
-		GlobalKeyValues: map[string]interface{}{
-			"server": s,
-			"args":   nj.Array(a...),
-			"shardCalc": func(in string) int {
-				return shardIndex(in)
-			},
-			"hashCommands": func(in ...string) [2]uint64 {
-				v := make([][]byte, len(in))
+	return &nj.Environment{
+		Globals: nj.NewObject(0).
+			SetProp("server", nj.ValueOf(s)).
+			SetProp("args", nj.NewArray(a...).ToValue()).
+			SetMethod("shardCalc", func(e *nj.Env) {
+				e.A = nj.Int(shardIndex(e.Str(0)))
+			}, "").
+			SetMethod("hashCommands", func(e *nj.Env) { // ) [2]uint64 {
+				v := make([][]byte, 0, e.Size())
 				for i := range v {
-					v[i] = []byte(in[i])
+					v = append(v, e.Get(i).Safe().Bytes())
 				}
-				return hashCommands(&redisproto.Command{Argv: v})
-			},
-			"getPendingUnlinks": func(shard int) []string {
-				v, err := getPendingUnlinks(s.db[shard].DB)
+				e.A = nj.ValueOf(hashCommands(&redisproto.Command{Argv: v}))
+			}, "").
+			SetMethod("getPendingUnlinks", func(e *nj.Env) { // ) []string {
+				v, err := getPendingUnlinks(s.db[e.Int(0)].DB)
 				if err != nil {
 					panic(err)
 				}
-				return v
-			},
-			"cmd": func(addr string, args ...interface{}) interface{} {
-				rdb := s.getRedis(addr)
-				v, err := rdb.Do(context.TODO(), args...).Result()
+				e.A = nj.ValueOf(v)
+			}, "").
+			SetMethod("cmd", func(e *nj.Env) { //  func(addr string, args ...interface{}) interface{} {
+				var args []interface{}
+				for i := 1; i < e.Size(); i++ {
+					args = append(args, e.Interface(i))
+				}
+				v, err := s.getRedis(e.Str(0)).Do(context.TODO(), args...).Result()
 				if err != nil {
 					if err == redis.Nil {
-						return nil
+						e.A = nj.Nil
+						return
 					}
 					panic(err)
 				}
-				return v
-			},
-		},
+				e.A = nj.ValueOf(v)
+			}, ""),
 	}
 }
 

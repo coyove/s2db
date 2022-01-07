@@ -177,7 +177,7 @@ func main() {
 		sp := uuid()
 		http.HandleFunc("/", webInfo(sp, &s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			lib.PlaygroundHandler(s.getCompileOptions())
+			lib.PlaygroundHandler(s.getCompileOptions())(w, r)
 		})
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
 		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))

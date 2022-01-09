@@ -213,16 +213,18 @@ func (s *Server) Serve(addr string) error {
 			conn, err := ln.Accept()
 			if err != nil {
 				if !s.Closed {
-					log.Error("accept: ", err)
+					log.Error("accept: ", err, " current connections: ", s.Survey.Connections)
+					continue
+				} else {
+					return
 				}
-				return
 			}
 			go s.handleConnection(conn, conn.RemoteAddr())
 		}
 	}
-	go runner(s.ln)
 	go runner(s.lnLocal)
-	select {}
+	runner(s.ln)
+	return nil
 }
 
 func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) {

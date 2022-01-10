@@ -35,6 +35,7 @@ type ServerConfig struct {
 	CompactJobType       int
 	CompactLogHead       int
 	CompactTxSize        int
+	CompactTxWorkers     int
 	CompactDumpTmpDir    string
 	CompactNoBackup      int // disable backup files when compacting, dangerous when you are master
 	CompactRunWait       int // see runTask()
@@ -84,6 +85,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 20000)
+	ifZero(&s.CompactTxWorkers, 1)
 
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)

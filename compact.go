@@ -9,9 +9,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coyove/nj/typ"
+	"github.com/coyove/s2db/internal"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -83,7 +86,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
 		dumpDB.Close()
 		compactDB.Close()
-		log.Error("defragdb: ", err)
+		log.Error("defragdb: ", err, " remove compactDB: ", os.Remove(compactPath))
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
@@ -287,17 +290,6 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		unlinkp[n] = true
 	}
 
-	// open a tx on tmpdb for writes
-	tmptx, err := tmpdb.Begin(true)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			tmptx.Rollback()
-		}
-	}()
-
 	// open a tx on old db for read
 	tx, err := odb.Begin(false)
 	if err != nil {
@@ -305,66 +297,57 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	}
 	defer tx.Rollback()
 
-	c := tx.Cursor()
+	slaveMinWal, useSlaveWal := s.calcSlaveWAL(shard)
 
-	var slaveMinWal uint64
-	var useSlaveWal bool
-	{
-		var min uint64 = math.MaxUint64
-		s.Slaves.Foreach(func(si *serverInfo) {
-			if si.LogTails[shard] < min {
-				min = si.LogTails[shard]
+	var total, queueDrops int64
+
+	tmptx, err := internal.CreateOnetimeLimitedTx(tmpdb, s.CompactTxSize)
+	if err != nil {
+		return err
+	}
+	defer tmptx.Close()
+
+	c := tx.Cursor()
+	bucketIn := make(chan *internal.BucketWalker, 2*s.CompactTxWorkers)
+	bucketWalkerWg := sync.WaitGroup{}
+	bucketWalkerWg.Add(s.CompactTxWorkers)
+	for i := 0; i < s.CompactTxWorkers; i++ {
+		go func() {
+			defer bucketWalkerWg.Done()
+			for p := range bucketIn {
+				s.compactionBucketWalker(p)
 			}
-		})
-		if min != math.MaxUint64 {
-			// If master have any slaves, it can't purge logs which slaves don't have yet
-			// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-			slaveMinWal = min
-			useSlaveWal = true
-		} else if s.MasterMode {
-			log.Info("STAGE 0.1: master mode: failed to collect info from slaves, no log compaction will be made")
-			slaveMinWal = 0
-			useSlaveWal = true
-		}
+		}()
 	}
 
-	count := 0
-	total := 0
-	queueDrops := 0
-	for next, _ := c.First(); next != nil; next, _ = c.Next() {
-		nextStr := string(next)
-		if nextStr == "unlink" { // pending unlinks will be cleared during every compaction
-			continue
-		}
-		isQueue := strings.HasPrefix(nextStr, "q.")
-		if strings.HasPrefix(nextStr, "zset.score.") && unlinkp[string(next[11:])] ||
-			strings.HasPrefix(nextStr, "zset.") && unlinkp[string(next[5:])] ||
-			isQueue && unlinkp[string(next[2:])] {
+	for key, _ := c.First(); key != nil; key, _ = c.Next() {
+		bucketName := string(key)
+		isQueue := strings.HasPrefix(bucketName, "q.")
+		isZSetScore := strings.HasPrefix(bucketName, "zset.score.")
+		isZSet := !isZSetScore && strings.HasPrefix(bucketName, "zset.")
+
+		// Drop unlinked buckets, "unlink" bucket itself will be dropped during every compaction
+		if bucketName == "unlink" ||
+			(isZSetScore && unlinkp[bucketName[11:]]) ||
+			(isZSet && unlinkp[bucketName[5:]]) ||
+			(isQueue && unlinkp[bucketName[2:]]) {
 			continue
 		}
 
-		queueTTL := 0
+		b := tx.Bucket(key)
+		if b == nil {
+			return fmt.Errorf("backend: cannot defrag bucket %q", string(key))
+		}
+
+		// Calculate queue TTL and WAL logs length if needed
+		var queueTTL int
+		var walStartBuf []byte
 		if isQueue {
-			res, err := s.runInspectFuncRet("queuettl", nextStr[2:])
+			res, err := s.runInspectFuncRet("queuettl", bucketName[2:])
 			if err == nil && res.Type() == typ.Number {
 				queueTTL = int(res.Int())
 			}
-		}
-
-		b := tx.Bucket(next)
-		if b == nil {
-			return fmt.Errorf("backend: cannot defrag bucket %q", string(next))
-		}
-
-		tmpb, berr := tmptx.CreateBucketIfNotExists(next)
-		if berr != nil {
-			return berr
-		}
-		tmpb.FillPercent = 0.9 // for seq write in for each
-		tmpb.SetSequence(b.Sequence())
-
-		var walStartBuf []byte
-		if nextStr == "wal" {
+		} else if bucketName == "wal" {
 			walStart := decUint64(slaveMinWal, uint64(s.CompactLogHead))
 			if !useSlaveWal {
 				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
@@ -377,60 +360,75 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			binary.BigEndian.PutUint64(walStartBuf, walStart)
 		}
 
-		now := time.Now().UnixNano()
-		if err = b.ForEach(func(k, v []byte) error {
-			if len(walStartBuf) > 0 && bytes.Compare(k, walStartBuf) < 0 {
-				return nil
-			}
-			if isQueue && len(k) == 16 && queueTTL > 0 {
-				ts := int64(binary.BigEndian.Uint64(k[8:]))
-				if (now-ts)/1e9 > int64(queueTTL) {
-					queueDrops++
-					return nil
-				}
-			}
-
-			count++
-			total++
-			if count > s.CompactTxSize {
-				err = tmptx.Commit()
-				if err != nil {
-					return err
-				}
-				tmptx, err = tmpdb.Begin(true)
-				if err != nil {
-					return err
-				}
-				tmpb = tmptx.Bucket(next)
-				tmpb.FillPercent = 0.9 // for seq write in for each
-
-				count = 0
-			}
-			return tmpb.Put(k, v)
-		}); err != nil {
-			return err
-		}
-
-		if len(walStartBuf) > 0 {
-			k, _ := tmpb.Cursor().Last()
-			if len(k) != 8 {
-				log.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", walStartBuf, k, tmpb.Sequence(), total)
-				return fmt.Errorf("FATAL")
-			} else {
-				log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), total)
-			}
-		}
-
-		if isQueue {
-			k, _ := tmpb.Cursor().Last()
-			if len(k) == 0 {
-				tmptx.DeleteBucket(next)
-			}
+		bucketIn <- &internal.BucketWalker{
+			Bucket:      b,
+			BucketName:  bucketName,
+			Tx:          tmptx,
+			QueueTTL:    queueTTL,
+			WALStartBuf: walStartBuf,
+			Total:       &total,
+			QueueDrops:  &queueDrops,
 		}
 	}
 
+	close(bucketIn)
+	bucketWalkerWg.Wait()
+
 	log.Infof("STAGE 0.3: queue drops: %d", queueDrops)
-	return tmptx.Commit()
+	return tmptx.Finish()
+}
+
+func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
+	now := time.Now().UnixNano()
+	isQueue := strings.HasPrefix(p.BucketName, "q.")
+	if err := p.Bucket.ForEach(func(k, v []byte) error {
+		// Truncate WAL logs
+		if len(p.WALStartBuf) > 0 && bytes.Compare(k, p.WALStartBuf) < 0 {
+			return nil
+		}
+
+		// Truncate queue
+		if isQueue && len(k) == 16 && p.QueueTTL > 0 {
+			ts := int64(binary.BigEndian.Uint64(k[8:]))
+			if (now-ts)/1e9 > int64(p.QueueTTL) {
+				atomic.AddInt64(p.QueueDrops, 1)
+				return nil
+			}
+		}
+
+		atomic.AddInt64(p.Total, 1)
+		return p.Tx.Put(&internal.OnetimeLimitedTxPut{
+			BkName: p.BucketName,
+			Seq:    p.Bucket.Sequence(),
+			Key:    k,
+			Value:  v,
+		})
+	}); err != nil {
+		return err
+	}
+
+	// Check compaction
+	return p.Tx.Put(&internal.OnetimeLimitedTxPut{
+		BkName: p.BucketName,
+		Seq:    p.Bucket.Sequence(),
+		Finishing: func(tx *bbolt.Tx, tmpb *bbolt.Bucket) error {
+			if len(p.WALStartBuf) > 0 {
+				k, _ := tmpb.Cursor().Last()
+				if len(k) != 8 {
+					log.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.WALStartBuf, k, tmpb.Sequence(), p.Total)
+				} else {
+					log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), p.Total)
+				}
+			}
+			if isQueue {
+				if k, _ := tmpb.Cursor().Last(); len(k) == 0 {
+					tx.DeleteBucket([]byte(p.BucketName))
+				}
+			}
+			// Done bucket compaction
+			return nil
+		},
+	})
 }
 
 func decUint64(v uint64, d uint64) uint64 {
@@ -455,6 +453,26 @@ func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {
 		return nil
 	}); err != nil {
 		return nil, err
+	}
+	return
+}
+
+func (s *Server) calcSlaveWAL(shard int) (slaveMinWal uint64, useSlaveWal bool) {
+	var min uint64 = math.MaxUint64
+	s.Slaves.Foreach(func(si *serverInfo) {
+		if si.LogTails[shard] < min {
+			min = si.LogTails[shard]
+		}
+	})
+	if min != math.MaxUint64 {
+		// If master have any slaves, it can't purge logs which slaves don't have yet
+		// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
+		slaveMinWal = min
+		useSlaveWal = true
+	} else if s.MasterMode {
+		log.Infof("FATAL(master mode): failed to collect shard info #%d from slaves, no log compaction will be made", shard)
+		slaveMinWal = 0
+		useSlaveWal = true
 	}
 	return
 }

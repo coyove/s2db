@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/gob"
@@ -500,16 +501,6 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
-func parseSlaveFlag(in *redisproto.Command) string {
-	i := in.ArgCount() - 2
-	if in.EqualFold(i, "AT") {
-		x := in.Argv[i+1]
-		in.Argv = in.Argv[:i]
-		return string(x)
-	}
-	return ""
-}
-
 func parseDeferFlag(in *redisproto.Command) bool {
 	if len(in.Argv) > 2 && bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
 		in.Argv = append(in.Argv[:2], in.Argv[3:]...)
@@ -550,4 +541,58 @@ func (l *locker) lock(v int32) (int32, bool) {
 
 func (l *locker) unlock() {
 	atomic.StoreInt32((*int32)(l), 0)
+}
+
+type bigKeysHeap []Pair
+
+func (h bigKeysHeap) Len() int           { return len(h) }
+func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
+func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *bigKeysHeap) Push(x interface{}) {
+	*h = append(*h, x.(Pair))
+}
+
+func (h *bigKeysHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
+func (s *Server) BigKeys(n, shard int) []string {
+	if n <= 0 {
+		n = 10
+	}
+	h := &bigKeysHeap{}
+	heap.Init(h)
+	for i, db := range s.db {
+		if shard != -1 && i != shard {
+			continue
+		}
+		db.View(func(tx *bbolt.Tx) error {
+			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
+				if bytes.HasPrefix(name, []byte("zset.score.")) {
+					return nil
+				}
+				if bytes.HasPrefix(name, []byte("zset.")) {
+					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.KeyN())})
+				}
+				if bytes.HasPrefix(name, []byte("q.")) {
+					heap.Push(h, Pair{Key: string(name[2:]), Score: float64(bk.KeyN())})
+				}
+				if h.Len() > n {
+					heap.Pop(h)
+				}
+				return nil
+			})
+		})
+	}
+	x := []string{}
+	for h.Len() > 0 {
+		p := heap.Pop(h).(Pair)
+		x = append(x, strconv.Itoa(int(p.Score))+":"+p.Key)
+	}
+	return x
 }

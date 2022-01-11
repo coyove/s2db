@@ -2,16 +2,12 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/base64"
 	"fmt"
 	"math"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
-
-	"go.etcd.io/bbolt"
 )
 
 func TestCommandJoinSplit(t *testing.T) {
@@ -51,49 +47,6 @@ func TestCommandJoinSplit(t *testing.T) {
 		if cmd1 != cmd2 {
 			t.Fatal(cmd1, cmd2)
 		}
-	}
-}
-
-func TestBBolt(t *testing.T) {
-	xxx := []string{
-		"QAPPEND",
-		"love130421010922294:love131163602688147",
-		"4SjC3qQOJSfE_0FJF-O9Jv7wldWydVAScbX2_4YekwhodpJKYHo_Idm2TpfEgleC8jLq4JTXkqO5bBC0jzFgkLYECL3qeyPVN7EP393AKZ7f8YOgn0WABZLT6nrBKaEdEoxzsqq6Vcmhx9CidR8Kkqco8SPABuYDLBI4YTLAVKZYKng75bMZgaFiJhrbGfaHGnJxJ5CbLk4nYXRN6Brl7vtJFrUkVqPPsZ7BRd0MAbTB0_oYWtb8EufI3OGxsCzirZ1udZ9BwSjqRp352tc=",
-		"10000",
-	}
-	c := joinCommandString(xxx...)
-	p := &bytes.Buffer{}
-	w := gzip.NewWriter(p)
-	w.Write(c)
-	w.Flush()
-	fmt.Println(p.Len(), len(c))
-	return
-
-	data := func() []byte {
-		n := rand.Intn(32) + 32
-		return make([]byte, n)
-	}
-	const N = 1e5
-	const B = 1000
-
-	{
-		os.Remove("s.db")
-		db, _ := bbolt.Open("s.db", 0666, bboltOptions)
-		for z := 0; z < N; z += B {
-			db.Update(func(tx *bbolt.Tx) error {
-				off := 1000
-				bk, _ := tx.CreateBucketIfNotExists([]byte("a"))
-				bk.FillPercent = 0.9
-				for i := 0; i < B; i++ {
-					bk.Put(intToBytes(uint64(z+i)), data())
-					bk.Delete(intToBytes(uint64(z + i - off)))
-				}
-				return nil
-			})
-		}
-		db.Close()
-		fi, _ := os.Stat("s.db")
-		fmt.Println("0.9 seq", fi.Size())
 	}
 }
 

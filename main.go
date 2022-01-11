@@ -252,7 +252,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 
 		if ins != "" {
 			s.updateConfig("InspectorSource", ins, false)
-			http.Redirect(w, r, "/?p="+password, 302)
+			http.Redirect(w, r, "/?p="+password, http.StatusFound)
 			return
 		}
 

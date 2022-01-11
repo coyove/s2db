@@ -18,6 +18,7 @@ import (
 	"github.com/coyove/common/sched"
 	"github.com/coyove/nj"
 	_ "github.com/coyove/nj/lib"
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -61,13 +62,13 @@ type Server struct {
 	Survey struct {
 		StartAt                 time.Time
 		Connections             int64
-		SysRead, SysWrite       Survey
-		SysWriteDiscards        Survey
-		SysReadLat, SysWriteLat Survey
-		Cache, WeakCache        Survey
-		BatchSize, BatchLat     Survey
-		BatchSizeSv, BatchLatSv Survey
-		Proxy, ProxyLat         Survey
+		SysRead, SysWrite       internal.Survey
+		SysWriteDiscards        internal.Survey
+		SysReadLat, SysWriteLat internal.Survey
+		Cache, WeakCache        internal.Survey
+		BatchSize, BatchLat     internal.Survey
+		BatchSizeSv, BatchLatSv internal.Survey
+		Proxy, ProxyLat         internal.Survey
 	}
 
 	db [ShardNum]struct {

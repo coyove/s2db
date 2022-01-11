@@ -305,6 +305,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	if err != nil {
 		return err
 	}
+	tmptx.MapSize.NoTick = true
 	defer tmptx.Close()
 
 	c := tx.Cursor()
@@ -374,7 +375,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: queue drops: %d", queueDrops)
+	log.Infof("STAGE 0.3: queue drops: %d, limited tx: %v", queueDrops, tmptx.MapSize.MeanString())
 	return tmptx.Finish()
 }
 

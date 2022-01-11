@@ -14,6 +14,8 @@ type OnetimeLimitedTx struct {
 	puts     int
 	size     int
 	finished bool
+
+	MapSize Survey
 }
 
 func CreateOnetimeLimitedTx(db *bbolt.DB, size int) (*OnetimeLimitedTx, error) {
@@ -51,6 +53,7 @@ func (tx *OnetimeLimitedTx) Put(p *OnetimeLimitedTxPut) (err error) {
 		bk.FillPercent = 0.9
 		bk.SetSequence(p.Seq)
 	}
+	tx.MapSize.Incr(int64(len(tx.bkMap)))
 
 	if p.Finishing != nil {
 		if err := p.Finishing(tx.tx, bk); err != nil {

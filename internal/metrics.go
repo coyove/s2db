@@ -1,79 +1,21 @@
-package main
+package internal
 
 import (
-	"bytes"
-	"container/heap"
 	"fmt"
 	"math"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"go.etcd.io/bbolt"
 )
-
-type bigKeysHeap []Pair
-
-func (h bigKeysHeap) Len() int           { return len(h) }
-func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
-func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *bigKeysHeap) Push(x interface{}) {
-	*h = append(*h, x.(Pair))
-}
-
-func (h *bigKeysHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
-func (s *Server) BigKeys(n, shard int) []string {
-	if n <= 0 {
-		n = 10
-	}
-	h := &bigKeysHeap{}
-	heap.Init(h)
-	for i, db := range s.db {
-		if shard != -1 && i != shard {
-			continue
-		}
-		db.View(func(tx *bbolt.Tx) error {
-			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
-				if bytes.HasPrefix(name, []byte("zset.score.")) {
-					return nil
-				}
-				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.KeyN())})
-				}
-				if bytes.HasPrefix(name, []byte("q.")) {
-					heap.Push(h, Pair{Key: string(name[2:]), Score: float64(bk.KeyN())})
-				}
-				if h.Len() > n {
-					heap.Pop(h)
-				}
-				return nil
-			})
-		})
-	}
-	x := []string{}
-	for h.Len() > 0 {
-		p := heap.Pop(h).(Pair)
-		x = append(x, strconv.Itoa(int(p.Score))+":"+p.Key)
-	}
-	return x
-}
 
 const SurveyRange = 900
 
 type Survey struct {
-	tick  sync.Once
-	data  [SurveyRange]int64
-	count [SurveyRange]int32
-	ts    [SurveyRange]uint32
+	tick   sync.Once
+	NoTick bool
+	data   [SurveyRange]int64
+	count  [SurveyRange]int32
+	ts     [SurveyRange]uint32
 }
 
 func (s *Survey) _i() (uint64, uint32) {
@@ -106,6 +48,9 @@ func (s *Survey) dotick() {
 
 func (s *Survey) Incr(c int64) {
 	s.tick.Do(func() {
+		if s.NoTick {
+			return
+		}
 		go func() {
 			s.dotick()
 			for range time.Tick(time.Second) {

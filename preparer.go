@@ -140,7 +140,7 @@ func prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbo
 		}
 
 		if by == 0 {
-			// special case: zincrby name 0 non_existed_key
+			_ = "special case: zincrby name 0 non_existed_key"
 		}
 		if err := checkScore(score + by); err != nil {
 			return 0, err

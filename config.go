@@ -16,6 +16,8 @@ import (
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/nj"
+	"github.com/coyove/nj/bas"
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -62,7 +64,7 @@ func (s *Server) loadConfig() error {
 			buf := bk.Get([]byte(strings.ToLower(f.Name)))
 			switch f.Type {
 			case reflect.TypeOf(0):
-				fv.SetInt(int64(bytesToFloatZero(buf)))
+				fv.SetInt(int64(internal.BytesToFloatZero(buf)))
 			case reflect.TypeOf(""):
 				fv.SetString(string(buf))
 			}
@@ -90,7 +92,7 @@ func (s *Server) saveConfig() error {
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	nj.Globals.SetMethod("log", func(env *nj.Env) {
+	bas.Globals.SetMethod("log", func(env *bas.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
 			x.WriteString(a.String() + " ")
@@ -115,7 +117,7 @@ func (s *Server) saveConfig() error {
 			var buf []byte
 			switch f.Type {
 			case reflect.TypeOf(0):
-				buf = floatToBytes(float64(fv.Int()))
+				buf = internal.FloatToBytes(float64(fv.Int()))
 			case reflect.TypeOf(""):
 				buf = []byte(fv.String())
 			}
@@ -145,7 +147,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		}
 		switch f.Type {
 		case reflect.TypeOf(0):
-			fv.SetInt(int64(atoi(value)))
+			fv.SetInt(int64(internal.ParseInt(value)))
 		case reflect.TypeOf(""):
 			fv.SetString(value)
 		}
@@ -156,7 +158,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 				return err
 			}
 			buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
-			return bk.Put(intToBytes(uint64(time.Now().UnixNano())), buf)
+			return bk.Put(internal.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
 		})
 		return fmt.Errorf("exit")
 	})
@@ -303,10 +305,10 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	}
 
 	x := &s.db[shard]
-	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
-		return fmt.Errorf("previous compaction in the way #%d", v-1)
+	if v, ok := s.CompactLock.Lock(shard); !ok {
+		return fmt.Errorf("previous compaction in the way #%d", v)
 	}
-	defer s.CompactLock.unlock()
+	defer s.CompactLock.Unlock()
 	path := x.Path()
 
 	x.DB.Close()
@@ -348,62 +350,65 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) {
 	if !f.IsObject() {
 		return
 	}
-	in := make([]nj.Value, len(args))
+	in := make([]bas.Value, len(args))
 	for i := range in {
-		in[i] = nj.ValueOf(args[i])
+		in[i] = bas.ValueOf(args[i])
 	}
-	v, err := nj.Call2(f.Object(), in...)
+	v, err := bas.Call2(f.Object(), in...)
 	if err != nil {
 		log.Error("[inspector] run ", name, " err=", err)
 	}
-	if v != nj.Nil {
+	if v != bas.Nil {
 		log.Info("[inspector] debug ", name, " result=", v)
 	}
 }
 
-func (s *Server) runInspectFuncRet(name string, args ...interface{}) (nj.Value, error) {
+func (s *Server) runInspectFuncRet(name string, args ...interface{}) (bas.Value, error) {
 	if s.Inspector == nil {
-		return nj.Nil, nil
+		return bas.Nil, nil
 	}
 	defer func() { recover() }()
 	f, _ := s.Inspector.Get(name)
 	if !f.IsObject() {
 		return f, nil
 	}
-	in := make([]nj.Value, len(args))
+	in := make([]bas.Value, len(args))
 	for i := range in {
-		in[i] = nj.ValueOf(args[i])
+		in[i] = bas.ValueOf(args[i])
 	}
-	return nj.Call2(f.Object(), in...)
+	return bas.Call2(f.Object(), in...)
 }
 
-func (s *Server) getCompileOptions(args ...[]byte) *nj.Environment {
-	var a []nj.Value
+func (s *Server) getCompileOptions(args ...[]byte) *bas.Environment {
+	var a []bas.Value
 	for _, arg := range args {
-		a = append(a, nj.UnsafeStr(arg))
+		a = append(a, bas.Str(string(arg)))
 	}
-	return &nj.Environment{
-		Globals: nj.NewObject(0).
-			SetProp("server", nj.ValueOf(s)).
-			SetProp("args", nj.NewArray(a...).ToValue()).
-			SetMethod("shardCalc", func(e *nj.Env) {
-				e.A = nj.Int(shardIndex(e.Str(0)))
+	return &bas.Environment{
+		Globals: bas.NewObject(0).
+			SetProp("server", bas.ValueOf(s)).
+			SetProp("args", bas.NewArray(a...).ToValue()).
+			SetMethod("shardCalc", func(e *bas.Env) {
+				e.A = bas.Int(shardIndex(e.Str(0)))
 			}, "").
-			SetMethod("hashCommands", func(e *nj.Env) { // ) [2]uint64 {
+			SetMethod("atof", func(e *bas.Env) {
+				v, err := internal.ParseFloat(e.Str(0))
+				internal.PanicErr(err)
+				e.A = bas.Float64(v)
+			}, "").
+			SetMethod("hashCommands", func(e *bas.Env) { // ) [2]uint64 {
 				v := make([][]byte, 0, e.Size())
 				for i := range v {
 					v = append(v, e.Get(i).Safe().Bytes())
 				}
-				e.A = nj.ValueOf(hashCommands(&redisproto.Command{Argv: v}))
+				e.A = bas.ValueOf(hashCommands(&redisproto.Command{Argv: v}))
 			}, "").
-			SetMethod("getPendingUnlinks", func(e *nj.Env) { // ) []string {
+			SetMethod("getPendingUnlinks", func(e *bas.Env) { // ) []string {
 				v, err := getPendingUnlinks(s.db[e.Int(0)].DB)
-				if err != nil {
-					panic(err)
-				}
-				e.A = nj.ValueOf(v)
+				internal.PanicErr(err)
+				e.A = bas.ValueOf(v)
 			}, "").
-			SetMethod("cmd", func(e *nj.Env) { //  func(addr string, args ...interface{}) interface{} {
+			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {
 					args = append(args, e.Interface(i))
@@ -411,12 +416,12 @@ func (s *Server) getCompileOptions(args ...[]byte) *nj.Environment {
 				v, err := s.getRedis(e.Str(0)).Do(context.TODO(), args...).Result()
 				if err != nil {
 					if err == redis.Nil {
-						e.A = nj.Nil
+						e.A = bas.Nil
 						return
 					}
 					panic(err)
 				}
-				e.A = nj.ValueOf(v)
+				e.A = bas.ValueOf(v)
 			}, ""),
 	}
 }

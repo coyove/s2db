@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/coyove/s2db/internal"
 	"go.etcd.io/bbolt"
 )
 
@@ -68,7 +69,7 @@ func (s *Server) QScan(name string, start, n int64, withIndexes bool) ([][]byte,
 		}
 
 		c := bk.Cursor()
-		startBuf := intToBytes(uint64(start))
+		startBuf := internal.Uint64ToBytes(uint64(start))
 		k, v := c.Seek(startBuf)
 		if !bytes.HasPrefix(k, startBuf) {
 			return fmt.Errorf("fatal: missing key")
@@ -109,7 +110,7 @@ func (s *Server) QGet(name string, idx int64) ([]byte, error) {
 		}
 
 		c := bk.Cursor()
-		startBuf := intToBytes(uint64(idx))
+		startBuf := internal.Uint64ToBytes(uint64(idx))
 		k, v := c.Seek(startBuf)
 		if !bytes.HasPrefix(k, startBuf) {
 			return fmt.Errorf("fatal: missing key")

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"container/heap"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/gob"
 	"encoding/hex"
 	"fmt"
@@ -17,13 +16,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
-	"github.com/coyove/common/sched"
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
-	"github.com/mmcloughlin/geohash"
 	"go.etcd.io/bbolt"
 )
 
@@ -33,7 +30,6 @@ func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-	sched.Verbose = false
 	rand.Seed(time.Now().Unix())
 }
 
@@ -54,45 +50,6 @@ func uuid() string {
 	buf := make([]byte, 16)
 	rand.Read(buf)
 	return hex.EncodeToString(buf)
-}
-
-func intToBytes(i uint64) []byte {
-	v := [8]byte{}
-	binary.BigEndian.PutUint64(v[:], i)
-	return v[:]
-}
-
-func bytesToFloatZero(b []byte) float64 {
-	if len(b) != 8 {
-		return 0
-	}
-	return bytesToFloat(b)
-}
-
-func bytesToFloat(b []byte) float64 {
-	x := binary.BigEndian.Uint64(b)
-	if x>>63 == 1 {
-		x = x << 1 >> 1
-	} else {
-		x = ^x
-	}
-	return math.Float64frombits(x)
-}
-
-func floatToInternalUint64(v float64) uint64 {
-	x := math.Float64bits(v)
-	if v >= 0 {
-		x |= 1 << 63
-	} else {
-		x = ^x
-	}
-	return x
-}
-
-func floatToBytes(v float64) []byte {
-	tmp := [8]byte{}
-	binary.BigEndian.PutUint64(tmp[:8], floatToInternalUint64(v))
-	return tmp[:]
 }
 
 func hashStr(s string) (h uint64) {
@@ -118,64 +75,6 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	return h
 }
 
-func atof(a string) (float64, error) {
-	if idx := strings.Index(a, ","); idx > 0 {
-		a, b := a[:idx], a[idx+1:]
-		long, err := strconv.ParseFloat(a, 64)
-		if err != nil {
-			return 0, err
-		}
-		lat, err := strconv.ParseFloat(b, 64)
-		if err != nil {
-			return 0, err
-		}
-		h := geohash.EncodeIntWithPrecision(lat, long, 52)
-		return float64(h), nil
-	}
-	return strconv.ParseFloat(a, 64)
-}
-
-func atof2(a []byte) (float64, error) {
-	return atof(*(*string)(unsafe.Pointer(&a)))
-}
-
-func atof2p(a []byte) float64 {
-	f, err := atof2(a)
-	if err != nil {
-		panic(err)
-	}
-	return f
-}
-
-func ftoa(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
-
-func ftob(f float64) []byte {
-	if math.IsNaN(f) {
-		return nil
-	}
-	return []byte(strconv.FormatFloat(f, 'f', -1, 64))
-}
-
-func atoi(a string) int {
-	i, _ := strconv.Atoi(a)
-	return i
-}
-
-func atoip(a string) int {
-	i, err := strconv.Atoi(a)
-	if err != nil {
-		panic("invalid integer: " + strconv.Quote(a))
-	}
-	return i
-}
-
-func atoi64(a string) uint64 {
-	i, _ := strconv.ParseUint(a, 10, 64)
-	return i
-}
-
 func shardIndex(key string) int {
 	return int(hashStr(key) % ShardNum)
 }
@@ -188,19 +87,14 @@ func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	return keys
 }
 
-func writePairs(in []Pair, w *redisproto.Writer, command *redisproto.Command) error {
-	var withScores, withData bool
-	for i := len(command.Argv) - 1; i >= len(command.Argv)-3 && i >= 0; i-- {
-		withScores = withScores || command.EqualFold(i, "WITHSCORES")
-		withData = withData || command.EqualFold(i, "WITHDATA")
-	}
+func writePairs(in []Pair, w *redisproto.Writer, flags redisproto.Flags) error {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Key)
-		if withScores || withData {
-			data = append(data, ftoa(p.Score))
+		if flags.WITHSCORES || flags.WITHDATA {
+			data = append(data, internal.FormatFloat(p.Score))
 		}
-		if withData {
+		if flags.WITHDATA {
 			data = append(data, string(p.Data))
 		}
 	}
@@ -273,69 +167,7 @@ func joinCommandString(cmd ...string) []byte {
 	return res
 }
 
-type RangeLimit struct {
-	Value     string
-	Float     float64
-	Inclusive bool
-	LexEnd    bool
-}
-
-type RangeOptions struct {
-	Rev            bool
-	OffsetStart    int
-	OffsetEnd      int
-	CountOnly      bool
-	WithData       bool
-	DeleteLog      []byte
-	LexMatch       string
-	ScoreMatchData string
-	Limit          int
-}
-
-func (r RangeLimit) fromString(v string) RangeLimit {
-	r.Value = v
-	r.Inclusive = true
-	if strings.HasPrefix(v, "[") {
-		r.Value = r.Value[1:]
-	} else if strings.HasPrefix(v, "(") {
-		r.Value = r.Value[1:]
-		r.Inclusive = false
-	} else if v == "+" {
-		r.Value = "\xff"
-		r.LexEnd = true
-	} else if v == "-" {
-		r.Value = ""
-	}
-	return r
-}
-
-func (r RangeLimit) fromFloatString(v string) (RangeLimit, error) {
-	var err error
-	r.Inclusive = true
-	if strings.HasPrefix(v, "[") {
-		r.Float, err = atof(v[1:])
-	} else if strings.HasPrefix(v, "(") {
-		r.Float, err = atof(v[1:])
-		r.Inclusive = false
-	} else {
-		r.Float, err = atof(v)
-	}
-	return r, err
-}
-
-func (o *RangeOptions) translateOffset(keyName string, bk *bbolt.Bucket) {
-	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
-		n := bk.KeyN()
-		if o.OffsetStart < 0 {
-			o.OffsetStart += n
-		}
-		if o.OffsetEnd < 0 {
-			o.OffsetEnd += n
-		}
-	}
-}
-
-func (o *RangeOptions) getLimit() int {
+func getLimit(o internal.RangeOptions) int {
 	limit := HardLimit
 	if o.Limit > 0 && o.Limit < HardLimit {
 		limit = o.Limit
@@ -348,9 +180,7 @@ func (s *Server) Info(section string) string {
 	fls := []string{}
 	for i := range s.db {
 		fi, err := os.Stat(s.db[i].Path())
-		if err != nil {
-			panic(err)
-		}
+		internal.PanicErr(err)
 		sz += int(fi.Size())
 		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
 	}
@@ -371,7 +201,6 @@ func (s *Server) Info(section string) string {
 		"# server_misc",
 		fmt.Sprintf("cwd:%v", cwd),
 		fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
-		fmt.Sprintf("death_scheduler:%v", s.DieKey),
 		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 		fmt.Sprintf("db_size:%v", sz),
 		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
@@ -427,9 +256,7 @@ func (s *Server) Info(section string) string {
 func (s *Server) shardInfo(shard int) string {
 	x := &s.db[shard]
 	fi, err := os.Stat(x.Path())
-	if err != nil {
-		panic(err)
-	}
+	internal.PanicErr(err)
 	tmp := []string{
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
@@ -512,7 +339,7 @@ func parseDeferFlag(in *redisproto.Command) bool {
 func parseWeakFlag(in *redisproto.Command) time.Duration {
 	i := in.ArgCount() - 2
 	if i >= 2 && in.EqualFold(i, "WEAK") {
-		x := atof2p(in.Argv[i+1])
+		x := internal.MustParseFloatBytes(in.Argv[i+1])
 		in.Argv = in.Argv[:i]
 		return time.Duration(int64(x*1e6) * 1e3)
 	}
@@ -526,21 +353,6 @@ func joinArray(v interface{}) string {
 		p = append(p, fmt.Sprint(rv.Index(i).Interface()))
 	}
 	return strings.Join(p, " ")
-}
-
-type locker int32
-
-func (l *locker) lock(v int32) (int32, bool) {
-	if v == 0 {
-		panic(0)
-	} else if atomic.CompareAndSwapInt32((*int32)(l), 0, v) {
-		return v, true
-	}
-	return atomic.LoadInt32((*int32)(l)), false
-}
-
-func (l *locker) unlock() {
-	atomic.StoreInt32((*int32)(l), 0)
 }
 
 type bigKeysHeap []Pair
@@ -567,11 +379,11 @@ func (s *Server) BigKeys(n, shard int) []string {
 	}
 	h := &bigKeysHeap{}
 	heap.Init(h)
-	for i, db := range s.db {
+	for i := range s.db {
 		if shard != -1 && i != shard {
 			continue
 		}
-		db.View(func(tx *bbolt.Tx) error {
+		s.db[i].View(func(tx *bbolt.Tx) error {
 			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
 				if bytes.HasPrefix(name, []byte("zset.score.")) {
 					return nil

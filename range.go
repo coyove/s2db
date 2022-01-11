@@ -8,33 +8,38 @@ import (
 	"path/filepath"
 	"unsafe"
 
+	"github.com/coyove/s2db/internal"
+	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
 var (
-	MinScoreRange = RangeLimit{Float: math.Inf(-1), Inclusive: true}
-	MaxScoreRange = RangeLimit{Float: math.Inf(1), Inclusive: true}
+	MinScoreRange = internal.RangeLimit{Float: math.Inf(-1), Inclusive: true}
+	MaxScoreRange = internal.RangeLimit{Float: math.Inf(1), Inclusive: true}
 )
 
 func (s *Server) ZCount(lex bool, name string, start, end string, match string) (int, error) {
 	if lex {
-		_, c, err := s.runPreparedRangeTx(name, rangeLex(name, (RangeLimit{}).fromString(start), (RangeLimit{}).fromString(end), RangeOptions{
-			OffsetStart: 0,
-			OffsetEnd:   math.MaxInt64,
-			CountOnly:   true,
-			LexMatch:    match,
-		}))
+		_, c, err := s.runPreparedRangeTx(name, rangeLex(name,
+			internal.NewRLFromString(start),
+			internal.NewRLFromString(end),
+			internal.RangeOptions{
+				OffsetStart: 0,
+				OffsetEnd:   math.MaxInt64,
+				CountOnly:   true,
+				LexMatch:    match,
+			}))
 		return c, err
 	}
-	rangeStart, err := (RangeLimit{}).fromFloatString(start)
+	rangeStart, err := internal.NewRLFromFloatString(start)
 	if err != nil {
 		return 0, err
 	}
-	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
+	rangeEnd, err := internal.NewRLFromFloatString(end)
 	if err != nil {
 		return 0, err
 	}
-	_, c, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	_, c, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		CountOnly:   true,
@@ -44,58 +49,61 @@ func (s *Server) ZCount(lex bool, name string, start, end string, match string) 
 
 }
 
-func (s *Server) ZRange(rev bool, name string, start, end int, withData bool) ([]Pair, error) {
+func (s *Server) ZRange(rev bool, name string, start, end int, flags redisproto.Flags) ([]Pair, error) {
 	if rev {
-		p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MaxScoreRange, MinScoreRange, RangeOptions{
+		p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MaxScoreRange, MinScoreRange, internal.RangeOptions{
 			Rev:         true,
 			OffsetStart: start,
 			OffsetEnd:   end,
-			WithData:    withData,
+			WithData:    flags.WITHDATA,
 		}))
 		return p, err
 	}
-	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, MinScoreRange, MaxScoreRange, internal.RangeOptions{
 		OffsetStart: start,
 		OffsetEnd:   end,
-		WithData:    withData,
+		WithData:    flags.WITHDATA,
 	}))
 	return p, err
 }
 
-func (s *Server) ZRangeByLex(rev bool, name string, start, end string, match string, limit int, withData bool) ([]Pair, error) {
-	p, _, err := s.runPreparedRangeTx(name, rangeLex(name, (RangeLimit{}).fromString(start), (RangeLimit{}).fromString(end), RangeOptions{
-		Rev:      rev,
-		LexMatch: match,
-		Limit:    limit,
-	}))
-	if withData {
+func (s *Server) ZRangeByLex(rev bool, name string, start, end string, flags redisproto.Flags) ([]Pair, error) {
+	p, _, err := s.runPreparedRangeTx(name, rangeLex(name,
+		internal.NewRLFromString(start),
+		internal.NewRLFromString(end),
+		internal.RangeOptions{
+			Rev:      rev,
+			LexMatch: flags.MATCH,
+			Limit:    flags.LIMIT,
+		}))
+	if flags.WITHDATA {
 		err = s.fillPairsData(name, p)
 	}
 	return p, err
 }
 
-func (s *Server) ZRangeByScore(rev bool, name string, start, end string, match, matchData string, limit int, withData bool) (p []Pair, err error) {
-	rangeStart, err := (RangeLimit{}).fromFloatString(start)
+func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags redisproto.Flags) (p []Pair, err error) {
+	rangeStart, err := internal.NewRLFromFloatString(start)
 	if err != nil {
 		return nil, err
 	}
-	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
+	rangeEnd, err := internal.NewRLFromFloatString(end)
 	if err != nil {
 		return nil, err
 	}
-	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
 		Rev:            rev,
 		OffsetStart:    0,
 		OffsetEnd:      math.MaxInt64,
-		Limit:          limit,
-		WithData:       withData,
-		LexMatch:       match,
-		ScoreMatchData: matchData,
+		Limit:          flags.LIMIT,
+		WithData:       flags.WITHDATA,
+		LexMatch:       flags.MATCH,
+		ScoreMatchData: flags.MATCHDATA,
 	}))
 	return p, err
 }
 
-func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
+func rangeLex(name string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + name))
 		if bk == nil {
@@ -115,7 +123,7 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 			}
 
 			if !opt.CountOnly {
-				pairs = append(pairs, Pair{Key: string(k), Score: bytesToFloat(sc)})
+				pairs = append(pairs, Pair{Key: string(k), Score: internal.BytesToFloat(sc)})
 			}
 			count++
 			return nil
@@ -134,13 +142,13 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 					}
 				}
 			}
-			k, sc := c.Seek(startBuf)
+			var k, sc = c.Seek(startBuf)
 			if len(k) == 0 {
 				k, sc = c.Last()
 			} else {
 				k, sc = c.Prev()
 			}
-			for i := 0; len(pairs) < opt.getLimit(); i++ {
+			for i := 0; len(pairs) < getLimit(opt); i++ {
 				if len(sc) > 0 && bytes.Compare(k, startBuf) <= 0 && bytes.Compare(k, endBuf) >= endFlag {
 					if err := do(k, sc); err != nil {
 						return nil, 0, err
@@ -159,7 +167,7 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 				endFlag = -1
 			}
 			k, sc := c.Seek(startBuf)
-			for i := 0; len(pairs) < opt.getLimit(); i++ {
+			for i := 0; len(pairs) < getLimit(opt); i++ {
 				if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
 					if err := do(k, sc); err != nil {
 						return nil, 0, err
@@ -178,13 +186,13 @@ func rangeLex(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbo
 	}
 }
 
-func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
+func rangeScore(name string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + name))
 		if bk == nil {
 			return
 		}
-		opt.translateOffset(name, bk)
+		opt.TranslateOffset(name, bk)
 
 		c := bk.Cursor()
 		do := func(k, dataBuf []byte) error {
@@ -208,7 +216,7 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 				}
 			}
 			if !opt.CountOnly {
-				p := Pair{Key: key, Score: bytesToFloat(k[:8])}
+				p := Pair{Key: key, Score: internal.BytesToFloat(k[:8])}
 				if opt.WithData {
 					p.Data = append([]byte{}, dataBuf...)
 				}
@@ -218,7 +226,7 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			return nil
 		}
 
-		startInt, endInt := floatToInternalUint64(start.Float), floatToInternalUint64(end.Float)
+		startInt, endInt := internal.FloatToOrderedUint64(start.Float), internal.FloatToOrderedUint64(end.Float)
 		if opt.Rev {
 			if start.Inclusive {
 				startInt++
@@ -226,13 +234,13 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			if !end.Inclusive {
 				endInt++
 			}
-			k, dataBuf := c.Seek(intToBytes(startInt))
+			var k, dataBuf = c.Seek(internal.Uint64ToBytes(startInt))
 			if len(k) == 0 {
 				k, dataBuf = c.Last()
 			} else {
 				k, dataBuf = c.Prev()
 			}
-			for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
+			for i := 0; len(k) >= 8 && len(pairs) < getLimit(opt); i++ {
 				x := binary.BigEndian.Uint64(k)
 				if x <= startInt && x >= endInt {
 					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
@@ -252,8 +260,8 @@ func rangeScore(name string, start, end RangeLimit, opt RangeOptions) func(tx *b
 			if end.Inclusive {
 				endInt++
 			}
-			k, dataBuf := c.Seek(intToBytes(startInt))
-			for i := 0; len(k) >= 8 && len(pairs) < opt.getLimit(); i++ {
+			k, dataBuf := c.Seek(internal.Uint64ToBytes(startInt))
+			for i := 0; len(k) >= 8 && len(pairs) < getLimit(opt); i++ {
 				x := binary.BigEndian.Uint64(k)
 				if x >= startInt && x < endInt {
 					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
@@ -312,7 +320,7 @@ func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err err
 }
 
 func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []Pair, nextCursor string, err error) {
-	if count > HardLimit {
+	if count > HardLimit || count <= 0 {
 		count = HardLimit
 	}
 	count++

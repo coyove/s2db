@@ -15,9 +15,8 @@ import (
 	"time"
 
 	"github.com/coyove/common/lru"
-	"github.com/coyove/common/sched"
 	"github.com/coyove/nj"
-	_ "github.com/coyove/nj/lib"
+	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/go-redis/redis/v8"
@@ -51,13 +50,12 @@ type Server struct {
 	MasterPassword   string
 	DataPath         string
 	RedirectWrites   string
-	Inspector        *nj.Program
-	DieKey           sched.SchedKey
+	Inspector        *bas.Program
 	Cache            *keyedCache
 	WeakCache        *lru.Cache
 	Slaves           slaves
 	Master           serverInfo
-	CompactLock      locker
+	CompactLock      internal.LockBox
 
 	Survey struct {
 		StartAt                 time.Time
@@ -77,7 +75,7 @@ type Server struct {
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
-		compactReplacing  bool
+		compactReplacing  internal.Locker
 	}
 	ConfigDB *bbolt.DB
 }
@@ -206,7 +204,7 @@ func (s *Server) Serve(addr string) error {
 	go s.schedCompactionJob() // TODO: close signal
 
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
-		s.runInspectFuncRet("compactonresume", atoip(v))
+		s.runInspectFuncRet("compactonresume", internal.MustParseInt(v))
 	}
 
 	runner := func(ln net.Listener) {
@@ -342,26 +340,11 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	// General commands
 	switch cmd {
 	case "DIE":
-		quit := func() {
-			log.Info(s.Close())
-			os.Exit(100)
-		}
-		sec := time.Now().Second()
-		if sec > 58 || strings.EqualFold(name, "now") {
-			quit()
-		}
-		s.DieKey.Reschedule(quit, time.Duration(59-sec)*time.Second)
-		return w.WriteInt(59 - int64(sec))
+		log.Info(s.Close())
+		os.Exit(100)
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
-		if strings.HasPrefix(name, "=") {
-			v, err := atof(name)
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			return w.WriteSimpleString(ftoa(v))
-		}
 		p, err := nj.LoadString(name, s.getCompileOptions(command.Argv[2:]...))
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -410,23 +393,23 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "INFO":
 		switch n := strings.ToLower(name); {
 		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
-			return w.WriteBulkString(s.shardInfo(atoip(n)))
+			return w.WriteBulkString(s.shardInfo(internal.MustParseInt(n)))
 		default:
 			return w.WriteBulkString(s.Info(n))
 		}
 	case "DUMPSHARD":
 		path := command.Get(2)
 		if path == "" {
-			path = s.db[atoip(name)].DB.Path() + ".bak"
+			path = s.db[internal.MustParseInt(name)].DB.Path() + ".bak"
 		}
-		return w.WriteIntOrError(s.db[atoip(name)].DB.Dump(path))
+		return w.WriteIntOrError(s.db[internal.MustParseInt(name)].DB.Dump(path))
 	case "COMPACTSHARD":
-		if err := s.CompactShard(atoip(name), true); err != nil {
+		if err := s.CompactShard(internal.MustParseInt(name), true); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("STARTED")
 	case "REMAPSHARD":
-		if err := s.remapShard(atoip(name), command.Get(2)); err != nil {
+		if err := s.remapShard(internal.MustParseInt(name), command.Get(2)); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
@@ -437,21 +420,23 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "LOGTAIL":
 		var c uint64
 		if name != "" {
-			c, err = s.myLogTail(atoip(name))
+			c, err = s.myLogTail(internal.MustParseInt(name))
 		} else {
 			c, err = s.myLogTail(-1)
 		}
 		return w.WriteIntOrError(int64(c), err)
 	case "REQUESTLOG":
-		start := atoi64(command.Get(2))
+		start := internal.ParseUint64(command.Get(2))
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.responseLog(atoip(name), start, false)
+		logs, err := s.responseLog(internal.MustParseInt(name), start, false)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.Slaves.Update(w.RemoteIP().String(), func(info *serverInfo) { info.LogTails[atoip(name)] = start - 1 })
+		s.Slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
+			info.LogTails[internal.MustParseInt(name)] = start - 1
+		})
 		return w.WriteBulkStrings(logs)
 	}
 
@@ -493,7 +478,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulk(ftob(s[0]))
+		return w.WriteBulk(internal.FormatFloatBulk(s[0]))
 	case "ZMSCORE":
 		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
 		if err != nil {
@@ -501,7 +486,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		data := [][]byte{}
 		for _, s := range s {
-			data = append(data, ftob(s))
+			data = append(data, internal.FormatFloatBulk(s))
 		}
 		return w.WriteBulks(data...)
 	case "ZMDATA":
@@ -528,8 +513,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
-		match := command.Get(5) // maybe empty
-		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", name, command.Get(2), command.Get(3), match)
+		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", name, command.Get(2), command.Get(3), command.Flags(4).MATCH)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -543,9 +527,8 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		} else if v := s.getWeakCache(h, weak); v != nil {
 			c = v.(int)
 		} else {
-			// ZRANK name key LIMIT X
-			limit := atoi(command.Get(4))
-			c, err = s.ZRank(isRev, name, command.Get(2), limit)
+			// COMMAND name key COUNT X
+			c, err = s.ZRank(isRev, name, command.Get(2), command.Flags(3).COUNT)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -557,54 +540,32 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		}
 		return w.WriteInt(int64(c))
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+		// COMMAND name start end FLAGS ...
+		flags := command.Flags(4)
 		if v := s.getCache(h); v != nil {
-			return writePairs(v.([]Pair), w, command)
+			return writePairs(v.([]Pair), w, flags)
 		}
 		if v := s.getWeakCache(h, weak); v != nil {
-			return writePairs(v.([]Pair), w, command)
+			return writePairs(v.([]Pair), w, flags)
 		}
 		start, end := command.Get(2), command.Get(3)
 		if end == "" {
 			end = start
 		}
-		limit, match, matchData, withData := -1, "", "", false
-
-		// Parse command flags and remove "LIMIT 0 X" and "MATCH X"
-		for i := 3; i < command.ArgCount(); i++ {
-			if command.EqualFold(i, "LIMIT") {
-				if atoi(command.Get(i+1)) != 0 {
-					return w.WriteError("non-zero limit offset not supported")
-				}
-				limit = atoi(command.Get(i + 2))
-				command.Argv = append(command.Argv[:i], command.Argv[i+3:]...)
-				i--
-			} else if command.EqualFold(i, "WITHDATA") {
-				withData = true
-			} else if command.EqualFold(i, "MATCH") {
-				match = command.Get(i + 1)
-				command.Argv = append(command.Argv[:i], command.Argv[i+2:]...)
-				i--
-			} else if command.EqualFold(i, "MATCHDATA") {
-				matchData = command.Get(i + 1)
-				command.Argv = append(command.Argv[:i], command.Argv[i+2:]...)
-				i--
-			}
-		}
-
 		switch cmd {
 		case "ZRANGE", "ZREVRANGE":
-			p, err = s.ZRange(isRev, name, atoip(start), atoip(end), withData)
+			p, err = s.ZRange(isRev, name, internal.MustParseInt(start), internal.MustParseInt(end), flags)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			p, err = s.ZRangeByLex(isRev, name, start, end, match, limit, withData)
+			p, err = s.ZRangeByLex(isRev, name, start, end, flags)
 		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			p, err = s.ZRangeByScore(isRev, name, start, end, match, matchData, limit, withData)
+			p, err = s.ZRangeByScore(isRev, name, start, end, flags)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.addCache(wm, name, h, p)
 		s.WeakCache.AddWeight(h, &weakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
-		return writePairs(p, w, command)
+		return writePairs(p, w, flags)
 	case "GEORADIUS", "GEORADIUS_RO":
 		return s.runGeoRadius(w, false, name, h, wm, weak, command)
 	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
@@ -614,31 +575,16 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "GEOPOS":
 		return s.runGeoPos(w, name, command)
 	case "SCAN":
-		limit, match, withScores, inShard := HardLimit, "", false, -1
-		for i := 2; i < command.ArgCount(); i++ {
-			if command.EqualFold(i, "COUNT") {
-				limit = atoip(command.Get(i + 1))
-				i++
-			} else if command.EqualFold(i, "SHARD") {
-				inShard = atoip(command.Get(i + 1))
-				i++
-			} else if command.EqualFold(i, "MATCH") {
-				match = command.Get(i + 1)
-				i++
-			} else if command.EqualFold(i, "WITHSCORES") {
-				withScores = true
-			}
-
-		}
-		p, next, err := s.Scan(name, match, inShard, limit)
+		flags := command.Flags(2)
+		p, next, err := s.Scan(name, flags.MATCH, flags.SHARD, flags.COUNT)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		keys := []interface{}{}
 		for _, p := range p {
 			keys = append(keys, p.Key)
-			if withScores {
-				keys = append(keys, ftoa(p.Score))
+			if flags.WITHSCORES {
+				keys = append(keys, internal.FormatFloat(p.Score))
 			}
 		}
 		return w.WriteObjects(next, keys)
@@ -647,7 +593,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "QHEAD":
 		return w.WriteIntOrError(s.QHead(name))
 	case "QINDEX":
-		v, err := s.QGet(name, int64(atoip(command.Get(2))))
+		v, err := s.QGet(name, internal.MustParseInt64(command.Get(2)))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -656,10 +602,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if c := s.getCache(h); c != nil {
 			return w.WriteBulksSlice(c.([][]byte))
 		}
-		start := int64(atoip(command.Get(2)))
-		n := int64(atoip(command.Get(3)))
-		withIndexes := command.EqualFold(4, "WITHINDEXES")
-		data, err := s.QScan(name, start, n, withIndexes)
+		start := internal.MustParseInt64(command.Get(2))
+		n := internal.MustParseInt64(command.Get(3))
+		data, err := s.QScan(name, start, n, command.Flags(4).WITHINDEXES)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

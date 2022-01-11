@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
+
+	"github.com/coyove/s2db/internal"
 )
 
 func TestCommandJoinSplit(t *testing.T) {
@@ -57,7 +61,7 @@ func TestFloatBytesComparison(t *testing.T) {
 		for i := 0; i < 1e6; i++ {
 			a := rand.Float64() * k
 			b := rand.Float64() * k
-			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
 			if a > b && s == 1 {
 			} else if a < b && s == -1 {
 			} else {
@@ -68,16 +72,16 @@ func TestFloatBytesComparison(t *testing.T) {
 		for i := 0; i < 1e6; i++ {
 			a := rand.Float64() * k
 			b := -rand.Float64() * k
-			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
 			if s != 1 {
-				t.Fatal(a, b, floatToBytes(a), floatToBytes(b))
+				t.Fatal(a, b, internal.FloatToBytes(a), internal.FloatToBytes(b))
 			}
 		}
 
 		for i := 0; i < 1e6; i++ {
 			a := -rand.Float64() * k
 			b := -rand.Float64() * k
-			s := bytes.Compare(floatToBytes(a), floatToBytes(b))
+			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
 			if a > b && s == 1 {
 			} else if a < b && s == -1 {
 			} else {
@@ -87,7 +91,7 @@ func TestFloatBytesComparison(t *testing.T) {
 
 		for i := 0; i < 1e6; i++ {
 			a := -rand.Float64() * k
-			if x := bytesToFloat(floatToBytes(a)); math.Abs((x-a)/a) > 1e-6 {
+			if x := internal.BytesToFloat(internal.FloatToBytes(a)); math.Abs((x-a)/a) > 1e-6 {
 				t.Fatal(a, x)
 			}
 		}
@@ -97,13 +101,28 @@ func TestFloatBytesComparison(t *testing.T) {
 	do(2)
 	do(math.Float64frombits(0x7FEFFFFFFFFFFFFF)) // max float64 below +inf
 
-	fmt.Println(floatToBytes(math.Inf(1)))
-	fmt.Println(floatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
-	fmt.Println(floatToBytes(math.Inf(-1)))
-	fmt.Println(floatToBytes(math.Float64frombits(1 << 63)))
-	fmt.Println(floatToBytes(0))
+	fmt.Println(internal.FloatToBytes(math.Inf(1)))
+	fmt.Println(internal.FloatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
+	fmt.Println(internal.FloatToBytes(math.Inf(-1)))
+	fmt.Println(internal.FloatToBytes(math.Float64frombits(1 << 63)))
+	fmt.Println(internal.FloatToBytes(0))
 
-	if !bytes.Equal(floatToBytes(0), floatToBytes(math.Float64frombits(1<<63))) {
+	if !bytes.Equal(internal.FloatToBytes(0), internal.FloatToBytes(math.Float64frombits(1<<63))) {
 		t.FailNow()
+	}
+}
+
+func BenchmarkGlobMatch(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		filepath.Match("ab*e", "abccccccd")
+	}
+}
+
+func BenchmarkRegexpMatch(b *testing.B) {
+	b.StopTimer()
+	rx := regexp.MustCompile("ab.*e")
+	b.StartTimer()
+	for i := 0; i < b.N; i++ {
+		rx.MatchString("abccccccd")
 	}
 }

@@ -17,17 +17,19 @@ func (l *Locker) Unlock() {
 	l.mu.Unlock()
 }
 
-func (l *Locker) Wait() {
+func (l *Locker) Wait(waiting func()) {
 	if *(*int32)(unsafe.Pointer(l)) == 0 {
 		return
 	}
 	l.mu.Lock()
-	_ = 1
+	if waiting != nil {
+		waiting()
+	}
 	l.mu.Unlock()
 }
 
 type LockBox struct {
-	mu sync.Locker
+	mu sync.Mutex
 	v  interface{}
 }
 
@@ -45,4 +47,10 @@ func (b *LockBox) Unlock() {
 	b.mu.Lock()
 	b.v = nil
 	b.mu.Unlock()
+}
+
+func PanicErr(err error) {
+	if err != nil {
+		panic(err)
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/mmcloughlin/geohash"
 	"go.etcd.io/bbolt"
@@ -62,8 +63,8 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 		if len(fromBuf) != 8 || len(toBuf) != 8 {
 			return nil
 		}
-		fromLat, fromLong := geohash.DecodeIntWithPrecision(uint64(bytesToFloat(fromBuf)), 52)
-		toLat, toLong := geohash.DecodeIntWithPrecision(uint64(bytesToFloat(toBuf)), 52)
+		fromLat, fromLong := geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(fromBuf)), 52)
+		toLat, toLong := geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(toBuf)), 52)
 		dist = geoDist(fromLat, fromLong, toLat, toLong)
 		return nil
 	})
@@ -74,9 +75,9 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 		return w.WriteBulks()
 	}
 	if string(command.At(4)) == "km" {
-		return w.WriteBulkString(ftoa(dist / 1000))
+		return w.WriteBulkString(internal.FormatFloat(dist / 1000))
 	}
-	return w.WriteBulkString(ftoa(dist))
+	return w.WriteBulkString(internal.FormatFloat(dist))
 }
 
 func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisproto.Command) error {
@@ -99,7 +100,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 			if len(fromBuf) != 8 {
 				continue
 			}
-			coords[i-2][1], coords[i-2][0] = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(fromBuf)), 52)
+			coords[i-2][1], coords[i-2][0] = geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(fromBuf)), 52)
 		}
 		return nil
 	})
@@ -111,7 +112,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 		if math.IsNaN(c[0]) || math.IsNaN(c[1]) {
 			data = append(data, nil)
 		} else {
-			data = append(data, []interface{}{ftoa(c[1]), ftoa(c[0])})
+			data = append(data, []interface{}{internal.FormatFloat(c[1]), internal.FormatFloat(c[0])})
 		}
 	}
 	return w.WriteObjectsSlice(data)
@@ -131,17 +132,17 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		key = command.Get(2)
 		options = command.Argv[3:]
 	} else {
-		long, err = atof(command.Get(2))
+		long, err = internal.ParseFloat(command.Get(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		lat, err = atof(command.Get(3))
+		lat, err = internal.ParseFloat(command.Get(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 	}
 
-	radius, err := atof(string(options[0]))
+	radius, err := internal.ParseFloat(string(options[0]))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -156,7 +157,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	options = append(options, nil)
 	for i := 2; i < len(options)-1; i++ {
 		if bytes.EqualFold(options[i], []byte("COUNT")) {
-			count = atoip(string(options[i+1]))
+			count = internal.MustParseInt(string(options[i+1]))
 			i++
 			if bytes.EqualFold(options[i+1], []byte("ANY")) {
 				any = true
@@ -215,14 +216,14 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	for _, p := range p {
 		tmp := []interface{}{p.Key}
 		if withHash {
-			tmp = append(tmp, ftoa(p.Score))
+			tmp = append(tmp, internal.FormatFloat(p.Score))
 		}
 		if withDist {
-			tmp = append(tmp, ftoa(geoDistHash(lat, long, uint64(p.Score))))
+			tmp = append(tmp, internal.FormatFloat(geoDistHash(lat, long, uint64(p.Score))))
 		}
 		if withCoord {
 			lat, long := geohash.DecodeIntWithPrecision(uint64(p.Score), 52)
-			tmp = append(tmp, ftoa(long), ftoa(lat))
+			tmp = append(tmp, internal.FormatFloat(long), internal.FormatFloat(lat))
 		}
 		if withData {
 			tmp = append(tmp, string(p.Data))
@@ -257,7 +258,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 			if len(buf) != 8 {
 				return fmt.Errorf("%q not found in %q", key, name)
 			}
-			lat, long = geohash.DecodeIntWithPrecision(uint64(bytesToFloat(buf)), 52)
+			lat, long = geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(buf)), 52)
 		}
 
 		center := geohash.EncodeIntWithPrecision(lat, long, bits)
@@ -270,14 +271,14 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 		// iterate neighbours, starting at center (itself)
 		for c := bk.Cursor(); len(neigs) > 0; neigs = neigs[1:] {
 			start := neigs[0] << (52 - bits)
-			startBuf := floatToBytes(float64(start))
+			startBuf := internal.FloatToBytes(float64(start))
 
 			end := (neigs[0] + 1) << (52 - bits)
-			endBuf := floatToBytes(float64(end))
+			endBuf := internal.FloatToBytes(float64(end))
 
 			for k, v := c.Seek(startBuf); ; k, v = c.Next() {
 				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-					if s := bytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
+					if s := internal.BytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
 						p := Pair{Key: string(k[8:]), Score: s}
 						if withData {
 							p.Data = append([]byte{}, v...)

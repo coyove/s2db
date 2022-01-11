@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -41,7 +42,7 @@ func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bb
 	case int64:
 		return w.WriteInt(res)
 	case float64:
-		return w.WriteBulkString(ftoa(res))
+		return w.WriteBulkString(internal.FormatFloat(res))
 	default:
 		panic(-99)
 	}
@@ -110,10 +111,10 @@ EXIT:
 
 func (s *Server) runTasks(tasks []*batchTask, shard int) {
 	start := time.Now()
-	for ; s.db[shard].compactReplacing && time.Since(start).Seconds() < float64(s.CompactRunWait); time.Sleep(100 * time.Millisecond) {
-		// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
-		// so we wait CompactRunWait seconds for its recovery
-	}
+	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
+	s.db[shard].compactReplacing.Wait(func() {
+		log.Infof("shard #%d runner is waiting for compaction", shard)
+	})
 	outs := make([]interface{}, len(tasks))
 	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		var err error

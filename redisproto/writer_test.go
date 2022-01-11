@@ -33,3 +33,16 @@ func TestWriter_WriteSlice2(t *testing.T) {
 		t.Errorf("Unexpected WriteObjectsSlice, got %s", buff.String())
 	}
 }
+
+func BenchmarkFlags(b *testing.B) {
+	cmd := Command{Argv: [][]byte{
+		[]byte("ZADD"),
+		[]byte("zzz"),
+		[]byte("1.2345"),
+		[]byte("key"),
+		[]byte("withscores"),
+	}}
+	for i := 0; i < b.N; i++ {
+		cmd.Flags(2)
+	}
+}

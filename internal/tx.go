@@ -3,6 +3,7 @@ package internal
 import (
 	"sync"
 
+	"github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -101,11 +102,13 @@ func (tx *OnetimeLimitedTx) Finish() error {
 }
 
 type BucketWalker struct {
-	Bucket      *bbolt.Bucket
-	BucketName  string
-	Tx          *OnetimeLimitedTx
-	QueueTTL    int
-	WALStartBuf []byte
-	Total       *int64
-	QueueDrops  *int64
+	Bucket       *bbolt.Bucket
+	BucketName   string
+	Tx           *OnetimeLimitedTx
+	QueueTTL     int
+	WALStartBuf  []byte
+	Total        *int64
+	QueueDrops   *int64
+	QueueDeletes *int64
+	Logger       *logrus.Entry
 }

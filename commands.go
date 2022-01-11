@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
@@ -22,7 +23,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	}
 	bkWal.FillPercent = 0.9
 	id, _ := bkWal.NextSequence()
-	return bkWal.Put(intToBytes(id), dd)
+	return bkWal.Put(internal.Uint64ToBytes(id), dd)
 }
 
 func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
@@ -45,10 +46,8 @@ func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (i
 			data = true
 			continue
 		case "FILL":
-			fillPercent, err = atof(command.Get(idx + 1))
-			if err != nil {
-				panic(err)
-			}
+			fillPercent, err = internal.ParseFloat(command.Get(idx + 1))
+			internal.PanicErr(err)
 			idx++
 			continue
 		}
@@ -58,12 +57,12 @@ func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (i
 	pairs := []Pair{}
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			s := atof2p(command.Argv[i])
+			s := internal.MustParseFloatBytes(command.Argv[i])
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			s := atof2p(command.Argv[i])
+			s := internal.MustParseFloatBytes(command.Argv[i])
 			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
 		}
 	}
@@ -85,14 +84,14 @@ func parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (in
 	case "ZREMRANGEBYSCORE":
 		return prepareZRemRangeByScore(name, start, end, dd)
 	case "ZREMRANGEBYRANK":
-		return prepareZRemRangeByRank(name, atoip(start), atoip(end), dd)
+		return prepareZRemRangeByRank(name, internal.MustParseInt(start), internal.MustParseInt(end), dd)
 	default:
 		panic(-1)
 	}
 }
 
 func parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	by := atof2p(command.Argv[2])
+	by := internal.MustParseFloatBytes(command.Argv[2])
 	return prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
 }
 
@@ -139,7 +138,7 @@ func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err err
 		for i, key := range keys {
 			scoreBuf := bkName.Get([]byte(key))
 			if len(scoreBuf) != 0 {
-				scores[i] = bytesToFloat(scoreBuf)
+				scores[i] = internal.BytesToFloat(scoreBuf)
 			}
 		}
 		return nil
@@ -183,7 +182,7 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 		if err := bkName.Delete([]byte(p.Key)); err != nil {
 			return err
 		}
-		if err := bkScore.Delete([]byte(string(floatToBytes(p.Score)) + p.Key)); err != nil {
+		if err := bkScore.Delete([]byte(string(internal.FloatToBytes(p.Score)) + p.Key)); err != nil {
 			return err
 		}
 	}
@@ -192,7 +191,7 @@ func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
 
 func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	value := append([]byte{}, command.At(2)...)
-	max := int64(atoi(command.Get(3)))
+	max := int64(internal.ParseInt(command.Get(3)))
 
 	var m func(string) bool
 	switch appender := strings.ToUpper(command.Get(4)); appender {
@@ -200,9 +199,7 @@ func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx)
 		v := command.Get(5)
 		m = func(a string) bool {
 			ok, err := filepath.Match(v, a)
-			if err != nil {
-				panic(err)
-			}
+			internal.PanicErr(err)
 			return ok != (appender == "NOTMATCH")
 		}
 	}

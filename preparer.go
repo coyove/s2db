@@ -8,6 +8,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/coyove/s2db/internal"
 	"go.etcd.io/bbolt"
 )
 
@@ -71,7 +72,7 @@ func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64
 				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
 					return nil, err
 				}
-				if p.Score != bytesToFloat(scoreBuf) {
+				if p.Score != internal.BytesToFloat(scoreBuf) {
 					updated++
 				}
 			} else {
@@ -81,7 +82,7 @@ func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64
 				}
 				added++
 			}
-			scoreBuf = floatToBytes(p.Score)
+			scoreBuf = internal.FloatToBytes(p.Score)
 			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
 				return nil, err
 			}
@@ -108,7 +109,7 @@ func prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (inte
 			if len(scoreBuf) == 0 {
 				continue
 			}
-			pairs = append(pairs, Pair{Key: key, Score: bytesToFloat(scoreBuf)})
+			pairs = append(pairs, Pair{Key: key, Score: internal.BytesToFloat(scoreBuf)})
 		}
 		return len(pairs), deletePair(tx, name, pairs, dd)
 	}
@@ -134,7 +135,7 @@ func prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbo
 			if err := bkScore.Delete(oldKey); err != nil {
 				return 0, err
 			}
-			score = bytesToFloat(scoreBuf)
+			score = internal.BytesToFloat(scoreBuf)
 		} else {
 			dataBuf = []byte("")
 		}
@@ -145,7 +146,7 @@ func prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbo
 		if err := checkScore(score + by); err != nil {
 			return 0, err
 		}
-		scoreBuf = floatToBytes(score + by)
+		scoreBuf = internal.FloatToBytes(score + by)
 		if err := bkName.Put([]byte(key), scoreBuf); err != nil {
 			return 0, err
 		}
@@ -158,7 +159,7 @@ func prepareZIncrBy(name string, key string, by float64, dd []byte) func(tx *bbo
 
 func prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := rangeScore(name, MinScoreRange, MaxScoreRange, RangeOptions{
+		_, c, err := rangeScore(name, MinScoreRange, MaxScoreRange, internal.RangeOptions{
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
@@ -169,9 +170,9 @@ func prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbo
 
 func prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart := (RangeLimit{}).fromString(start)
-		rangeEnd := (RangeLimit{}).fromString(end)
-		_, c, err := rangeLex(name, rangeStart, rangeEnd, RangeOptions{
+		rangeStart := internal.NewRLFromString(start)
+		rangeEnd := internal.NewRLFromString(end)
+		_, c, err := rangeLex(name, rangeStart, rangeEnd, internal.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
@@ -181,16 +182,12 @@ func prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *b
 }
 
 func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	rangeStart, err := (RangeLimit{}).fromFloatString(start)
-	if err != nil {
-		panic(err)
-	}
-	rangeEnd, err := (RangeLimit{}).fromFloatString(end)
-	if err != nil {
-		panic(err)
-	}
+	rangeStart, err := internal.NewRLFromFloatString(start)
+	internal.PanicErr(err)
+	rangeEnd, err := internal.NewRLFromFloatString(end)
+	internal.PanicErr(err)
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := rangeScore(name, rangeStart, rangeEnd, RangeOptions{
+		_, c, err := rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,

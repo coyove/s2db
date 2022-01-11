@@ -35,16 +35,16 @@ func (s *Server) CompactShard(shard int, async bool) error {
 func (s *Server) compactShardImpl(shard int, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	if v, ok := s.CompactLock.lock(int32(shard) + 1); !ok {
-		out <- int(v - 1)
-		log.Info("STAGE -1: previous compaction in the way #", v-1)
+	if v, ok := s.CompactLock.Lock(shard); !ok {
+		out <- v.(int)
+		log.Info("STAGE -1: previous compaction in the way #", v)
 		return
 	}
 	out <- shard
 
 	s.LocalStorage().Set("compact_lock", shard)
 	defer func() {
-		s.CompactLock.unlock()
+		s.CompactLock.Unlock()
 		s.LocalStorage().Delete("compact_lock")
 	}()
 
@@ -137,8 +137,8 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
 
 	// STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
-	x.compactReplacing = true
-	defer func() { x.compactReplacing = false }()
+	x.compactReplacing.Lock()
+	defer x.compactReplacing.Unlock()
 
 	x.DB.Close()
 	roDB, err := bbolt.Open(path, 0666, bboltReadonlyOptions)
@@ -299,7 +299,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	slaveMinWal, useSlaveWal := s.calcSlaveWAL(shard)
 
-	var total, queueDrops int64
+	var total, queueDrops, queueDeletes int64
 
 	tmptx, err := internal.CreateOnetimeLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
@@ -362,20 +362,22 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		}
 
 		bucketIn <- &internal.BucketWalker{
-			Bucket:      b,
-			BucketName:  bucketName,
-			Tx:          tmptx,
-			QueueTTL:    queueTTL,
-			WALStartBuf: walStartBuf,
-			Total:       &total,
-			QueueDrops:  &queueDrops,
+			Bucket:       b,
+			BucketName:   bucketName,
+			Tx:           tmptx,
+			QueueTTL:     queueTTL,
+			WALStartBuf:  walStartBuf,
+			Total:        &total,
+			QueueDrops:   &queueDrops,
+			QueueDeletes: &queueDeletes,
+			Logger:       log,
 		}
 	}
 
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: queue drops: %d, limited tx: %v", queueDrops, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: queue drops: %d, queue deletes: %d, limited tx: %v", queueDrops, queueDeletes, tmptx.MapSize.MeanString())
 	return tmptx.Finish()
 }
 
@@ -416,13 +418,14 @@ func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
 			if len(p.WALStartBuf) > 0 {
 				k, _ := tmpb.Cursor().Last()
 				if len(k) != 8 {
-					log.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.WALStartBuf, k, tmpb.Sequence(), p.Total)
+					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.WALStartBuf, k, tmpb.Sequence(), p.Total)
 				} else {
-					log.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), p.Total)
+					p.Logger.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), p.Total)
 				}
 			}
 			if isQueue {
 				if k, _ := tmpb.Cursor().Last(); len(k) == 0 {
+					atomic.AddInt64(p.QueueDeletes, 1)
 					tx.DeleteBucket([]byte(p.BucketName))
 				}
 			}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode/utf8"
 	"unsafe"
+
+	"github.com/coyove/s2db/internal"
 )
 
 var (
@@ -309,4 +311,60 @@ func (r *Parser) Commands() <-chan *Command {
 
 	}()
 	return cmds
+}
+
+type Flags struct {
+	MATCH       string
+	MATCHDATA   string
+	LIMIT       int
+	COUNT       int
+	SHARD       int
+	ANY         bool
+	ASC         bool
+	DESC        bool
+	WITHDATA    bool
+	WITHSCORES  bool
+	WITHCOORD   bool
+	WITHDIST    bool
+	WITHHASH    bool
+	WITHINDEXES bool
+}
+
+func (c *Command) Flags(start int) (f Flags) {
+	f.LIMIT = -1
+	f.COUNT = -1
+	f.SHARD = -1
+	for i := start; i < c.ArgCount(); i++ {
+		if c.EqualFold(i, "COUNT") {
+			f.COUNT = internal.MustParseInt(c.Get(i + 1))
+			i++
+		} else if c.EqualFold(i, "SHARD") {
+			f.SHARD = internal.MustParseInt(c.Get(i + 1))
+			i++
+		} else if c.EqualFold(i, "LIMIT") {
+			if c.Get(i+1) != "0" {
+				panic("non-zero limit offset not supported")
+			}
+			f.LIMIT = internal.MustParseInt(c.Get(i + 2))
+			i += 2
+		} else if c.EqualFold(i, "MATCH") {
+			f.MATCH = c.Get(i + 1)
+			i++
+		} else if c.EqualFold(i, "MATCHDATA") {
+			f.MATCHDATA = c.Get(i + 1)
+			i++
+		} else {
+			f.WITHSCORES = f.WITHCOORD || c.EqualFold(i, "WITHSCORES")
+			f.ANY = f.ANY || c.EqualFold(i, "ANY")
+			f.ASC = f.ASC || c.EqualFold(i, "ASC")
+			f.DESC = f.DESC || c.EqualFold(i, "DESC")
+			f.WITHDATA = f.WITHDATA || c.EqualFold(i, "WITHDATA")
+			f.WITHSCORES = f.WITHSCORES || c.EqualFold(i, "WITHSCORES")
+			f.WITHCOORD = f.WITHCOORD || c.EqualFold(i, "WITHCOORD")
+			f.WITHDIST = f.WITHDIST || c.EqualFold(i, "WITHDIST")
+			f.WITHHASH = f.WITHHASH || c.EqualFold(i, "WITHHASH")
+			f.WITHINDEXES = f.WITHINDEXES || c.EqualFold(i, "WITHINDEXES")
+		}
+	}
+	return
 }

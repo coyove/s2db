@@ -19,7 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/nj/lib"
+	"github.com/coyove/nj"
+	"github.com/coyove/s2db/internal"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -177,7 +178,7 @@ func main() {
 		sp := uuid()
 		http.HandleFunc("/", webInfo(sp, &s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			lib.PlaygroundHandler(s.getCompileOptions())(w, r)
+			nj.PlaygroundHandler(s.getCompileOptions())(w, r)
 		})
 		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
 		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
@@ -264,7 +265,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 		if shard != "" {
 			start := time.Now()
 			w.Write([]byte("<a href='/'>&laquo; index</a>"))
-			w.Write([]byte("<pre>" + s.shardInfo(atoip(shard)) + "</pre>"))
+			w.Write([]byte("<pre>" + s.shardInfo(internal.MustParseInt(shard)) + "</pre>"))
 			w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
 		} else {
 			cpu, disk := getOSUsage()

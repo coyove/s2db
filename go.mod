@@ -11,6 +11,7 @@ require (
 	github.com/stretchr/testify v1.6.1 // indirect
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4 // indirect
+	golang.org/x/sys v0.0.0-20210330210617-4fbd30eecc44
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 
 )

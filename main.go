@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"html/template"
 	"io"
 	"math/rand"
 	"net"
@@ -24,6 +26,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
+	"golang.org/x/sys/unix"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -49,6 +52,9 @@ var (
 
 	noFreelistSync = flag.Bool("F", false, "DEBUG flag, do not use")
 )
+
+//go:embed internal/webui.html
+var webuiHTML string
 
 func main() {
 	flag.Parse()
@@ -169,24 +175,31 @@ func main() {
 	var s *Server
 	var err error
 	var opened = make(chan bool)
+	var fullyOpened sync.Mutex
 	go func() {
 		select {
 		case <-opened:
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		sp := uuid()
+		fullyOpened.Lock()
+		sp := internal.UUID()
 		http.HandleFunc("/", webInfo(sp, &s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
 			nj.PlaygroundHandler(s.getCompileOptions())(w, r)
 		})
-		log.Info("serving HTTP info and pprof at ", *pprofListenAddr)
-		log.Error("http: ", http.ListenAndServe(*pprofListenAddr, nil))
+		ln, _ := net.Listen("tcp", "127.0.0.1:0")
+		log.Info("serving HTTP info and pprof at ", ln.Addr())
+		s.lnWeb = ln
+		fullyOpened.Unlock()
+		log.Error("http: ", http.Serve(ln, nil))
 	}()
+	fullyOpened.Lock()
 	s, err = Open(*dataDir, opened)
 	if err != nil {
 		log.Panic(err)
 	}
+	fullyOpened.Unlock()
 
 	if *serverName != "" {
 		old, _ := s.getConfig("servername")
@@ -239,7 +252,7 @@ func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
 func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, q := *ps, r.URL.Query()
-		section := q.Get("section")
+		// section := q.Get("section")
 		shard := q.Get("shard")
 		password := q.Get("p")
 		ins := q.Get("inspector")
@@ -257,47 +270,28 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			return
 		}
 
+		start := time.Now()
+		cpu, disk := getOSUsage(s)
 		w.Header().Add("Content-Type", "text/html")
-		w.Write([]byte("<meta name='viewport' content='width=device-width, initial-scale=1'><meta charset='utf-8'>"))
-		w.Write([]byte("<title>s2db - " + s.ServerName + "</title>"))
-		w.Write([]byte("<style>body{line-height:1.5}*{font-family:monospace}pre{white-space:pre-wrap;width:100%}td{padding:0.2em}</style><h1>" + s.ServerName + "</h1>"))
-
-		if shard != "" {
-			start := time.Now()
-			w.Write([]byte("<a href='/'>&laquo; index</a>"))
-			w.Write([]byte("<pre>" + s.shardInfo(internal.MustParseInt(shard)) + "</pre>"))
-			w.Write([]byte("<span>returned in " + time.Since(start).String() + "</span>"))
-		} else {
-			cpu, disk := getOSUsage()
-			w.Write([]byte("<button onclick='location.href=\"/" + evalPath + "\"'>open repl</button>"))
-			w.Write([]byte("<pre>cpu: " + cpu + "%<br><br>" + disk + "</pre><br>"))
-			w.Write([]byte("golang pprof: <button onclick='location.href=\"/debug/pprof\"'>open</button><br>"))
-			w.Write([]byte("view shard info: <select onchange='location.href=\"?shard=\"+this.value'><option value=''>-</option>"))
-			for i := 0; i < ShardNum; i++ {
-				w.Write([]byte("<option value=" + strconv.Itoa(i) + ">#" + strconv.Itoa(i) + "</option>"))
-			}
-			w.Write([]byte("</select> (performance may degrade)<br>remote pprof port: <input type=number id=port value='16379'/><br>"))
-			w.Write([]byte("<table border=1 style='margin-top:0.5em'><tr><td>role</td><td>address</td><td>name</td></tr>"))
-			const row = `<tr><td>%s</td><td>%s</td><td>%s</td><td><button onclick='location.href="http://%s:"+port.value'>view</button></td></tr>`
-			slavesInfo := s.slavesSection()
-			s.Slaves.Foreach(func(si *serverInfo) {
-				w.Write([]byte(fmt.Sprintf(row, "slave", si.RemoteAddr, si.ServerName, si.RemoteAddr)))
-				w.Write([]byte(fmt.Sprintf("<tr><td colspan=4><pre>%s</pre></td></tr>", extractSlaveSections(slavesInfo, si.RemoteAddr))))
-			})
-			if s.MasterAddr != "" {
-				host, _, _ := net.SplitHostPort(s.MasterAddr)
-				w.Write([]byte(fmt.Sprintf(row, "master", host, s.MasterNameAssert, host)))
-			}
-			w.Write([]byte("</table><br>"))
-			w.Write([]byte("<pre>" + s.Info(section) + "\n# config\n" + strings.Join(s.listConfig(), "\n") + "</pre>"))
-			w.Write([]byte("<form method=GET>inspector:<br>"))
-			w.Write([]byte("<textarea style='width:100%' rows=20 name=inspector>" + s.InspectorSource + "</textarea>"))
-			w.Write([]byte("<input type=hidden name=p value='" + s.Password + "'><input type=submit value=save></form>"))
-		}
+		template.Must(template.New("").Funcs(template.FuncMap{
+			"kv": func(s string) struct{ Key, Value string } {
+				if idx := strings.Index(s, ":"); idx > 0 {
+					return struct{ Key, Value string }{s[:idx], s[idx+1:]}
+				}
+				return struct{ Key, Value string }{s, ""}
+			},
+		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
+			"s": s, "Elapsed": time.Since(start).Seconds(),
+			"Sections": map[string]string{
+				"Server": "server", "Others": "server_misc", "Replication": "replication",
+				"Read-write": "sys_rw_stats", "Batch": "batch", "Cache": "cache",
+			},
+			"Slaves": s.Slaves.List(), "Shard": shard, "ShardNum": ShardNum, "CPU": cpu, "Disk": disk, "REPLPath": evalPath,
+		})
 	}
 }
 
-func getOSUsage() (cpu, disk string) {
+func getOSUsage(s *Server) (cpu string, diskFreeGB uint64) {
 	buf, _ := exec.Command("ps", "aux").Output()
 	pid := []byte(" " + strconv.Itoa(os.Getpid()) + " ")
 	for _, line := range bytes.Split(buf, []byte("\n")) {
@@ -311,17 +305,8 @@ func getOSUsage() (cpu, disk string) {
 			break
 		}
 	}
-	buf, _ = exec.Command("df", "-h").Output()
-	disk = string(bytes.TrimSpace(buf))
+	var stat unix.Statfs_t
+	unix.Statfs(s.DataPath, &stat)
+	diskFreeGB = stat.Bavail * uint64(stat.Bsize) / 1024 / 1024 / 1024
 	return
-}
-
-func extractSlaveSections(in []string, addr string) string {
-	x := []string{}
-	for _, row := range in {
-		if strings.HasPrefix(row, "slave_"+addr) {
-			x = append(x, row[len(addr)+6:])
-		}
-	}
-	return strings.Join(x, "\n")
 }

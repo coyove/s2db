@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"net"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -48,7 +49,7 @@ func (s *Server) myLogTail(shard int) (total uint64, err error) {
 	return combined, err
 }
 
-func (s *Server) slavesSection() (data []string) {
+func (s *Server) SlaveInfo(addr string) (data []string) {
 	tails, combined, _, err := s.myLogTails()
 	if err != nil {
 		return []string{"error:" + err.Error()}
@@ -58,6 +59,9 @@ func (s *Server) slavesSection() (data []string) {
 	names := []string{}
 	diffs := [ShardNum]int64{}
 	s.Slaves.Foreach(func(si *serverInfo) {
+		if addr != "" && si.RemoteAddr != addr {
+			return
+		}
 		lt := int64(0)
 		for i, t := range si.LogTails {
 			lt += int64(t)
@@ -271,6 +275,11 @@ type serverInfo struct {
 	purgeTimer *time.Timer
 }
 
+func (si *serverInfo) RemoteConnectAddr() string {
+	_, port, _ := net.SplitHostPort(si.ListenAddr)
+	return si.RemoteAddr + ":" + port
+}
+
 func (s *slaves) Get(ip string) *serverInfo {
 	s.RLock()
 	defer s.RUnlock()
@@ -292,6 +301,16 @@ func (s *slaves) Foreach(cb func(*serverInfo)) {
 	for _, sv := range s.q {
 		cb(sv)
 	}
+}
+
+func (s *slaves) List() []*serverInfo {
+	s.RLock()
+	defer s.RUnlock()
+	si := []*serverInfo{}
+	for _, sv := range s.q {
+		si = append(si, sv)
+	}
+	return si
 }
 
 func (s *slaves) Len() (l int) {

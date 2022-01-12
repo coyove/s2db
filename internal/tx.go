@@ -7,7 +7,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-type OnetimeLimitedTx struct {
+type LimitedTx struct {
 	mu       sync.Mutex
 	db       *bbolt.DB
 	tx       *bbolt.Tx
@@ -19,12 +19,12 @@ type OnetimeLimitedTx struct {
 	MapSize Survey
 }
 
-func CreateOnetimeLimitedTx(db *bbolt.DB, size int) (*OnetimeLimitedTx, error) {
+func CreateOnetimeLimitedTx(db *bbolt.DB, size int) (*LimitedTx, error) {
 	tx, err := db.Begin(true)
 	if err != nil {
 		return nil, err
 	}
-	x := &OnetimeLimitedTx{
+	x := &LimitedTx{
 		tx:    tx,
 		db:    db,
 		bkMap: make(map[string]*bbolt.Bucket),
@@ -40,7 +40,7 @@ type OnetimeLimitedTxPut struct {
 	Key, Value []byte
 }
 
-func (tx *OnetimeLimitedTx) Put(p *OnetimeLimitedTxPut) (err error) {
+func (tx *LimitedTx) Put(p *OnetimeLimitedTxPut) (err error) {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 
@@ -85,7 +85,7 @@ func (tx *OnetimeLimitedTx) Put(p *OnetimeLimitedTxPut) (err error) {
 	return nil
 }
 
-func (tx *OnetimeLimitedTx) Close() {
+func (tx *LimitedTx) Close() {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	if !tx.finished {
@@ -94,7 +94,7 @@ func (tx *OnetimeLimitedTx) Close() {
 	}
 }
 
-func (tx *OnetimeLimitedTx) Finish() error {
+func (tx *LimitedTx) Finish() error {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
 	tx.finished = true
@@ -104,7 +104,7 @@ func (tx *OnetimeLimitedTx) Finish() error {
 type BucketWalker struct {
 	Bucket       *bbolt.Bucket
 	BucketName   string
-	Tx           *OnetimeLimitedTx
+	Tx           *LimitedTx
 	QueueTTL     int
 	WALStartBuf  []byte
 	Total        *int64

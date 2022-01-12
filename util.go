@@ -5,11 +5,11 @@ import (
 	"container/heap"
 	"encoding/base64"
 	"encoding/gob"
-	"encoding/hex"
 	"fmt"
 	"io/ioutil"
 	"math"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,20 +46,6 @@ func checkScore(s float64) error {
 	return nil
 }
 
-func uuid() string {
-	buf := make([]byte, 16)
-	rand.Read(buf)
-	return hex.EncodeToString(buf)
-}
-
-func hashStr(s string) (h uint64) {
-	h = 5381
-	for i := 0; i < len(s); i++ {
-		h = h*33 + uint64(s[i])
-	}
-	return h
-}
-
 func hashCommands(in *redisproto.Command) (h [2]uint64) {
 	h = [2]uint64{0, 5381}
 	for _, buf := range in.Argv {
@@ -76,7 +62,7 @@ func hashCommands(in *redisproto.Command) (h [2]uint64) {
 }
 
 func shardIndex(key string) int {
-	return int(hashStr(key) % ShardNum)
+	return int(internal.HashStr(key) % ShardNum)
 }
 
 func restCommandsToKeys(i int, command *redisproto.Command) []string {
@@ -175,85 +161,86 @@ func getLimit(o internal.RangeOptions) int {
 	return limit
 }
 
-func (s *Server) Info(section string) string {
-	sz, dataSize := 0, 0
-	fls := []string{}
-	for i := range s.db {
-		fi, err := os.Stat(s.db[i].Path())
-		internal.PanicErr(err)
-		sz += int(fi.Size())
-		fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
+func (s *Server) Info(section string) (data []string) {
+	if section == "" || section == "server" {
+		data = append(data, "# server",
+			fmt.Sprintf("version:%v", Version),
+			fmt.Sprintf("servername:%v", s.ServerName),
+			fmt.Sprintf("listen:%v", s.ln.Addr().String()),
+			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
+			fmt.Sprintf("readonly:%v", s.ReadOnly),
+			fmt.Sprintf("connections:%v", s.Survey.Connections),
+			"")
 	}
-	dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.ConfigDB.Path()))
-	for _, fi := range dataFiles {
-		dataSize += int(fi.Size())
-	}
-	cwd, _ := os.Getwd()
-	data := []string{
-		"# server",
-		fmt.Sprintf("version:%v", Version),
-		fmt.Sprintf("servername:%v", s.ServerName),
-		fmt.Sprintf("listen:%v", s.ln.Addr().String()),
-		fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
-		fmt.Sprintf("readonly:%v", s.ReadOnly),
-		fmt.Sprintf("connections:%v", s.Survey.Connections),
-		"",
-		"# server_misc",
-		fmt.Sprintf("cwd:%v", cwd),
-		fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
-		fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
-		fmt.Sprintf("db_size:%v", sz),
-		fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
-		fmt.Sprintf("configdb_size_mb:%.2f", float64(s.ConfigDB.Size())/1024/1024),
-		fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
-		"",
-		"# replication",
-		fmt.Sprintf("master_mode:%v", s.MasterMode),
-		fmt.Sprintf("master:%v", s.MasterAddr),
-		fmt.Sprintf("master_name:%v", s.Master.ServerName),
-		fmt.Sprintf("master_version:%v", s.Master.Version),
-		fmt.Sprintf("slaves:%v", s.Slaves.Len()),
-		"",
-		"# sys_rw_stats",
-		fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead),
-		fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysReadLat.MeanString()),
-		fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite),
-		fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWriteLat.MeanString()),
-		fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
-		fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy),
-		fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.ProxyLat.MeanString()),
-		"",
-	}
-	data = append(data, s.slavesSection()...)
-	data = append(data, "# batch",
-		fmt.Sprintf("batch_size:%v", s.Survey.BatchSize.MeanString()),
-		fmt.Sprintf("batch_lat:%v", s.Survey.BatchLat.MeanString()),
-		fmt.Sprintf("batch_size_slave:%v", s.Survey.BatchSizeSv.MeanString()),
-		fmt.Sprintf("batch_lat_slave:%v", s.Survey.BatchLatSv.MeanString()),
-		"",
-		"# cache",
-		fmt.Sprintf("cache_hit_qps:%v", s.Survey.Cache),
-		fmt.Sprintf("cache_obj_count:%v", s.Cache.Len()),
-		fmt.Sprintf("cache_size:%v", s.Cache.curWeight),
-		fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCache),
-		fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
-		fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
-		"")
-	if section != "" {
-		for i, r := range data {
-			if strings.HasPrefix(r, "# ") && strings.HasSuffix(r, section) {
-				for j := i + 1; j < len(data); j++ {
-					if data[j] == "" {
-						return strings.Join(data[i:j+1], "\r\n")
-					}
-				}
-			}
+	if section == "" || section == "server_misc" {
+		sz, dataSize := 0, 0
+		fls := []string{}
+		for i := range s.db {
+			fi, err := os.Stat(s.db[i].Path())
+			internal.PanicErr(err)
+			sz += int(fi.Size())
+			fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
 		}
+		dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.ConfigDB.Path()))
+		for _, fi := range dataFiles {
+			dataSize += int(fi.Size())
+		}
+		cwd, _ := os.Getwd()
+		data = append(data, "# server_misc",
+			fmt.Sprintf("cwd:%v", cwd),
+			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
+			fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
+			fmt.Sprintf("db_size:%v", sz),
+			fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
+			fmt.Sprintf("configdb_size_mb:%.2f", float64(s.ConfigDB.Size())/1024/1024),
+			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
+			"")
 	}
-	return strings.Join(data, "\r\n")
+	if section == "" || section == "replication" {
+		data = append(data, "# replication",
+			fmt.Sprintf("master_mode:%v", s.MasterMode),
+			fmt.Sprintf("master:%v", s.MasterAddr),
+			fmt.Sprintf("master_name:%v", s.Master.ServerName),
+			fmt.Sprintf("master_version:%v", s.Master.Version),
+			fmt.Sprintf("slaves:%v", s.Slaves.Len()),
+			"")
+	}
+	if section == "" || section == "sys_rw_stats" {
+		data = append(data, "# sys_rw_stats",
+			fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead),
+			fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysReadLat.MeanString()),
+			fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite),
+			fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWriteLat.MeanString()),
+			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
+			fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy),
+			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.ProxyLat.MeanString()),
+			"")
+	}
+	if section == "" || section == "batch" {
+		data = append(data, "# batch",
+			fmt.Sprintf("batch_size:%v", s.Survey.BatchSize.MeanString()),
+			fmt.Sprintf("batch_lat:%v", s.Survey.BatchLat.MeanString()),
+			fmt.Sprintf("batch_size_slave:%v", s.Survey.BatchSizeSv.MeanString()),
+			fmt.Sprintf("batch_lat_slave:%v", s.Survey.BatchLatSv.MeanString()),
+			"")
+	}
+	if section == "" || section == "cache" {
+		data = append(data, "# cache",
+			fmt.Sprintf("cache_hit_qps:%v", s.Survey.Cache),
+			fmt.Sprintf("cache_obj_count:%v", s.Cache.Len()),
+			fmt.Sprintf("cache_size:%v", s.Cache.curWeight),
+			fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCache),
+			fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
+			fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
+			"")
+	}
+	if section == "" {
+		data = append(data, s.SlaveInfo(section)...)
+	}
+	return
 }
 
-func (s *Server) shardInfo(shard int) string {
+func (s *Server) ShardInfo(shard int) []string {
 	x := &s.db[shard]
 	fi, err := os.Stat(x.Path())
 	internal.PanicErr(err)
@@ -296,7 +283,8 @@ func (s *Server) shardInfo(shard int) string {
 	})
 	tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
 	tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
-	return strings.Join(tmp, "\r\n") + "\r\n"
+	tmp = append(tmp, "")
+	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
 }
 
 func (s *Server) WaitFirstSlaveCatchUp(timeout float64) (*serverInfo, error) {
@@ -373,7 +361,7 @@ func (h *bigKeysHeap) Pop() interface{} {
 	return x
 }
 
-func (s *Server) BigKeys(n, shard int) []string {
+func (s *Server) BigKeys(n, shard int) map[string]int {
 	if n <= 0 {
 		n = 10
 	}
@@ -389,10 +377,10 @@ func (s *Server) BigKeys(n, shard int) []string {
 					return nil
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, Pair{Key: string(name[5:]), Score: float64(bk.KeyN())})
+					heap.Push(h, Pair{Key: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
 				}
 				if bytes.HasPrefix(name, []byte("q.")) {
-					heap.Push(h, Pair{Key: string(name[2:]), Score: float64(bk.KeyN())})
+					heap.Push(h, Pair{Key: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
 				}
 				if h.Len() > n {
 					heap.Pop(h)
@@ -401,10 +389,18 @@ func (s *Server) BigKeys(n, shard int) []string {
 			})
 		})
 	}
-	x := []string{}
+	x := map[string]int{}
 	for h.Len() > 0 {
 		p := heap.Pop(h).(Pair)
-		x = append(x, strconv.Itoa(int(p.Score))+":"+p.Key)
+		x[p.Key] = int(p.Score)
 	}
 	return x
+}
+
+func getRemoteIP(addr net.Addr) net.IP {
+	tcp, _ := addr.(*net.TCPAddr)
+	if tcp == nil {
+		return net.IPv4bcast
+	}
+	return tcp.IP
 }

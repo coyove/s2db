@@ -1,0 +1,142 @@
+<head>
+    <meta name='viewport' content='width=device-width, initial-scale=1'>
+    <meta charset='utf-8'>
+    <title>[{{.s.ServerName}}] - s2db console</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            line-height: 1.5
+        }
+        textarea {
+            font-family: monospace
+        }
+        pre {
+            white-space: pre-wrap;
+            width: 100%;
+        }
+        table {
+            border: solid;
+            margin: 0.5em 0;
+        }
+        td {
+            padding: 0.2em
+        }
+        .section-container {
+        }
+        .section {
+            border: solid 1px #ddd;
+            border-width: 0 1px;
+        }
+        .section-title {
+            padding: 0.2em 0.5em;
+            background: #677;
+            color: white;
+        }
+        .section-content {
+            padding: 0.2em 0.33em;
+            display: flex;
+        }
+        .section-content:nth-child(odd) {
+            background: rgba(0, 0, 0, 0.05);
+        }
+        .section-key, .section-value {
+            flex-basis: 50%;
+            flex-grow: 1;
+        }
+        .section-value {
+            text-align: right;
+            font-family: monospace
+        }
+    </style>
+</head>
+<body>
+    <h1>{{.s.ServerName}}</h1>
+        {{if .Shard}}
+        <a href='/'>&laquo; index</a>
+        <pre>{{.Shard}}</pre>
+        {{else}}
+        View shard info:
+        <select onchange='location.href="?shard="+this.value'>
+            <option value=''>-</option>
+            <script>
+                for (var i = 0; i < {{.ShardNum}}; i ++)
+                    document.write("<option value=" + i + ">#" + i + "</option>");
+            </script>
+        </select>
+
+        <div class=section-container>
+            <div class=section>
+                <div class=section-title>OS</div>
+                <div class=section-content>
+                    <div class=section-key>CPU</div><div class=section-value>{{.CPU}}%</div>
+                </div>
+                <div class=section-content>
+                    <div class=section-key>Free space</div><div class=section-value>{{.Disk}}GB</div>
+                </div>
+                <div class=section-content>
+                    <div class=section-key>Golang pprof</div><div class=section-value><a href='/debug/pprof/'>Open</a></div>
+                </div>
+                <div class=section-content>
+                    <div class=section-key>REPL</div><div class=section-value><a href='/{{.REPLPath}}'>Open</a></div>
+                </div>
+            </div>
+
+            <div class=section>
+                {{range $k, $v := .Slaves}}
+                <div class=section-title>Slave: {{$v.RemoteAddr}}</div>
+                    <div class=section-content>
+                        <div class=section-key>Address</div>
+                        <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
+                    </div>
+                    <div class=section-content>
+                        <div class=section-key>Name</div>
+                        <div class=section-value>{{$v.ServerName}}</div>
+                    </div>
+                    {{range $.s.SlaveInfo $v.RemoteAddr}}
+                    <div class=section-content>
+                        <div class=section-key>{{(kv .).Key}}</div>
+                        <div class=section-value>{{(kv .).Value}}</div>
+                    </div>
+                    {{end}}
+                </div>
+                {{end}}
+
+                    {{if .s.MasterAddr}}
+                    <tr>
+                        <td>Master</td>
+                        <td>{{.s.MasterAddr}}</td>
+                        <td>{{.s.MasterNameAssert}}</td>
+                        <td><a href="http://{{.s.MasterAddr}}">View</a></td>
+                    </tr>
+                    {{end}}
+                </table>
+            </div>
+
+            {{range $title, $section := .Sections}}
+            <div class=section>
+                <div class=section-title>{{$title}}</div>
+                {{range $i, $v := $.s.Info $section}}
+                {{if ne $i 0}}
+                {{if $v}}
+                <div class=section-content>
+                    <div class=section-key>{{(kv $v).Key}}</div>
+                    <div class=section-value>{{(kv $v).Value}}</div>
+                </div>
+                {{end}}
+                {{end}}
+                {{end}}
+            </div>  
+            {{end}}
+
+            <div class=section-title>Runnable</div>
+            <form method=GET>
+                <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>
+                <input type=hidden name=p value='{{.s.Password}}'>
+                <input type=submit value=save>
+            </form>
+        </div>
+        {{end}}
+	<span>returned in {{.Elapsed}}</span>
+</body>

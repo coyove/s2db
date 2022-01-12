@@ -13,7 +13,7 @@ import (
 )
 
 func (s *Server) pick(name string) *bbolt.DB {
-	return s.db[hashStr(name)%uint64(len(s.db))].DB
+	return s.db[shardIndex(name)].DB
 }
 
 func writeLog(tx *bbolt.Tx, dd []byte) error {

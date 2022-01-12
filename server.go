@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/coyove/common/lru"
 	"github.com/coyove/nj"
@@ -37,9 +41,9 @@ var (
 )
 
 type Server struct {
-	ln, lnLocal net.Listener
-	rdb         *redis.Client
-	rdbCache    *lru.Cache
+	ln, lnLocal, lnWeb net.Listener
+	rdb                *redis.Client
+	rdbCache           *lru.Cache
 
 	ServerConfig
 	ReadOnly         bool
@@ -218,7 +222,34 @@ func (s *Server) Serve(addr string) error {
 					return
 				}
 			}
-			go s.handleConnection(conn, conn.RemoteAddr())
+			go func() {
+				rd := bufio.NewReader(conn)
+				buf, _ := rd.Peek(4)
+				switch *(*string)(unsafe.Pointer(&buf)) {
+				case "GET ", "POST", "HEAD":
+					req, err := http.ReadRequest(rd)
+					if err != nil {
+						log.Errorf("httpmux: invalid request: %q, %v", buf, err)
+						return
+					}
+					req.URL, _ = url.Parse(req.RequestURI)
+					req.URL.Scheme = "http"
+					req.URL.Host = s.lnWeb.Addr().String()
+					req.RequestURI = ""
+					resp, err := http.DefaultClient.Do(req)
+					if err != nil {
+						log.Error("httpmux: invalid response: ", err)
+						return
+					}
+					resp.Write(conn)
+					conn.Close()
+					return
+				}
+				s.handleConnection(struct {
+					io.Reader
+					io.WriteCloser
+				}{rd, conn}, conn.RemoteAddr())
+			}()
 		}
 	}
 	go runner(s.lnLocal)
@@ -261,7 +292,7 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 				continue
 			}
 		RUN:
-			ew = s.runCommand(writer, command)
+			ew = s.runCommand(writer, remoteAddr, command)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -273,7 +304,7 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 	}
 }
 
-func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) error {
+func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *redisproto.Command) error {
 	var (
 		cmd         = strings.ToUpper(command.Get(0))
 		isRev       = strings.HasPrefix(cmd, "ZREV")
@@ -359,7 +390,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
 		if strings.EqualFold(name, "FROM") {
-			s.Slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
+			s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
 				info.ListenAddr = command.Get(2)
 				info.ServerName = command.Get(3)
 				info.Version = command.Get(4)
@@ -393,9 +424,9 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 	case "INFO":
 		switch n := strings.ToLower(name); {
 		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
-			return w.WriteBulkString(s.shardInfo(internal.MustParseInt(n)))
+			return w.WriteBulkString(strings.Join(s.ShardInfo(internal.MustParseInt(n)), "\r\n"))
 		default:
-			return w.WriteBulkString(s.Info(n))
+			return w.WriteBulkString(strings.Join(s.Info(n), "\r\n"))
 		}
 	case "DUMPSHARD":
 		path := command.Get(2)
@@ -434,7 +465,7 @@ func (s *Server) runCommand(w *redisproto.Writer, command *redisproto.Command) e
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.Slaves.Update(w.RemoteIP().String(), func(info *serverInfo) {
+		s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
 			info.LogTails[internal.MustParseInt(name)] = start - 1
 		})
 		return w.WriteBulkStrings(logs)

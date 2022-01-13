@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const SurveyRange = 900
+const SurveyRange = 3600
 
 type Survey struct {
 	tick   sync.Once
@@ -105,7 +105,7 @@ func (s Survey) QPS() (q1, q5, q15 float64) {
 		} else if i == 299 {
 			q5 = sum / 300
 		} else if i == len(sec)-1 {
-			q15 = sum / 900
+			q15 = sum / 3600
 		}
 	}
 	return

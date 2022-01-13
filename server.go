@@ -84,7 +84,7 @@ type Server struct {
 	ConfigDB *bbolt.DB
 }
 
-func Open(path string, out chan bool) (*Server, error) {
+func Open(path string, configOpened chan bool) (*Server, error) {
 	os.MkdirAll(path, 0777)
 	var err error
 	x := &Server{}
@@ -95,8 +95,8 @@ func Open(path string, out chan bool) (*Server, error) {
 	if err := x.loadConfig(); err != nil {
 		return nil, err
 	}
-	if out != nil {
-		out <- true // indicate the opening process is running normally
+	if configOpened != nil {
+		configOpened <- true // indicate the opening process is running normally
 	}
 	x.DataPath = path
 	for i := range x.db {
@@ -224,26 +224,28 @@ func (s *Server) Serve(addr string) error {
 			}
 			go func() {
 				rd := bufio.NewReader(conn)
-				buf, _ := rd.Peek(4)
-				switch *(*string)(unsafe.Pointer(&buf)) {
-				case "GET ", "POST", "HEAD":
-					req, err := http.ReadRequest(rd)
-					if err != nil {
-						log.Errorf("httpmux: invalid request: %q, %v", buf, err)
+				if s.lnWeb != nil {
+					buf, _ := rd.Peek(4)
+					switch *(*string)(unsafe.Pointer(&buf)) {
+					case "GET ", "POST", "HEAD":
+						req, err := http.ReadRequest(rd)
+						if err != nil {
+							log.Errorf("httpmux: invalid request: %q, %v", buf, err)
+							return
+						}
+						req.URL, _ = url.Parse(req.RequestURI)
+						req.URL.Scheme = "http"
+						req.URL.Host = s.lnWeb.Addr().String()
+						req.RequestURI = ""
+						resp, err := http.DefaultClient.Do(req)
+						if err != nil {
+							log.Error("httpmux: invalid response: ", err)
+							return
+						}
+						resp.Write(conn)
+						conn.Close()
 						return
 					}
-					req.URL, _ = url.Parse(req.RequestURI)
-					req.URL.Scheme = "http"
-					req.URL.Host = s.lnWeb.Addr().String()
-					req.RequestURI = ""
-					resp, err := http.DefaultClient.Do(req)
-					if err != nil {
-						log.Error("httpmux: invalid response: ", err)
-						return
-					}
-					resp.Write(conn)
-					conn.Close()
-					return
 				}
 				s.handleConnection(struct {
 					io.Reader

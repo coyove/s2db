@@ -5,25 +5,23 @@
     <style>
         * {
             box-sizing: border-box;
+            margin: 0;
         }
         body {
-            line-height: 1.5
+            line-height: 1.5;
+            margin: 0.5em;
+            font-family: Arial, Helvetica, sans-serif;
         }
         textarea {
-            font-family: monospace
+            font-family: Lucida Console, Monaco, Monospace;
+            resize: vertical;
+            border: none;
+            border-bottom: dotted 1px #ddd;
+            padding: 0.2em;
         }
         pre {
             white-space: pre-wrap;
             width: 100%;
-        }
-        table {
-            border: solid;
-            margin: 0.5em 0;
-        }
-        td {
-            padding: 0.2em
-        }
-        .section-container {
         }
         .section {
             border: solid 1px #ddd;
@@ -35,108 +33,205 @@
             color: white;
         }
         .section-content {
-            padding: 0.2em 0.33em;
             display: flex;
         }
         .section-content:nth-child(odd) {
-            background: rgba(0, 0, 0, 0.05);
+            background: rgba(0, 0, 0, 0.067);
         }
-        .section-key, .section-value {
-            flex-basis: 50%;
+        .section-key {
+            padding: 0.2em 0.33em;
+            flex-basis: 25%;
             flex-grow: 1;
         }
         .section-value {
+            padding: 0.2em 0.33em;
+            flex-basis: 75%;
+            flex-grow: 1;
             text-align: right;
-            font-family: monospace
+            font-family: Lucida Console, Monaco, Monospace;
+        }
+        .section-box {
+            display: flex;
+            flex-wrap: wrap;
+            border: solid 1px #ddd;
+            background: white;
+        }
+        .section-box .box {
+            width: 12.5%;
+            overflow: hidden;
+            padding: 0.1em;
+            font-size: 80%;
+        }
+        .section-box .box.shard:hover {
+            background-color: #ffeedd80;
+        }
+        .section-box .box:nth-child(2), .section-box .box:nth-child(4), .section-box .box:nth-child(6), .section-box .box:nth-child(8),
+        .section-box .box:nth-child(9), .section-box .box:nth-child(11), .section-box .box:nth-child(13), .section-box .box:nth-child(15),
+        .section-box .box:nth-child(18), .section-box .box:nth-child(20), .section-box .box:nth-child(22), .section-box .box:nth-child(24),
+        .section-box .box:nth-child(25), .section-box .box:nth-child(27), .section-box .box:nth-child(29), .section-box .box:nth-child(31) {
+            background: rgba(0, 0, 0, 0.04);
+        }
+        .box a {
+            text-decoration: none;
+            color: #233;
+            display: block;
+        }
+        .stat {
+            display: inline-flex;
+            background-color: #fafbfc;
+            border: solid 1px #ccc;
+            padding-right: 0.25em;
+        }
+        .stat div:first-child:before {
+            margin: 0 0.25em 0 0;
+        }
+        .stat div:before {
+            background: #fed;
+            padding: 0.1em 0.25em;
+            margin: 0 0.25em;
+        }
+        .stat .stat1:before { content: '1' }
+        .stat .stat5:before { content: '5' }
+        .stat .stat15:before { content: '60' }
+        .save-btn {
+            display: block;
+            padding: 0.5em 1em;
+            border: none;
+            background-color: #677;
+            color: white;
+            box-shadow: 0 2px 1px #666, 0 2px 1px #666;
+        }
+        .save-btn:hover {
+            background-color: #667777dd;
         }
     </style>
 </head>
 <body>
-    <h1>{{.s.ServerName}}</h1>
-        {{if .Shard}}
-        <a href='/'>&laquo; index</a>
-        <pre>{{.Shard}}</pre>
-        {{else}}
-        View shard info:
-        <select onchange='location.href="?shard="+this.value'>
-            <option value=''>-</option>
-            <script>
-                for (var i = 0; i < {{.ShardNum}}; i ++)
-                    document.write("<option value=" + i + ">#" + i + "</option>");
-            </script>
-        </select>
-
         <div class=section-container>
             <div class=section>
-                <div class=section-title>OS</div>
+                <div class=section-title>[{{.s.ServerName}}]</div>
                 <div class=section-content>
-                    <div class=section-key>CPU</div><div class=section-value>{{.CPU}}%</div>
+                    <div class=section-key>start_at</div><div class=section-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
+                </div>
+                {{range $k, $v := .CPU}}
+                <div class=section-content>
+                    <div class=section-key>cpu{{$k}}_usage</div><div class=section-value>{{stat $v}}</div>
+                </div>
+                {{end}}
+                {{range $k, $v := .Disk}}
+                <div class=section-content>
+                    <div class=section-key>data_dir_{{$k}}</div><div class=section-value>{{index $v 0}}/{{index $v 1}}</div>
+                </div>
+                {{end}}
+                {{range $k, $v := .IOPS}}
+                <div class=section-content>
+                    <div class=section-key>disk_{{$k}}_read_iops</div><div class=section-value>{{stat (index $v 0)}}</div>
                 </div>
                 <div class=section-content>
-                    <div class=section-key>Free space</div><div class=section-value>{{.Disk}}GB</div>
+                    <div class=section-key>disk_{{$k}}_write_iops</div><div class=section-value>{{stat (index $v 1)}}</div>
+                </div>
+                {{end}}
+                <div class=section-content>
+                    <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>Open</a></div>
                 </div>
                 <div class=section-content>
-                    <div class=section-key>Golang pprof</div><div class=section-value><a href='/debug/pprof/'>Open</a></div>
+                    <div class=section-key>shard_info</div>
+                    <div class=section-value>
+                        <div class=section-box>{{box32 "-"}}</div>
+                        <style>.box.shard{{.Shard}}{ background: #fed !important }</style>
+                    </div>
                 </div>
                 <div class=section-content>
-                    <div class=section-key>REPL</div><div class=section-value><a href='/{{.REPLPath}}'>Open</a></div>
+                    <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>Open</a></div>
                 </div>
             </div>
 
+        {{if ne .Shard -1}}
+            <div class=section>
+                <div class=section-title>shard #{{.Shard}}</div>
+                {{range $i, $v := $.s.ShardInfo .Shard}}
+                {{if $v}}
+                <div class=section-content>
+                    {{$x := kv $v}}
+                    <div class=section-key>{{$x.Key}}</div>
+                    <div class=section-value>
+                        {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                        <div class=section-box>{{box32 $x.Value}}</div>
+                        {{else}}
+                        {{stat $x.Value}}
+                        {{end}}
+                    </div>
+                </div>
+                {{end}}
+                {{end}}
+            </div>
+        {{else}}
+
             <div class=section>
                 {{range $k, $v := .Slaves}}
-                <div class=section-title>Slave: {{$v.RemoteAddr}}</div>
-                    <div class=section-content>
-                        <div class=section-key>Address</div>
-                        <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
+                <div class=section-title>slave: {{$v.RemoteAddr}}</div>
+                <div class=section-content>
+                    <div class=section-key>address</div>
+                    <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
+                </div>
+                {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}
+                {{if and (ne $i 0) $v}}
+                <div class=section-content>
+                    {{$x := kv $v}}
+                    <div class=section-key>{{$x.Key}}</div>
+                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                    <div class=section-value>
+                        <div class=section-box>{{box32 $x.Value}}</div>
                     </div>
-                    <div class=section-content>
-                        <div class=section-key>Name</div>
-                        <div class=section-value>{{$v.ServerName}}</div>
-                    </div>
-                    {{range $.s.SlaveInfo $v.RemoteAddr}}
-                    <div class=section-content>
-                        <div class=section-key>{{(kv .).Key}}</div>
-                        <div class=section-value>{{(kv .).Value}}</div>
-                    </div>
+                    {{else}}
+                    <div class=section-value>{{stat $x.Value}}</div>
                     {{end}}
                 </div>
                 {{end}}
+                {{end}}
+                {{end}}
 
-                    {{if .s.MasterAddr}}
-                    <tr>
-                        <td>Master</td>
-                        <td>{{.s.MasterAddr}}</td>
-                        <td>{{.s.MasterNameAssert}}</td>
-                        <td><a href="http://{{.s.MasterAddr}}">View</a></td>
-                    </tr>
-                    {{end}}
-                </table>
+                {{if .s.MasterAddr}}
+                <div class=section-title>master: {{.s.MasterAddr}}</div>
+                <div class=section-content>
+                    <div class=section-key>address</div>
+                    <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
+                </div>
+                {{end}}
             </div>
 
             {{range $title, $section := .Sections}}
             <div class=section>
-                <div class=section-title>{{$title}}</div>
+                <div class=section-title>{{$section}}</div>
                 {{range $i, $v := $.s.Info $section}}
-                {{if ne $i 0}}
-                {{if $v}}
+                {{if and (ne $i 0) $v}}
                 <div class=section-content>
-                    <div class=section-key>{{(kv $v).Key}}</div>
-                    <div class=section-value>{{(kv $v).Value}}</div>
+                    {{$x := kv $v}}
+                    <div class=section-key>{{$x.Key}}</div>
+                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                    <div class=section-value>
+                        <div class=section-box>{{box32 $x.Value}}</div>
+                    </div>
+                    {{else}}
+                    <div class=section-value>{{stat $x.Value}}</div>
+                    {{end}}
                 </div>
-                {{end}}
                 {{end}}
                 {{end}}
             </div>  
             {{end}}
 
-            <div class=section-title>Runnable</div>
+            <div class=section-title>self-managed code</div>
+            <div style='border: solid 1px #ddd'>
             <form method=GET>
                 <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>
                 <input type=hidden name=p value='{{.s.Password}}'>
-                <input type=submit value=save>
+                <button type=submit class=save-btn style='margin:0.5em'>Save</button>
             </form>
-        </div>
+            </div>
         {{end}}
-	<span>returned in {{.Elapsed}}</span>
+
+        <div class=section style='border-bottom-width: 1px; text-align: center; padding: 0.5em; font-size: 80%'>
+            s2db console in {{(timeSince .start).Seconds}}s
+        </div>
 </body>

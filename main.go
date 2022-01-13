@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	_ "embed"
 	"encoding/binary"
@@ -14,7 +13,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,7 +24,6 @@ import (
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
-	"golang.org/x/sys/unix"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -36,10 +33,10 @@ var (
 	masterAddr     = flag.String("master", "", "connect to master server, form: master_name@ip:port")
 	masterPassword = flag.String("mp", "", "")
 
-	listenAddr      = flag.String("l", ":6379", "listen address")
-	pprofListenAddr = flag.String("pprof", ":16379", "pprof listen address")
-	serverName      = flag.String("n", "", "same as: CONFIG SET servername <Name>")
-	dataDir         = flag.String("d", "test", "data directory")
+	listenAddr = flag.String("l", ":6379", "listen address")
+	noWebUI    = flag.Bool("no-web", false, "disable web console interface")
+	serverName = flag.String("n", "", "same as: CONFIG SET servername <Name>")
+	dataDir    = flag.String("d", "test", "data directory")
 
 	showLogTail = flag.String("logtail", "", "")
 
@@ -49,8 +46,6 @@ var (
 	showVersion = flag.Bool("v", false, "print s2db version")
 	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark   = flag.String("bench", "", "")
-
-	noFreelistSync = flag.Bool("F", false, "DEBUG flag, do not use")
 )
 
 //go:embed internal/webui.html
@@ -59,6 +54,7 @@ var webuiHTML string
 func main() {
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
+	go internal.OSWatcher()
 
 	if *calcShard != "" {
 		fmt.Print(shardIndex(*calcShard))
@@ -68,10 +64,9 @@ func main() {
 		fmt.Println("s2db", Version)
 		return
 	}
-	bboltOptions.NoFreelistSync = *noFreelistSync
 
 	log.SetReportCaller(true)
-	log.SetFormatter(&LogFormatter{})
+	log.SetFormatter(&internal.LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename:   "x_s2db.log",
 		MaxSize:    100, // megabytes
@@ -174,28 +169,29 @@ func main() {
 
 	var s *Server
 	var err error
-	var opened = make(chan bool)
+	var configOpened = make(chan bool)
 	var fullyOpened sync.Mutex
 	go func() {
 		select {
-		case <-opened:
+		case <-configOpened:
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		fullyOpened.Lock()
-		sp := internal.UUID()
-		http.HandleFunc("/", webInfo(sp, &s))
-		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			nj.PlaygroundHandler(s.getCompileOptions())(w, r)
-		})
-		ln, _ := net.Listen("tcp", "127.0.0.1:0")
-		log.Info("serving HTTP info and pprof at ", ln.Addr())
-		s.lnWeb = ln
-		fullyOpened.Unlock()
-		log.Error("http: ", http.Serve(ln, nil))
+		if !*noWebUI {
+			fullyOpened.Lock()
+			sp := internal.UUID()
+			http.HandleFunc("/", webInfo(sp, &s))
+			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
+				nj.PlaygroundHandler(s.getCompileOptions())(w, r)
+			})
+			s.lnWeb, _ = net.Listen("tcp", "127.0.0.1:0")
+			log.Info("serving HTTP info and pprof at ", s.lnWeb.Addr())
+			fullyOpened.Unlock()
+			log.Error("http: ", http.Serve(s.lnWeb, nil))
+		}
 	}()
 	fullyOpened.Lock()
-	s, err = Open(*dataDir, opened)
+	s, err = Open(*dataDir, configOpened)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -225,37 +221,16 @@ func main() {
 	s.Serve(*listenAddr)
 }
 
-type LogFormatter struct{}
-
-func (f *LogFormatter) Format(entry *log.Entry) ([]byte, error) {
-	buf := bytes.Buffer{}
-	if entry.Level <= log.ErrorLevel {
-		buf.WriteString("@err")
-	} else {
-		buf.WriteString("@info")
-	}
-	if v, ok := entry.Data["shard"]; ok {
-		buf.WriteString("`shard")
-		buf.WriteString(v.(string))
-	}
-	buf.WriteString("\t")
-	buf.WriteString(entry.Time.UTC().Format("2006-01-02T15:04:05.000\t"))
-	buf.WriteString(filepath.Base(entry.Caller.File))
-	buf.WriteString(":")
-	buf.WriteString(strconv.Itoa(entry.Caller.Line))
-	buf.WriteString("\t")
-	buf.WriteString(entry.Message)
-	buf.WriteByte('\n')
-	return buf.Bytes(), nil
-}
-
 func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, q := *ps, r.URL.Query()
-		// section := q.Get("section")
 		shard := q.Get("shard")
 		password := q.Get("p")
 		ins := q.Get("inspector")
+
+		if shard == "" {
+			shard = "-1"
+		}
 
 		if s.Password != "" && s.Password != password {
 			w.Header().Add("Content-Type", "text/html")
@@ -270,43 +245,54 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			return
 		}
 
-		start := time.Now()
-		cpu, disk := getOSUsage(s)
+		sp := []string{}
+		for i := range s.db {
+			sp = append(sp, filepath.Dir(s.db[i].Path()))
+		}
+		if s.ServerConfig.CompactDumpTmpDir != "" {
+			sp = append(sp, s.CompactDumpTmpDir)
+		}
+		cpu, iops, disk := internal.GetOSUsage(sp[:])
 		w.Header().Add("Content-Type", "text/html")
 		template.Must(template.New("").Funcs(template.FuncMap{
-			"kv": func(s string) struct{ Key, Value string } {
+			"kv": func(s string) (r struct{ Key, Value string }) {
+				r.Key = s
 				if idx := strings.Index(s, ":"); idx > 0 {
-					return struct{ Key, Value string }{s[:idx], s[idx+1:]}
+					r.Key, r.Value = s[:idx], s[idx+1:]
 				}
-				return struct{ Key, Value string }{s, ""}
+				return
+			},
+			"box32": func(v string) template.HTML {
+				if v == "-" {
+					parts := [ShardNum]string{}
+					for i := range parts {
+						if internal.ParseInt(shard) == i {
+							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?p=%s'><b>#%d</b> [-]</a></div>", i, s.Password, i)
+						} else {
+							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?shard=%d&p=%s'><b>#%d</b> [+]</a></div>", i, i, s.Password, i)
+						}
+					}
+					return template.HTML(strings.Join(parts[:], ""))
+				}
+				parts := strings.Split(v, " ")
+				for i, p := range parts {
+					parts[i] = "<div class=box>" + p + "</div>"
+				}
+				return template.HTML(strings.Join(parts, ""))
+			},
+			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
+			"stat": func(s string) template.HTML {
+				var a, b, c float64
+				if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
+					return template.HTML(s)
+				}
+				return template.HTML(fmt.Sprintf("<div class=stat><div class=stat1>%.2f</div><div class=stat5>%.2f</div><div class=stat15>%.2f</div></div>", a, b, c))
 			},
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "Elapsed": time.Since(start).Seconds(),
-			"Sections": map[string]string{
-				"Server": "server", "Others": "server_misc", "Replication": "replication",
-				"Read-write": "sys_rw_stats", "Batch": "batch", "Cache": "cache",
-			},
-			"Slaves": s.Slaves.List(), "Shard": shard, "ShardNum": ShardNum, "CPU": cpu, "Disk": disk, "REPLPath": evalPath,
+			"s": s, "start": time.Now(),
+			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "cache"},
+			"Slaves":   s.Slaves.List(), "Shard": internal.MustParseInt(shard), "ShardNum": ShardNum,
+			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
 		})
 	}
-}
-
-func getOSUsage(s *Server) (cpu string, diskFreeGB uint64) {
-	buf, _ := exec.Command("ps", "aux").Output()
-	pid := []byte(" " + strconv.Itoa(os.Getpid()) + " ")
-	for _, line := range bytes.Split(buf, []byte("\n")) {
-		if bytes.Contains(line, pid) {
-			line = bytes.TrimSpace(line[bytes.Index(line, pid)+len(pid):])
-			end := bytes.IndexByte(line, ' ')
-			if end == -1 {
-				break
-			}
-			cpu = string(line[:end])
-			break
-		}
-	}
-	var stat unix.Statfs_t
-	unix.Statfs(s.DataPath, &stat)
-	diskFreeGB = stat.Bavail * uint64(stat.Bsize) / 1024 / 1024 / 1024
-	return
 }

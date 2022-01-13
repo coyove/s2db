@@ -55,8 +55,7 @@ func (s *Server) SlaveInfo(addr string) (data []string) {
 		return []string{"error:" + err.Error()}
 	}
 
-	data = []string{"# slaves", ""}
-	names := []string{}
+	data = []string{}
 	diffs := [ShardNum]int64{}
 	s.Slaves.Foreach(func(si *serverInfo) {
 		if addr != "" && si.RemoteAddr != addr {
@@ -67,18 +66,17 @@ func (s *Server) SlaveInfo(addr string) (data []string) {
 			lt += int64(t)
 			diffs[i] = int64(tails[i]) - int64(t)
 		}
-		data = append(data,
-			"slave_"+si.RemoteAddr+"_name:"+si.ServerName,
-			"slave_"+si.RemoteAddr+"_version:"+si.Version,
-			"slave_"+si.RemoteAddr+"_ack_before:"+strconv.FormatInt(time.Now().Unix()-si.LastUpdateUnix, 10),
-			"slave_"+si.RemoteAddr+"_listen:"+si.ListenAddr,
-			"slave_"+si.RemoteAddr+"_logtail:"+joinArray(si.LogTails),
-			fmt.Sprintf("slave_%s_logtail_diff_sum:%d", si.RemoteAddr, int64(combined)-lt),
-			fmt.Sprintf("slave_%s_logtail_diff:%v", si.RemoteAddr, joinArray(diffs)),
+		data = append(data, "# slave_"+si.RemoteAddr,
+			"name:"+si.ServerName,
+			"version:"+si.Version,
+			"ack_before:"+strconv.FormatInt(time.Now().Unix()-si.LastUpdateUnix, 10),
+			"listen:"+si.ListenAddr,
+			"logtail:"+joinArray(si.LogTails),
+			fmt.Sprintf("logtail_diff:%v", joinArray(diffs)),
+			fmt.Sprintf("logtail_diff_sum:%d", int64(combined)-lt),
+			"",
 		)
-		names = append(names, si.RemoteAddr)
 	})
-	data[1] = "list:" + joinArray(names)
 	return append(data, "")
 }
 

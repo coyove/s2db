@@ -46,6 +46,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	defer func() {
 		s.CompactLock.Unlock()
 		s.LocalStorage().Delete("compact_lock")
+		internal.Recover()
 	}()
 
 	x := &s.db[shard]
@@ -245,6 +246,19 @@ func (s *Server) schedCompactionJob() {
 					break
 				}
 			}
+		} else if cjt >= 600 && cjt <= 659 {
+			offset := int64(cjt-600) * 60
+			ts := (now.Unix() - offset) / 3600
+			shardIdx := int(ts % ShardNum)
+			key := "last_compact_6xx_ts"
+			if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
+				log.Info("last_compact_6xx_ts: skip #", shardIdx, " last=", time.Unix(last*3600+offset, 0))
+			} else {
+				log.Info("scheduleCompaction(", shardIdx, ")")
+				s.compactShardImpl(shardIdx, out)
+				<-out
+				log.Info("update last_compact_6xx_ts: ", shardIdx, " err=", s.LocalStorage().Set(key, ts))
+			}
 		}
 
 		// Do compaction on shard with large freelist
@@ -297,11 +311,11 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	}
 	defer tx.Rollback()
 
-	slaveMinWal, useSlaveWal := s.calcSlaveWAL(shard)
+	slaveMinLogtail, useSlaveLogtail := s.calcSlaveLogtail(shard)
 
 	var total, queueDrops, queueDeletes int64
 
-	tmptx, err := internal.CreateOnetimeLimitedTx(tmpdb, s.CompactTxSize)
+	tmptx, err := internal.CreateLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
 		return err
 	}
@@ -314,7 +328,10 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	bucketWalkerWg.Add(s.CompactTxWorkers)
 	for i := 0; i < s.CompactTxWorkers; i++ {
 		go func() {
-			defer bucketWalkerWg.Done()
+			defer func() {
+				bucketWalkerWg.Done()
+				internal.Recover()
+			}()
 			for p := range bucketIn {
 				s.compactionBucketWalker(p)
 			}
@@ -342,35 +359,35 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		// Calculate queue TTL and WAL logs length if needed
 		var queueTTL int
-		var walStartBuf []byte
+		var logtailStartBuf []byte
 		if isQueue {
 			res, err := s.runInspectFuncRet("queuettl", bucketName[2:])
 			if err == nil && res.Type() == typ.Number {
 				queueTTL = int(res.Int())
 			}
 		} else if bucketName == "wal" {
-			walStart := decUint64(slaveMinWal, uint64(s.CompactLogHead))
-			if !useSlaveWal {
-				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
-			} else if walStart >= b.Sequence() {
-				log.Infof("STAGE 0.1: dumping took too long, slave logs surpass dumped logs: slave log: %d, log tail: %d", slaveMinWal, b.Sequence())
-				walStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
+			logtailStart := decUint64(slaveMinLogtail, uint64(s.CompactLogHead))
+			if !useSlaveLogtail {
+				logtailStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
+			} else if logtailStart >= b.Sequence() {
+				log.Infof("STAGE 0.1: dumping took too long, slave logs surpass dumped logs: slave log: %d, log tail: %d", slaveMinLogtail, b.Sequence())
+				logtailStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
-			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", walStart, slaveMinWal, b.Sequence())
-			walStartBuf = make([]byte, 8)
-			binary.BigEndian.PutUint64(walStartBuf, walStart)
+			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", logtailStart, slaveMinLogtail, b.Sequence())
+			logtailStartBuf = make([]byte, 8)
+			binary.BigEndian.PutUint64(logtailStartBuf, logtailStart)
 		}
 
 		bucketIn <- &internal.BucketWalker{
-			Bucket:       b,
-			BucketName:   bucketName,
-			Tx:           tmptx,
-			QueueTTL:     queueTTL,
-			WALStartBuf:  walStartBuf,
-			Total:        &total,
-			QueueDrops:   &queueDrops,
-			QueueDeletes: &queueDeletes,
-			Logger:       log,
+			Bucket:          b,
+			BucketName:      bucketName,
+			Tx:              tmptx,
+			QueueTTL:        queueTTL,
+			LogtailStartBuf: logtailStartBuf,
+			Total:           &total,
+			QueueDrops:      &queueDrops,
+			QueueDeletes:    &queueDeletes,
+			Logger:          log,
 		}
 	}
 
@@ -386,7 +403,7 @@ func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
 	isQueue := strings.HasPrefix(p.BucketName, "q.")
 	if err := p.Bucket.ForEach(func(k, v []byte) error {
 		// Truncate WAL logs
-		if len(p.WALStartBuf) > 0 && bytes.Compare(k, p.WALStartBuf) < 0 {
+		if len(p.LogtailStartBuf) > 0 && bytes.Compare(k, p.LogtailStartBuf) < 0 {
 			return nil
 		}
 
@@ -415,10 +432,10 @@ func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
 		BkName: p.BucketName,
 		Seq:    p.Bucket.Sequence(),
 		Finishing: func(tx *bbolt.Tx, tmpb *bbolt.Bucket) error {
-			if len(p.WALStartBuf) > 0 {
+			if len(p.LogtailStartBuf) > 0 {
 				k, _ := tmpb.Cursor().Last()
 				if len(k) != 8 {
-					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.WALStartBuf, k, tmpb.Sequence(), p.Total)
+					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.LogtailStartBuf, k, tmpb.Sequence(), p.Total)
 				} else {
 					p.Logger.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), p.Total)
 				}
@@ -461,7 +478,7 @@ func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {
 	return
 }
 
-func (s *Server) calcSlaveWAL(shard int) (slaveMinWal uint64, useSlaveWal bool) {
+func (s *Server) calcSlaveLogtail(shard int) (slaveMinLogtail uint64, useSlaveLogtail bool) {
 	var min uint64 = math.MaxUint64
 	s.Slaves.Foreach(func(si *serverInfo) {
 		if si.LogTails[shard] < min {
@@ -471,12 +488,12 @@ func (s *Server) calcSlaveWAL(shard int) (slaveMinWal uint64, useSlaveWal bool) 
 	if min != math.MaxUint64 {
 		// If master have any slaves, it can't purge logs which slaves don't have yet
 		// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-		slaveMinWal = min
-		useSlaveWal = true
+		slaveMinLogtail = min
+		useSlaveLogtail = true
 	} else if s.MasterMode {
 		log.Infof("FATAL(master mode): failed to collect shard info #%d from slaves, no log compaction will be made", shard)
-		slaveMinWal = 0
-		useSlaveWal = true
+		slaveMinLogtail = 0
+		useSlaveLogtail = true
 	}
 	return
 }

@@ -122,7 +122,10 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
-	x.rdbCache = lru.NewCache(2)
+	x.rdbCache = lru.NewCache(1)
+	x.rdbCache.OnEvicted = func(k lru.Key, v interface{}) {
+		log.Info("rdbCache(", k, ") close: ", v.(*redis.Client).Close())
+	}
 	return x, nil
 }
 

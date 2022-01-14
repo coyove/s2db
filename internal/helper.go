@@ -3,6 +3,9 @@ package internal
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"runtime/debug"
+
+	"github.com/sirupsen/logrus"
 )
 
 func UUID() string {
@@ -17,4 +20,10 @@ func HashStr(s string) (h uint64) {
 		h = h*33 + uint64(s[i])
 	}
 	return h
+}
+
+func Recover() {
+	if r := recover(); r != nil {
+		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
+	}
 }

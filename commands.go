@@ -17,13 +17,13 @@ func (s *Server) pick(name string) *bbolt.DB {
 }
 
 func writeLog(tx *bbolt.Tx, dd []byte) error {
-	bkWal, err := tx.CreateBucketIfNotExists([]byte("wal"))
+	bk, err := tx.CreateBucketIfNotExists([]byte("wal"))
 	if err != nil {
 		return err
 	}
-	bkWal.FillPercent = 0.9
-	id, _ := bkWal.NextSequence()
-	return bkWal.Put(internal.Uint64ToBytes(id), dd)
+	bk.FillPercent = 0.9
+	id, _ := bk.NextSequence()
+	return bk.Put(internal.Uint64ToBytes(id), dd)
 }
 
 func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {

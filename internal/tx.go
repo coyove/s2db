@@ -19,7 +19,7 @@ type LimitedTx struct {
 	MapSize Survey
 }
 
-func CreateOnetimeLimitedTx(db *bbolt.DB, size int) (*LimitedTx, error) {
+func CreateLimitedTx(db *bbolt.DB, size int) (*LimitedTx, error) {
 	tx, err := db.Begin(true)
 	if err != nil {
 		return nil, err
@@ -102,13 +102,13 @@ func (tx *LimitedTx) Finish() error {
 }
 
 type BucketWalker struct {
-	Bucket       *bbolt.Bucket
-	BucketName   string
-	Tx           *LimitedTx
-	QueueTTL     int
-	WALStartBuf  []byte
-	Total        *int64
-	QueueDrops   *int64
-	QueueDeletes *int64
-	Logger       *logrus.Entry
+	Bucket          *bbolt.Bucket
+	BucketName      string
+	Tx              *LimitedTx
+	QueueTTL        int
+	LogtailStartBuf []byte
+	Total           *int64
+	QueueDrops      *int64
+	QueueDeletes    *int64
+	Logger          *logrus.Entry
 }

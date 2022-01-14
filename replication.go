@@ -130,7 +130,7 @@ func (s *Server) requestLogPuller(shard int) {
 		// 	continue
 		// }
 
-		myWalIndex, err := s.myLogTail(shard)
+		myLogtail, err := s.myLogTail(shard)
 		if err != nil {
 			if err == bbolt.ErrDatabaseNotOpen {
 				time.Sleep(time.Second * 5)
@@ -140,7 +140,7 @@ func (s *Server) requestLogPuller(shard int) {
 			break
 		}
 
-		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myWalIndex+1)
+		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
 		if err := s.rdb.Process(ctx, cmd); err != nil {
 			if strings.Contains(err.Error(), "refused") {
 				if shard == 0 {
@@ -211,15 +211,15 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 
 func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string, err error) {
 	sz := 0
-	masterWalIndex, err := s.myLogTail(shard)
+	myLogtail, err := s.myLogTail(shard)
 	if err != nil {
 		return nil, err
 	}
-	if start == masterWalIndex+1 {
+	if start == myLogtail+1 {
 		return nil, nil
 	}
-	if start > masterWalIndex {
-		return nil, fmt.Errorf("slave log (%d) surpass master log (%d)", start, masterWalIndex)
+	if start > myLogtail {
+		return nil, fmt.Errorf("slave log (%d) surpass master log (%d)", start, myLogtail)
 	}
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
@@ -235,7 +235,7 @@ func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string,
 			}
 		}
 
-		for i := start; i <= masterWalIndex; i++ {
+		for i := start; i <= myLogtail; i++ {
 			data := bk.Get(internal.Uint64ToBytes(uint64(i)))
 			if data[0] == 0x93 {
 				logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))

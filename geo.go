@@ -119,7 +119,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 }
 
 func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak time.Duration, command *redisproto.Command) error {
-	var p []Pair
+	var p []internal.Pair
 	var count = -1
 	var any bool
 	var withCoord, withDist, withHash, withData, asc, desc bool
@@ -179,9 +179,9 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	}
 
 	if v, ok := s.Cache.Get(h); ok {
-		p = v.Data.([]Pair)
+		p = v.Data.([]internal.Pair)
 	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
-		p = x.([]Pair)
+		p = x.([]internal.Pair)
 	} else {
 		p, err = (s.geoRange(name, key, lat, long, radius, count, any, withData))
 		if err != nil {
@@ -207,14 +207,14 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	if !withHash && !withCoord && !withDist && !withData {
 		data := []string{}
 		for _, p := range p {
-			data = append(data, p.Key)
+			data = append(data, p.Member)
 		}
 		return w.WriteBulkStrings(data)
 	}
 
 	var data []interface{}
 	for _, p := range p {
-		tmp := []interface{}{p.Key}
+		tmp := []interface{}{p.Member}
 		if withHash {
 			tmp = append(tmp, internal.FormatFloat(p.Score))
 		}
@@ -233,7 +233,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any, withData bool) (pairs []Pair, err error) {
+func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any, withData bool) (pairs []internal.Pair, err error) {
 	limit := HardLimit
 	if count > 0 && count < HardLimit {
 		limit = count
@@ -279,7 +279,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 			for k, v := c.Seek(startBuf); ; k, v = c.Next() {
 				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
 					if s := internal.BytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
-						p := Pair{Key: string(k[8:]), Score: s}
+						p := internal.Pair{Member: string(k[8:]), Score: s}
 						if withData {
 							p.Data = append([]byte{}, v...)
 						}
@@ -307,7 +307,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 			pairs = h.p
 		} else {
 			for h.Len() > 0 {
-				pairs = append(pairs, heap.Pop(h).(Pair)) // from farest to closest
+				pairs = append(pairs, heap.Pop(h).(internal.Pair)) // from farest to closest
 			}
 		}
 		return nil
@@ -317,7 +317,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, c
 
 type geoHeap struct {
 	lat, long float64
-	p         []Pair
+	p         []internal.Pair
 }
 
 func (h geoHeap) Len() int {
@@ -333,7 +333,7 @@ func (h geoHeap) Swap(i, j int) {
 }
 
 func (h *geoHeap) Push(x interface{}) {
-	h.p = append(h.p, x.(Pair))
+	h.p = append(h.p, x.(internal.Pair))
 }
 
 func (h *geoHeap) Pop() interface{} {

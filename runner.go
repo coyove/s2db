@@ -12,7 +12,7 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) runPreparedRangeTx(name string, f func(tx *bbolt.Tx) ([]Pair, int, error)) (pairs []Pair, count int, err error) {
+func (s *Server) runPreparedRangeTx(name string, f func(tx *bbolt.Tx) ([]internal.Pair, int, error)) (pairs []internal.Pair, count int, err error) {
 	err = s.pick(name).View(func(tx *bbolt.Tx) error {
 		pairs, count, err = f(tx)
 		return err

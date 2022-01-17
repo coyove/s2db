@@ -42,7 +42,7 @@ func prepareDel(name string, dd []byte) func(tx *bbolt.Tx) (count interface{}, e
 	}
 }
 
-func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZAdd(name string, pairs []internal.Pair, nx, xx, ch bool, fillPercent float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + name))
 		if err != nil {
@@ -63,13 +63,13 @@ func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64
 			if err := checkScore(p.Score); err != nil {
 				return nil, err
 			}
-			scoreBuf := bkName.Get([]byte(p.Key))
+			scoreBuf := bkName.Get([]byte(p.Member))
 			if len(scoreBuf) != 0 {
 				// old key exists
 				if nx {
 					continue
 				}
-				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Key)); err != nil {
+				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Member)); err != nil {
 					return nil, err
 				}
 				if p.Score != internal.BytesToFloat(scoreBuf) {
@@ -83,10 +83,10 @@ func prepareZAdd(name string, pairs []Pair, nx, xx, ch bool, fillPercent float64
 				added++
 			}
 			scoreBuf = internal.FloatToBytes(p.Score)
-			if err := bkName.Put([]byte(p.Key), scoreBuf); err != nil {
+			if err := bkName.Put([]byte(p.Member), scoreBuf); err != nil {
 				return nil, err
 			}
-			if err := bkScore.Put([]byte(string(scoreBuf)+p.Key), p.Data); err != nil {
+			if err := bkScore.Put([]byte(string(scoreBuf)+p.Member), p.Data); err != nil {
 				return nil, err
 			}
 		}
@@ -103,13 +103,13 @@ func prepareZRem(name string, keys []string, dd []byte) func(tx *bbolt.Tx) (inte
 		if bkName == nil {
 			return 0, writeLog(tx, dd)
 		}
-		pairs := []Pair{}
+		var pairs []internal.Pair
 		for _, key := range keys {
 			scoreBuf := bkName.Get([]byte(key))
 			if len(scoreBuf) == 0 {
 				continue
 			}
-			pairs = append(pairs, Pair{Key: key, Score: internal.BytesToFloat(scoreBuf)})
+			pairs = append(pairs, internal.Pair{Member: key, Score: internal.BytesToFloat(scoreBuf)})
 		}
 		return len(pairs), deletePair(tx, name, pairs, dd)
 	}
@@ -163,6 +163,8 @@ func prepareZRemRangeByRank(name string, start, end int, dd []byte) func(tx *bbo
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
+			Limit:       internal.RangeHardLimit,
+			Append:      internal.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}
@@ -176,6 +178,8 @@ func prepareZRemRangeByLex(name string, start, end string, dd []byte) func(tx *b
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
+			Limit:       internal.RangeHardLimit,
+			Append:      internal.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}
@@ -191,6 +195,8 @@ func prepareZRemRangeByScore(name string, start, end string, dd []byte) func(tx 
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
+			Limit:       internal.RangeHardLimit,
+			Append:      internal.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}

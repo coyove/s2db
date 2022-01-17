@@ -6,6 +6,12 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+type Pair struct {
+	Member string
+	Score  float64
+	Data   []byte
+}
+
 type RangeLimit struct {
 	Value     string
 	Float     float64
@@ -14,15 +20,20 @@ type RangeLimit struct {
 }
 
 type RangeOptions struct {
-	Rev            bool
-	OffsetStart    int
-	OffsetEnd      int
-	CountOnly      bool
-	WithData       bool
-	DeleteLog      []byte
-	LexMatch       string
-	ScoreMatchData string
+	OffsetStart    int // only used by Z[REV]RANGE
+	OffsetEnd      int // only used by Z[REV]RANGE
 	Limit          int
+	WithData       bool
+	Rev            bool
+	LexMatch       string
+	ScoreMatchData string // only available in ZSCOREBYSCORE
+	DeleteLog      []byte
+	Append         func(pairs *[]Pair, p Pair) bool
+}
+
+func DefaultRangeAppend(pairs *[]Pair, p Pair) bool {
+	*pairs = append(*pairs, p)
+	return true
 }
 
 func NewRLFromString(v string) (r RangeLimit) {
@@ -66,3 +77,5 @@ func (o *RangeOptions) TranslateOffset(keyName string, bk *bbolt.Bucket) {
 		}
 	}
 }
+
+var RangeHardLimit = 65535

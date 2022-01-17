@@ -33,12 +33,6 @@ func init() {
 	rand.Seed(time.Now().Unix())
 }
 
-type Pair struct {
-	Key   string
-	Score float64
-	Data  []byte
-}
-
 func checkScore(s float64) error {
 	if math.IsNaN(s) {
 		return fmt.Errorf("score is NaN")
@@ -73,10 +67,10 @@ func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	return keys
 }
 
-func writePairs(in []Pair, w *redisproto.Writer, flags redisproto.Flags) error {
+func writePairs(in []internal.Pair, w *redisproto.Writer, flags redisproto.Flags) error {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
-		data = append(data, p.Key)
+		data = append(data, p.Member)
 		if flags.WITHSCORES || flags.WITHDATA {
 			data = append(data, internal.FormatFloat(p.Score))
 		}
@@ -95,21 +89,21 @@ func sizeBytes(in [][]byte) int {
 	return sz
 }
 
-func sizePairs(in []Pair) int {
+func sizePairs(in []internal.Pair) int {
 	sz := 1
 	for _, p := range in {
-		sz += len(p.Key) + 8 + len(p.Data)
+		sz += len(p.Member) + 8 + len(p.Data)
 	}
 	return sz
 }
 
-func (s *Server) fillPairsData(name string, in []Pair) error {
+func (s *Server) fillPairsData(name string, in []internal.Pair) error {
 	if len(in) == 0 {
 		return nil
 	}
 	keys := make([]string, len(in))
 	for i, el := range in {
-		keys[i] = el.Key
+		keys[i] = el.Member
 	}
 	data, err := s.ZMData(name, keys...)
 	if err != nil {
@@ -151,14 +145,6 @@ func joinCommandString(cmd ...string) []byte {
 	res := joinCommand(*(*[][]byte)(unsafe.Pointer(&tmp))...)
 	runtime.KeepAlive(tmp)
 	return res
-}
-
-func getLimit(o internal.RangeOptions) int {
-	limit := HardLimit
-	if o.Limit > 0 && o.Limit < HardLimit {
-		limit = o.Limit
-	}
-	return limit
 }
 
 func (s *Server) Info(section string) (data []string) {
@@ -343,14 +329,14 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-type bigKeysHeap []Pair
+type bigKeysHeap []internal.Pair
 
 func (h bigKeysHeap) Len() int           { return len(h) }
 func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
 func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *bigKeysHeap) Push(x interface{}) {
-	*h = append(*h, x.(Pair))
+	*h = append(*h, x.(internal.Pair))
 }
 
 func (h *bigKeysHeap) Pop() interface{} {
@@ -377,10 +363,10 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 					return nil
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, Pair{Key: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
+					heap.Push(h, internal.Pair{Member: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
 				}
 				if bytes.HasPrefix(name, []byte("q.")) {
-					heap.Push(h, Pair{Key: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
+					heap.Push(h, internal.Pair{Member: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
 				}
 				if h.Len() > n {
 					heap.Pop(h)
@@ -391,8 +377,8 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 	}
 	x := map[string]int{}
 	for h.Len() > 0 {
-		p := heap.Pop(h).(Pair)
-		x[p.Key] = int(p.Score)
+		p := heap.Pop(h).(internal.Pair)
+		x[p.Member] = int(p.Score)
 	}
 	return x
 }

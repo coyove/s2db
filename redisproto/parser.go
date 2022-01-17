@@ -6,9 +6,12 @@ import (
 	"errors"
 	"io"
 	"strings"
+	"time"
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/coyove/nj"
+	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/internal"
 )
 
@@ -314,8 +317,13 @@ func (r *Parser) Commands() <-chan *Command {
 }
 
 type Flags struct {
-	MATCH       string
-	MATCHDATA   string
+	MATCH     string
+	MATCHDATA string
+	TWOHOPS   struct {
+		ENDPOINT []byte
+		KEYMAP   bas.Value
+	}
+	INTERSECT   map[string]bas.Value
 	LIMIT       int
 	COUNT       int
 	SHARD       int
@@ -328,13 +336,14 @@ type Flags struct {
 	WITHDIST    bool
 	WITHHASH    bool
 	WITHINDEXES bool
-	UNION       []string
+	TIMEOUT     time.Duration
 }
 
 func (c *Command) Flags(start int) (f Flags) {
-	f.LIMIT = -1
+	f.LIMIT = internal.RangeHardLimit
 	f.COUNT = -1
 	f.SHARD = -1
+	f.TIMEOUT = time.Second
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
 			f.COUNT = internal.MustParseInt(c.Get(i + 1))
@@ -354,8 +363,20 @@ func (c *Command) Flags(start int) (f Flags) {
 		} else if c.EqualFold(i, "MATCHDATA") {
 			f.MATCHDATA = c.Get(i + 1)
 			i++
-		} else if c.EqualFold(i, "UNION") {
-			f.UNION = strings.Split(c.Get(i+1), ",")
+		} else if c.EqualFold(i, "INTERSECT") {
+			if f.INTERSECT == nil {
+				f.INTERSECT = map[string]bas.Value{}
+			}
+			key, fun := splitCode(c, c.Get(i+1))
+			f.INTERSECT[key] = fun
+			i++
+		} else if c.EqualFold(i, "TWOHOPS") {
+			key, fun := splitCode(c, c.Get(i+1))
+			f.TWOHOPS.ENDPOINT = []byte(key)
+			f.TWOHOPS.KEYMAP = fun
+			i++
+		} else if c.EqualFold(i, "TIMEOUT") {
+			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))
 			i++
 		} else {
 			f.WITHSCORES = f.WITHCOORD || c.EqualFold(i, "WITHSCORES")
@@ -371,4 +392,18 @@ func (c *Command) Flags(start int) (f Flags) {
 		}
 	}
 	return
+}
+
+func splitCode(c *Command, key string) (string, bas.Value) {
+	if idx := strings.Index(key, "{"); idx > 0 && strings.HasSuffix(key, "}") {
+		key2 := key[:idx]
+		code, err := nj.LoadString(key[idx+1:len(key)-1], &bas.Environment{
+			Globals: bas.NewObject(2).SetProp("left", bas.Str(c.Get(1))).SetProp("right", bas.Str(key2)),
+		})
+		internal.PanicErr(err)
+		res, err := code.Run()
+		internal.PanicErr(err)
+		return key2, res
+	}
+	return key, bas.Nil
 }

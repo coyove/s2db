@@ -88,10 +88,7 @@ func (tx *LimitedTx) Put(p *OnetimeLimitedTxPut) (err error) {
 func (tx *LimitedTx) Close() {
 	tx.mu.Lock()
 	defer tx.mu.Unlock()
-	if !tx.finished {
-		tx.finished = true
-		tx.tx.Rollback()
-	}
+	tx.tx.Rollback()
 }
 
 func (tx *LimitedTx) Finish() error {

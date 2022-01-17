@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/coyove/common/lru"
+	"github.com/coyove/s2db/internal"
 )
 
 type weakCacheItem struct {
@@ -65,7 +66,7 @@ func (c *keyedCache) nextWatermark() int64 {
 
 func (c *keyedCache) Add(value *cacheItem, keyMaxLen int) error {
 	weight := int64(1)
-	if p, ok := value.Data.([]Pair); ok {
+	if p, ok := value.Data.([]internal.Pair); ok {
 		weight = int64(sizePairs(p))
 	}
 	if p, ok := value.Data.([][]byte); ok {
@@ -151,7 +152,7 @@ func (c *keyedCache) KeyInfo(key string) (ln, size, hits int) {
 	ln = len(c.keyed[key])
 	for _, x := range c.keyed[key] {
 		e := x.Value.(*entry)
-		if d, ok := e.value.Data.([]Pair); ok {
+		if d, ok := e.value.Data.([]internal.Pair); ok {
 			size += sizePairs(d)
 		} else {
 			size += 1

@@ -4,7 +4,7 @@ go 1.16
 
 require (
 	github.com/coyove/common v0.0.0-20210601082815-1e7f2ca0bb84
-	github.com/coyove/nj v0.0.0-20220106121203-913a43aff7e6
+	github.com/coyove/nj v0.0.0-20220117072501-e622ca564222
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/mmcloughlin/geohash v0.10.0
 	github.com/sirupsen/logrus v1.8.1

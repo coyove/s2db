@@ -143,7 +143,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		old := fmt.Sprint(fv.Interface())
 		if old == value {
 			found = true
-			return fmt.Errorf("exit")
+			return errSafeExit
 		}
 		switch f.Type {
 		case reflect.TypeOf(0):
@@ -160,7 +160,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 			buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
 			return bk.Put(internal.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
 		})
-		return fmt.Errorf("exit")
+		return errSafeExit
 	})
 	if found {
 		if err := s.saveConfig(); err != nil {

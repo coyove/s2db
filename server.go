@@ -370,7 +370,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 	}(time.Now())
 
-	var p []Pair
+	var p []internal.Pair
 	var err error
 
 	// General commands
@@ -579,10 +579,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
 		if v := s.getCache(h); v != nil {
-			return writePairs(v.([]Pair), w, flags)
+			return writePairs(v.([]internal.Pair), w, flags)
 		}
 		if v := s.getWeakCache(h, weak); v != nil {
-			return writePairs(v.([]Pair), w, flags)
+			return writePairs(v.([]internal.Pair), w, flags)
 		}
 		start, end := command.Get(2), command.Get(3)
 		if end == "" {
@@ -618,7 +618,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		keys := []interface{}{}
 		for _, p := range p {
-			keys = append(keys, p.Key)
+			keys = append(keys, p.Member)
 			if flags.WITHSCORES {
 				keys = append(keys, internal.FormatFloat(p.Score))
 			}

@@ -54,16 +54,16 @@ func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (i
 		break
 	}
 
-	pairs := []Pair{}
+	var pairs []internal.Pair
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
 			s := internal.MustParseFloatBytes(command.Argv[i])
-			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s})
+			pairs = append(pairs, internal.Pair{Member: command.Get(i + 1), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
 			s := internal.MustParseFloatBytes(command.Argv[i])
-			pairs = append(pairs, Pair{Key: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
+			pairs = append(pairs, internal.Pair{Member: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
 		}
 	}
 	return prepareZAdd(name, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
@@ -172,17 +172,17 @@ func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) 
 	return
 }
 
-func deletePair(tx *bbolt.Tx, name string, pairs []Pair, dd []byte) error {
+func deletePair(tx *bbolt.Tx, name string, pairs []internal.Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + name))
 	bkScore := tx.Bucket([]byte("zset.score." + name))
 	if bkScore == nil || bkName == nil {
 		return writeLog(tx, dd)
 	}
 	for _, p := range pairs {
-		if err := bkName.Delete([]byte(p.Key)); err != nil {
+		if err := bkName.Delete([]byte(p.Member)); err != nil {
 			return err
 		}
-		if err := bkScore.Delete([]byte(string(internal.FloatToBytes(p.Score)) + p.Key)); err != nil {
+		if err := bkScore.Delete([]byte(string(internal.FloatToBytes(p.Score)) + p.Member)); err != nil {
 			return err
 		}
 	}

@@ -18,10 +18,11 @@ VERSION=$(($(date -u +%y)-20))
 VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))-${COMMIT}-${SCRIPT_COMMIT}
 echo 'building' $VERSION
 
+if [[ "$1" == "linux" ]]; then
+    env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC 
+    exit 0
+fi
+
 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC
 mkdir -p slave_dir
 cp s2db slave_dir/
-
-if [[ "$1" == "linux" ]]; then
-    env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC 
-fi

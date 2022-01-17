@@ -328,6 +328,7 @@ type Flags struct {
 	WITHDIST    bool
 	WITHHASH    bool
 	WITHINDEXES bool
+	UNION       []string
 }
 
 func (c *Command) Flags(start int) (f Flags) {
@@ -352,6 +353,9 @@ func (c *Command) Flags(start int) (f Flags) {
 			i++
 		} else if c.EqualFold(i, "MATCHDATA") {
 			f.MATCHDATA = c.Get(i + 1)
+			i++
+		} else if c.EqualFold(i, "UNION") {
+			f.UNION = strings.Split(c.Get(i+1), ",")
 			i++
 		} else {
 			f.WITHSCORES = f.WITHCOORD || c.EqualFold(i, "WITHSCORES")

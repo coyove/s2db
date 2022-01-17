@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
+	"sync"
 	"unsafe"
 
 	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -68,6 +71,23 @@ func (s *Server) ZRange(rev bool, name string, start, end int, flags redisproto.
 }
 
 func (s *Server) ZRangeByLex(rev bool, name string, start, end string, flags redisproto.Flags) ([]Pair, error) {
+	if len(flags.UNION) > 0 {
+		names := append(flags.UNION, name)
+		flags.UNION = nil
+		out := s.zUnion(names, func(key string) ([]Pair, error) {
+			return s.ZRangeByLex(rev, key, start, end, flags)
+		})
+		sort.SliceStable(out, func(i, j int) bool {
+			if rev {
+				return out[i].Key > out[j].Key
+			}
+			return out[i].Key < out[j].Key
+		})
+		if flags.LIMIT > 0 && len(out) > flags.LIMIT {
+			out = out[:flags.LIMIT]
+		}
+		return out, nil
+	}
 	p, _, err := s.runPreparedRangeTx(name, rangeLex(name,
 		internal.NewRLFromString(start),
 		internal.NewRLFromString(end),
@@ -82,7 +102,24 @@ func (s *Server) ZRangeByLex(rev bool, name string, start, end string, flags red
 	return p, err
 }
 
-func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags redisproto.Flags) (p []Pair, err error) {
+func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags redisproto.Flags) ([]Pair, error) {
+	if len(flags.UNION) > 0 {
+		names := append(flags.UNION, name)
+		flags.UNION = nil
+		out := s.zUnion(names, func(key string) ([]Pair, error) {
+			return s.ZRangeByScore(rev, key, start, end, flags)
+		})
+		sort.SliceStable(out, func(i, j int) bool {
+			if rev {
+				return out[i].Score > out[j].Score
+			}
+			return out[i].Score < out[j].Score
+		})
+		if flags.LIMIT > 0 && len(out) > flags.LIMIT {
+			out = out[:flags.LIMIT]
+		}
+		return out, nil
+	}
 	rangeStart, err := internal.NewRLFromFloatString(start)
 	if err != nil {
 		return nil, err
@@ -91,7 +128,7 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags r
 	if err != nil {
 		return nil, err
 	}
-	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
+	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
 		Rev:            rev,
 		OffsetStart:    0,
 		OffsetEnd:      math.MaxInt64,
@@ -101,6 +138,26 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags r
 		ScoreMatchData: flags.MATCHDATA,
 	}))
 	return p, err
+}
+
+func (s *Server) zUnion(names []string, f func(string) ([]Pair, error)) []Pair {
+	wg, out, outMu := sync.WaitGroup{}, make([]Pair, 0), sync.Mutex{}
+	wg.Add(len(names))
+	for _, key := range names {
+		go func(key string) {
+			defer wg.Done()
+			p, err := f(key)
+			if err != nil {
+				log.Errorf("zUnion(%s): %v", key, err)
+				return
+			}
+			outMu.Lock()
+			out = append(out, p...)
+			outMu.Unlock()
+		}(key)
+	}
+	wg.Wait()
+	return out
 }
 
 func rangeLex(name string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]Pair, int, error) {

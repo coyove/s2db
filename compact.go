@@ -361,7 +361,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		var queueTTL int
 		var logtailStartBuf []byte
 		if isQueue {
-			res, err := s.runInspectFuncRet("queuettl", bucketName[2:])
+			res, err := s.runInspectFunc("queuettl", bucketName[2:])
 			if err == nil && res.Type() == typ.Number {
 				queueTTL = int(res.Int())
 			}

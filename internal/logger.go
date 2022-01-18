@@ -13,13 +13,20 @@ type LogFormatter struct{}
 func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	buf := bytes.Buffer{}
 	if entry.Level <= logrus.ErrorLevel {
-		buf.WriteString("@err")
+		buf.WriteString("ERR")
 	} else {
-		buf.WriteString("@info")
+		buf.WriteString("INFO")
 	}
 	if v, ok := entry.Data["shard"]; ok {
-		buf.WriteString("`shard")
-		buf.WriteString(v.(string))
+		buf.WriteString("\t#")
+		if s := v.(string); len(s) == 1 {
+			buf.WriteString("0")
+			buf.WriteString(s)
+		} else {
+			buf.WriteString(s)
+		}
+	} else {
+		buf.WriteString("\tall")
 	}
 	buf.WriteString("\t")
 	buf.WriteString(entry.Time.UTC().Format("2006-01-02T15:04:05.000\t"))

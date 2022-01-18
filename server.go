@@ -211,7 +211,7 @@ func (s *Server) Serve(addr string) error {
 	go s.schedCompactionJob() // TODO: close signal
 
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
-		s.runInspectFuncRet("compactonresume", internal.MustParseInt(v))
+		s.runInspectFunc("compactonresume", internal.MustParseInt(v))
 	}
 
 	runner := func(ln net.Listener) {
@@ -381,7 +381,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
-		p, err := nj.LoadString(name, s.getCompileOptions(command.Argv[2:]...))
+		p, err := nj.LoadString(name, s.getScriptEnviron(command.Argv[2:]...))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

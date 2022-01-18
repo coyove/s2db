@@ -339,9 +339,9 @@ type Flags struct {
 	TIMEOUT     time.Duration
 }
 
-func (c *Command) Flags(start int) (f Flags) {
+func (c Command) Flags(start int) (f Flags) {
 	f.LIMIT = internal.RangeHardLimit
-	f.COUNT = -1
+	f.COUNT = internal.RangeHardLimit
 	f.SHARD = -1
 	f.TIMEOUT = time.Second
 	for i := start; i < c.ArgCount(); i++ {
@@ -394,7 +394,7 @@ func (c *Command) Flags(start int) (f Flags) {
 	return
 }
 
-func splitCode(c *Command, key string) (string, bas.Value) {
+func splitCode(c Command, key string) (string, bas.Value) {
 	if idx := strings.Index(key, "{"); idx > 0 && strings.HasSuffix(key, "}") {
 		key2 := key[:idx]
 		code, err := nj.LoadString(key[idx+1:len(key)-1], &bas.Environment{

@@ -45,8 +45,8 @@ func (s *Server) QScan(name string, start, n int64, withIndexes bool) ([][]byte,
 		n = -n
 		desc = true
 	}
-	if n > int64(HardLimit) {
-		n = int64(HardLimit)
+	if n > int64(internal.RangeHardLimit) {
+		n = int64(internal.RangeHardLimit)
 	}
 	err := s.pick(name).View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("q." + name))

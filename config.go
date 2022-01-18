@@ -92,14 +92,7 @@ func (s *Server) saveConfig() error {
 	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
-	bas.Globals.SetMethod("log", func(env *bas.Env) {
-		x := bytes.Buffer{}
-		for _, a := range env.Stack() {
-			x.WriteString(a.String() + " ")
-		}
-		log.Info("[logIO] ", x.String())
-	}, "")
-	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getCompileOptions())
+	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
 		log.Error("saveConfig inspector: ", err)
 	} else if _, err = p.Run(); err != nil {
@@ -341,45 +334,27 @@ func (s *Server) remapShard(shard int, newPath string) error {
 	return nil
 }
 
-func (s *Server) runInspectFunc(name string, args ...interface{}) {
-	if s.Inspector == nil {
-		return
-	}
-	defer func() { recover() }()
-	f, _ := s.Inspector.Get(name)
-	if !f.IsObject() {
-		return
-	}
-	in := make([]bas.Value, len(args))
-	for i := range in {
-		in[i] = bas.ValueOf(args[i])
-	}
-	v, err := bas.Call2(f.Object(), in...)
-	if err != nil {
-		log.Error("[inspector] run ", name, " err=", err)
-	}
-	if v != bas.Nil {
-		log.Info("[inspector] debug ", name, " result=", v)
-	}
-}
-
-func (s *Server) runInspectFuncRet(name string, args ...interface{}) (bas.Value, error) {
+func (s *Server) runInspectFunc(name string, args ...interface{}) (bas.Value, error) {
 	if s.Inspector == nil {
 		return bas.Nil, nil
 	}
-	defer func() { recover() }()
+	defer internal.Recover()
 	f, _ := s.Inspector.Get(name)
-	if !f.IsObject() {
+	if !bas.IsCallable(f) {
 		return f, nil
 	}
 	in := make([]bas.Value, len(args))
 	for i := range in {
 		in[i] = bas.ValueOf(args[i])
 	}
-	return bas.Call2(f.Object(), in...)
+	res, err := bas.Call2(f.Object(), in...)
+	if err != nil {
+		log.Errorf("runScript(%s): %v", name, err)
+	}
+	return res, err
 }
 
-func (s *Server) getCompileOptions(args ...[]byte) *bas.Environment {
+func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 	var a []bas.Value
 	for _, arg := range args {
 		a = append(a, bas.Str(string(arg)))
@@ -388,6 +363,13 @@ func (s *Server) getCompileOptions(args ...[]byte) *bas.Environment {
 		Globals: bas.NewObject(0).
 			SetProp("server", bas.ValueOf(s)).
 			SetProp("args", bas.NewArray(a...).ToValue()).
+			SetMethod("log", func(env *bas.Env) {
+				x := bytes.Buffer{}
+				for _, a := range env.Stack() {
+					x.WriteString(a.String() + " ")
+				}
+				log.Info("[logIO] ", x.String())
+			}, "").
 			SetMethod("shardCalc", func(e *bas.Env) {
 				e.A = bas.Int(shardIndex(e.Str(0)))
 			}, "").

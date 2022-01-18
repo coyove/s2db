@@ -160,6 +160,9 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		start := time.Now()
+		s.db[shard].compactReplacing.Wait(func() {
+			log.Info("bulkload is waiting for compaction")
+		})
 		names, err := runLog(cmds, s.db[shard].DB)
 		if err != nil {
 			log.Error("bulkload: ", err)

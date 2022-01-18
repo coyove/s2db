@@ -182,7 +182,7 @@ func main() {
 			sp := internal.UUID()
 			http.HandleFunc("/", webInfo(sp, &s))
 			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-				nj.PlaygroundHandler(s.getCompileOptions())(w, r)
+				nj.PlaygroundHandler(s.getScriptEnviron())(w, r)
 			})
 			s.lnWeb, _ = net.Listen("tcp", "127.0.0.1:0")
 			log.Info("serving HTTP info and pprof at ", s.lnWeb.Addr())
@@ -289,10 +289,16 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				return template.HTML(fmt.Sprintf("<div class=stat><div class=stat1>%.2f</div><div class=stat5>%.2f</div><div class=stat15>%.2f</div></div>", a, b, c))
 			},
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "start": time.Now(),
+			"s":        s,
+			"start":    time.Now(),
+			"CPU":      cpu,
+			"IOPS":     iops,
+			"Disk":     disk,
+			"REPLPath": evalPath,
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "cache"},
-			"Slaves":   s.Slaves.List(), "Shard": internal.MustParseInt(shard), "ShardNum": ShardNum,
-			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
+			"Slaves":   s.Slaves.List(),
+			"Shard":    internal.MustParseInt(shard),
+			"ShardNum": ShardNum,
 		})
 	}
 }

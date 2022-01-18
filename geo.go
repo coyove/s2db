@@ -120,13 +120,10 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 
 func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak time.Duration, command *redisproto.Command) error {
 	var p []internal.Pair
-	var count = -1
-	var any bool
-	var withCoord, withDist, withHash, withData, asc, desc bool
 	var lat, long float64
 	var key string
 	var err error
-	options := command.Argv[4:]
+	var options [][]byte
 
 	if byMember {
 		key = command.Get(2)
@@ -140,6 +137,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		options = command.Argv[4:]
 	}
 
 	radius, err := internal.ParseFloat(string(options[0]))
@@ -154,47 +152,24 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		return w.WriteError("unrecognized radius unit")
 	}
 
-	options = append(options, nil)
-	for i := 2; i < len(options)-1; i++ {
-		if bytes.EqualFold(options[i], []byte("COUNT")) {
-			count = internal.MustParseInt(string(options[i+1]))
-			i++
-			if bytes.EqualFold(options[i+1], []byte("ANY")) {
-				any = true
-				i++
-			}
-		} else if bytes.EqualFold(options[i], []byte("WITHCOORD")) {
-			withCoord = true
-		} else if bytes.EqualFold(options[i], []byte("WITHDIST")) {
-			withDist = true
-		} else if bytes.EqualFold(options[i], []byte("WITHHASH")) {
-			withHash = true
-		} else if bytes.EqualFold(options[i], []byte("WITHDATA")) {
-			withData = true
-		} else if bytes.EqualFold(options[i], []byte("ASC")) {
-			asc = true
-		} else if bytes.EqualFold(options[i], []byte("DESC")) {
-			desc = true
-		}
-	}
-
+	flags := (redisproto.Command{Argv: options}).Flags(2)
 	if v, ok := s.Cache.Get(h); ok {
 		p = v.Data.([]internal.Pair)
 	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
 		p = x.([]internal.Pair)
 	} else {
-		p, err = (s.geoRange(name, key, lat, long, radius, count, any, withData))
+		p, err = s.geoRange(name, key, lat, long, radius, flags.COUNT, flags.ANY, flags.WITHDATA)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 
-		if asc {
+		if flags.ASC {
 			sort.Slice(p, func(i, j int) bool {
 				return geoDistHash(lat, long, uint64(p[i].Score)) < geoDistHash(lat, long, uint64(p[j].Score))
 			})
 		}
 
-		if desc {
+		if flags.DESC {
 			sort.Slice(p, func(i, j int) bool {
 				return geoDistHash(lat, long, uint64(p[i].Score)) > geoDistHash(lat, long, uint64(p[j].Score))
 			})
@@ -204,8 +179,8 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		s.WeakCache.AddWeight(name, p, int64(sizePairs(p)))
 	}
 
-	if !withHash && !withCoord && !withDist && !withData {
-		data := []string{}
+	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {
+		var data []string
 		for _, p := range p {
 			data = append(data, p.Member)
 		}
@@ -215,17 +190,17 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	var data []interface{}
 	for _, p := range p {
 		tmp := []interface{}{p.Member}
-		if withHash {
+		if flags.WITHHASH {
 			tmp = append(tmp, internal.FormatFloat(p.Score))
 		}
-		if withDist {
+		if flags.WITHDIST {
 			tmp = append(tmp, internal.FormatFloat(geoDistHash(lat, long, uint64(p.Score))))
 		}
-		if withCoord {
+		if flags.WITHCOORD {
 			lat, long := geohash.DecodeIntWithPrecision(uint64(p.Score), 52)
 			tmp = append(tmp, internal.FormatFloat(long), internal.FormatFloat(lat))
 		}
-		if withData {
+		if flags.WITHDATA {
 			tmp = append(tmp, string(p.Data))
 		}
 		data = append(data, tmp)
@@ -233,12 +208,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) geoRange(name, key string, lat, long float64, radius float64, count int, any, withData bool) (pairs []internal.Pair, err error) {
-	limit := HardLimit
-	if count > 0 && count < HardLimit {
-		limit = count
-	}
-
+func (s *Server) geoRange(name, key string, lat, long float64, radius float64, limit int, any, withData bool) (pairs []internal.Pair, err error) {
 	bits := bitsForBox(radius, radius)
 	if bits > 52 {
 		bits = 52

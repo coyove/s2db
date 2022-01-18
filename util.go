@@ -24,8 +24,6 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-var HardLimit = 100000
-
 func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
@@ -389,4 +387,12 @@ func getRemoteIP(addr net.Addr) net.IP {
 		return net.IPv4bcast
 	}
 	return tcp.IP
+}
+
+func closeAllReadTxs(txs []*bbolt.Tx) {
+	for _, tx := range txs {
+		if tx != nil {
+			tx.Rollback()
+		}
+	}
 }

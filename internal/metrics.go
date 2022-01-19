@@ -81,7 +81,18 @@ func (s Survey) GoString() string {
 	return "qps: " + s.String() + " mean: " + s.MeanString()
 }
 
-func (s Survey) QPS() (q1, q5, q15 float64) {
+func (s *Survey) DivQPSString(s2 *Survey) string {
+	q1, q5, q15 := s.DivQPS(s2)
+	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
+}
+
+func (s *Survey) DivQPS(s2 *Survey) (q1, q5, q15 float64) {
+	q11, q51, q151 := s.QPS()
+	q12, q52, q152 := s2.QPS()
+	return q11 / q12, q51 / q52, q151 / q152
+}
+
+func (s *Survey) QPS() (q1, q5, q15 float64) {
 	idx, ts := s._i()
 	sec := []int64{}
 
@@ -111,7 +122,7 @@ func (s Survey) QPS() (q1, q5, q15 float64) {
 	return
 }
 
-func (s Survey) Mean() (q1, q5, q15 float64) {
+func (s *Survey) Mean() (q1, q5, q15 float64) {
 	idx, ts := s._i()
 	total, count := 0.0, 0.0
 

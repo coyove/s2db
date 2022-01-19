@@ -69,7 +69,8 @@ type Server struct {
 		SysRead, SysWrite       internal.Survey
 		SysWriteDiscards        internal.Survey
 		SysReadLat, SysWriteLat internal.Survey
-		Cache, WeakCache        internal.Survey
+		CacheReq, WeakCacheReq  internal.Survey
+		CacheHit, WeakCacheHit  internal.Survey
 		BatchSize, BatchLat     internal.Survey
 		BatchSizeSv, BatchLatSv internal.Survey
 		Proxy, ProxyLat         internal.Survey

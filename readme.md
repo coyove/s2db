@@ -57,12 +57,8 @@ GEORADIUS[_RO] key longitude latitude radius m|km [WITHCOORD] [WITHDIST] [WITHHA
 GEORADIUSBYMEMBER[_RO] key member radius m|km [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]
     # Behaves exactly like redis.
 
-ZCARD key
-    # Behaves exactly like redis but considerably slower, because it scans all data on disk. Use with cautions.
-
-ZCARDMATCH pattern
-    # Count the sum of the cardinality of keys who match 'pattern'.
-    # All keys will be scanned so this command is extremely slow, don't use it in production.
+ZCARD key [MATCH pattern]
+    # Behaves similar to redis but considerably slower because it scans all data on disk. Use with cautions.
 
 ZCOUNTLEX key min max
     # Behaves similar to 'ZCOUNT', but sorts lexicographically.
@@ -73,7 +69,7 @@ ZMDATA key member [member ...]
 ZRANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [INTERSECT key2 [INTERSECT key3 ...]] [TWOHOPS endpoint] [WITHSCORES] [WITHDATA]
     # Behaves similar to redis, except that 'offset' in LIMIT must be 0 if provided.
     # INTERSECT: returned members will exist in every key: 'key', 'key2', ... 
-    # TWOHOPS: for every member in 'key', find 'endpoint' by ZSCORE member endpoint 
+    # TWOHOPS: find every member in 'key' who (as a zset) contains 'endpoint' (ZSCORE member endpoint)
 
 SCAN cursor [SHARD shard] [MATCH pattern] [COUNT count]
     # Scan keys in database (or in a particular shard).
@@ -81,6 +77,12 @@ SCAN cursor [SHARD shard] [MATCH pattern] [COUNT count]
 UNLINK key
     # Unlink the key, it will get deleted during compaction.
 ```
+
+# Weak Cache
+Read commands like `ZRANGE` or `ZMDATA` will store results into a weak cache. Cached values will not be returned in the preceding requests unless you append `WEAK sec` to your commands, e.g.: `ZRANGE key start end WEAK 30` means returning cached results of `ZRANGE` if they are younger than 30 seconds.
+
+# Web Console
+Web console can be accessed at the same address as flag `-l` identified, to disable it, use flag `-no-web`.
 
 # Compaction
 To enable compaction, execute: `CONFIG SET CompactJobType <Type>`, where `<Type>` can be (`hh` ranges `00-23`, `mm` ranges `00-59`):

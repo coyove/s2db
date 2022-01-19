@@ -353,7 +353,7 @@ func TestQueue(t *testing.T) {
 	rdb.Del(ctx, "q")
 
 	for i := 1; i <= 100; i++ {
-		rdb.Do(ctx, "QAPPEND", "q", i, "10")
+		rdb.Do(ctx, "QAPPEND", "q", i, "COUNT", 10)
 	}
 
 	v, _ := rdb.Do(ctx, "QSCAN", "q", 2, 4).Result()
@@ -361,7 +361,7 @@ func TestQueue(t *testing.T) {
 	v, _ = rdb.Do(ctx, "QSCAN", "q", -2, -4).Result()
 	assertEqual(v, []string{"98", "97", "96", "95"})
 
-	rdb.Do(ctx, "QAPPEND", "q", "--TRIM--", 8)
+	rdb.Do(ctx, "QAPPEND", "q", "--TRIM--", "COUNT", 8)
 	v, _ = rdb.Do(ctx, "QSCAN", "q", 2, 4).Result()
 	assertEqual(v, []string{"94", "95", "96", "97"})
 

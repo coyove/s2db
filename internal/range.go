@@ -20,14 +20,14 @@ type RangeLimit struct {
 }
 
 type RangeOptions struct {
-	OffsetStart    int // only used by Z[REV]RANGE
-	OffsetEnd      int // only used by Z[REV]RANGE
-	Limit          int
-	WithData       bool
-	Rev            bool
-	LexMatch       string
-	ScoreMatchData string // only available in ZSCOREBYSCORE
-	DeleteLog      []byte
+	OffsetStart    int    // used by Z[REV]RANGE
+	OffsetEnd      int    // used by Z[REV]RANGE
+	Limit          int    // upper bound in: LIMIT 0 limit
+	WithData       bool   // return attached data
+	Rev            bool   // reversed range
+	LexMatch       string // match member
+	ScoreMatchData string // only available in ZRANGEBYSCORE
+	DeleteLog      []byte // used by ZREM...
 	Append         func(pairs *[]Pair, p Pair) bool
 }
 

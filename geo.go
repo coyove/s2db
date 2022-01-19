@@ -23,17 +23,6 @@ func bitsForBox(w, h float64) uint {
 	return uint(math.Min(b1, b2) * 2)
 }
 
-func init() {
-	// // h := geohash.EncodeIntWithPrecision(10, 20, 52)
-	// fmt.Println(bitsForBox(1000, 1000))
-	// for i := 0; i < 52; i++ {
-	// 	// fmt.Println(geohash.BoundingBoxIntWithPrecision(h>>i, 52-uint(i)))
-	// 	lat, long := errorWithPrecision(52 - uint(i))
-	// 	fmt.Println(52-i, lat*6371000, long*6371000)
-	// }
-	// panic(1)
-}
-
 func geoDistHash(lat1, lon1 float64, hash uint64) float64 {
 	lat2, long2 := geohash.DecodeIntWithPrecision(hash, 52)
 	return geoDist(lat1, lon1, lat2, long2)
@@ -175,8 +164,8 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 			})
 		}
 
-		s.addCache(wm, name, h, p)
-		s.WeakCache.AddWeight(name, p, int64(sizePairs(p)))
+		// s.addCache(wm, name, h, p)
+		s.WeakCache.AddWeight(name, p, int64(internal.SizePairs(p)))
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {

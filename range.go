@@ -23,17 +23,19 @@ var (
 	errSafeExit = fmt.Errorf("exit")
 )
 
-func (s *Server) ZCount(lex bool, name string, start, end string, match string) (int, error) {
+func (s *Server) ZCount(lex bool, key string, start, end string, flags redisproto.Flags) (int, error) {
 	if lex {
-		_, c, err := s.runPreparedRangeTx(name, rangeLex(name,
+		_, c, err := s.runPreparedRangeTx(key, rangeLex(key,
 			internal.NewRLFromString(start),
 			internal.NewRLFromString(end),
 			internal.RangeOptions{
 				OffsetStart: 0,
 				OffsetEnd:   math.MaxInt64,
-				LexMatch:    match,
+				LexMatch:    flags.MATCH,
 				Limit:       internal.RangeHardLimit,
-			}))
+			}), func(p []internal.Pair, count int) {
+			s.addCache(key, flags.Command.HashCode(), count)
+		})
 		return c, err
 	}
 	rangeStart, err := internal.NewRLFromFloatString(start)
@@ -44,37 +46,42 @@ func (s *Server) ZCount(lex bool, name string, start, end string, match string) 
 	if err != nil {
 		return 0, err
 	}
-	_, c, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
+	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, internal.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
 		Limit:       internal.RangeHardLimit,
-		LexMatch:    match,
-	}))
+		LexMatch:    flags.MATCH,
+	}), func(p []internal.Pair, count int) {
+		s.addCache(key, flags.Command.HashCode(), count)
+	})
 	return c, err
 
 }
 
-func (s *Server) ZRange(rev bool, name string, start, end int, flags redisproto.Flags) ([]internal.Pair, error) {
+func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.Flags) ([]internal.Pair, error) {
 	rangeStart, rangeEnd := MinScoreRange, MaxScoreRange
 	if rev {
 		rangeStart, rangeEnd = MaxScoreRange, MinScoreRange
 	}
-	p, _, err := s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, internal.RangeOptions{
+	p, _, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, internal.RangeOptions{
 		Rev:         rev,
 		OffsetStart: start,
 		OffsetEnd:   end,
 		Limit:       flags.LIMIT,
 		WithData:    flags.WITHDATA,
 		Append:      internal.DefaultRangeAppend,
-	}))
+	}), func(p []internal.Pair, count int) {
+		s.addCache(key, flags.Command.HashCode(), p)
+	})
 	return p, err
 }
 
-func (s *Server) ZRangeByLex(rev bool, name string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
+func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
 	ro := internal.RangeOptions{
 		Rev:      rev,
 		LexMatch: flags.MATCH,
 	}
+	success := func(p []internal.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, close := s.prepareIntersectBuckets(flags)
 		defer close()
@@ -83,26 +90,28 @@ func (s *Server) ZRangeByLex(rev bool, name string, start, end string, flags red
 		}
 		ro.Limit = math.MaxInt64
 		ro.Append = genIntersectFunc(bkm, flags)
+		success = func([]internal.Pair, int) {}
 	} else if flags.TWOHOPS.ENDPOINT != nil {
 		txs, close := s.openAllTx()
 		defer close()
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
+		success = func([]internal.Pair, int) {}
 	} else {
 		ro.Limit = flags.LIMIT
 		ro.Append = internal.DefaultRangeAppend
 	}
-	p, _, err = s.runPreparedRangeTx(name, rangeLex(name, internal.NewRLFromString(start), internal.NewRLFromString(end), ro))
+	p, _, err = s.runPreparedRangeTx(key, rangeLex(key, internal.NewRLFromString(start), internal.NewRLFromString(end), ro), success)
 	if err == errSafeExit {
 		err = nil
 	}
 	if flags.WITHDATA && err == nil {
-		err = s.fillPairsData(name, p)
+		err = s.fillPairsData(key, p)
 	}
 	return p, err
 }
 
-func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
+func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
 	rangeStart, err := internal.NewRLFromFloatString(start)
 	if err != nil {
 		return nil, err
@@ -119,6 +128,7 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags r
 		ScoreMatchData: flags.MATCHDATA,
 		WithData:       flags.WITHDATA,
 	}
+	success := func(p []internal.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, close := s.prepareIntersectBuckets(flags)
 		defer close()
@@ -127,25 +137,27 @@ func (s *Server) ZRangeByScore(rev bool, name string, start, end string, flags r
 		}
 		ro.Limit = math.MaxInt64
 		ro.Append = genIntersectFunc(bkm, flags)
+		success = func([]internal.Pair, int) {}
 	} else if flags.TWOHOPS.ENDPOINT != nil {
 		txs, close := s.openAllTx()
 		defer close()
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
+		success = func([]internal.Pair, int) {}
 	} else {
 		ro.Limit = flags.LIMIT
 		ro.Append = internal.DefaultRangeAppend
 	}
-	p, _, err = s.runPreparedRangeTx(name, rangeScore(name, rangeStart, rangeEnd, ro))
+	p, _, err = s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, ro), success)
 	if err == errSafeExit {
 		err = nil
 	}
 	return p, err
 }
 
-func rangeLex(name string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
+func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
-		bk := tx.Bucket([]byte("zset." + name))
+		bk := tx.Bucket([]byte("zset." + key))
 		if bk == nil {
 			return
 		}
@@ -221,19 +233,19 @@ func rangeLex(name string, start, end internal.RangeLimit, opt internal.RangeOpt
 		}
 
 		if len(opt.DeleteLog) > 0 {
-			return pairs, count, deletePair(tx, name, pairs, opt.DeleteLog)
+			return pairs, count, deletePair(tx, key, pairs, opt.DeleteLog)
 		}
 		return pairs, count, nil
 	}
 }
 
-func rangeScore(name string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
+func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
 	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
-		bk := tx.Bucket([]byte("zset.score." + name))
+		bk := tx.Bucket([]byte("zset.score." + key))
 		if bk == nil {
 			return
 		}
-		opt.TranslateOffset(name, bk)
+		opt.TranslateOffset(key, bk)
 
 		c := bk.Cursor()
 		do := func(k, dataBuf []byte) error {
@@ -318,42 +330,45 @@ func rangeScore(name string, start, end internal.RangeLimit, opt internal.RangeO
 		}
 
 		if len(opt.DeleteLog) > 0 {
-			return pairs, count, deletePair(tx, name, pairs, opt.DeleteLog)
+			return pairs, count, deletePair(tx, key, pairs, opt.DeleteLog)
 		}
 		return pairs, count, nil
 	}
 }
 
-func (s *Server) ZRank(rev bool, name, key string, limit int) (rank int, err error) {
+func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (rank int, err error) {
 	rank = -1
-	keybuf := []byte(key)
-	err = s.pick(name).View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("zset.score." + name))
-		if bk == nil {
-			return nil
-		}
-		c := bk.Cursor()
-		if rev {
-			for k, _ := c.Last(); len(k) > 8; k, _ = c.Prev() {
-				rank++
-				if bytes.Equal(k[8:], keybuf) || rank == limit+1 {
-					return nil
+	keybuf := []byte(member)
+	err = s.pick(key).View(func(tx *bbolt.Tx) error {
+		func() {
+			bk := tx.Bucket([]byte("zset.score." + key))
+			if bk == nil {
+				return
+			}
+			c := bk.Cursor()
+			if rev {
+				for k, _ := c.Last(); len(k) > 8; k, _ = c.Prev() {
+					rank++
+					if bytes.Equal(k[8:], keybuf) || rank == flags.COUNT+1 {
+						return
+					}
+				}
+			} else {
+				for k, _ := c.First(); len(k) > 8; k, _ = c.Next() {
+					rank++
+					if bytes.Equal(k[8:], keybuf) || rank == flags.COUNT+1 {
+						return
+					}
 				}
 			}
-		} else {
-			for k, _ := c.First(); len(k) > 8; k, _ = c.Next() {
-				rank++
-				if bytes.Equal(k[8:], keybuf) || rank == limit+1 {
-					return nil
-				}
-			}
+			rank = -1
+		}()
+		if rank == flags.COUNT+1 {
+			rank = -1
 		}
-		rank = -1
+		s.addCache(key, flags.HashCode(), rank)
 		return nil
 	})
-	if rank == limit+1 {
-		rank = -1
-	}
 	return
 }
 

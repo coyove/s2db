@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coyove/common/lru"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/internal"
@@ -89,8 +88,8 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactTxSize, 20000)
 	ifZero(&s.CompactTxWorkers, 1)
 
-	s.Cache = newKeyedCache(int64(s.CacheSize) * 1024 * 1024)
-	s.WeakCache = lru.NewCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	s.Cache = internal.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
+	s.WeakCache = internal.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -98,7 +97,7 @@ func (s *Server) saveConfig() error {
 	} else if _, err = p.Run(); err != nil {
 		log.Error("saveConfig inspector: ", err)
 	} else {
-		s.Inspector = p
+		s.SelfManager = p
 	}
 
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
@@ -335,11 +334,11 @@ func (s *Server) remapShard(shard int, newPath string) error {
 }
 
 func (s *Server) runInspectFunc(name string, args ...interface{}) (bas.Value, error) {
-	if s.Inspector == nil {
+	if s.SelfManager == nil {
 		return bas.Nil, nil
 	}
 	defer internal.Recover()
-	f, _ := s.Inspector.Get(name)
+	f, _ := s.SelfManager.Get(name)
 	if !bas.IsCallable(f) {
 		return f, nil
 	}
@@ -383,7 +382,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				for i := range v {
 					v = append(v, e.Get(i).Safe().Bytes())
 				}
-				e.A = bas.ValueOf(hashCommands(&redisproto.Command{Argv: v}))
+				e.A = bas.ValueOf((redisproto.Command{Argv: v}).HashCode())
 			}, "").
 			SetMethod("getPendingUnlinks", func(e *bas.Env) { // ) []string {
 				v, err := getPendingUnlinks(s.db[e.Int(0)].DB)

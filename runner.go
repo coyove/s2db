@@ -12,30 +12,33 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) runPreparedRangeTx(name string, f func(tx *bbolt.Tx) ([]internal.Pair, int, error)) (pairs []internal.Pair, count int, err error) {
-	err = s.pick(name).View(func(tx *bbolt.Tx) error {
+func (s *Server) runPreparedRangeTx(key string,
+	f func(tx *bbolt.Tx) ([]internal.Pair, int, error),
+	success func([]internal.Pair, int)) (pairs []internal.Pair, count int, err error) {
+	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		pairs, count, err = f(tx)
+		if err == nil {
+			success(pairs, count)
+		}
 		return err
 	})
 	return
 }
 
-func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
-	t := &batchTask{f: f, out: make(chan interface{}, 1)}
+func (s *Server) runPreparedTxAndWrite(key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
+	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
 	if s.Closed {
 		return fmt.Errorf("server closing stage")
 	}
 
-	s.db[shardIndex(name)].batchTx <- t
+	s.db[shardIndex(key)].batchTx <- t
 	if deferred {
-		s.removeCache(name)
 		return w.WriteSimpleString("OK")
 	}
 	out := <-t.out
 	if err, _ := out.(error); err != nil {
 		return w.WriteError(err.Error())
 	}
-	s.removeCache(name)
 	switch res := out.(type) {
 	case int:
 		return w.WriteInt(int64(res))
@@ -50,6 +53,7 @@ func (s *Server) runPreparedTxAndWrite(name string, deferred bool, f func(tx *bb
 
 type batchTask struct {
 	f   func(*bbolt.Tx) (interface{}, error)
+	key string
 	out chan interface{}
 }
 
@@ -134,6 +138,7 @@ func (s *Server) runTasks(tasks []*batchTask, shard int) {
 		if err != nil {
 			t.out <- err
 		} else {
+			s.removeCache(t.key)
 			t.out <- outs[i]
 		}
 	}

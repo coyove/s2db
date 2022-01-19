@@ -317,6 +317,7 @@ func (r *Parser) Commands() <-chan *Command {
 }
 
 type Flags struct {
+	Command
 	MATCH     string
 	MATCHDATA string
 	TWOHOPS   struct {
@@ -340,6 +341,7 @@ type Flags struct {
 }
 
 func (c Command) Flags(start int) (f Flags) {
+	f.Command = c
 	f.LIMIT = internal.RangeHardLimit
 	f.COUNT = internal.RangeHardLimit
 	f.SHARD = -1
@@ -406,4 +408,19 @@ func splitCode(c Command, key string) (string, bas.Value) {
 		return key2, res
 	}
 	return key, bas.Nil
+}
+
+func (in Command) HashCode() (h [2]uint64) {
+	h = [2]uint64{0, 5381}
+	for _, buf := range in.Argv {
+		for _, b := range buf {
+			old := h[1]
+			h[1] = h[1]*33 + uint64(b)
+			if h[1] < old {
+				h[0]++
+			}
+		}
+		h[1]++
+	}
+	return h
 }

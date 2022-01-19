@@ -7,13 +7,15 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/coyove/nj"
+	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) pick(name string) *bbolt.DB {
-	return s.db[shardIndex(name)].DB
+func (s *Server) pick(key string) *bbolt.DB {
+	return s.db[shardIndex(key)].DB
 }
 
 func writeLog(tx *bbolt.Tx, dd []byte) error {
@@ -26,7 +28,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bk.Put(internal.Uint64ToBytes(id), dd)
 }
 
-func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZAdd(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	var xx, nx, ch, data bool
 	var fillPercent float64
 	var err error
@@ -66,72 +68,65 @@ func parseZAdd(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (i
 			pairs = append(pairs, internal.Pair{Member: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
 		}
 	}
-	return prepareZAdd(name, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
+	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
 }
 
-func parseDel(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseDel(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	dd := dumpCommand(command)
 	switch cmd {
 	case "DEL":
-		return prepareDel(name, dd)
+		return prepareDel(key, dd)
 	case "ZREM":
-		return prepareZRem(name, restCommandsToKeys(2, command), dd)
+		return prepareZRem(key, restCommandsToKeys(2, command), dd)
 	}
 	start, end := command.Get(2), command.Get(3)
 	switch cmd {
 	case "ZREMRANGEBYLEX":
-		return prepareZRemRangeByLex(name, start, end, dd)
+		return prepareZRemRangeByLex(key, start, end, dd)
 	case "ZREMRANGEBYSCORE":
-		return prepareZRemRangeByScore(name, start, end, dd)
+		return prepareZRemRangeByScore(key, start, end, dd)
 	case "ZREMRANGEBYRANK":
-		return prepareZRemRangeByRank(name, internal.MustParseInt(start), internal.MustParseInt(end), dd)
+		return prepareZRemRangeByRank(key, internal.MustParseInt(start), internal.MustParseInt(end), dd)
 	default:
 		panic(-1)
 	}
 }
 
-func parseZIncrBy(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	by := internal.MustParseFloatBytes(command.Argv[2])
-	return prepareZIncrBy(name, command.Get(3), by, dumpCommand(command))
+	return prepareZIncrBy(key, command.Get(3), by, dumpCommand(command))
 }
 
-func (s *Server) ZCard(name string, match bool) (count int64, err error) {
-	if match {
-		for i := range s.db {
-			err = s.db[i].View(func(tx *bbolt.Tx) error {
-				return tx.ForEach(func(k []byte, bk *bbolt.Bucket) error {
-					x := *(*string)(unsafe.Pointer(&k))
-					if strings.HasPrefix(x, "zset.score.") {
-						if m, _ := filepath.Match(name, x[11:]); m {
-							count += int64(bk.KeyN())
-						}
-					}
-					return nil
-				})
-			})
-		}
-	} else {
-		err = s.pick(name).View(func(tx *bbolt.Tx) error {
-			bk := tx.Bucket([]byte("zset." + name))
-			if bk == nil {
-				return nil
-			}
-			count = int64(bk.KeyN())
+func (s *Server) ZCard(key string, flags redisproto.Flags) (count int64) {
+	s.pick(key).View(func(tx *bbolt.Tx) error {
+		bk := tx.Bucket([]byte("zset." + key))
+		if bk == nil {
 			return nil
-		})
-	}
+		}
+		if flags.MATCH != "" {
+			c := bk.Cursor()
+			for k, _ := c.First(); len(k) > 0; k, _ = c.Next() {
+				if m, _ := filepath.Match(flags.MATCH, *(*string)(unsafe.Pointer(&k))); m {
+					count++
+				}
+			}
+		} else {
+			count = int64(bk.KeyN())
+		}
+		return nil
+	})
 	return
 }
 
-func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err error) {
+func (s *Server) ZMScore(key string, keys ...string) (scores []float64, err error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
 	for range keys {
 		scores = append(scores, math.NaN())
 	}
-	err = s.pick(name).View(func(tx *bbolt.Tx) error {
-		bkName := tx.Bucket([]byte("zset." + name))
+	err = s.pick(key).View(func(tx *bbolt.Tx) error {
+		bkName := tx.Bucket([]byte("zset." + key))
 		if bkName == nil {
 			return nil
 		}
@@ -146,35 +141,40 @@ func (s *Server) ZMScore(name string, keys ...string) (scores []float64, err err
 	return
 }
 
-func (s *Server) ZMData(name string, keys ...string) (data [][]byte, err error) {
+func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data [][]byte, err error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
 	data = make([][]byte, len(keys))
-	err = s.pick(name).View(func(tx *bbolt.Tx) error {
-		bkName := tx.Bucket([]byte("zset." + name))
-		if bkName == nil {
-			return nil
-		}
-		bkScore := tx.Bucket([]byte("zset.score." + name))
-		if bkScore == nil {
-			return nil
-		}
-		for i, key := range keys {
-			scoreBuf := bkName.Get([]byte(key))
-			if len(scoreBuf) != 0 {
-				d := bkScore.Get([]byte(string(scoreBuf) + keys[i]))
-				data[i] = append([]byte{}, d...)
+	err = s.pick(key).View(func(tx *bbolt.Tx) error {
+		func() {
+			bkName := tx.Bucket([]byte("zset." + key))
+			if bkName == nil {
+				return
 			}
+			bkScore := tx.Bucket([]byte("zset.score." + key))
+			if bkScore == nil {
+				return
+			}
+			for i, key := range keys {
+				scoreBuf := bkName.Get([]byte(key))
+				if len(scoreBuf) != 0 {
+					d := bkScore.Get([]byte(string(scoreBuf) + keys[i]))
+					data[i] = append([]byte{}, d...)
+				}
+			}
+		}()
+		if flags.Command.ArgCount() > 0 {
+			s.addCache(key, flags.HashCode(), data)
 		}
 		return nil
 	})
 	return
 }
 
-func deletePair(tx *bbolt.Tx, name string, pairs []internal.Pair, dd []byte) error {
-	bkName := tx.Bucket([]byte("zset." + name))
-	bkScore := tx.Bucket([]byte("zset.score." + name))
+func deletePair(tx *bbolt.Tx, key string, pairs []internal.Pair, dd []byte) error {
+	bkName := tx.Bucket([]byte("zset." + key))
+	bkScore := tx.Bucket([]byte("zset.score." + key))
 	if bkScore == nil || bkName == nil {
 		return writeLog(tx, dd)
 	}
@@ -189,20 +189,18 @@ func deletePair(tx *bbolt.Tx, name string, pairs []internal.Pair, dd []byte) err
 	return writeLog(tx, dd)
 }
 
-func parseQAppend(cmd, name string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseQAppend(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	value := append([]byte{}, command.At(2)...)
-	max := int64(internal.ParseInt(command.Get(3)))
+	flags := command.Flags(3)
 
 	var m func(string) bool
-	switch appender := strings.ToUpper(command.Get(4)); appender {
-	case "MATCH", "NOTMATCH":
-		v := command.Get(5)
-		m = func(a string) bool {
-			ok, err := filepath.Match(v, a)
-			internal.PanicErr(err)
-			return ok != (appender == "NOTMATCH")
+	if flags.MATCH != "" {
+		if f := nj.MustRun(nj.LoadString(flags.MATCH, nil)); bas.IsCallable(f) {
+			m = func(a string) bool {
+				v, _ := bas.Call2(f.Object(), bas.Str(a))
+				return v.IsTrue()
+			}
 		}
 	}
-
-	return prepareQAppend(name, value, max, m, dumpCommand(command))
+	return prepareQAppend(key, value, int64(flags.COUNT), m, dumpCommand(command))
 }

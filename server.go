@@ -18,7 +18,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/coyove/common/lru"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/internal"
@@ -28,7 +27,9 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-const ShardNum = 32
+const (
+	ShardNum = 32
+)
 
 var (
 	bboltOptions = &bbolt.Options{
@@ -42,21 +43,22 @@ var (
 
 type Server struct {
 	ln, lnLocal, lnWeb net.Listener
-	rdb                *redis.Client
-	rdbCache           *lru.Cache
+
+	rdb      *redis.Client
+	rdbCache *internal.LRUCache
 
 	ServerConfig
-	ReadOnly         bool
-	Closed           bool
-	MasterMode       bool
-	MasterAddr       string
-	MasterNameAssert string // when pulling logs from master, we use its servername to ensure this is the right source
-	MasterPassword   string
-	DataPath         string
+	ReadOnly         bool   // server is readonly
+	Closed           bool   // server close flag
+	MasterMode       bool   // I AM MASTER server
+	MasterAddr       string // connect master address
+	MasterNameAssert string // when pulling logs, use this name to ensure the right master
+	MasterPassword   string // master password
+	DataPath         string // location of config database
 	RedirectWrites   string
-	Inspector        *bas.Program
-	Cache            *keyedCache
-	WeakCache        *lru.Cache
+	SelfManager      *bas.Program
+	Cache            *internal.KeyedLRUCache
+	WeakCache        *internal.LRUCache
 	Slaves           slaves
 	Master           serverInfo
 	CompactLock      internal.LockBox
@@ -75,7 +77,6 @@ type Server struct {
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		writeWatermark    int64
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
@@ -122,8 +123,8 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
-	x.rdbCache = lru.NewCache(1)
-	x.rdbCache.OnEvicted = func(k lru.Key, v interface{}) {
+	x.rdbCache = internal.NewLRUCache(1)
+	x.rdbCache.OnEvicted = func(k internal.LRUKey, v interface{}) {
 		log.Info("rdbCache(", k, ") close: ", v.(*redis.Client).Close())
 	}
 	return x, nil
@@ -140,7 +141,7 @@ func (s *Server) Close() error {
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
 	}
-	s.rdbCache.Info(func(k lru.Key, v interface{}, a, b int64) { errs <- v.(*redis.Client).Close() })
+	s.rdbCache.Info(func(k internal.LRUKey, v interface{}, a, b int64) { errs <- v.(*redis.Client).Close() })
 
 	wg := sync.WaitGroup{}
 	for i := range s.db {
@@ -313,15 +314,14 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	var (
 		cmd         = strings.ToUpper(command.Get(0))
 		isRev       = strings.HasPrefix(cmd, "ZREV")
-		name        = command.Get(1)
+		key         = command.Get(1)
 		weak        = parseWeakFlag(command) // weak parsing comes first
-		wm          = s.Cache.nextWatermark()
 		isReadWrite byte
 	)
 	cmd = strings.TrimSuffix(cmd, "WEAK")
 
 	if cmd == "UNLINK" || cmd == "DEL" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
-		if name == "" || strings.HasPrefix(name, "score.") || strings.HasPrefix(name, "--") || strings.Contains(name, "\r\n") {
+		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
 			return w.WriteError("invalid name which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
 		// UNLINK can be executed on slaves because it's a maintenance command,
@@ -352,13 +352,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			// log.Error(r, string(debug.Stack()))
-			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(name), r))
+			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r))
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				buf := "slowLog(" + strconv.Itoa(shardIndex(name)) + "): " + diff.String() + " " + command.String()
-				if diff := len(buf) - 256; diff > 0 {
-					buf = buf[:256] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
+				buf := "slowLog(" + strconv.Itoa(shardIndex(key)) + "): " + diff.String() + " " + command.String()
+				if diff := len(buf) - 100; diff > 0 {
+					buf = buf[:100] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
 				}
 				log.Info(buf)
 			}
@@ -381,7 +381,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
-		p, err := nj.LoadString(name, s.getScriptEnviron(command.Argv[2:]...))
+		p, err := nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -391,10 +391,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteBulkString(v.String())
 	case "PING":
-		if name == "" {
+		if key == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
-		if strings.EqualFold(name, "FROM") {
+		if strings.EqualFold(key, "FROM") {
 			s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
 				info.ListenAddr = command.Get(2)
 				info.ServerName = command.Get(3)
@@ -402,9 +402,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			})
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
-		return w.WriteSimpleString(name)
+		return w.WriteSimpleString(key)
 	case "CONFIG":
-		switch strings.ToUpper(name) {
+		switch strings.ToUpper(key) {
 		case "GET":
 			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
@@ -427,7 +427,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteBulkStrings(s.listConfig())
 		}
 	case "INFO":
-		switch n := strings.ToLower(name); {
+		switch n := strings.ToLower(key); {
 		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
 			return w.WriteBulkString(strings.Join(s.ShardInfo(internal.MustParseInt(n)), "\r\n"))
 		default:
@@ -436,16 +436,16 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "DUMPSHARD":
 		path := command.Get(2)
 		if path == "" {
-			path = s.db[internal.MustParseInt(name)].DB.Path() + ".bak"
+			path = s.db[internal.MustParseInt(key)].DB.Path() + ".bak"
 		}
-		return w.WriteIntOrError(s.db[internal.MustParseInt(name)].DB.Dump(path))
+		return w.WriteIntOrError(s.db[internal.MustParseInt(key)].DB.Dump(path))
 	case "COMPACTSHARD":
-		if err := s.CompactShard(internal.MustParseInt(name), true); err != nil {
+		if err := s.CompactShard(internal.MustParseInt(key), true); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("STARTED")
 	case "REMAPSHARD":
-		if err := s.remapShard(internal.MustParseInt(name), command.Get(2)); err != nil {
+		if err := s.remapShard(internal.MustParseInt(key), command.Get(2)); err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
@@ -455,8 +455,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	switch cmd {
 	case "LOGTAIL":
 		var c uint64
-		if name != "" {
-			c, err = s.myLogTail(internal.MustParseInt(name))
+		if key != "" {
+			c, err = s.myLogTail(internal.MustParseInt(key))
 		} else {
 			c, err = s.myLogTail(-1)
 		}
@@ -466,12 +466,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.responseLog(internal.MustParseInt(name), start, false)
+		logs, err := s.responseLog(internal.MustParseInt(key), start, false)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
-			info.LogTails[internal.MustParseInt(name)] = start - 1
+			info.LogTails[internal.MustParseInt(key)] = start - 1
 		})
 		return w.WriteBulkStrings(logs)
 	}
@@ -479,12 +479,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Special
 	switch cmd {
 	case "UNLINK":
-		if err := s.pick(name).Update(func(tx *bbolt.Tx) error {
+		if err := s.pick(key).Update(func(tx *bbolt.Tx) error {
 			bk, err := tx.CreateBucketIfNotExists([]byte("unlink"))
 			if err != nil {
 				return err
 			}
-			return bk.Put([]byte(name), []byte("unlink"))
+			return bk.Put([]byte(key), []byte("unlink"))
 		}); err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -495,32 +495,29 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	deferred := parseDeferFlag(command)
 	switch cmd {
 	case "DEL":
-		return s.runPreparedTxAndWrite(name, false, parseDel(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(key, false, parseDel(cmd, key, command), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(name, deferred, parseDel(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(key, deferred, parseDel(cmd, key, command), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(name, deferred, parseZAdd(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(key, deferred, parseZAdd(cmd, key, command), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(name, deferred, parseZIncrBy(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(key, deferred, parseZIncrBy(cmd, key, command), w)
 	case "QAPPEND":
-		return s.runPreparedTxAndWrite(name, deferred, parseQAppend(cmd, name, command), w)
+		return s.runPreparedTxAndWrite(key, deferred, parseQAppend(cmd, key, command), w)
 	}
 
-	h := hashCommands(command)
+	h := command.HashCode()
 	// Client space read commands
 	switch cmd {
-	case "ZSCORE":
-		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
+	case "ZSCORE", "ZMSCORE":
+		s, err := s.ZMScore(key, restCommandsToKeys(2, command)...)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulk(internal.FormatFloatBulk(s[0]))
-	case "ZMSCORE":
-		s, err := s.ZMScore(name, restCommandsToKeys(2, command)...)
-		if err != nil {
-			return w.WriteError(err.Error())
+		if cmd == "ZSCORE" {
+			return w.WriteBulk(internal.FormatFloatBulk(s[0]))
 		}
-		data := [][]byte{}
+		var data [][]byte
 		for _, s := range s {
 			data = append(data, internal.FormatFloatBulk(s))
 		}
@@ -532,15 +529,14 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if v := s.getWeakCache(h, weak); v != nil {
 			return w.WriteBulks(v.([][]byte)...)
 		}
-		data, err := s.ZMData(name, restCommandsToKeys(2, command)...)
+		data, err := s.ZMData(key, restCommandsToKeys(2, command), redisproto.Flags{Command: *command})
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(wm, name, h, data)
-		s.WeakCache.AddWeight(h, &weakCacheItem{Data: data, Time: time.Now().Unix()}, int64(sizeBytes(data)))
+		s.addWeakCache(h, data, internal.SizeBytes(data))
 		return w.WriteBulks(data...)
-	case "ZCARD", "ZCARDMATCH":
-		return w.WriteIntOrError(s.ZCard(name, cmd == "ZCARDMATCH"))
+	case "ZCARD":
+		return w.WriteInt(s.ZCard(key, command.Flags(2)))
 	case "ZCOUNT", "ZCOUNTBYLEX":
 		if v := s.getCache(h); v != nil {
 			return w.WriteInt(int64(v.(int)))
@@ -549,12 +545,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
-		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", name, command.Get(2), command.Get(3), command.Flags(4).MATCH)
+		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(wm, name, h, c)
-		s.WeakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
+		s.addWeakCache(h, c, 1)
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK":
 		var c int
@@ -564,12 +559,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			c = v.(int)
 		} else {
 			// COMMAND name key COUNT X
-			c, err = s.ZRank(isRev, name, command.Get(2), command.Flags(3).COUNT)
+			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addCache(wm, name, h, c)
-			s.WeakCache.Add(h, &weakCacheItem{Data: c, Time: time.Now().Unix()})
+			s.addWeakCache(h, c, 1)
 		}
 		if c == -1 {
 			return w.WriteBulk(nil)
@@ -590,29 +584,28 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		switch cmd {
 		case "ZRANGE", "ZREVRANGE":
-			p, err = s.ZRange(isRev, name, internal.MustParseInt(start), internal.MustParseInt(end), flags)
+			p, err = s.ZRange(isRev, key, internal.MustParseInt(start), internal.MustParseInt(end), flags)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			p, err = s.ZRangeByLex(isRev, name, start, end, flags)
+			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
 		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			p, err = s.ZRangeByScore(isRev, name, start, end, flags)
+			p, err = s.ZRangeByScore(isRev, key, start, end, flags)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(wm, name, h, p)
-		s.WeakCache.AddWeight(h, &weakCacheItem{Data: p, Time: time.Now().Unix()}, int64(sizePairs(p)))
+		s.addWeakCache(h, p, internal.SizePairs(p))
 		return writePairs(p, w, flags)
 	case "GEORADIUS", "GEORADIUS_RO":
-		return s.runGeoRadius(w, false, name, h, wm, weak, command)
+		return s.runGeoRadius(w, false, key, h, 0, weak, command)
 	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
-		return s.runGeoRadius(w, true, name, h, wm, weak, command)
+		return s.runGeoRadius(w, true, key, h, 0, weak, command)
 	case "GEODIST":
-		return s.runGeoDist(w, name, command)
+		return s.runGeoDist(w, key, command)
 	case "GEOPOS":
-		return s.runGeoPos(w, name, command)
+		return s.runGeoPos(w, key, command)
 	case "SCAN":
 		flags := command.Flags(2)
-		p, next, err := s.Scan(name, flags.MATCH, flags.SHARD, flags.COUNT)
+		p, next, err := s.Scan(key, flags.MATCH, flags.SHARD, flags.COUNT)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -625,11 +618,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteObjects(next, keys)
 	case "QLEN":
-		return w.WriteIntOrError(s.QLength(name))
+		return w.WriteIntOrError(s.QLength(key))
 	case "QHEAD":
-		return w.WriteIntOrError(s.QHead(name))
+		return w.WriteIntOrError(s.QHead(key))
 	case "QINDEX":
-		v, err := s.QGet(name, internal.MustParseInt64(command.Get(2)))
+		v, err := s.QGet(key, internal.MustParseInt64(command.Get(2)))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -640,11 +633,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		start := internal.MustParseInt64(command.Get(2))
 		n := internal.MustParseInt64(command.Get(3))
-		data, err := s.QScan(name, start, n, command.Flags(4).WITHINDEXES)
+		data, err := s.QScan(key, start, n, command.Flags(4))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(wm, name, h, data)
 		return w.WriteBulksSlice(data)
 	default:
 		return w.WriteError("unknown command: " + cmd)

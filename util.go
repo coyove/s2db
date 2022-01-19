@@ -38,21 +38,6 @@ func checkScore(s float64) error {
 	return nil
 }
 
-func hashCommands(in *redisproto.Command) (h [2]uint64) {
-	h = [2]uint64{0, 5381}
-	for _, buf := range in.Argv {
-		for _, b := range buf {
-			old := h[1]
-			h[1] = h[1]*33 + uint64(b)
-			if h[1] < old {
-				h[0]++
-			}
-		}
-		h[1]++
-	}
-	return h
-}
-
 func shardIndex(key string) int {
 	return int(internal.HashStr(key) % ShardNum)
 }
@@ -79,23 +64,7 @@ func writePairs(in []internal.Pair, w *redisproto.Writer, flags redisproto.Flags
 	return w.WriteBulkStrings(data)
 }
 
-func sizeBytes(in [][]byte) int {
-	sz := 1
-	for _, p := range in {
-		sz += len(p)
-	}
-	return sz
-}
-
-func sizePairs(in []internal.Pair) int {
-	sz := 1
-	for _, p := range in {
-		sz += len(p.Member) + 8 + len(p.Data)
-	}
-	return sz
-}
-
-func (s *Server) fillPairsData(name string, in []internal.Pair) error {
+func (s *Server) fillPairsData(key string, in []internal.Pair) error {
 	if len(in) == 0 {
 		return nil
 	}
@@ -103,7 +72,7 @@ func (s *Server) fillPairsData(name string, in []internal.Pair) error {
 	for i, el := range in {
 		keys[i] = el.Member
 	}
-	data, err := s.ZMData(name, keys...)
+	data, err := s.ZMData(key, keys, redisproto.Flags{})
 	if err != nil {
 		return err
 	}
@@ -212,7 +181,7 @@ func (s *Server) Info(section string) (data []string) {
 		data = append(data, "# cache",
 			fmt.Sprintf("cache_hit_qps:%v", s.Survey.Cache),
 			fmt.Sprintf("cache_obj_count:%v", s.Cache.Len()),
-			fmt.Sprintf("cache_size:%v", s.Cache.curWeight),
+			fmt.Sprintf("cache_size:%v", s.Cache.Weight()),
 			fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCache),
 			fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
 			fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
@@ -395,4 +364,40 @@ func closeAllReadTxs(txs []*bbolt.Tx) {
 			tx.Rollback()
 		}
 	}
+}
+
+func (s *Server) removeCache(key string) {
+	s.Cache.Remove(key)
+}
+
+func (s *Server) getCache(h [2]uint64) interface{} {
+	v, ok := s.Cache.Get(h)
+	if !ok {
+		return nil
+	}
+	s.Survey.Cache.Incr(1)
+	return v.Data
+}
+
+func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
+	if ttl == 0 {
+		return nil
+	}
+	v, ok := s.WeakCache.Get(h)
+	if !ok {
+		return nil
+	}
+	if i := v.(*internal.WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
+		s.Survey.WeakCache.Incr(1)
+		return i.Data
+	}
+	return nil
+}
+
+func (s *Server) addCache(key string, h [2]uint64, data interface{}) {
+	s.Cache.Add(key, h, data, s.ServerConfig.CacheKeyMaxLen)
+}
+
+func (s *Server) addWeakCache(h [2]uint64, data interface{}, size int) {
+	s.WeakCache.AddWeight(h, &internal.WeakCacheItem{Data: data, Time: time.Now().Unix()}, int64(size))
 }

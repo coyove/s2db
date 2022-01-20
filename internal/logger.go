@@ -26,7 +26,7 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 			buf.WriteString(s)
 		}
 	} else {
-		buf.WriteString("\tall")
+		buf.WriteString("\t-")
 	}
 	buf.WriteString("\t")
 	buf.WriteString(entry.Time.UTC().Format("2006-01-02T15:04:05.000\t"))

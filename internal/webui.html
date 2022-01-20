@@ -202,7 +202,7 @@
 
             {{range $title, $section := .Sections}}
             <div class=section>
-                <div class=section-title>{{$section}}</div>
+                <div class=section-title id=s_{{$section}}>{{$section}}</div>
                 {{range $i, $v := $.s.Info $section}}
                 {{if and (ne $i 0) $v}}
                 <div class=section-content>

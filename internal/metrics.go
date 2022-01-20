@@ -2,147 +2,75 @@ package internal
 
 import (
 	"fmt"
-	"math"
-	"sync"
 	"sync/atomic"
 	"time"
 )
 
-const SurveyRange = 3600
+const (
+	surveyRangeSec    = 3600
+	surveyIntervalSec = 20
+	surveyCount       = surveyRangeSec / surveyIntervalSec
+)
 
 type Survey struct {
-	tick   sync.Once
-	NoTick bool
-	data   [SurveyRange]int64
-	count  [SurveyRange]int32
-	ts     [SurveyRange]uint32
+	value [surveyCount]int64
+	count [surveyCount]int32
+	ts    [surveyCount]uint32
 }
 
 func (s *Survey) _i() (uint64, uint32) {
 	ts := time.Now().Unix()
-	return uint64(ts) % SurveyRange, uint32(ts)
-}
-
-func (s *Survey) _decr(x uint64) uint64 {
-	x--
-	if x == math.MaxUint64 {
-		return SurveyRange - 1
-	}
-	return x
-}
-
-func (s *Survey) _incr(x uint64) uint64 {
-	x++
-	if x >= SurveyRange {
-		return 0
-	}
-	return x
-}
-
-func (s *Survey) dotick() {
-	idx, _ := s._i()
-	next := (idx + 1) % SurveyRange
-	s.data[next] = 0
-	s.count[next] = 0
+	sec := uint64(ts) / surveyIntervalSec
+	return sec % surveyCount, uint32(sec) * surveyIntervalSec
 }
 
 func (s *Survey) Incr(c int64) {
-	s.tick.Do(func() {
-		if s.NoTick {
-			return
-		}
-		go func() {
-			s.dotick()
-			for range time.Tick(time.Second) {
-				s.dotick()
-			}
-		}()
-	})
 	idx, ts := s._i()
-	next := (idx + 1) % SurveyRange
-	s.data[next] = 0
-	s.count[next] = 0
-	atomic.AddInt64(&s.data[idx], c)
+	atomic.AddInt64(&s.value[idx], c)
 	atomic.AddInt32(&s.count[idx], 1)
 	s.ts[idx] = ts
 }
 
 func (s Survey) String() string {
-	q1, q5, q15 := s.QPS()
-	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
+	return s.QPSString()
+}
+
+func (s Survey) QPSString() string {
+	q, _ := s.Calc()
+	return fmt.Sprintf("%.2f %.2f %.2f", q[0], q[1], q[2])
 }
 
 func (s Survey) MeanString() string {
-	q1, q5, q15 := s.Mean()
-	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
+	_, m := s.Calc()
+	return fmt.Sprintf("%.2f %.2f %.2f", m[0], m[1], m[2])
 }
 
 func (s Survey) GoString() string {
 	return "qps: " + s.String() + " mean: " + s.MeanString()
 }
 
-func (s *Survey) DivQPSString(s2 *Survey) string {
-	q1, q5, q15 := s.DivQPS(s2)
-	return fmt.Sprintf("%.2f %.2f %.2f", q1, q5, q15)
-}
-
-func (s *Survey) DivQPS(s2 *Survey) (q1, q5, q15 float64) {
-	q11, q51, q151 := s.QPS()
-	q12, q52, q152 := s2.QPS()
-	return q11 / q12, q51 / q52, q151 / q152
-}
-
-func (s *Survey) QPS() (q1, q5, q15 float64) {
+func (s *Survey) Calc() (qps, mean [3]float64) {
 	idx, ts := s._i()
-	sec := []int64{}
+	var value, count int64
 
-	for startIdx := idx; ; {
-		if s.ts[idx] >= ts-SurveyRange {
-			sec = append(sec, s.data[idx])
-		} else {
-			sec = append(sec, 0)
+	for i := uint64(0); i < surveyCount; i++ {
+		switch i {
+		case 60 / surveyIntervalSec:
+			qps[0] = float64(count) / 60
+			mean[0] = float64(value) / float64(count)
+		case 300 / surveyIntervalSec:
+			qps[1] = float64(count) / 300
+			mean[1] = float64(value) / float64(count)
 		}
-		idx = s._decr(idx)
-		if idx == s._incr(startIdx) {
-			break
+		ii := (idx - i + surveyCount) % surveyCount
+		if ts-s.ts[ii] < surveyRangeSec {
+			value += s.value[ii]
+			count += int64(s.count[ii])
+		}
+		if i == surveyCount-1 {
+			qps[2] = float64(count) / surveyRangeSec
+			mean[2] = float64(value) / float64(count)
 		}
 	}
-
-	sum := 0.0
-	for i := 0; i < len(sec); i++ {
-		sum += float64(sec[i])
-		if i == 59 {
-			q1 = sum / 60
-		} else if i == 299 {
-			q5 = sum / 300
-		} else if i == len(sec)-1 {
-			q15 = sum / 3600
-		}
-	}
-	return
-}
-
-func (s *Survey) Mean() (q1, q5, q15 float64) {
-	idx, ts := s._i()
-	total, count := 0.0, 0.0
-
-	sec := 0
-	for startIdx := idx; ; {
-		sec++
-		if s.ts[idx] >= ts-SurveyRange {
-			total += float64(s.data[idx])
-			count += float64(s.count[idx])
-		}
-		if sec == 60 {
-			q1 = total / count
-		} else if sec == 300 {
-			q5 = total / count
-		}
-		idx = s._decr(idx)
-		if idx == s._incr(startIdx) {
-			break
-		}
-	}
-	q15 = total / count
 	return
 }

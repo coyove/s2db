@@ -25,7 +25,8 @@ func OSWatcher() {
 	disks := map[string][2][2]int64{}
 
 	x := 0
-	for range time.Tick(time.Second * 10) {
+	const interval = 10
+	for range time.Tick(time.Second * interval) {
 		func() {
 			defer Recover()
 
@@ -79,8 +80,8 @@ func OSWatcher() {
 				if stats[0][0] > 0 && stats[1][0] > 0 && stats[0][1] > 0 && stats[1][1] > 0 {
 					sx, _ := DiskUsages.LoadOrStore(n, new([2]Survey))
 					s := sx.(*[2]Survey)
-					(*s)[0].Incr(rDiff)
-					(*s)[1].Incr(wDiff)
+					(*s)[0].Incr(rDiff / interval)
+					(*s)[1].Incr(wDiff / interval)
 				}
 			}
 		}()
@@ -121,7 +122,7 @@ func GetOSUsage(dbPaths []string) (cpu []string, diskIOPS map[string][2]string, 
 	diskIOPS = map[string][2]string{}
 	DiskUsages.Range(func(k, v interface{}) bool {
 		x := v.(*[2]Survey)
-		diskIOPS[k.(string)] = [2]string{(*x)[0].String(), (*x)[1].String()}
+		diskIOPS[k.(string)] = [2]string{(*x)[0].MeanString(), (*x)[1].MeanString()}
 		return true
 	})
 

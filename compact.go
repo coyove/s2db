@@ -64,7 +64,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	os.Remove(compactPath)
 	os.Remove(dumpPath)
 
-	dumpSize, err := x.DB.Dump(dumpPath)
+	dumpSize, err := x.DB.Dump(dumpPath, s.DumpSafeMargin*1024*1024)
 	if err != nil {
 		log.Error("dump DB: ", err)
 		s.runInspectFunc("compactonerror", err)
@@ -319,7 +319,6 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	if err != nil {
 		return err
 	}
-	tmptx.MapSize.NoTick = true
 	defer tmptx.Close()
 
 	c := tx.Cursor()

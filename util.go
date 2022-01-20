@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -160,14 +161,29 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "sys_rw_stats" {
 		data = append(data, "# sys_rw_stats",
-			fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead),
-			fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysReadLat.MeanString()),
-			fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite),
-			fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWriteLat.MeanString()),
+			fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead.String()),
+			fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysRead.MeanString()),
+			fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite.String()),
+			fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWrite.MeanString()),
 			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
-			fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy),
-			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.ProxyLat.MeanString()),
+			fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy.String()),
+			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.Proxy.MeanString()),
 			"")
+	}
+	if section == "" || section == "commands" {
+		data = append(data, "# commands")
+		var keys []string
+		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
+		sort.Strings(keys)
+		for _, k := range keys {
+			v, _ := s.Survey.Command.Load(k)
+			data = append(data, fmt.Sprintf("%v_qps:%v", k, v.(*internal.Survey).QPSString()))
+		}
+		for _, k := range keys {
+			v, _ := s.Survey.Command.Load(k)
+			data = append(data, fmt.Sprintf("%v_avg_lat:%v", k, v.(*internal.Survey).MeanString()))
+		}
+		data = append(data, "")
 	}
 	if section == "" || section == "batch" {
 		data = append(data, "# batch",
@@ -187,8 +203,6 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCacheHit),
 			fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
 			fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
-			fmt.Sprintf("cache_hit_ratio:%v", s.Survey.CacheHit.DivQPSString(&s.Survey.CacheReq)),
-			fmt.Sprintf("weak_cache_hit_ratio:%v", s.Survey.WeakCacheHit.DivQPSString(&s.Survey.WeakCacheReq)),
 			"")
 	}
 	if section == "" {

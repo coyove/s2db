@@ -32,6 +32,7 @@ type ServerConfig struct {
 	SlowLimit            int // ms
 	ResponseLogRun       int
 	ResponseLogSize      int // kb
+	DumpSafeMargin       int // mb
 	BatchMaxRun          int
 	CompactJobType       int
 	CompactLogHead       int
@@ -87,6 +88,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactLogHead, 1500)
 	ifZero(&s.CompactTxSize, 20000)
 	ifZero(&s.CompactTxWorkers, 1)
+	ifZero(&s.DumpSafeMargin, 16)
 
 	s.Cache = internal.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = internal.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)

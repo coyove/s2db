@@ -68,12 +68,12 @@ type Server struct {
 		Connections             int64
 		SysRead, SysWrite       internal.Survey
 		SysWriteDiscards        internal.Survey
-		SysReadLat, SysWriteLat internal.Survey
 		CacheReq, WeakCacheReq  internal.Survey
 		CacheHit, WeakCacheHit  internal.Survey
 		BatchSize, BatchLat     internal.Survey
 		BatchSizeSv, BatchLatSv internal.Survey
-		Proxy, ProxyLat         internal.Survey
+		Proxy                   internal.Survey
+		Command                 sync.Map
 	}
 
 	db [ShardNum]struct {
@@ -331,8 +331,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			if s.RedirectWrites != "" {
 				start := time.Now()
 				v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
-				s.Survey.Proxy.Incr(1)
-				s.Survey.ProxyLat.Incr(int64(time.Since(start).Milliseconds()))
+				s.Survey.Proxy.Incr(int64(time.Since(start).Milliseconds()))
 				if err != nil {
 					return w.WriteError(err.Error())
 				}
@@ -342,10 +341,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			} else if s.ServerName == "" {
 				return w.WriteError("server name not set, writes are omitted")
 			}
-			s.Survey.SysWrite.Incr(1)
 			isReadWrite = 'w'
 		} else {
-			s.Survey.SysRead.Incr(1)
 			isReadWrite = 'r'
 		}
 	}
@@ -363,10 +360,15 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 				}
 				log.Info(buf)
 			}
+			diffMs := int64(diff.Seconds() * 1000)
 			if isReadWrite == 'r' {
-				s.Survey.SysReadLat.Incr(int64(diff.Seconds() * 1000))
+				s.Survey.SysRead.Incr(diffMs)
 			} else if isReadWrite == 'w' {
-				s.Survey.SysWriteLat.Incr(int64(diff.Seconds() * 1000))
+				s.Survey.SysWrite.Incr(diffMs)
+			}
+			if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "Q") || strings.HasPrefix(cmd, "GEO") {
+				x, _ := s.Survey.Command.LoadOrStore(cmd, new(internal.Survey))
+				x.(*internal.Survey).Incr(diffMs)
 			}
 		}
 	}(time.Now())
@@ -439,7 +441,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if path == "" {
 			path = s.db[internal.MustParseInt(key)].DB.Path() + ".bak"
 		}
-		return w.WriteIntOrError(s.db[internal.MustParseInt(key)].DB.Dump(path))
+		return w.WriteIntOrError(s.db[internal.MustParseInt(key)].DB.Dump(path, s.DumpSafeMargin*1024*1024))
 	case "COMPACTSHARD":
 		if err := s.CompactShard(internal.MustParseInt(key), true); err != nil {
 			return w.WriteError(err.Error())

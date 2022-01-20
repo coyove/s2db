@@ -81,18 +81,23 @@
             background-color: #fafbfc;
             border: solid 1px #ccc;
             padding-right: 0.25em;
+            overflow: hidden;
         }
         .stat div:first-child:before {
             margin: 0 0.25em 0 0;
         }
+        .stat div { display: inline-flex; }
+        .stat .stat1:before  { background: #fed; }
+        .stat .stat5:before  { background: #fc8; }
+        .stat .stat15:before { background: #f88; }
         .stat div:before {
-            background: #fed;
+            content: '';
             padding: 0.1em 0.25em;
             margin: 0 0.25em;
+            display: inline-block;
+            width: 0;
+            height: 100%;
         }
-        .stat .stat1:before { content: '1' }
-        .stat .stat5:before { content: '5' }
-        .stat .stat15:before { content: '60' }
         .save-btn {
             display: block;
             padding: 0.5em 1em;

@@ -372,9 +372,7 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 	return
 }
 
-func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []internal.Pair, nextCursor string, err error) {
-	count++
-
+func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bucket) bool) error {
 	startShard := 0
 	if cursor != "" {
 		startShard = shardIndex(cursor)
@@ -384,57 +382,54 @@ func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs 
 	}
 
 	for ; startShard < ShardNum; startShard++ {
-		err = s.db[startShard].View(func(tx *bbolt.Tx) error {
+		err := s.db[startShard].View(func(tx *bbolt.Tx) error {
 			c := tx.Cursor()
 			k, _ := c.First()
 			if cursor != "" {
-				k, _ = c.Seek([]byte("q." + cursor))
+				k, _ = c.Seek([]byte("q." + cursor)) // 'q.' comes first, then 'zset.'
 			}
 
 			for ; len(k) > 0; k, _ = c.Next() {
+				var key []byte
 				if bytes.HasPrefix(k, []byte("zset.score")) {
 					continue
-				}
-				var key string
-				if bytes.HasPrefix(k, []byte("zset.")) {
-					key = string(k[5:])
+				} else if bytes.HasPrefix(k, []byte("zset.")) {
+					key = k[5:]
 				} else if bytes.HasPrefix(k, []byte("q.")) {
-					key = string(k[2:])
+					key = k[2:]
 				} else {
 					continue
 				}
-				if match != "" {
-					m, err := filepath.Match(match, key)
-					if err != nil {
-						return err
-					}
-					if !m {
-						continue
-					}
-				}
-				pairs = append(pairs, internal.Pair{
-					Member: key,
-					Score:  float64(tx.Bucket(k).Stats().KeyN),
-				})
-				if len(pairs) >= count {
+				if !f(string(key), tx.Bucket(k)) {
 					return errSafeExit
 				}
 			}
 			return nil
 		})
-		if err != nil {
-			if err == errSafeExit {
-				err = nil
-				break
-			}
-			return
+		if err == errSafeExit {
+			return nil
+		} else if err != nil {
+			return err
 		}
 		cursor = ""
 		if shard >= 0 {
 			break
 		}
 	}
+	return nil
+}
 
+func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []internal.Pair, nextCursor string, err error) {
+	count++
+	if err := s.Foreach(cursor, shard, func(k string, bk *bbolt.Bucket) bool {
+		pairs = append(pairs, internal.Pair{
+			Member: k,
+			Score:  float64(bk.Stats().KeyN),
+		})
+		return len(pairs) < count
+	}); err != nil {
+		return nil, "", err
+	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
 	}

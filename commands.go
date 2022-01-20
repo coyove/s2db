@@ -5,6 +5,7 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
+	"time"
 	"unsafe"
 
 	"github.com/coyove/nj"
@@ -118,12 +119,16 @@ func (s *Server) ZCard(key string, flags redisproto.Flags) (count int64) {
 	return
 }
 
-func (s *Server) ZMScore(key string, keys ...string) (scores []float64, err error) {
+func (s *Server) ZMScore(key string, keys []string, weak time.Duration) (scores []float64, err error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
-	for range keys {
-		scores = append(scores, math.NaN())
+	for _, k := range keys {
+		if score, ok := s.getWeakCache(internal.HashStr2(k), weak).(float64); ok {
+			scores = append(scores, score)
+		} else {
+			scores = append(scores, math.NaN())
+		}
 	}
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + key))
@@ -131,9 +136,13 @@ func (s *Server) ZMScore(key string, keys ...string) (scores []float64, err erro
 			return nil
 		}
 		for i, key := range keys {
-			scoreBuf := bkName.Get([]byte(key))
-			if len(scoreBuf) != 0 {
+			if !math.IsNaN(scores[i]) {
+				continue
+			}
+			if scoreBuf := bkName.Get([]byte(key)); len(scoreBuf) != 0 {
 				scores[i] = internal.BytesToFloat(scoreBuf)
+				h := internal.HashStr2(key)
+				s.addWeakCache(h, scores[i], 1)
 			}
 		}
 		return nil

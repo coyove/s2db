@@ -19,12 +19,7 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	}
 	if v, ok := entry.Data["shard"]; ok {
 		buf.WriteString("\t#")
-		if s := v.(string); len(s) == 1 {
-			buf.WriteString("0")
-			buf.WriteString(s)
-		} else {
-			buf.WriteString(s)
-		}
+		buf.WriteString(v.(string))
 	} else {
 		buf.WriteString("\t-")
 	}

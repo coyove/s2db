@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -184,7 +185,10 @@ func main() {
 			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
 				nj.PlaygroundHandler(s.getScriptEnviron())(w, r)
 			})
-			s.lnWeb, _ = net.Listen("tcp", "127.0.0.1:0")
+			s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				log.Panic(err)
+			}
 			log.Info("serving HTTP info and pprof at ", s.lnWeb.Addr())
 			fullyOpened.Unlock()
 			log.Error("http: ", http.Serve(s.lnWeb, nil))
@@ -201,7 +205,7 @@ func main() {
 		old, _ := s.getConfig("servername")
 		log.Infof("update server name from %q to %q", old, *serverName)
 		if _, err := s.updateConfig("servername", *serverName, false); err != nil {
-			log.Fatal(err)
+			log.Panic(err)
 		}
 	}
 
@@ -286,7 +290,9 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
 					return template.HTML(s)
 				}
-				return template.HTML(fmt.Sprintf("<div class=stat><div class=stat1>%.2f</div><div class=stat5>%.2f</div><div class=stat15>%.2f</div></div>", a, b, c))
+				al, bl, cl := trilabel(a, b, c)
+				return template.HTML(fmt.Sprintf("<div class=stat><div class=%s>%s</div><div class=%s>%s</div><div class=%s>%s</div></div>",
+					al, internal.FormatFloatShort(a), bl, internal.FormatFloatShort(b), cl, internal.FormatFloatShort(c)))
 			},
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s":        s,
@@ -301,4 +307,12 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			"ShardNum": ShardNum,
 		})
 	}
+}
+
+func trilabel(a, b, c float64) (ap, bp, cp string) {
+	x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
+	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
+	text := [3]string{"stat1", "stat5", "stat15"}
+	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
+	return
 }

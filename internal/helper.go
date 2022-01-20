@@ -14,10 +14,14 @@ func UUID() string {
 	return hex.EncodeToString(buf)
 }
 
-func HashStr2(s string) (h uint64) {
-	h = 5381
-	for i := len(s) - 1; i >= 0; i-- {
-		h = h*33 + uint64(s[i])
+func HashStr2(s string) (h [2]uint64) {
+	h = [2]uint64{0, 5381}
+	for i := 0; i < len(s); i++ {
+		old := h[1]
+		h[1] = h[1]*33 + uint64(s[i])
+		if h[1] < old {
+			h[0]++
+		}
 	}
 	return h
 }

@@ -513,7 +513,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Client space read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
-		s, err := s.ZMScore(key, restCommandsToKeys(2, command)...)
+		s, err := s.ZMScore(key, restCommandsToKeys(2, command), weak)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

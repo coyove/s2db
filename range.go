@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"time"
 	"unsafe"
 
 	"github.com/coyove/nj/bas"
+	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
 	log "github.com/sirupsen/logrus"
@@ -81,30 +83,9 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redi
 		Rev:      rev,
 		LexMatch: flags.MATCH,
 	}
-	success := func(p []internal.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
-	if flags.INTERSECT != nil {
-		bkm, close := s.prepareIntersectBuckets(flags)
-		defer close()
-		if len(bkm) == 0 {
-			return
-		}
-		ro.Limit = math.MaxInt64
-		ro.Append = genIntersectFunc(bkm, flags)
-		success = func([]internal.Pair, int) {}
-	} else if flags.TWOHOPS.ENDPOINT != nil {
-		txs, close := s.openAllTx()
-		defer close()
-		ro.Limit = math.MaxInt64
-		ro.Append = genTwoHopsFunc(s, txs, flags)
-		success = func([]internal.Pair, int) {}
-	} else {
-		ro.Limit = flags.LIMIT
-		ro.Append = internal.DefaultRangeAppend
-	}
-	p, _, err = s.runPreparedRangeTx(key, rangeLex(key, internal.NewRLFromString(start), internal.NewRLFromString(end), ro), success)
-	if err == errSafeExit {
-		err = nil
-	}
+	p, err = s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc {
+		return rangeLex(key, internal.NewRLFromString(start), internal.NewRLFromString(end), ro)
+	})
 	if flags.WITHDATA && err == nil {
 		err = s.fillPairsData(key, p)
 	}
@@ -128,6 +109,10 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 		ScoreMatchData: flags.MATCHDATA,
 		WithData:       flags.WITHDATA,
 	}
+	return s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc { return rangeScore(key, rangeStart, rangeEnd, ro) })
+}
+
+func (s *Server) zRangeScoreLex(key string, ro *internal.RangeOptions, flags redisproto.Flags, f func() PreparedTxFunc) (p []internal.Pair, err error) {
 	success := func(p []internal.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, close := s.prepareIntersectBuckets(flags)
@@ -144,18 +129,34 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
 		success = func([]internal.Pair, int) {}
+	} else if flags.MERGE.ENDPOINTS != nil {
+		bks, close := s.prepareMergeBuckets(flags)
+		defer close()
+		if len(bks) == 0 {
+			return
+		}
+		ro.Limit = math.MaxInt64
+		ro.Append = genMergeFunc(bks, flags)
+		success = func([]internal.Pair, int) {}
 	} else {
 		ro.Limit = flags.LIMIT
 		ro.Append = internal.DefaultRangeAppend
 	}
-	p, _, err = s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, ro), success)
+	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
 		err = nil
+	}
+	if err == nil && flags.MERGE.ENDPOINTS != nil {
+		if ro.Rev {
+			sort.Slice(p, func(i, j int) bool { return p[i].Score > p[j].Score })
+		} else {
+			sort.Slice(p, func(i, j int) bool { return p[i].Score < p[j].Score })
+		}
 	}
 	return p, err
 }
 
-func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
+func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOptions) PreparedTxFunc {
 	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + key))
 		if bk == nil {
@@ -239,7 +240,7 @@ func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOpti
 	}
 }
 
-func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOptions) func(tx *bbolt.Tx) ([]internal.Pair, int, error) {
+func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOptions) PreparedTxFunc {
 	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + key))
 		if bk == nil {
@@ -300,6 +301,8 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 						if err := do(k, dataBuf); err != nil {
 							return pairs, 0, err
 						}
+					} else if i > opt.OffsetEnd {
+						break
 					}
 					k, dataBuf = c.Prev()
 				} else {
@@ -321,6 +324,8 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 						if err := do(k, dataBuf); err != nil {
 							return pairs, 0, err
 						}
+					} else if i > opt.OffsetEnd {
+						break
 					}
 					k, dataBuf = c.Next()
 				} else {
@@ -456,6 +461,25 @@ func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt
 	return bkm, func() { closeAllReadTxs(txs) }
 }
 
+func (s *Server) prepareMergeBuckets(flags redisproto.Flags) (bkm []*bbolt.Bucket, close func()) {
+	var txs []*bbolt.Tx
+	for _, k := range flags.MERGE.ENDPOINTS {
+		tx, err := s.pick(k).Begin(false)
+		if err != nil {
+			log.Errorf("prepareMergeBuckets(%s): %v", k, err)
+			continue
+		}
+		bk := tx.Bucket([]byte("zset." + k))
+		if bk == nil {
+			tx.Rollback()
+			continue
+		}
+		txs = append(txs, tx)
+		bkm = append(bkm, bk)
+	}
+	return bkm, func() { closeAllReadTxs(txs) }
+}
+
 func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func()) {
 	for i := range s.db {
 		tx, err := s.db[i].Begin(false)
@@ -508,6 +532,32 @@ func genIntersectFunc(bkm map[*bbolt.Bucket]bas.Value, flags redisproto.Flags) f
 			}
 		}
 		if hits == len(bkm) {
+			*pairs = append(*pairs, p)
+		}
+		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
+	}
+}
+
+func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]internal.Pair, p internal.Pair) bool {
+	ddl := time.Now().Add(flags.TIMEOUT)
+	f := flags.MERGE.FUNC
+	scores := make([]bas.Value, len(bkm)+2)
+	return func(pairs *[]internal.Pair, p internal.Pair) bool {
+		key := []byte(p.Member)
+		scores[0], scores[1] = bas.UnsafeStr(key), bas.Float64(p.Score)
+		for i, bk := range bkm {
+			scores[i+2] = bas.Float64(internal.BytesToFloatZero(bk.Get(key)))
+		}
+		if bas.IsCallable(f) {
+			res, err := bas.Call2(f.Object(), scores...)
+			if err != nil {
+				log.Error("MergeFunc: ", key, " error: ", err)
+				return false
+			} else if res.Type() != typ.Number {
+				log.Error("MergeFunc: ", key, " should return numbers")
+				return false
+			}
+			p.Score = res.Float64()
 			*pairs = append(*pairs, p)
 		}
 		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)

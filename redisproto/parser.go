@@ -324,6 +324,10 @@ type Flags struct {
 		ENDPOINT []byte
 		KEYMAP   bas.Value
 	}
+	MERGE struct {
+		ENDPOINTS []string
+		FUNC      bas.Value
+	}
 	INTERSECT   map[string]bas.Value
 	LIMIT       int
 	COUNT       int
@@ -376,6 +380,11 @@ func (c Command) Flags(start int) (f Flags) {
 			key, fun := splitCode(c, c.Get(i+1))
 			f.TWOHOPS.ENDPOINT = []byte(key)
 			f.TWOHOPS.KEYMAP = fun
+			i++
+		} else if c.EqualFold(i, "MERGE") {
+			key, fun := splitCode(c, c.Get(i+1))
+			f.MERGE.ENDPOINTS = strings.Split(key, ",")
+			f.MERGE.FUNC = fun
 			i++
 		} else if c.EqualFold(i, "TIMEOUT") {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))

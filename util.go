@@ -421,3 +421,22 @@ func (s *Server) addCache(key string, h [2]uint64, data interface{}) {
 func (s *Server) addWeakCache(h [2]uint64, data interface{}, size int) {
 	s.WeakCache.AddWeight(h, &internal.WeakCacheItem{Data: data, Time: time.Now().Unix()}, int64(size))
 }
+
+var isCommand = map[string]bool{
+	"DEL": true, "ZREM": true, "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
+	"ZADD": true, "ZINCRBY": true,
+	"QAPPEND": true,
+	"ZSCORE":  true, "ZMSCORE": true,
+	"ZMDATA": true,
+	"ZCARD":  true,
+	"ZCOUNT": true, "ZCOUNTBYLEX": true,
+	"ZRANK": true, "ZREVRANK": true,
+	"ZRANGE": true, "ZREVRANGE": true,
+	"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
+	"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
+	"GEORADIUS": true, "GEORADIUS_RO": true,
+	"GEORADIUSBYMEMBER": true, "GEORADIUSBYMEMBER_RO": true,
+	"GEODIST": true, "GEOPOS": true,
+	"SCAN": true,
+	"QLEN": true, "QHEAD": true, "QINDEX": true, "QSCAN": true,
+}

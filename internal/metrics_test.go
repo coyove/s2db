@@ -11,8 +11,8 @@ func TestMetrics(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
 	var s Survey
-	m, _ := s.Metrics()
-	if m[0] != 0 {
+	m := s.Metrics()
+	if m.QPS[0] != 0 {
 		t.Fatal(s)
 	}
 
@@ -24,28 +24,29 @@ func TestMetrics(t *testing.T) {
 		s.Value[i] = rand.Int63()
 	}
 
-	m, _ = s.Metrics()
-	if m[0] != 0 {
+	m = s.Metrics()
+	if m.QPS[0] != 0 {
 		t.Fatal(s)
 	}
 
 	s.Incr(60)
-	m, q := s.Metrics()
-	if q[0] != 60 {
+	time.Sleep(surveyIntervalSec * time.Second)
+	m = s.Metrics()
+	if m.Mean[0] != 60 {
 		t.Fatal(s)
 	}
-	if m[0] != 1.0/60 {
+	if m.QPS[0] != 1.0/60 {
 		t.Fatal(s)
 	}
 
-	time.Sleep(time.Second)
 	s.Incr(30)
 
-	m, q = s.Metrics()
-	if q[0] != 45 {
+	time.Sleep(surveyIntervalSec * time.Second)
+	m = s.Metrics()
+	if m.Mean[0] != 45 {
 		t.Fatal(s)
 	}
-	if m[0] != 2.0/60 {
+	if m.QPS[0] != 2.0/60 {
 		t.Fatal(s)
 	}
 }

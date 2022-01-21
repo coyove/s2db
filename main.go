@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"math"
 	"math/rand"
 	"net"
 	"net/http"
@@ -310,9 +311,15 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 }
 
 func trilabel(a, b, c float64) (ap, bp, cp string) {
+	text := [3]string{"stat1", "stat5", "stat15"}
+	if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
+		return text[0], text[0], text[0]
+	}
+	if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
+		return text[0], text[0], text[0]
+	}
 	x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
 	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
-	text := [3]string{"stat1", "stat5", "stat15"}
 	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
 	return
 }

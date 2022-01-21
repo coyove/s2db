@@ -12,6 +12,11 @@ const (
 	surveyCount       = surveyRangeSec / surveyIntervalSec
 )
 
+type metrics struct {
+	QPS  [3]float64
+	Mean [3]float64
+}
+
 type Survey struct {
 	Value [surveyCount]int64
 	Count [surveyCount]int32
@@ -44,32 +49,32 @@ func (s Survey) String() string {
 }
 
 func (s Survey) QPSString() string {
-	q, _ := s.Metrics()
-	return fmt.Sprintf("%.2f %.2f %.2f", q[0], q[1], q[2])
+	q := s.Metrics()
+	return fmt.Sprintf("%.2f %.2f %.2f", q.QPS[0], q.QPS[1], q.QPS[2])
 }
 
 func (s Survey) MeanString() string {
-	_, m := s.Metrics()
-	return fmt.Sprintf("%.2f %.2f %.2f", m[0], m[1], m[2])
+	m := s.Metrics()
+	return fmt.Sprintf("%.2f %.2f %.2f", m.Mean[0], m.Mean[1], m.Mean[2])
 }
 
 func (s Survey) GoString() string {
-	return "qps: " + s.String() + " mean: " + s.MeanString()
+	return "qps: " + s.QPSString() + " mean: " + s.MeanString()
 }
 
 // Metrics returns metrics grouped in 1 min, 5 mins, 60 mins
-func (s *Survey) Metrics() (qps, mean [3]float64) {
+func (s *Survey) Metrics() (m metrics) {
 	idx, ts := s._i()
 	var value, count int64
 
 	for i := uint64(1); i < surveyCount; i++ {
 		switch i {
 		case 60/surveyIntervalSec + 1:
-			qps[0] = float64(count) / 60
-			mean[0] = float64(value) / float64(count)
+			m.QPS[0] = float64(count) / 60
+			m.Mean[0] = float64(value) / float64(count)
 		case 300/surveyIntervalSec + 1:
-			qps[1] = float64(count) / 300
-			mean[1] = float64(value) / float64(count)
+			m.QPS[1] = float64(count) / 300
+			m.Mean[1] = float64(value) / float64(count)
 		}
 		ii := (idx - i + surveyCount) % surveyCount
 		if ts-s.Ts[ii] <= surveyRangeSec {
@@ -77,8 +82,8 @@ func (s *Survey) Metrics() (qps, mean [3]float64) {
 			count += int64(s.Count[ii])
 		}
 		if i == surveyCount-1 {
-			qps[2] = float64(count) / surveyRangeSec
-			mean[2] = float64(value) / float64(count)
+			m.QPS[2] = float64(count) / surveyRangeSec
+			m.Mean[2] = float64(value) / float64(count)
 		}
 	}
 	return

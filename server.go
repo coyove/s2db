@@ -366,7 +366,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			} else if isReadWrite == 'w' {
 				s.Survey.SysWrite.Incr(diffMs)
 			}
-			if cmd == "DEL" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "Q") || strings.HasPrefix(cmd, "GEO") {
+			if isCommand[cmd] {
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(internal.Survey))
 				x.(*internal.Survey).Incr(diffMs)
 			}

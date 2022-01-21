@@ -65,7 +65,8 @@ func (b *DB) Dump(path string, safeSizeMargin int) (int64, error) {
 		return 0, err
 	}
 	defer dumpFile.Close()
-	if err := b.mmap(int(sz) + safeSizeMargin); err != nil {
+	// Re-mmap data file to a larger size, hopefully big enough so that read tx won't block writes
+	if err := b.Update(func(tx *Tx) error { return b.mmap(int(sz) + safeSizeMargin) }); err != nil {
 		return 0, err
 	}
 	if err := b.View(func(tx *Tx) error {

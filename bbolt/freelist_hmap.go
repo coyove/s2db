@@ -113,7 +113,7 @@ func (f *freelist) hashmapMergeSpans(ids pgids) {
 		if f.db != nil {
 			path = f.db.path
 		}
-		logrus.Infof("[MergeSpans] %q: drop %d ids out of %d due to limit: %d", path, drops, len(ids), *bboltLimitFreeCountSize*1024)
+		logrus.Infof("[hashmapMergeSpans] %q: drop %d ids of %d", path, drops, len(ids))
 	}
 }
 

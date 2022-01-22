@@ -8,7 +8,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"go.etcd.io/bbolt"
 )
 
@@ -42,7 +42,7 @@ func prepareDel(key string, dd []byte) func(tx *bbolt.Tx) (count interface{}, er
 	}
 }
 
-func prepareZAdd(key string, pairs []internal.Pair, nx, xx, ch bool, fillPercent float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent float64, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
 		if err != nil {
@@ -72,7 +72,7 @@ func prepareZAdd(key string, pairs []internal.Pair, nx, xx, ch bool, fillPercent
 				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Member)); err != nil {
 					return nil, err
 				}
-				if p.Score != internal.BytesToFloat(scoreBuf) {
+				if p.Score != s2pkg.BytesToFloat(scoreBuf) {
 					updated++
 				}
 			} else {
@@ -82,7 +82,7 @@ func prepareZAdd(key string, pairs []internal.Pair, nx, xx, ch bool, fillPercent
 				}
 				added++
 			}
-			scoreBuf = internal.FloatToBytes(p.Score)
+			scoreBuf = s2pkg.FloatToBytes(p.Score)
 			if err := bkName.Put([]byte(p.Member), scoreBuf); err != nil {
 				return nil, err
 			}
@@ -103,13 +103,13 @@ func prepareZRem(key string, keys []string, dd []byte) func(tx *bbolt.Tx) (inter
 		if bkName == nil {
 			return 0, writeLog(tx, dd)
 		}
-		var pairs []internal.Pair
+		var pairs []s2pkg.Pair
 		for _, key := range keys {
 			scoreBuf := bkName.Get([]byte(key))
 			if len(scoreBuf) == 0 {
 				continue
 			}
-			pairs = append(pairs, internal.Pair{Member: key, Score: internal.BytesToFloat(scoreBuf)})
+			pairs = append(pairs, s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(scoreBuf)})
 		}
 		return len(pairs), deletePair(tx, key, pairs, dd)
 	}
@@ -135,7 +135,7 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 			if err := bkScore.Delete(oldKey); err != nil {
 				return 0, err
 			}
-			score = internal.BytesToFloat(scoreBuf)
+			score = s2pkg.BytesToFloat(scoreBuf)
 		} else {
 			dataBuf = []byte("")
 		}
@@ -146,7 +146,7 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 		if err := checkScore(score + by); err != nil {
 			return 0, err
 		}
-		scoreBuf = internal.FloatToBytes(score + by)
+		scoreBuf = s2pkg.FloatToBytes(score + by)
 		if err := bkName.Put([]byte(member), scoreBuf); err != nil {
 			return 0, err
 		}
@@ -159,12 +159,12 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 
 func prepareZRemRangeByRank(key string, start, end int, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := rangeScore(key, MinScoreRange, MaxScoreRange, internal.RangeOptions{
+		_, c, err := rangeScore(key, MinScoreRange, MaxScoreRange, s2pkg.RangeOptions{
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
-			Limit:       internal.RangeHardLimit,
-			Append:      internal.DefaultRangeAppend,
+			Limit:       s2pkg.RangeHardLimit,
+			Append:      s2pkg.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}
@@ -172,31 +172,31 @@ func prepareZRemRangeByRank(key string, start, end int, dd []byte) func(tx *bbol
 
 func prepareZRemRangeByLex(key string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart := internal.NewRLFromString(start)
-		rangeEnd := internal.NewRLFromString(end)
-		_, c, err := rangeLex(key, rangeStart, rangeEnd, internal.RangeOptions{
+		rangeStart := s2pkg.NewRLFromString(start)
+		rangeEnd := s2pkg.NewRLFromString(end)
+		_, c, err := rangeLex(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
-			Limit:       internal.RangeHardLimit,
-			Append:      internal.DefaultRangeAppend,
+			Limit:       s2pkg.RangeHardLimit,
+			Append:      s2pkg.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}
 }
 
 func prepareZRemRangeByScore(key string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	rangeStart, err := internal.NewRLFromFloatString(start)
-	internal.PanicErr(err)
-	rangeEnd, err := internal.NewRLFromFloatString(end)
-	internal.PanicErr(err)
+	rangeStart, err := s2pkg.NewRLFromFloatString(start)
+	s2pkg.PanicErr(err)
+	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
+	s2pkg.PanicErr(err)
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := rangeScore(key, rangeStart, rangeEnd, internal.RangeOptions{
+		_, c, err := rangeScore(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
-			Limit:       internal.RangeHardLimit,
-			Append:      internal.DefaultRangeAppend,
+			Limit:       s2pkg.RangeHardLimit,
+			Append:      s2pkg.DefaultRangeAppend,
 		})(tx)
 		return c, err
 	}

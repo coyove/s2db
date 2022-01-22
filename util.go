@@ -20,8 +20,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/s2pkg"
 	"go.etcd.io/bbolt"
 )
 
@@ -40,7 +40,7 @@ func checkScore(s float64) error {
 }
 
 func shardIndex(key string) int {
-	return int(internal.HashStr(key) % ShardNum)
+	return int(s2pkg.HashStr(key) % ShardNum)
 }
 
 func restCommandsToKeys(i int, command *redisproto.Command) []string {
@@ -51,12 +51,12 @@ func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	return keys
 }
 
-func writePairs(in []internal.Pair, w *redisproto.Writer, flags redisproto.Flags) error {
+func writePairs(in []s2pkg.Pair, w *redisproto.Writer, flags redisproto.Flags) error {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Member)
 		if flags.WITHSCORES || flags.WITHDATA {
-			data = append(data, internal.FormatFloat(p.Score))
+			data = append(data, s2pkg.FormatFloat(p.Score))
 		}
 		if flags.WITHDATA {
 			data = append(data, string(p.Data))
@@ -65,7 +65,7 @@ func writePairs(in []internal.Pair, w *redisproto.Writer, flags redisproto.Flags
 	return w.WriteBulkStrings(data)
 }
 
-func (s *Server) fillPairsData(key string, in []internal.Pair) error {
+func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {
 	if len(in) == 0 {
 		return nil
 	}
@@ -131,7 +131,7 @@ func (s *Server) Info(section string) (data []string) {
 		fls := []string{}
 		for i := range s.db {
 			fi, err := os.Stat(s.db[i].Path())
-			internal.PanicErr(err)
+			s2pkg.PanicErr(err)
 			sz += int(fi.Size())
 			fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
 		}
@@ -177,11 +177,11 @@ func (s *Server) Info(section string) (data []string) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			v, _ := s.Survey.Command.Load(k)
-			data = append(data, fmt.Sprintf("%v_qps:%v", k, v.(*internal.Survey).QPSString()))
+			data = append(data, fmt.Sprintf("%v_qps:%v", k, v.(*s2pkg.Survey).QPSString()))
 		}
 		for _, k := range keys {
 			v, _ := s.Survey.Command.Load(k)
-			data = append(data, fmt.Sprintf("%v_avg_lat:%v", k, v.(*internal.Survey).MeanString()))
+			data = append(data, fmt.Sprintf("%v_avg_lat:%v", k, v.(*s2pkg.Survey).MeanString()))
 		}
 		data = append(data, "")
 	}
@@ -214,7 +214,7 @@ func (s *Server) Info(section string) (data []string) {
 func (s *Server) ShardInfo(shard int) []string {
 	x := &s.db[shard]
 	fi, err := os.Stat(x.Path())
-	internal.PanicErr(err)
+	s2pkg.PanicErr(err)
 	tmp := []string{
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
@@ -298,7 +298,7 @@ func parseDeferFlag(in *redisproto.Command) bool {
 func parseWeakFlag(in *redisproto.Command) time.Duration {
 	i := in.ArgCount() - 2
 	if i >= 2 && in.EqualFold(i, "WEAK") {
-		x := internal.MustParseFloatBytes(in.Argv[i+1])
+		x := s2pkg.MustParseFloatBytes(in.Argv[i+1])
 		in.Argv = in.Argv[:i]
 		return time.Duration(int64(x*1e6) * 1e3)
 	}
@@ -314,14 +314,14 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-type bigKeysHeap []internal.Pair
+type bigKeysHeap []s2pkg.Pair
 
 func (h bigKeysHeap) Len() int           { return len(h) }
 func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
 func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
 func (h *bigKeysHeap) Push(x interface{}) {
-	*h = append(*h, x.(internal.Pair))
+	*h = append(*h, x.(s2pkg.Pair))
 }
 
 func (h *bigKeysHeap) Pop() interface{} {
@@ -348,10 +348,10 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 					return nil
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, internal.Pair{Member: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
+					heap.Push(h, s2pkg.Pair{Member: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
 				}
 				if bytes.HasPrefix(name, []byte("q.")) {
-					heap.Push(h, internal.Pair{Member: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
+					heap.Push(h, s2pkg.Pair{Member: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
 				}
 				if h.Len() > n {
 					heap.Pop(h)
@@ -362,7 +362,7 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 	}
 	x := map[string]int{}
 	for h.Len() > 0 {
-		p := heap.Pop(h).(internal.Pair)
+		p := heap.Pop(h).(s2pkg.Pair)
 		x[p.Member] = int(p.Score)
 	}
 	return x
@@ -407,7 +407,7 @@ func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
 	if !ok {
 		return nil
 	}
-	if i := v.(*internal.WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
+	if i := v.(*s2pkg.WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
 		s.Survey.WeakCacheHit.Incr(1)
 		return i.Data
 	}
@@ -419,7 +419,7 @@ func (s *Server) addCache(key string, h [2]uint64, data interface{}) {
 }
 
 func (s *Server) addWeakCache(h [2]uint64, data interface{}, size int) {
-	s.WeakCache.AddWeight(h, &internal.WeakCacheItem{Data: data, Time: time.Now().Unix()}, int64(size))
+	s.WeakCache.AddWeight(h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, int64(size))
 }
 
 var isCommand = map[string]bool{

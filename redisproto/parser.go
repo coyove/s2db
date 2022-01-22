@@ -12,7 +12,7 @@ import (
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/internal"
+	"github.com/coyove/s2db/s2pkg"
 )
 
 var (
@@ -346,22 +346,22 @@ type Flags struct {
 
 func (c Command) Flags(start int) (f Flags) {
 	f.Command = c
-	f.LIMIT = internal.RangeHardLimit
-	f.COUNT = internal.RangeHardLimit
+	f.LIMIT = s2pkg.RangeHardLimit
+	f.COUNT = s2pkg.RangeHardLimit
 	f.SHARD = -1
 	f.TIMEOUT = time.Second
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
-			f.COUNT = internal.MustParseInt(c.Get(i + 1))
+			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "SHARD") {
-			f.SHARD = internal.MustParseInt(c.Get(i + 1))
+			f.SHARD = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
 			if c.Get(i+1) != "0" {
 				panic("non-zero limit offset not supported")
 			}
-			f.LIMIT = internal.MustParseInt(c.Get(i + 2))
+			f.LIMIT = s2pkg.MustParseInt(c.Get(i + 2))
 			i += 2
 		} else if c.EqualFold(i, "MATCH") {
 			f.MATCH = c.Get(i + 1)
@@ -411,9 +411,9 @@ func splitCode(c Command, key string) (string, bas.Value) {
 		code, err := nj.LoadString(key[idx+1:len(key)-1], &bas.Environment{
 			Globals: bas.NewObject(2).SetProp("left", bas.Str(c.Get(1))).SetProp("right", bas.Str(key2)),
 		})
-		internal.PanicErr(err)
+		s2pkg.PanicErr(err)
 		res, err := code.Run()
-		internal.PanicErr(err)
+		s2pkg.PanicErr(err)
 		return key2, res
 	}
 	return key, bas.Nil

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -239,7 +239,7 @@ func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string,
 		}
 
 		for i := start; i <= myLogtail; i++ {
-			data := bk.Get(internal.Uint64ToBytes(uint64(i)))
+			data := bk.Get(s2pkg.Uint64ToBytes(uint64(i)))
 			if data[0] == 0x93 {
 				logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))
 			} else {

@@ -10,8 +10,8 @@ import (
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"go.etcd.io/bbolt"
 )
 
@@ -26,7 +26,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	}
 	bk.FillPercent = 0.9
 	id, _ := bk.NextSequence()
-	return bk.Put(internal.Uint64ToBytes(id), dd)
+	return bk.Put(s2pkg.Uint64ToBytes(id), dd)
 }
 
 func parseZAdd(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
@@ -49,24 +49,24 @@ func parseZAdd(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (in
 			data = true
 			continue
 		case "FILL":
-			fillPercent, err = internal.ParseFloat(command.Get(idx + 1))
-			internal.PanicErr(err)
+			fillPercent, err = s2pkg.ParseFloat(command.Get(idx + 1))
+			s2pkg.PanicErr(err)
 			idx++
 			continue
 		}
 		break
 	}
 
-	var pairs []internal.Pair
+	var pairs []s2pkg.Pair
 	if !data {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			s := internal.MustParseFloatBytes(command.Argv[i])
-			pairs = append(pairs, internal.Pair{Member: command.Get(i + 1), Score: s})
+			s := s2pkg.MustParseFloatBytes(command.Argv[i])
+			pairs = append(pairs, s2pkg.Pair{Member: command.Get(i + 1), Score: s})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			s := internal.MustParseFloatBytes(command.Argv[i])
-			pairs = append(pairs, internal.Pair{Member: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
+			s := s2pkg.MustParseFloatBytes(command.Argv[i])
+			pairs = append(pairs, s2pkg.Pair{Member: command.Get(i + 1), Score: s, Data: append([]byte{}, command.At(i+2)...)})
 		}
 	}
 	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
@@ -87,14 +87,14 @@ func parseDel(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (int
 	case "ZREMRANGEBYSCORE":
 		return prepareZRemRangeByScore(key, start, end, dd)
 	case "ZREMRANGEBYRANK":
-		return prepareZRemRangeByRank(key, internal.MustParseInt(start), internal.MustParseInt(end), dd)
+		return prepareZRemRangeByRank(key, s2pkg.MustParseInt(start), s2pkg.MustParseInt(end), dd)
 	default:
 		panic(-1)
 	}
 }
 
 func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
-	by := internal.MustParseFloatBytes(command.Argv[2])
+	by := s2pkg.MustParseFloatBytes(command.Argv[2])
 	return prepareZIncrBy(key, command.Get(3), by, dumpCommand(command))
 }
 
@@ -124,7 +124,7 @@ func (s *Server) ZMScore(key string, keys []string, weak time.Duration) (scores 
 		return nil, fmt.Errorf("missing keys")
 	}
 	for _, k := range keys {
-		if score, ok := s.getWeakCache(internal.HashStr2(k), weak).(float64); ok {
+		if score, ok := s.getWeakCache(s2pkg.HashStr2(k), weak).(float64); ok {
 			scores = append(scores, score)
 		} else {
 			scores = append(scores, math.NaN())
@@ -140,8 +140,8 @@ func (s *Server) ZMScore(key string, keys []string, weak time.Duration) (scores 
 				continue
 			}
 			if scoreBuf := bkName.Get([]byte(key)); len(scoreBuf) != 0 {
-				scores[i] = internal.BytesToFloat(scoreBuf)
-				h := internal.HashStr2(key)
+				scores[i] = s2pkg.BytesToFloat(scoreBuf)
+				h := s2pkg.HashStr2(key)
 				s.addWeakCache(h, scores[i], 1)
 			}
 		}
@@ -181,7 +181,7 @@ func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data
 	return
 }
 
-func deletePair(tx *bbolt.Tx, key string, pairs []internal.Pair, dd []byte) error {
+func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + key))
 	bkScore := tx.Bucket([]byte("zset.score." + key))
 	if bkScore == nil || bkName == nil {
@@ -191,7 +191,7 @@ func deletePair(tx *bbolt.Tx, key string, pairs []internal.Pair, dd []byte) erro
 		if err := bkName.Delete([]byte(p.Member)); err != nil {
 			return err
 		}
-		if err := bkScore.Delete([]byte(string(internal.FloatToBytes(p.Score)) + p.Member)); err != nil {
+		if err := bkScore.Delete([]byte(string(s2pkg.FloatToBytes(p.Score)) + p.Member)); err != nil {
 			return err
 		}
 	}

@@ -9,8 +9,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/mmcloughlin/geohash"
 	"go.etcd.io/bbolt"
 )
@@ -52,8 +52,8 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 		if len(fromBuf) != 8 || len(toBuf) != 8 {
 			return nil
 		}
-		fromLat, fromLong := geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(fromBuf)), 52)
-		toLat, toLong := geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(toBuf)), 52)
+		fromLat, fromLong := geohash.DecodeIntWithPrecision(uint64(s2pkg.BytesToFloat(fromBuf)), 52)
+		toLat, toLong := geohash.DecodeIntWithPrecision(uint64(s2pkg.BytesToFloat(toBuf)), 52)
 		dist = geoDist(fromLat, fromLong, toLat, toLong)
 		return nil
 	})
@@ -64,9 +64,9 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 		return w.WriteBulks()
 	}
 	if string(command.At(4)) == "km" {
-		return w.WriteBulkString(internal.FormatFloat(dist / 1000))
+		return w.WriteBulkString(s2pkg.FormatFloat(dist / 1000))
 	}
-	return w.WriteBulkString(internal.FormatFloat(dist))
+	return w.WriteBulkString(s2pkg.FormatFloat(dist))
 }
 
 func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisproto.Command) error {
@@ -89,7 +89,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 			if len(fromBuf) != 8 {
 				continue
 			}
-			coords[i-2][1], coords[i-2][0] = geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(fromBuf)), 52)
+			coords[i-2][1], coords[i-2][0] = geohash.DecodeIntWithPrecision(uint64(s2pkg.BytesToFloat(fromBuf)), 52)
 		}
 		return nil
 	})
@@ -101,14 +101,14 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 		if math.IsNaN(c[0]) || math.IsNaN(c[1]) {
 			data = append(data, nil)
 		} else {
-			data = append(data, []interface{}{internal.FormatFloat(c[1]), internal.FormatFloat(c[0])})
+			data = append(data, []interface{}{s2pkg.FormatFloat(c[1]), s2pkg.FormatFloat(c[0])})
 		}
 	}
 	return w.WriteObjectsSlice(data)
 }
 
 func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak time.Duration, command *redisproto.Command) error {
-	var p []internal.Pair
+	var p []s2pkg.Pair
 	var lat, long float64
 	var key string
 	var err error
@@ -118,18 +118,18 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		key = command.Get(2)
 		options = command.Argv[3:]
 	} else {
-		long, err = internal.ParseFloat(command.Get(2))
+		long, err = s2pkg.ParseFloat(command.Get(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		lat, err = internal.ParseFloat(command.Get(3))
+		lat, err = s2pkg.ParseFloat(command.Get(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		options = command.Argv[4:]
 	}
 
-	radius, err := internal.ParseFloat(string(options[0]))
+	radius, err := s2pkg.ParseFloat(string(options[0]))
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -143,9 +143,9 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 
 	flags := (redisproto.Command{Argv: options}).Flags(2)
 	if v, ok := s.Cache.Get(h); ok {
-		p = v.Data.([]internal.Pair)
+		p = v.Data.([]s2pkg.Pair)
 	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
-		p = x.([]internal.Pair)
+		p = x.([]s2pkg.Pair)
 	} else {
 		p, err = s.geoRange(name, key, lat, long, radius, flags.COUNT, flags.ANY, flags.WITHDATA)
 		if err != nil {
@@ -165,7 +165,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		}
 
 		// s.addCache(wm, name, h, p)
-		s.WeakCache.AddWeight(name, p, int64(internal.SizePairs(p)))
+		s.WeakCache.AddWeight(name, p, int64(s2pkg.SizePairs(p)))
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {
@@ -180,14 +180,14 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	for _, p := range p {
 		tmp := []interface{}{p.Member}
 		if flags.WITHHASH {
-			tmp = append(tmp, internal.FormatFloat(p.Score))
+			tmp = append(tmp, s2pkg.FormatFloat(p.Score))
 		}
 		if flags.WITHDIST {
-			tmp = append(tmp, internal.FormatFloat(geoDistHash(lat, long, uint64(p.Score))))
+			tmp = append(tmp, s2pkg.FormatFloat(geoDistHash(lat, long, uint64(p.Score))))
 		}
 		if flags.WITHCOORD {
 			lat, long := geohash.DecodeIntWithPrecision(uint64(p.Score), 52)
-			tmp = append(tmp, internal.FormatFloat(long), internal.FormatFloat(lat))
+			tmp = append(tmp, s2pkg.FormatFloat(long), s2pkg.FormatFloat(lat))
 		}
 		if flags.WITHDATA {
 			tmp = append(tmp, string(p.Data))
@@ -197,7 +197,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) geoRange(name, key string, lat, long float64, radius float64, limit int, any, withData bool) (pairs []internal.Pair, err error) {
+func (s *Server) geoRange(name, key string, lat, long float64, radius float64, limit int, any, withData bool) (pairs []s2pkg.Pair, err error) {
 	bits := bitsForBox(radius, radius)
 	if bits > 52 {
 		bits = 52
@@ -217,7 +217,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, l
 			if len(buf) != 8 {
 				return fmt.Errorf("%q not found in %q", key, name)
 			}
-			lat, long = geohash.DecodeIntWithPrecision(uint64(internal.BytesToFloat(buf)), 52)
+			lat, long = geohash.DecodeIntWithPrecision(uint64(s2pkg.BytesToFloat(buf)), 52)
 		}
 
 		center := geohash.EncodeIntWithPrecision(lat, long, bits)
@@ -230,15 +230,15 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, l
 		// iterate neighbours, starting at center (itself)
 		for c := bk.Cursor(); len(neigs) > 0; neigs = neigs[1:] {
 			start := neigs[0] << (52 - bits)
-			startBuf := internal.FloatToBytes(float64(start))
+			startBuf := s2pkg.FloatToBytes(float64(start))
 
 			end := (neigs[0] + 1) << (52 - bits)
-			endBuf := internal.FloatToBytes(float64(end))
+			endBuf := s2pkg.FloatToBytes(float64(end))
 
 			for k, v := c.Seek(startBuf); ; k, v = c.Next() {
 				if len(k) >= 8 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) < 0 {
-					if s := internal.BytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
-						p := internal.Pair{Member: string(k[8:]), Score: s}
+					if s := s2pkg.BytesToFloat(k[:8]); geoDistHash(lat, long, uint64(s)) <= radius {
+						p := s2pkg.Pair{Member: string(k[8:]), Score: s}
 						if withData {
 							p.Data = append([]byte{}, v...)
 						}
@@ -266,7 +266,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, l
 			pairs = h.p
 		} else {
 			for h.Len() > 0 {
-				pairs = append(pairs, heap.Pop(h).(internal.Pair)) // from farest to closest
+				pairs = append(pairs, heap.Pop(h).(s2pkg.Pair)) // from farest to closest
 			}
 		}
 		return nil
@@ -276,7 +276,7 @@ func (s *Server) geoRange(name, key string, lat, long float64, radius float64, l
 
 type geoHeap struct {
 	lat, long float64
-	p         []internal.Pair
+	p         []s2pkg.Pair
 }
 
 func (h geoHeap) Len() int {
@@ -292,7 +292,7 @@ func (h geoHeap) Swap(i, j int) {
 }
 
 func (h *geoHeap) Push(x interface{}) {
-	h.p = append(h.p, x.(internal.Pair))
+	h.p = append(h.p, x.(s2pkg.Pair))
 }
 
 func (h *geoHeap) Pop() interface{} {

@@ -16,8 +16,8 @@ import (
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -64,7 +64,7 @@ func (s *Server) loadConfig() error {
 			buf := bk.Get([]byte(strings.ToLower(f.Name)))
 			switch f.Type {
 			case reflect.TypeOf(0):
-				fv.SetInt(int64(internal.BytesToFloatZero(buf)))
+				fv.SetInt(int64(s2pkg.BytesToFloatZero(buf)))
 			case reflect.TypeOf(""):
 				fv.SetString(string(buf))
 			}
@@ -90,8 +90,8 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactTxWorkers, 1)
 	ifZero(&s.DumpSafeMargin, 16)
 
-	s.Cache = internal.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
-	s.WeakCache = internal.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	s.Cache = s2pkg.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
+	s.WeakCache = s2pkg.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -111,7 +111,7 @@ func (s *Server) saveConfig() error {
 			var buf []byte
 			switch f.Type {
 			case reflect.TypeOf(0):
-				buf = internal.FloatToBytes(float64(fv.Int()))
+				buf = s2pkg.FloatToBytes(float64(fv.Int()))
 			case reflect.TypeOf(""):
 				buf = []byte(fv.String())
 			}
@@ -141,7 +141,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 		}
 		switch f.Type {
 		case reflect.TypeOf(0):
-			fv.SetInt(int64(internal.ParseInt(value)))
+			fv.SetInt(int64(s2pkg.ParseInt(value)))
 		case reflect.TypeOf(""):
 			fv.SetString(value)
 		}
@@ -152,7 +152,7 @@ func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
 				return err
 			}
 			buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
-			return bk.Put(internal.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
+			return bk.Put(s2pkg.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
 		})
 		return errSafeExit
 	})
@@ -339,7 +339,7 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) (bas.Value, er
 	if s.SelfManager == nil {
 		return bas.Nil, nil
 	}
-	defer internal.Recover()
+	defer s2pkg.Recover()
 	f, _ := s.SelfManager.Get(name)
 	if !bas.IsCallable(f) {
 		return f, nil
@@ -375,8 +375,8 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				e.A = bas.Int(shardIndex(e.Str(0)))
 			}, "").
 			SetMethod("atof", func(e *bas.Env) {
-				v, err := internal.ParseFloat(e.Str(0))
-				internal.PanicErr(err)
+				v, err := s2pkg.ParseFloat(e.Str(0))
+				s2pkg.PanicErr(err)
 				e.A = bas.Float64(v)
 			}, "").
 			SetMethod("hashCommands", func(e *bas.Env) { // ) [2]uint64 {
@@ -388,7 +388,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 			}, "").
 			SetMethod("getPendingUnlinks", func(e *bas.Env) { // ) []string {
 				v, err := getPendingUnlinks(s.db[e.Int(0)].DB)
-				internal.PanicErr(err)
+				s2pkg.PanicErr(err)
 				e.A = bas.ValueOf(v)
 			}, "").
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {

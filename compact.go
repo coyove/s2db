@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/coyove/nj/typ"
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -46,7 +46,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	defer func() {
 		s.CompactLock.Unlock()
 		s.LocalStorage().Delete("compact_lock")
-		internal.Recover()
+		s2pkg.Recover()
 	}()
 
 	x := &s.db[shard]
@@ -315,21 +315,21 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	var total, queueDrops, queueDeletes int64
 
-	tmptx, err := internal.CreateLimitedTx(tmpdb, s.CompactTxSize)
+	tmptx, err := s2pkg.CreateLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
 		return err
 	}
 	defer tmptx.Close()
 
 	c := tx.Cursor()
-	bucketIn := make(chan *internal.BucketWalker, 2*s.CompactTxWorkers)
+	bucketIn := make(chan *s2pkg.BucketWalker, 2*s.CompactTxWorkers)
 	bucketWalkerWg := sync.WaitGroup{}
 	bucketWalkerWg.Add(s.CompactTxWorkers)
 	for i := 0; i < s.CompactTxWorkers; i++ {
 		go func() {
 			defer func() {
 				bucketWalkerWg.Done()
-				internal.Recover()
+				s2pkg.Recover()
 			}()
 			for p := range bucketIn {
 				s.compactionBucketWalker(p)
@@ -377,7 +377,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			binary.BigEndian.PutUint64(logtailStartBuf, logtailStart)
 		}
 
-		bucketIn <- &internal.BucketWalker{
+		bucketIn <- &s2pkg.BucketWalker{
 			Bucket:          b,
 			BucketName:      bucketName,
 			Tx:              tmptx,
@@ -397,7 +397,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	return tmptx.Finish()
 }
 
-func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
+func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 	now := time.Now().UnixNano()
 	isQueue := strings.HasPrefix(p.BucketName, "q.")
 	if err := p.Bucket.ForEach(func(k, v []byte) error {
@@ -416,7 +416,7 @@ func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
 		}
 
 		atomic.AddInt64(p.Total, 1)
-		return p.Tx.Put(&internal.OnetimeLimitedTxPut{
+		return p.Tx.Put(&s2pkg.OnetimeLimitedTxPut{
 			BkName: p.BucketName,
 			Seq:    p.Bucket.Sequence(),
 			Key:    k,
@@ -427,7 +427,7 @@ func (s *Server) compactionBucketWalker(p *internal.BucketWalker) error {
 	}
 
 	// Check compaction
-	return p.Tx.Put(&internal.OnetimeLimitedTxPut{
+	return p.Tx.Put(&s2pkg.OnetimeLimitedTxPut{
 		BkName: p.BucketName,
 		Seq:    p.Bucket.Sequence(),
 		Finishing: func(tx *bbolt.Tx, tmpb *bbolt.Bucket) error {

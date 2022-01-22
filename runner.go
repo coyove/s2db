@@ -6,15 +6,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
-type PreparedTxFunc func(*bbolt.Tx) ([]internal.Pair, int, error)
+type PreparedTxFunc func(*bbolt.Tx) ([]s2pkg.Pair, int, error)
 
-func (s *Server) runPreparedRangeTx(key string, f PreparedTxFunc, success func([]internal.Pair, int)) (pairs []internal.Pair, count int, err error) {
+func (s *Server) runPreparedRangeTx(key string, f PreparedTxFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		pairs, count, err = f(tx)
 		if err == nil {
@@ -45,7 +45,7 @@ func (s *Server) runPreparedTxAndWrite(key string, deferred bool, f func(tx *bbo
 	case int64:
 		return w.WriteInt(res)
 	case float64:
-		return w.WriteBulkString(internal.FormatFloat(res))
+		return w.WriteBulkString(s2pkg.FormatFloat(res))
 	default:
 		panic(-99)
 	}

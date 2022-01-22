@@ -22,7 +22,7 @@ import (
 	"time"
 
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -50,13 +50,13 @@ var (
 	benchmark   = flag.String("bench", "", "")
 )
 
-//go:embed internal/webui.html
+//go:embed webui/index.html
 var webuiHTML string
 
 func main() {
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
-	go internal.OSWatcher()
+	go s2pkg.OSWatcher()
 
 	if *calcShard != "" {
 		fmt.Print(shardIndex(*calcShard))
@@ -68,7 +68,7 @@ func main() {
 	}
 
 	log.SetReportCaller(true)
-	log.SetFormatter(&internal.LogFormatter{})
+	log.SetFormatter(&s2pkg.LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename:   "x_s2db.log",
 		MaxSize:    100, // megabytes
@@ -181,7 +181,7 @@ func main() {
 		}
 		if !*noWebUI {
 			fullyOpened.Lock()
-			sp := internal.UUID()
+			sp := s2pkg.UUID()
 			http.HandleFunc("/", webInfo(sp, &s))
 			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
 				nj.PlaygroundHandler(s.getScriptEnviron())(w, r)
@@ -257,7 +257,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 		if s.ServerConfig.CompactDumpTmpDir != "" {
 			sp = append(sp, s.CompactDumpTmpDir)
 		}
-		cpu, iops, disk := internal.GetOSUsage(sp[:])
+		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
 		w.Header().Add("Content-Type", "text/html")
 		template.Must(template.New("").Funcs(template.FuncMap{
 			"kv": func(s string) (r struct{ Key, Value string }) {
@@ -271,7 +271,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				if v == "-" {
 					parts := [ShardNum]string{}
 					for i := range parts {
-						if internal.ParseInt(shard) == i {
+						if s2pkg.ParseInt(shard) == i {
 							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?p=%s'><b>#%d</b> [-]</a></div>", i, s.Password, i)
 						} else {
 							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?shard=%d&p=%s'><b>#%d</b> [+]</a></div>", i, i, s.Password, i)
@@ -293,7 +293,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				}
 				al, bl, cl := trilabel(a, b, c)
 				return template.HTML(fmt.Sprintf("<div class=stat><div class=%s>%s</div><div class=%s>%s</div><div class=%s>%s</div></div>",
-					al, internal.FormatFloatShort(a), bl, internal.FormatFloatShort(b), cl, internal.FormatFloatShort(c)))
+					al, s2pkg.FormatFloatShort(a), bl, s2pkg.FormatFloatShort(b), cl, s2pkg.FormatFloatShort(c)))
 			},
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s":        s,
@@ -304,7 +304,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			"REPLPath": evalPath,
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "commands", "cache"},
 			"Slaves":   s.Slaves.List(),
-			"Shard":    internal.MustParseInt(shard),
+			"Shard":    s2pkg.MustParseInt(shard),
 			"ShardNum": ShardNum,
 		})
 	}

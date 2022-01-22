@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"go.etcd.io/bbolt"
 )
 
@@ -46,8 +46,8 @@ func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) ([][]
 		n = -n
 		desc = true
 	}
-	if n > int64(internal.RangeHardLimit) {
-		n = int64(internal.RangeHardLimit)
+	if n > int64(s2pkg.RangeHardLimit) {
+		n = int64(s2pkg.RangeHardLimit)
 	}
 	err := s.pick(key).View(func(tx *bbolt.Tx) error {
 		err := func() error {
@@ -71,7 +71,7 @@ func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) ([][]
 			}
 
 			c := bk.Cursor()
-			startBuf := internal.Uint64ToBytes(uint64(start))
+			startBuf := s2pkg.Uint64ToBytes(uint64(start))
 			k, v := c.Seek(startBuf)
 			if !bytes.HasPrefix(k, startBuf) {
 				return fmt.Errorf("fatal: missing key")
@@ -117,7 +117,7 @@ func (s *Server) QGet(key string, idx int64) ([]byte, error) {
 		}
 
 		c := bk.Cursor()
-		startBuf := internal.Uint64ToBytes(uint64(idx))
+		startBuf := s2pkg.Uint64ToBytes(uint64(idx))
 		k, v := c.Seek(startBuf)
 		if !bytes.HasPrefix(k, startBuf) {
 			return fmt.Errorf("fatal: missing key")

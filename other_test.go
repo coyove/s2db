@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 )
 
 func TestCommandJoinSplit(t *testing.T) {
@@ -61,7 +61,7 @@ func TestFloatBytesComparison(t *testing.T) {
 		for i := 0; i < 1e6; i++ {
 			a := rand.Float64() * k
 			b := rand.Float64() * k
-			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
+			s := bytes.Compare(s2pkg.FloatToBytes(a), s2pkg.FloatToBytes(b))
 			if a > b && s == 1 {
 			} else if a < b && s == -1 {
 			} else {
@@ -72,16 +72,16 @@ func TestFloatBytesComparison(t *testing.T) {
 		for i := 0; i < 1e6; i++ {
 			a := rand.Float64() * k
 			b := -rand.Float64() * k
-			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
+			s := bytes.Compare(s2pkg.FloatToBytes(a), s2pkg.FloatToBytes(b))
 			if s != 1 {
-				t.Fatal(a, b, internal.FloatToBytes(a), internal.FloatToBytes(b))
+				t.Fatal(a, b, s2pkg.FloatToBytes(a), s2pkg.FloatToBytes(b))
 			}
 		}
 
 		for i := 0; i < 1e6; i++ {
 			a := -rand.Float64() * k
 			b := -rand.Float64() * k
-			s := bytes.Compare(internal.FloatToBytes(a), internal.FloatToBytes(b))
+			s := bytes.Compare(s2pkg.FloatToBytes(a), s2pkg.FloatToBytes(b))
 			if a > b && s == 1 {
 			} else if a < b && s == -1 {
 			} else {
@@ -91,7 +91,7 @@ func TestFloatBytesComparison(t *testing.T) {
 
 		for i := 0; i < 1e6; i++ {
 			a := -rand.Float64() * k
-			if x := internal.BytesToFloat(internal.FloatToBytes(a)); math.Abs((x-a)/a) > 1e-6 {
+			if x := s2pkg.BytesToFloat(s2pkg.FloatToBytes(a)); math.Abs((x-a)/a) > 1e-6 {
 				t.Fatal(a, x)
 			}
 		}
@@ -101,13 +101,13 @@ func TestFloatBytesComparison(t *testing.T) {
 	do(2)
 	do(math.Float64frombits(0x7FEFFFFFFFFFFFFF)) // max float64 below +inf
 
-	fmt.Println(internal.FloatToBytes(math.Inf(1)))
-	fmt.Println(internal.FloatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
-	fmt.Println(internal.FloatToBytes(math.Inf(-1)))
-	fmt.Println(internal.FloatToBytes(math.Float64frombits(1 << 63)))
-	fmt.Println(internal.FloatToBytes(0))
+	fmt.Println(s2pkg.FloatToBytes(math.Inf(1)))
+	fmt.Println(s2pkg.FloatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
+	fmt.Println(s2pkg.FloatToBytes(math.Inf(-1)))
+	fmt.Println(s2pkg.FloatToBytes(math.Float64frombits(1 << 63)))
+	fmt.Println(s2pkg.FloatToBytes(0))
 
-	if !bytes.Equal(internal.FloatToBytes(0), internal.FloatToBytes(math.Float64frombits(1<<63))) {
+	if !bytes.Equal(s2pkg.FloatToBytes(0), s2pkg.FloatToBytes(math.Float64frombits(1<<63))) {
 		t.FailNow()
 	}
 }

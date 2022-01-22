@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/internal"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	"github.com/mmcloughlin/geohash"
 )
@@ -38,7 +38,7 @@ func TestZSet(t *testing.T) {
 	ctx := context.Background()
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 
-	internal.PanicErr(rdb.Ping(ctx).Err())
+	s2pkg.PanicErr(rdb.Ping(ctx).Err())
 
 	fmt.Println(rdb.ConfigSet(ctx, "SERVERNAME", "TEST").Err())
 
@@ -519,7 +519,7 @@ func TestZSetCache(t *testing.T) {
 
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 
-	internal.PanicErr(rdb.Ping(ctx).Err())
+	s2pkg.PanicErr(rdb.Ping(ctx).Err())
 
 	data := []*redis.Z{}
 	for i := 0; i < 50; i++ {

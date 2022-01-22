@@ -12,15 +12,15 @@ import (
 
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
-	"github.com/coyove/s2db/internal"
 	"github.com/coyove/s2db/redisproto"
+	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
 var (
-	MinScoreRange = internal.RangeLimit{Float: math.Inf(-1), Inclusive: true}
-	MaxScoreRange = internal.RangeLimit{Float: math.Inf(1), Inclusive: true}
+	MinScoreRange = s2pkg.RangeLimit{Float: math.Inf(-1), Inclusive: true}
+	MaxScoreRange = s2pkg.RangeLimit{Float: math.Inf(1), Inclusive: true}
 
 	errSafeExit = fmt.Errorf("exit")
 )
@@ -28,63 +28,63 @@ var (
 func (s *Server) ZCount(lex bool, key string, start, end string, flags redisproto.Flags) (int, error) {
 	if lex {
 		_, c, err := s.runPreparedRangeTx(key, rangeLex(key,
-			internal.NewRLFromString(start),
-			internal.NewRLFromString(end),
-			internal.RangeOptions{
+			s2pkg.NewRLFromString(start),
+			s2pkg.NewRLFromString(end),
+			s2pkg.RangeOptions{
 				OffsetStart: 0,
 				OffsetEnd:   math.MaxInt64,
 				LexMatch:    flags.MATCH,
-				Limit:       internal.RangeHardLimit,
-			}), func(p []internal.Pair, count int) {
+				Limit:       s2pkg.RangeHardLimit,
+			}), func(p []s2pkg.Pair, count int) {
 			s.addCache(key, flags.Command.HashCode(), count)
 		})
 		return c, err
 	}
-	rangeStart, err := internal.NewRLFromFloatString(start)
+	rangeStart, err := s2pkg.NewRLFromFloatString(start)
 	if err != nil {
 		return 0, err
 	}
-	rangeEnd, err := internal.NewRLFromFloatString(end)
+	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
 	if err != nil {
 		return 0, err
 	}
-	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, internal.RangeOptions{
+	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		Limit:       internal.RangeHardLimit,
+		Limit:       s2pkg.RangeHardLimit,
 		LexMatch:    flags.MATCH,
-	}), func(p []internal.Pair, count int) {
+	}), func(p []s2pkg.Pair, count int) {
 		s.addCache(key, flags.Command.HashCode(), count)
 	})
 	return c, err
 
 }
 
-func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.Flags) ([]internal.Pair, error) {
+func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.Flags) ([]s2pkg.Pair, error) {
 	rangeStart, rangeEnd := MinScoreRange, MaxScoreRange
 	if rev {
 		rangeStart, rangeEnd = MaxScoreRange, MinScoreRange
 	}
-	p, _, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, internal.RangeOptions{
+	p, _, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
 		Rev:         rev,
 		OffsetStart: start,
 		OffsetEnd:   end,
 		Limit:       flags.LIMIT,
 		WithData:    flags.WITHDATA,
-		Append:      internal.DefaultRangeAppend,
-	}), func(p []internal.Pair, count int) {
+		Append:      s2pkg.DefaultRangeAppend,
+	}), func(p []s2pkg.Pair, count int) {
 		s.addCache(key, flags.Command.HashCode(), p)
 	})
 	return p, err
 }
 
-func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
-	ro := internal.RangeOptions{
+func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
+	ro := s2pkg.RangeOptions{
 		Rev:      rev,
 		LexMatch: flags.MATCH,
 	}
 	p, err = s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc {
-		return rangeLex(key, internal.NewRLFromString(start), internal.NewRLFromString(end), ro)
+		return rangeLex(key, s2pkg.NewRLFromString(start), s2pkg.NewRLFromString(end), ro)
 	})
 	if flags.WITHDATA && err == nil {
 		err = s.fillPairsData(key, p)
@@ -92,16 +92,16 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redi
 	return p, err
 }
 
-func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags redisproto.Flags) (p []internal.Pair, err error) {
-	rangeStart, err := internal.NewRLFromFloatString(start)
+func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
+	rangeStart, err := s2pkg.NewRLFromFloatString(start)
 	if err != nil {
 		return nil, err
 	}
-	rangeEnd, err := internal.NewRLFromFloatString(end)
+	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
 	if err != nil {
 		return nil, err
 	}
-	ro := internal.RangeOptions{
+	ro := s2pkg.RangeOptions{
 		Rev:            rev,
 		OffsetStart:    0,
 		OffsetEnd:      math.MaxInt64,
@@ -112,8 +112,8 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 	return s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc { return rangeScore(key, rangeStart, rangeEnd, ro) })
 }
 
-func (s *Server) zRangeScoreLex(key string, ro *internal.RangeOptions, flags redisproto.Flags, f func() PreparedTxFunc) (p []internal.Pair, err error) {
-	success := func(p []internal.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
+func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() PreparedTxFunc) (p []s2pkg.Pair, err error) {
+	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, close := s.prepareIntersectBuckets(flags)
 		defer close()
@@ -122,13 +122,13 @@ func (s *Server) zRangeScoreLex(key string, ro *internal.RangeOptions, flags red
 		}
 		ro.Limit = math.MaxInt64
 		ro.Append = genIntersectFunc(bkm, flags)
-		success = func([]internal.Pair, int) {}
+		success = func([]s2pkg.Pair, int) {}
 	} else if flags.TWOHOPS.ENDPOINT != nil {
 		txs, close := s.openAllTx()
 		defer close()
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
-		success = func([]internal.Pair, int) {}
+		success = func([]s2pkg.Pair, int) {}
 	} else if flags.MERGE.ENDPOINTS != nil {
 		bks, close := s.prepareMergeBuckets(flags)
 		defer close()
@@ -137,10 +137,10 @@ func (s *Server) zRangeScoreLex(key string, ro *internal.RangeOptions, flags red
 		}
 		ro.Limit = math.MaxInt64
 		ro.Append = genMergeFunc(bks, flags)
-		success = func([]internal.Pair, int) {}
+		success = func([]s2pkg.Pair, int) {}
 	} else {
 		ro.Limit = flags.LIMIT
-		ro.Append = internal.DefaultRangeAppend
+		ro.Append = s2pkg.DefaultRangeAppend
 	}
 	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
@@ -156,8 +156,8 @@ func (s *Server) zRangeScoreLex(key string, ro *internal.RangeOptions, flags red
 	return p, err
 }
 
-func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOptions) PreparedTxFunc {
-	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
+func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) PreparedTxFunc {
+	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + key))
 		if bk == nil {
 			return
@@ -175,7 +175,7 @@ func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOpti
 				}
 			}
 
-			p := internal.Pair{Member: string(k), Score: internal.BytesToFloat(sc)}
+			p := s2pkg.Pair{Member: string(k), Score: s2pkg.BytesToFloat(sc)}
 			count++
 			if opt.Append != nil && !opt.Append(&pairs, p) {
 				return errSafeExit
@@ -240,8 +240,8 @@ func rangeLex(key string, start, end internal.RangeLimit, opt internal.RangeOpti
 	}
 }
 
-func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOptions) PreparedTxFunc {
-	return func(tx *bbolt.Tx) (pairs []internal.Pair, count int, err error) {
+func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) PreparedTxFunc {
+	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + key))
 		if bk == nil {
 			return
@@ -269,7 +269,7 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 					}
 				}
 			}
-			p := internal.Pair{Member: key, Score: internal.BytesToFloat(k[:8])}
+			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:8])}
 			if opt.WithData {
 				p.Data = append([]byte{}, dataBuf...)
 			}
@@ -280,7 +280,7 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 			return nil
 		}
 
-		startInt, endInt := internal.FloatToOrderedUint64(start.Float), internal.FloatToOrderedUint64(end.Float)
+		startInt, endInt := s2pkg.FloatToOrderedUint64(start.Float), s2pkg.FloatToOrderedUint64(end.Float)
 		if opt.Rev {
 			if start.Inclusive {
 				startInt++
@@ -288,7 +288,7 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 			if !end.Inclusive {
 				endInt++
 			}
-			var k, dataBuf = c.Seek(internal.Uint64ToBytes(startInt))
+			var k, dataBuf = c.Seek(s2pkg.Uint64ToBytes(startInt))
 			if len(k) == 0 {
 				k, dataBuf = c.Last()
 			} else {
@@ -316,7 +316,7 @@ func rangeScore(key string, start, end internal.RangeLimit, opt internal.RangeOp
 			if end.Inclusive {
 				endInt++
 			}
-			k, dataBuf := c.Seek(internal.Uint64ToBytes(startInt))
+			k, dataBuf := c.Seek(s2pkg.Uint64ToBytes(startInt))
 			for i := 0; len(k) >= 8 && len(pairs) < opt.Limit; i++ {
 				x := binary.BigEndian.Uint64(k)
 				if x >= startInt && x < endInt {
@@ -424,10 +424,10 @@ func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bu
 	return nil
 }
 
-func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []internal.Pair, nextCursor string, err error) {
+func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []s2pkg.Pair, nextCursor string, err error) {
 	count++
 	if err := s.Foreach(cursor, shard, func(k string, bk *bbolt.Bucket) bool {
-		pairs = append(pairs, internal.Pair{
+		pairs = append(pairs, s2pkg.Pair{
 			Member: k,
 			Score:  float64(bk.Stats().KeyN),
 		})
@@ -492,9 +492,9 @@ func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func()) {
 	return txs, func() { closeAllReadTxs(txs[:]) }
 }
 
-func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) func(pairs *[]internal.Pair, p internal.Pair) bool {
+func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
-	return func(pairs *[]internal.Pair, p internal.Pair) bool {
+	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := p.Member
 		if bas.IsCallable(flags.TWOHOPS.KEYMAP) {
 			res, err := bas.Call2(flags.TWOHOPS.KEYMAP.Object(), bas.Str(key))
@@ -513,9 +513,9 @@ func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) 
 	}
 }
 
-func genIntersectFunc(bkm map[*bbolt.Bucket]bas.Value, flags redisproto.Flags) func(pairs *[]internal.Pair, p internal.Pair) bool {
+func genIntersectFunc(bkm map[*bbolt.Bucket]bas.Value, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
-	return func(pairs *[]internal.Pair, p internal.Pair) bool {
+	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := p.Member
 		hits := 0
 		for bk, f := range bkm {
@@ -538,15 +538,15 @@ func genIntersectFunc(bkm map[*bbolt.Bucket]bas.Value, flags redisproto.Flags) f
 	}
 }
 
-func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]internal.Pair, p internal.Pair) bool {
+func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
 	f := flags.MERGE.FUNC
 	scores := make([]bas.Value, len(bkm)+2)
-	return func(pairs *[]internal.Pair, p internal.Pair) bool {
+	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := []byte(p.Member)
 		scores[0], scores[1] = bas.UnsafeStr(key), bas.Float64(p.Score)
 		for i, bk := range bkm {
-			scores[i+2] = bas.Float64(internal.BytesToFloatZero(bk.Get(key)))
+			scores[i+2] = bas.Float64(s2pkg.BytesToFloatZero(bk.Get(key)))
 		}
 		if bas.IsCallable(f) {
 			res, err := bas.Call2(f.Object(), scores...)

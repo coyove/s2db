@@ -15,7 +15,7 @@ fi
 COMMIT=$(git log --pretty=format:'%h' -n 1)
 SCRIPT_COMMIT=$(cat go.mod | grep 'coyove/nj' | cut -c45-52)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))-${COMMIT}-${SCRIPT_COMMIT}
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}-${SCRIPT_COMMIT}
 echo 'building' $VERSION
 
 if [[ "$1" == "linux" ]]; then
@@ -23,6 +23,11 @@ if [[ "$1" == "linux" ]]; then
     exit 0
 fi
 
-go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC
+OUT=s2db
+if [[ "$1" == "win32" ]]; then
+    OUT=s2db.exe
+fi
+
+go build -ldflags "-X main.Version=$VERSION" -o $OUT $SRC
 mkdir -p slave_dir
-cp s2db slave_dir/
+cp $OUT slave_dir/

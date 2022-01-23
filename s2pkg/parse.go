@@ -42,7 +42,10 @@ func FormatFloat(f float64) string {
 }
 
 func FormatFloatShort(f float64) string {
-	if f < 0.01 {
+	if f != f {
+		return "-.--"
+	}
+	if f < 0.01 && f > 0 {
 		return strconv.FormatFloat(f, 'f', 3, 64)
 	}
 	return strconv.FormatFloat(f, 'f', 2, 64)

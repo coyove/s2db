@@ -47,6 +47,9 @@
             padding: 0.2em 0.33em;
             flex-basis: 75%;
             flex-grow: 1;
+            display: flex;
+            align-items: center;
+            justify-content: right;
             text-align: right;
             font-family: Lucida Console, Monaco, Monospace;
         }
@@ -55,6 +58,7 @@
             flex-wrap: wrap;
             border: solid 1px #ddd;
             background: white;
+            width: 100%;
         }
         .section-box .box {
             width: 12.5%;
@@ -86,13 +90,16 @@
         .stat div:first-child:before {
             margin: 0 0.25em 0 0;
         }
-        .stat div { display: inline-flex; }
+        .stat div {
+            display: inline-flex; 
+            font-size: 80%;
+        }
         .stat .stat1:before  { background: #fed; }
         .stat .stat5:before  { background: #fc8; }
         .stat .stat15:before { background: #f88; }
         .stat div:before {
             content: '';
-            padding: 0 2px;
+            padding: 0 3px;
             margin: 0 0.25em;
             display: inline-block;
             width: 0;
@@ -137,9 +144,6 @@
                 </div>
                 {{end}}
                 <div class=section-content>
-                    <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>Open</a></div>
-                </div>
-                <div class=section-content>
                     <div class=section-key>shard_info</div>
                     <div class=section-value>
                         <div class=section-box>{{box32 "-"}}</div>
@@ -147,13 +151,16 @@
                     </div>
                 </div>
                 <div class=section-content>
-                    <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>Open</a></div>
+                    <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>open</a></div>
+                </div>
+                <div class=section-content>
+                    <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>open</a></div>
                 </div>
             </div>
 
         {{if ne .Shard -1}}
             <div class=section>
-                <div class=section-title>shard #{{.Shard}}</div>
+                <div class=section-title>shard_{{.Shard}}</div>
                 {{range $i, $v := $.s.ShardInfo .Shard}}
                 {{if $v}}
                 <div class=section-content>
@@ -174,7 +181,7 @@
 
             <div class=section>
                 {{range $k, $v := .Slaves}}
-                <div class=section-title>slave: {{$v.RemoteAddr}}</div>
+                <div class=section-title>slave_{{$v.RemoteAddr}}</div>
                 <div class=section-content>
                     <div class=section-key>address</div>
                     <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
@@ -197,7 +204,7 @@
                 {{end}}
 
                 {{if .s.MasterAddr}}
-                <div class=section-title>master: {{.s.MasterAddr}}</div>
+                <div class=section-title>master_{{.s.MasterAddr}}</div>
                 <div class=section-content>
                     <div class=section-key>address</div>
                     <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
@@ -226,7 +233,7 @@
             </div>  
             {{end}}
 
-            <div class=section-title>self-managed code</div>
+            <div class=section-title>self_managed_code</div>
             <div style='border: solid 1px #ddd'>
             <form method=GET>
                 <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>

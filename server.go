@@ -72,7 +72,7 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
-		Proxy                   s2pkg.Survey
+		Proxy, SlowLogs         s2pkg.Survey
 		Command                 sync.Map
 	}
 
@@ -81,7 +81,7 @@ type Server struct {
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
-		compactReplacing  s2pkg.Locker
+		compactLocker     s2pkg.Locker
 	}
 	ConfigDB *bbolt.DB
 }
@@ -102,15 +102,13 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 	}
 	x.DataPath = path
 	for i := range x.db {
-		start := time.Now()
-		var shardPath string
-		if remap, _ := x.getConfig("ShardPath" + strconv.Itoa(i)); remap != "" {
-			os.MkdirAll(remap, 0777)
-			shardPath = filepath.Join(remap, "shard"+strconv.Itoa(i))
-			log.Info("remap shard #", i, " to ", shardPath)
-		} else {
-			shardPath = filepath.Join(path, "shard"+strconv.Itoa(i))
+		fn, err := x.GetShardFilename(i)
+		if err != nil {
+			return nil, err
 		}
+		shardPath := filepath.Join(path, fn)
+		log.Info("open shard #", i, " of ", shardPath)
+		start := time.Now()
 		db, err := bbolt.Open(shardPath, 0666, bboltOptions)
 		if err != nil {
 			return nil, err
@@ -353,14 +351,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r))
 		} else {
 			diff := time.Since(start)
+			diffMs := diff.Milliseconds()
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				buf := "slowLog(" + strconv.Itoa(shardIndex(key)) + "): " + diff.String() + " " + command.String()
-				if diff := len(buf) - 100; diff > 0 {
-					buf = buf[:100] + " ...[" + strconv.Itoa(diff) + " bytes truncated]..."
-				}
-				log.Info(buf)
+				log.Info("slowLog(", shardIndex(key), "): ", diff, " ", command)
+				s.Survey.SlowLogs.Incr(diffMs)
 			}
-			diffMs := int64(diff.Seconds() * 1000)
 			if isReadWrite == 'r' {
 				s.Survey.SysRead.Incr(diffMs)
 			} else if isReadWrite == 'w' {
@@ -447,11 +442,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("STARTED")
-	case "REMAPSHARD":
-		if err := s.remapShard(s2pkg.MustParseInt(key), command.Get(2)); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
 	}
 
 	// Log related commands

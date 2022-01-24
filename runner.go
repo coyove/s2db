@@ -8,6 +8,7 @@ import (
 
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -105,7 +106,7 @@ func (s *Server) batchWorker(shard int) {
 			continue
 		}
 
-		s.runTasks(tasks, shard)
+		s.runTasks(log, tasks, shard)
 	}
 
 EXIT:
@@ -113,13 +114,11 @@ EXIT:
 	x.batchCloseSignal <- true
 }
 
-func (s *Server) runTasks(tasks []*batchTask, shard int) {
+func (s *Server) runTasks(log *logrus.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
-	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
-	s.db[shard].compactReplacing.Wait(func() {
-		log.Infof("shard #%d runner is waiting for compaction", shard)
-	})
 	outs := make([]interface{}, len(tasks))
+	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
+	s.db[shard].compactLocker.Lock(func() { log.Infof("runner is waiting for compactor", shard) })
 	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		var err error
 		for i, t := range tasks {
@@ -130,6 +129,7 @@ func (s *Server) runTasks(tasks []*batchTask, shard int) {
 		}
 		return nil
 	})
+	s.db[shard].compactLocker.Unlock()
 	if err != nil {
 		s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
 		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")

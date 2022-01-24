@@ -9,23 +9,15 @@ type Locker struct {
 	mu sync.Mutex
 }
 
-func (l *Locker) Lock() {
-	l.mu.Lock()
-}
-
 func (l *Locker) Unlock() {
 	l.mu.Unlock()
 }
 
-func (l *Locker) Wait(waiting func()) {
-	if *(*int32)(unsafe.Pointer(l)) == 0 {
-		return
-	}
-	l.mu.Lock()
-	if waiting != nil {
+func (l *Locker) Lock(waiting func()) {
+	if *(*int32)(unsafe.Pointer(l)) != 0 && waiting != nil {
 		waiting()
 	}
-	l.mu.Unlock()
+	l.mu.Lock()
 }
 
 type LockBox struct {

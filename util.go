@@ -166,6 +166,8 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite.String()),
 			fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWrite.MeanString()),
 			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
+			fmt.Sprintf("slow_logs_qps:%v", s.Survey.SlowLogs.QPSString()),
+			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
 			fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy.String()),
 			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.Proxy.MeanString()),
 			"")

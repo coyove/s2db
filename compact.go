@@ -34,6 +34,7 @@ func (s *Server) CompactShard(shard int, async bool) error {
 
 func (s *Server) compactShardImpl(shard int, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
+	success := false
 
 	if v, ok := s.CompactLock.Lock(shard); !ok {
 		out <- v.(int)
@@ -53,16 +54,20 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	s.runInspectFunc("compactonstart", shard)
 
 	path := x.DB.Path()
-	compactPath, dumpPath := path+".compact", path+".dump"
+	compactFilename := "shard" + strconv.Itoa(shard) + "." + fmt.Sprintf("%013d", time.Now().UnixNano()/1e6)
+	compactPath := filepath.Join(s.DataPath, compactFilename)
+	dumpPath := path + ".dump"
 	if s.ServerConfig.CompactDumpTmpDir != "" {
 		dumpPath = filepath.Join(s.CompactDumpTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
 	}
-
-	log.Info("STAGE 0: begin compaction, compactDB=", compactPath, ", dumpDB=", dumpPath)
+	defer func() {
+		if !success {
+			log.Infof("compaction failed, removeCompactErr=%v", os.Remove(compactPath))
+		}
+	}()
 
 	// STAGE 1: dump the shard, open a temp database for compaction
-	os.Remove(compactPath)
-	os.Remove(dumpPath)
+	log.Infof("STAGE 0: begin compaction, compactDB=%s, dumpDB=%s, removeOldDumpErr=%v", compactPath, dumpPath, os.Remove(dumpPath))
 
 	dumpSize, err := x.DB.Dump(dumpPath, s.DumpSafeMargin*1024*1024)
 	if err != nil {
@@ -80,19 +85,17 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	}
 	dumpDB, err := bbolt.Open(dumpPath, 0666, bboltReadonlyOptions)
 	if err != nil {
-		log.Error("open dumpDB: ", err)
+		log.Errorf("open dumpDB: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
-		dumpDB.Close()
-		compactDB.Close()
-		log.Error("defragdb: ", err, " remove compactDB: ", os.Remove(compactPath))
+		log.Errorf("defragdb error: %v, closeDumpErr=%v, closeCompactErr=%v", err, dumpDB.Close(), compactDB.Close())
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
-	dumpDB.Close()
-	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, removeDumpErr=%v", compactDB.Size(), os.Remove(dumpPath))
+	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, closeDumpErr=%v, removeDumpErr=%v",
+		compactDB.Size(), dumpDB.Close(), os.Remove(dumpPath))
 
 	// STAGE 2: for any changes happened during the compaction, write them into compactDB
 	var ct, mt uint64
@@ -105,102 +108,81 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			}
 			return nil
 		}); err != nil {
-			log.Error("get compactDB tail: ", err)
+			log.Errorf("get compactDB tail: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		mt, err = s.myLogTail(shard)
 		if err != nil {
-			log.Error("get shard tail: ", err)
+			log.Errorf("get shard tail: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		if ct > mt {
-			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d", ct, mt)
+			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d, closeCompactErr=%v", ct, mt, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
-		if mt-ct <= uint64(s.CompactTxSize) {
+		if mt-ct <= uint64(s.ResponseLogRun)*2 {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
+
 		logs, err := s.responseLog(shard, ct+1, false)
 		if err != nil {
-			log.Error("responseLog: ", err)
+			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
 		if _, err := runLog(logs, compactDB); err != nil {
-			log.Error("runLog: ", err)
+			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
 		}
 	}
 	log.Infof("STAGE 2: incremental logs replayed, ct=%d, mt=%d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
 
+	finalStageReached := func() {}
 	// STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
-	x.compactReplacing.Lock()
-	defer x.compactReplacing.Unlock()
-
-	x.DB.Close()
-	roDB, err := bbolt.Open(path, 0666, bboltReadonlyOptions)
-	if err != nil {
-		// Worst case, this shard goes offline completely
-		log.Error("CAUTION: open roDB: ", err)
-		s.runInspectFunc("compactonerror", err)
-		return
-	}
-	x.DB = roDB
-	log.Info("STAGE 3: make online database rw -> ro")
+	x.compactLocker.Lock(func() { log.Info("compactor is waiting for runner/bulkload") })
+	defer func() {
+		x.compactLocker.Unlock()
+		finalStageReached()
+	}()
+	log.Info("STAGE 3: onlineDB write lock acquired")
 
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
 	logs, err := s.responseLog(shard, ct+1, true)
 	if err != nil {
-		log.Error("responseLog: ", err)
+		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
 	if _, err := runLog(logs, compactDB); err != nil {
-		log.Error("runLog: ", err)
+		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", err)
 		return
 	}
-	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), roDB.Size(), compactDB.Size())
+	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
 
-	// STAGE 5: now compactDB and onlineDB are identical, swap them to make compactDB officially online
-	roDB.Close()
+	// STAGE 5: now compactDB and onlineDB are identical, time to make compactDB officially online
+	if err := s.UpdateShardFilename(shard, compactFilename); err != nil {
+		log.Errorf("update shard filename: %v, closeCompactErr=%v", err, compactDB.Close())
+		s.runInspectFunc("compactonerror", err)
+		return
+	}
 
-	if s.CompactNoBackup == 1 {
-		log.Info("CAUTION: compact no backup")
-		if err := os.Remove(path); err != nil {
-			log.Error("delete original (online) DB: ", err)
-			s.runInspectFunc("compactonerror", err)
-			return
+	old := x.DB
+	x.DB = compactDB
+	finalStageReached = func() {
+		bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
+		log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, removeBakErr=%v, renameOldErr=%v",
+			old.Close(), os.Remove(bakPath), os.Rename(path, bakPath))
+		if s.CompactNoBackup == 1 {
+			log.Infof("STAGE 5.1: CAUTION delete previous backup file: %v", os.Remove(bakPath))
 		}
-	} else {
-		if err := os.Rename(path, path+".bak"); err != nil {
-			log.Error("backup original (online) DB: ", err)
-			s.runInspectFunc("compactonerror", err)
-			return
-		}
+		s.runInspectFunc("compactonfinish", shard)
 	}
-
-	compactDB.Close()
-	if err := os.Rename(compactPath, path); err != nil {
-		log.Error("rename compactDB to online DB: ", err)
-		s.runInspectFunc("compactonerror", err)
-		return
-	}
-
-	db, err := bbolt.Open(path, 0666, bboltOptions)
-	if err != nil {
-		log.Error("open compactDB as online DB: ", err)
-		s.runInspectFunc("compactonerror", err)
-		return
-	}
-	x.DB = db
-
-	log.Info("STAGE 5: swap compacted database to online")
-	s.runInspectFunc("compactonfinish", shard)
+	success = true
 }
 
 func (s *Server) schedCompactionJob() {
@@ -221,7 +203,7 @@ func (s *Server) schedCompactionJob() {
 						log.Info("scheduleCompaction(", i, ")")
 						s.compactShardImpl(i, out)
 						<-out
-						log.Info("update last_compact_1xx_ts: ", i, " err=", s.LocalStorage().Set(key, ts))
+						log.Info("update last_compact_1xx_ts: #", i, " err=", s.LocalStorage().Set(key, ts))
 					}
 				}
 			}
@@ -241,7 +223,7 @@ func (s *Server) schedCompactionJob() {
 						log.Info("scheduleCompaction(", shardIdx, ")")
 						s.compactShardImpl(shardIdx, out)
 						<-out
-						log.Info("update last_compact_2xx_ts: ", shardIdx, " err=", s.LocalStorage().Set(key, ts))
+						log.Info("update last_compact_2xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
 					}
 					break
 				}
@@ -257,24 +239,8 @@ func (s *Server) schedCompactionJob() {
 				log.Info("scheduleCompaction(", shardIdx, ")")
 				s.compactShardImpl(shardIdx, out)
 				<-out
-				log.Info("update last_compact_6xx_ts: ", shardIdx, " err=", s.LocalStorage().Set(key, ts))
+				log.Info("update last_compact_6xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
 			}
-		}
-
-		// Do compaction on shard with large freelist
-		maxFreelistSize := 0
-		maxFreelistDB := -1
-		for i := range s.db {
-			sz := s.db[i].FreelistSize()
-			if sz > maxFreelistSize {
-				maxFreelistSize = sz
-				maxFreelistDB = i
-			}
-		}
-		if maxFreelistDB >= 0 && s.CompactFreelistLimit > 0 && maxFreelistSize > s.CompactFreelistLimit {
-			log.Info("freelistCompaction(", maxFreelistDB, ")")
-			s.compactShardImpl(maxFreelistDB, out)
-			<-out
 		}
 
 		time.Sleep(time.Minute)

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -85,13 +86,15 @@ func (c *Command) String() string {
 	buf := bytes.NewBufferString(c.Get(0))
 	for i := 1; i < c.ArgCount(); i++ {
 		msg := c.At(i)
-		if utf8.Valid(msg) {
-			buf.WriteString(" '")
-			buf.Write(msg)
-			buf.WriteString("'")
+		if i > 1 && len(msg) > 32 {
+			buf.WriteString(" ...")
 		} else {
-			buf.WriteString(" 0x")
-			hex.NewEncoder(buf).Write(msg)
+			if utf8.Valid(msg) {
+				buf.Write(strconv.AppendQuote(nil, *(*string)(unsafe.Pointer(&msg))))
+			} else {
+				buf.WriteString(" 0x")
+				hex.NewEncoder(buf).Write(msg)
+			}
 		}
 	}
 	return buf.String()

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
-	"sort"
 	"time"
 	"unsafe"
 
@@ -115,9 +114,9 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() PreparedTxFunc) (p []s2pkg.Pair, err error) {
 	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
-		bkm, close := s.prepareIntersectBuckets(flags)
+		bkm, goahead, close := s.prepareIntersectBuckets(flags)
 		defer close()
-		if len(bkm) == 0 {
+		if len(bkm) == 0 && !goahead { // 'goahead' example: ZRANGEBYSCORE key start end NOTINTERSECT not_existed_key
 			return
 		}
 		ro.Limit = math.MaxInt64
@@ -145,13 +144,6 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
 		err = nil
-	}
-	if err == nil && flags.MERGE.ENDPOINTS != nil {
-		if ro.Rev {
-			sort.Slice(p, func(i, j int) bool { return p[i].Score > p[j].Score })
-		} else {
-			sort.Slice(p, func(i, j int) bool { return p[i].Score < p[j].Score })
-		}
 	}
 	return p, err
 }
@@ -441,8 +433,8 @@ func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs 
 	return
 }
 
-func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt.Bucket]bas.Value, close func()) {
-	bkm = map[*bbolt.Bucket]bas.Value{}
+func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt.Bucket]redisproto.IntersectFlags, goahead bool, close func()) {
+	bkm = map[*bbolt.Bucket]redisproto.IntersectFlags{}
 	var txs []*bbolt.Tx
 	for k, f := range flags.INTERSECT {
 		tx, err := s.pick(k).Begin(false)
@@ -451,14 +443,23 @@ func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt
 			continue
 		}
 		bk := tx.Bucket([]byte("zset." + k))
-		if bk == nil {
-			tx.Rollback()
-			continue
-		}
 		txs = append(txs, tx)
+		if bk == nil {
+			if f.Not {
+				// Must not intersect, since key doesn't exist, there is no need to check it
+				tx.Rollback()
+				txs = txs[:len(txs)-1]
+				goahead = true
+				continue
+			} else {
+				// Must intersect, but key doesn't exist, so must fail
+				closeAllReadTxs(txs)
+				return nil, false, func() {}
+			}
+		}
 		bkm[bk] = f
 	}
-	return bkm, func() { closeAllReadTxs(txs) }
+	return bkm, goahead, func() { closeAllReadTxs(txs) }
 }
 
 func (s *Server) prepareMergeBuckets(flags redisproto.Flags) (bkm []*bbolt.Bucket, close func()) {
@@ -513,27 +514,37 @@ func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) 
 	}
 }
 
-func genIntersectFunc(bkm map[*bbolt.Bucket]bas.Value, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+func genIntersectFunc(bkm map[*bbolt.Bucket]redisproto.IntersectFlags, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
 	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := p.Member
-		hits := 0
+		count, hits := 0, 0
 		for bk, f := range bkm {
-			if bas.IsCallable(f) {
-				res, err := bas.Call2(f.Object(), bas.Str(key))
+			if bas.IsCallable(f.F) {
+				res, err := bas.Call2(f.F.Object(), bas.Str(key))
 				if err != nil {
 					log.Error("IntersectFunc: ", key, " error: ", err)
 					return false
 				}
 				key = res.String()
 			}
-			if len(bk.Get([]byte(key))) > 0 {
-				hits++
+
+			exist := len(bk.Get([]byte(key))) > 0
+			if f.Not {
+				if exist {
+					goto OUT
+				}
+			} else {
+				if exist {
+					hits++
+				}
+				count++
 			}
 		}
-		if hits == len(bkm) {
+		if hits == count {
 			*pairs = append(*pairs, p)
 		}
+	OUT:
 		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
 	}
 }

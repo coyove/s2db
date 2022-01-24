@@ -344,6 +344,42 @@ func TestZSet(t *testing.T) {
 	time.Sleep(time.Second)
 }
 
+func TestIntersect(t *testing.T) {
+	s, _ := Open("test", nil)
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "iz")
+	rdb.Del(ctx, "iz2")
+	rdb.Del(ctx, "iz3")
+
+	for i := 1; i <= 40; i++ {
+		rdb.Do(ctx, "ZADD", "iz", i, "m"+strconv.Itoa(i))
+		if i%2 == 0 {
+			rdb.Do(ctx, "ZADD", "iz2", i, "m"+strconv.Itoa(i))
+		}
+		if i%3 == 0 {
+			rdb.Do(ctx, "ZADD", "iz3", i, "m"+strconv.Itoa(i))
+		}
+	}
+
+	v, _ := rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "INTERSECT", "iz2").Result()
+	assertEqual([]string{"m2", "m4", "m6", "m8", "m10", "m12"}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "INTERSECT", "iz2", "INTERSECT", "iz3").Result()
+	assertEqual([]string{"m6", "m12", "m18", "m24", "m30", "m36"}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "INTERSECT", "whatever", "INTERSECT", "iz3").Result()
+	assertEqual([]string{}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "NOTINTERSECT", "whatever").Result()
+	assertEqual([]string{"m1", "m2", "m3", "m4", "m5", "m6"}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "NOTINTERSECT", "iz2", "INTERSECT", "iz3").Result()
+	assertEqual([]string{"m3", "m9", "m15", "m21", "m27", "m33"}, v)
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "iz", "+inf", "-inf", "LIMIT", 0, 3, "MERGE", "iz2", "MERGEFUNC", "lambda(k,s1,s2) (s1+1)*(s2+1) end", "WITHSCORES").Result()
+	assertEqual([]string{"m40", "1681", "m39", "40", "m38", "1521"}, v)
+
+	s.Close()
+}
+
 func TestQueue(t *testing.T) {
 	s, _ := Open("test", nil)
 	go s.Serve(":6666")

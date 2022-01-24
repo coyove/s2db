@@ -319,6 +319,11 @@ func (r *Parser) Commands() <-chan *Command {
 	return cmds
 }
 
+type IntersectFlags struct {
+	F   bas.Value
+	Not bool
+}
+
 type Flags struct {
 	Command
 	MATCH     string
@@ -331,7 +336,7 @@ type Flags struct {
 		ENDPOINTS []string
 		FUNC      bas.Value
 	}
-	INTERSECT   map[string]bas.Value
+	INTERSECT   map[string]IntersectFlags
 	LIMIT       int
 	COUNT       int
 	SHARD       int
@@ -372,12 +377,12 @@ func (c Command) Flags(start int) (f Flags) {
 		} else if c.EqualFold(i, "MATCHDATA") {
 			f.MATCHDATA = c.Get(i + 1)
 			i++
-		} else if c.EqualFold(i, "INTERSECT") {
+		} else if not := c.EqualFold(i, "NOTINTERSECT"); c.EqualFold(i, "INTERSECT") || not {
 			if f.INTERSECT == nil {
-				f.INTERSECT = map[string]bas.Value{}
+				f.INTERSECT = map[string]IntersectFlags{}
 			}
 			key, fun := splitCode(c, c.Get(i+1))
-			f.INTERSECT[key] = fun
+			f.INTERSECT[key] = IntersectFlags{fun, not}
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
 			key, fun := splitCode(c, c.Get(i+1))
@@ -385,9 +390,12 @@ func (c Command) Flags(start int) (f Flags) {
 			f.TWOHOPS.KEYMAP = fun
 			i++
 		} else if c.EqualFold(i, "MERGE") {
-			key, fun := splitCode(c, c.Get(i+1))
-			f.MERGE.ENDPOINTS = strings.Split(key, ",")
-			f.MERGE.FUNC = fun
+			f.MERGE.ENDPOINTS = append(f.MERGE.ENDPOINTS, c.Get(i+1))
+			i++
+		} else if c.EqualFold(i, "MERGEFUNC") {
+			f.MERGE.FUNC = nj.MustRun(nj.LoadString(c.Get(i+1), &bas.Environment{
+				Globals: bas.NewObject(2).SetProp("left", bas.Str(c.Get(1))).SetProp("right", bas.ValueOf(f.MERGE.ENDPOINTS)),
+			}))
 			i++
 		} else if c.EqualFold(i, "TIMEOUT") {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))

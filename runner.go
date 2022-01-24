@@ -8,7 +8,6 @@ import (
 
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -114,11 +113,11 @@ EXIT:
 	x.batchCloseSignal <- true
 }
 
-func (s *Server) runTasks(log *logrus.Entry, tasks []*batchTask, shard int) {
+func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
 	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
-	s.db[shard].compactLocker.Lock(func() { log.Infof("runner is waiting for compactor", shard) })
+	s.db[shard].compactLocker.Lock(func() { log.Info("runner is waiting for compactor") })
 	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
 		var err error
 		for i, t := range tasks {

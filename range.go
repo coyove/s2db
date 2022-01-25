@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sort"
 	"time"
 	"unsafe"
 
@@ -122,7 +123,7 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 		ro.Limit = math.MaxInt64
 		ro.Append = genIntersectFunc(bkm, flags)
 		success = func([]s2pkg.Pair, int) {}
-	} else if flags.TWOHOPS.ENDPOINT != nil {
+	} else if flags.TWOHOPS.ENDPOINT != "" {
 		txs, close := s.openAllTx()
 		defer close()
 		ro.Limit = math.MaxInt64
@@ -144,6 +145,16 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
 		err = nil
+	}
+	if flags.MERGE.ENDPOINTS != nil && flags.MERGE.TOP > 0 {
+		if flags.DESC {
+			sort.Slice(p, func(i, j int) bool { return p[i].Score > p[j].Score })
+		} else {
+			sort.Slice(p, func(i, j int) bool { return p[i].Score < p[j].Score })
+		}
+		if len(p) > flags.MERGE.TOP {
+			p = p[:flags.MERGE.TOP]
+		}
 	}
 	return p, err
 }
@@ -495,6 +506,7 @@ func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func()) {
 
 func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
+	endpoint := []byte(flags.TWOHOPS.ENDPOINT)
 	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := p.Member
 		if bas.IsCallable(flags.TWOHOPS.KEYMAP) {
@@ -506,7 +518,7 @@ func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) 
 			key = res.String()
 		}
 		if bk := txs[shardIndex(key)].Bucket([]byte("zset." + key)); bk != nil {
-			if len(bk.Get(flags.TWOHOPS.ENDPOINT)) > 0 {
+			if len(bk.Get(endpoint)) > 0 {
 				*pairs = append(*pairs, p)
 			}
 		}
@@ -552,15 +564,15 @@ func genIntersectFunc(bkm map[*bbolt.Bucket]redisproto.IntersectFlags, flags red
 func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 	ddl := time.Now().Add(flags.TIMEOUT)
 	f := flags.MERGE.FUNC
-	scores := make([]bas.Value, len(bkm)+2)
+	args := []bas.Value{bas.Nil, bas.NewArray(make([]bas.Value, 1+len(bkm))...).ToValue()}
 	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 		key := []byte(p.Member)
-		scores[0], scores[1] = bas.UnsafeStr(key), bas.Float64(p.Score)
-		for i, bk := range bkm {
-			scores[i+2] = bas.Float64(s2pkg.BytesToFloatZero(bk.Get(key)))
-		}
 		if bas.IsCallable(f) {
-			res, err := bas.Call2(f.Object(), scores...)
+			args[0], args[1].Array().Values()[0] = bas.UnsafeStr(key), bas.Float64(p.Score)
+			for i, bk := range bkm {
+				args[1].Array().Values()[i+1] = bas.Float64(s2pkg.BytesToFloatZero(bk.Get(key)))
+			}
+			res, err := bas.Call2(f.Object(), args...)
 			if err != nil {
 				log.Error("MergeFunc: ", key, " error: ", err)
 				return false
@@ -569,6 +581,11 @@ func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]s2p
 				return false
 			}
 			p.Score = res.Float64()
+			*pairs = append(*pairs, p)
+		} else {
+			for _, bk := range bkm {
+				p.Score += s2pkg.BytesToFloatZero(bk.Get(key))
+			}
 			*pairs = append(*pairs, p)
 		}
 		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)

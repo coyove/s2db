@@ -374,8 +374,12 @@ func TestIntersect(t *testing.T) {
 	assertEqual([]string{"m1", "m2", "m3", "m4", "m5", "m6"}, v)
 	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "NOTINTERSECT", "iz2", "INTERSECT", "iz3").Result()
 	assertEqual([]string{"m3", "m9", "m15", "m21", "m27", "m33"}, v)
-	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "iz", "+inf", "-inf", "LIMIT", 0, 3, "MERGE", "iz2", "MERGEFUNC", "lambda(k,s1,s2) (s1+1)*(s2+1) end", "WITHSCORES").Result()
+
+	mf := "lambda(k,s) (s[0]+1)*(s[1]+1) end"
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "iz", "+inf", "-inf", "LIMIT", 0, 3, "MERGE", "iz2", "MERGEFUNC", mf, "WITHSCORES").Result()
 	assertEqual([]string{"m40", "1681", "m39", "40", "m38", "1521"}, v)
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "iz", "+inf", "-inf", "LIMIT", 0, 100, "MERGE", "iz2", "MERGEFUNC", mf, "MERGETOP", 4, "DESC", "WITHSCORES").Result()
+	assertEqual([]string{"m40", "1681", "m38", "1521", "m36", "1369", "m34", "1225"}, v)
 
 	s.Close()
 }

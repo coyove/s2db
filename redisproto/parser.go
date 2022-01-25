@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -79,7 +80,7 @@ func (c *Command) Args() []interface{} {
 	return a
 }
 
-func (c *Command) String() string {
+func (c *Command) Dump(full bool) string {
 	if len(c.Argv) == 0 {
 		return "<empty command>"
 	}
@@ -90,14 +91,23 @@ func (c *Command) String() string {
 			buf.WriteString(" ...")
 		} else {
 			if utf8.Valid(msg) {
+				buf.WriteString(" ")
 				buf.Write(strconv.AppendQuote(nil, *(*string)(unsafe.Pointer(&msg))))
 			} else {
 				buf.WriteString(" 0x")
 				hex.NewEncoder(buf).Write(msg)
 			}
 		}
+		if i >= 4 && !full {
+			buf.WriteString(fmt.Sprintf(" (%d args)", c.ArgCount()-1))
+			break
+		}
 	}
 	return buf.String()
+}
+
+func (c *Command) String() string {
+	return c.Dump(false)
 }
 
 type Parser struct {
@@ -329,12 +339,13 @@ type Flags struct {
 	MATCH     string
 	MATCHDATA string
 	TWOHOPS   struct {
-		ENDPOINT []byte
+		ENDPOINT string
 		KEYMAP   bas.Value
 	}
 	MERGE struct {
 		ENDPOINTS []string
 		FUNC      bas.Value
+		TOP       int
 	}
 	INTERSECT   map[string]IntersectFlags
 	LIMIT       int
@@ -385,17 +396,19 @@ func (c Command) Flags(start int) (f Flags) {
 			f.INTERSECT[key] = IntersectFlags{fun, not}
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
-			key, fun := splitCode(c, c.Get(i+1))
-			f.TWOHOPS.ENDPOINT = []byte(key)
-			f.TWOHOPS.KEYMAP = fun
+			f.TWOHOPS.ENDPOINT, f.TWOHOPS.KEYMAP = splitCode(c, c.Get(i+1))
 			i++
 		} else if c.EqualFold(i, "MERGE") {
 			f.MERGE.ENDPOINTS = append(f.MERGE.ENDPOINTS, c.Get(i+1))
+			f.MERGE.TOP = -1
 			i++
 		} else if c.EqualFold(i, "MERGEFUNC") {
 			f.MERGE.FUNC = nj.MustRun(nj.LoadString(c.Get(i+1), &bas.Environment{
 				Globals: bas.NewObject(2).SetProp("left", bas.Str(c.Get(1))).SetProp("right", bas.ValueOf(f.MERGE.ENDPOINTS)),
 			}))
+			i++
+		} else if c.EqualFold(i, "MERGETOP") {
+			f.MERGE.TOP = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "TIMEOUT") {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))

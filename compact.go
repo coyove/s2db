@@ -99,7 +99,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 
 	// STAGE 2: for any changes happened during the compaction, write them into compactDB
 	var ct, mt uint64
-	for {
+	for first := true; ; first = false {
 		if err = compactDB.View(func(tx *bbolt.Tx) error {
 			if bk := tx.Bucket([]byte("wal")); bk != nil {
 				if k, _ := bk.Cursor().Last(); len(k) == 8 {
@@ -122,6 +122,9 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d, closeCompactErr=%v", ct, mt, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
 			return
+		}
+		if first {
+			log.Errorf("start chasing, compact tail: %d, online tail: %d", ct, mt)
 		}
 		if mt-ct <= uint64(s.ResponseLogRun)*2 {
 			break // the gap is close enough, it is time to move on to the next stage

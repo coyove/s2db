@@ -53,6 +53,8 @@ var (
 //go:embed scripts/index.html
 var webuiHTML string
 
+var slowLogger *log.Logger
+
 func main() {
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
@@ -70,11 +72,13 @@ func main() {
 	log.SetReportCaller(true)
 	log.SetFormatter(&s2pkg.LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename:   "x_s2db.log",
-		MaxSize:    100, // megabytes
-		MaxBackups: 16,
-		MaxAge:     28,   //days
-		Compress:   true, // disabled by default
+		Filename: "x_s2db.log", MaxSize: 100, MaxBackups: 8, MaxAge: 28, Compress: true,
+	}))
+
+	slowLogger = log.New()
+	slowLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
+	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
+		Filename: "slow_s2db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 7, Compress: true,
 	}))
 
 	rdb := redis.NewClient(&redis.Options{

@@ -2,7 +2,7 @@ package redisproto
 
 import (
 	"bytes"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -94,21 +94,22 @@ func (c *Command) Args() []interface{} {
 
 func (c *Command) Dump(full bool) string {
 	if len(c.Argv) == 0 {
-		return "<empty command>"
+		return "NOP"
 	}
 	buf := bytes.NewBufferString(c.Get(0))
 	for i := 1; i < c.ArgCount(); i++ {
 		msg := c.At(i)
-		if i > 1 && len(msg) > 32 {
-			buf.WriteString(" ...")
+		if i == 1 {
+			buf.WriteString("\t")
 		} else {
-			if utf8.Valid(msg) {
-				buf.WriteString(" ")
-				buf.Write(strconv.AppendQuote(nil, *(*string)(unsafe.Pointer(&msg))))
-			} else {
-				buf.WriteString(" 0x")
-				hex.NewEncoder(buf).Write(msg)
-			}
+			buf.WriteString(" ")
+		}
+		if utf8.Valid(msg) {
+			buf.Write(strconv.AppendQuote(nil, *(*string)(unsafe.Pointer(&msg))))
+		} else {
+			w := base64.NewEncoder(base64.URLEncoding, buf)
+			w.Write(msg)
+			w.Close()
 		}
 		if i >= 4 && !full {
 			buf.WriteString(fmt.Sprintf(" (%d args)", c.ArgCount()-1))

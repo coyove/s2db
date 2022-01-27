@@ -353,7 +353,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			diff := time.Since(start)
 			diffMs := diff.Milliseconds()
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				log.Info("slowLog(", shardIndex(key), "): ", diff, " ", command)
+				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), remoteAddr.(*net.TCPAddr).IP, command)
 				s.Survey.SlowLogs.Incr(diffMs)
 			}
 			if isReadWrite == 'r' {

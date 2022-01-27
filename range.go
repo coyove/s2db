@@ -26,38 +26,19 @@ var (
 )
 
 func (s *Server) ZCount(lex bool, key string, start, end string, flags redisproto.Flags) (int, error) {
-	if lex {
-		_, c, err := s.runPreparedRangeTx(key, rangeLex(key,
-			s2pkg.NewRLFromString(start),
-			s2pkg.NewRLFromString(end),
-			s2pkg.RangeOptions{
-				OffsetStart: 0,
-				OffsetEnd:   math.MaxInt64,
-				LexMatch:    flags.MATCH,
-				Limit:       s2pkg.RangeHardLimit,
-			}), func(p []s2pkg.Pair, count int) {
-			s.addCache(key, flags.Command.HashCode(), count)
-		})
-		return c, err
-	}
-	rangeStart, err := s2pkg.NewRLFromFloatString(start)
-	if err != nil {
-		return 0, err
-	}
-	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
-	if err != nil {
-		return 0, err
-	}
-	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
+	onSuccess := func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), count) }
+	ro := s2pkg.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		Limit:       s2pkg.RangeHardLimit,
 		LexMatch:    flags.MATCH,
-	}), func(p []s2pkg.Pair, count int) {
-		s.addCache(key, flags.Command.HashCode(), count)
-	})
+		Limit:       s2pkg.RangeHardLimit,
+	}
+	if lex {
+		_, c, err := s.runPreparedRangeTx(key, rangeLex(key, s2pkg.NewLexRL(start), s2pkg.NewLexRL(end), ro), onSuccess)
+		return c, err
+	}
+	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro), onSuccess)
 	return c, err
-
 }
 
 func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.Flags) ([]s2pkg.Pair, error) {
@@ -72,9 +53,7 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.F
 		Limit:       flags.LIMIT,
 		WithData:    flags.WITHDATA,
 		Append:      s2pkg.DefaultRangeAppend,
-	}), func(p []s2pkg.Pair, count int) {
-		s.addCache(key, flags.Command.HashCode(), p)
-	})
+	}), func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), p) })
 	return p, err
 }
 
@@ -83,9 +62,7 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redi
 		Rev:      rev,
 		LexMatch: flags.MATCH,
 	}
-	p, err = s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc {
-		return rangeLex(key, s2pkg.NewRLFromString(start), s2pkg.NewRLFromString(end), ro)
-	})
+	p, err = s.zRangeScoreLex(key, &ro, flags, func() rangeFunc { return rangeLex(key, s2pkg.NewLexRL(start), s2pkg.NewLexRL(end), ro) })
 	if flags.WITHDATA && err == nil {
 		err = s.fillPairsData(key, p)
 	}
@@ -93,14 +70,6 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redi
 }
 
 func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
-	rangeStart, err := s2pkg.NewRLFromFloatString(start)
-	if err != nil {
-		return nil, err
-	}
-	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
-	if err != nil {
-		return nil, err
-	}
 	ro := s2pkg.RangeOptions{
 		Rev:            rev,
 		OffsetStart:    0,
@@ -109,11 +78,11 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 		ScoreMatchData: flags.MATCHDATA,
 		WithData:       flags.WITHDATA,
 	}
-	return s.zRangeScoreLex(key, &ro, flags, func() PreparedTxFunc { return rangeScore(key, rangeStart, rangeEnd, ro) })
+	return s.zRangeScoreLex(key, &ro, flags, func() rangeFunc { return rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro) })
 }
 
-func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() PreparedTxFunc) (p []s2pkg.Pair, err error) {
-	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
+func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
+	success := func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, goahead, close := s.prepareIntersectBuckets(flags)
 		defer close()
@@ -159,7 +128,7 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 	return p, err
 }
 
-func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) PreparedTxFunc {
+func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
 	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + key))
 		if bk == nil {
@@ -243,7 +212,7 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) P
 	}
 }
 
-func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) PreparedTxFunc {
+func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
 	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + key))
 		if bk == nil {
@@ -374,7 +343,7 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 		if rank == flags.COUNT+1 {
 			rank = -1
 		}
-		s.addCache(key, flags.HashCode(), rank)
+		s.addStaticCache(key, flags.HashCode(), rank)
 		return nil
 	})
 	return

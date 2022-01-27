@@ -12,9 +12,9 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-type PreparedTxFunc func(*bbolt.Tx) ([]s2pkg.Pair, int, error)
+type rangeFunc func(*bbolt.Tx) ([]s2pkg.Pair, int, error)
 
-func (s *Server) runPreparedRangeTx(key string, f PreparedTxFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
+func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		pairs, count, err = f(tx)
 		if err == nil {

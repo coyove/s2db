@@ -36,7 +36,7 @@ func DefaultRangeAppend(pairs *[]Pair, p Pair) bool {
 	return true
 }
 
-func NewRLFromString(v string) (r RangeLimit) {
+func NewLexRL(v string) (r RangeLimit) {
 	r.Value = v
 	r.Inclusive = true
 	if strings.HasPrefix(v, "[") {
@@ -53,17 +53,17 @@ func NewRLFromString(v string) (r RangeLimit) {
 	return r
 }
 
-func NewRLFromFloatString(v string) (r RangeLimit, err error) {
+func NewScoreRL(v string) (r RangeLimit) {
 	r.Inclusive = true
 	if strings.HasPrefix(v, "[") {
-		r.Float, err = ParseFloat(v[1:])
+		r.Float = MustParseFloat(v[1:])
 	} else if strings.HasPrefix(v, "(") {
-		r.Float, err = ParseFloat(v[1:])
+		r.Float = MustParseFloat(v[1:])
 		r.Inclusive = false
 	} else {
-		r.Float, err = ParseFloat(v)
+		r.Float = MustParseFloat(v)
 	}
-	return r, err
+	return r
 }
 
 func (o *RangeOptions) TranslateOffset(keyName string, bk *bbolt.Bucket) {

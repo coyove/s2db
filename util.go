@@ -396,7 +396,14 @@ func (s *Server) removeCache(key string) {
 	s.Cache.Remove(key)
 }
 
-func (s *Server) getCache(h [2]uint64) interface{} {
+func (s *Server) getCache(h [2]uint64, ttl time.Duration) interface{} {
+	if v := s.getStaticCache(h); v != nil {
+		return v
+	}
+	return s.getWeakCache(h, ttl)
+}
+
+func (s *Server) getStaticCache(h [2]uint64) interface{} {
 	s.Survey.CacheReq.Incr(1)
 	v, ok := s.Cache.Get(h)
 	if !ok {
@@ -422,7 +429,7 @@ func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
 	return nil
 }
 
-func (s *Server) addCache(key string, h [2]uint64, data interface{}) {
+func (s *Server) addStaticCache(key string, h [2]uint64, data interface{}) {
 	s.Cache.Add(key, h, data, s.ServerConfig.CacheKeyMaxLen)
 }
 

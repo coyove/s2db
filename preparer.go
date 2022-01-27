@@ -172,8 +172,8 @@ func prepareZRemRangeByRank(key string, start, end int, dd []byte) func(tx *bbol
 
 func prepareZRemRangeByLex(key string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		rangeStart := s2pkg.NewRLFromString(start)
-		rangeEnd := s2pkg.NewRLFromString(end)
+		rangeStart := s2pkg.NewLexRL(start)
+		rangeEnd := s2pkg.NewLexRL(end)
 		_, c, err := rangeLex(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
@@ -186,12 +186,8 @@ func prepareZRemRangeByLex(key string, start, end string, dd []byte) func(tx *bb
 }
 
 func prepareZRemRangeByScore(key string, start, end string, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
-	rangeStart, err := s2pkg.NewRLFromFloatString(start)
-	s2pkg.PanicErr(err)
-	rangeEnd, err := s2pkg.NewRLFromFloatString(end)
-	s2pkg.PanicErr(err)
 	return func(tx *bbolt.Tx) (interface{}, error) {
-		_, c, err := rangeScore(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
+		_, c, err := rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), s2pkg.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
@@ -239,7 +235,7 @@ func prepareQAppend(key string, value []byte, max int64, appender func(string) b
 
 		if max > 0 {
 			c := bk.Cursor()
-			for _, _, n := qLenImpl(bk); n > max; n-- {
+			for _, _, n := queueLenImpl(bk); n > max; n-- {
 				k, _ := c.First()
 				if len(k) != 16 {
 					break

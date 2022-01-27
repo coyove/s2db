@@ -211,7 +211,7 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 	return
 }
 
-func (s *Server) responseLog(shard int, start uint64, full bool) (logs []string, err error) {
+func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, err error) {
 	sz := 0
 	myLogtail, err := s.myLogTail(shard)
 	if err != nil {

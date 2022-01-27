@@ -309,8 +309,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				e.A = bas.Int(shardIndex(e.Str(0)))
 			}, "").
 			SetMethod("atof", func(e *bas.Env) {
-				v, err := s2pkg.ParseFloat(e.Str(0))
-				s2pkg.PanicErr(err)
+				v := s2pkg.MustParseFloat(e.Str(0))
 				e.A = bas.Float64(v)
 			}, "").
 			SetMethod("hashCommands", func(e *bas.Env) { // ) [2]uint64 {

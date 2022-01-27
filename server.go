@@ -459,7 +459,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.responseLog(s2pkg.MustParseInt(key), start, false)
+		logs, err := s.respondLog(s2pkg.MustParseInt(key), start, false)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -516,10 +516,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteBulks(data...)
 	case "ZMDATA":
-		if v := s.getCache(h); v != nil {
-			return w.WriteBulks(v.([][]byte)...)
-		}
-		if v := s.getWeakCache(h, weak); v != nil {
+		if v := s.getCache(h, weak); v != nil {
 			return w.WriteBulks(v.([][]byte)...)
 		}
 		data, err := s.ZMData(key, restCommandsToKeys(2, command), redisproto.Flags{Command: *command})
@@ -529,12 +526,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.addWeakCache(h, data, s2pkg.SizeBytes(data))
 		return w.WriteBulks(data...)
 	case "ZCARD":
-		return w.WriteInt(s.ZCard(key, command.Flags(2)))
+		return w.WriteInt(s.ZCard(key, command.Flags(2).MATCH))
 	case "ZCOUNT", "ZCOUNTBYLEX":
-		if v := s.getCache(h); v != nil {
-			return w.WriteInt(int64(v.(int)))
-		}
-		if v := s.getWeakCache(h, weak); v != nil {
+		if v := s.getCache(h, weak); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
@@ -546,9 +540,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteInt(int64(c))
 	case "ZRANK", "ZREVRANK":
 		var c int
-		if v := s.getCache(h); v != nil {
-			c = v.(int)
-		} else if v := s.getWeakCache(h, weak); v != nil {
+		if v := s.getCache(h, weak); v != nil {
 			c = v.(int)
 		} else {
 			// COMMAND name key COUNT X
@@ -565,10 +557,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
-		if v := s.getCache(h); v != nil {
-			return writePairs(v.([]s2pkg.Pair), w, flags)
-		}
-		if v := s.getWeakCache(h, weak); v != nil {
+		if v := s.getCache(h, weak); v != nil {
 			return writePairs(v.([]s2pkg.Pair), w, flags)
 		}
 		start, end := command.Get(2), command.Get(3)
@@ -589,9 +578,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.addWeakCache(h, p, s2pkg.SizePairs(p))
 		return writePairs(p, w, flags)
 	case "GEORADIUS", "GEORADIUS_RO":
-		return s.runGeoRadius(w, false, key, h, 0, weak, command)
+		return s.runGeoRadius(w, false, key, h, weak, command)
 	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
-		return s.runGeoRadius(w, true, key, h, 0, weak, command)
+		return s.runGeoRadius(w, true, key, h, weak, command)
 	case "GEODIST":
 		return s.runGeoDist(w, key, command)
 	case "GEOPOS":
@@ -615,22 +604,21 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "QHEAD":
 		return w.WriteIntOrError(s.QHead(key))
 	case "QINDEX":
-		v, err := s.QGet(key, s2pkg.MustParseInt64(command.Get(2)))
+		v, err := s.QGet(key, command.Int64(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(v)
 	case "QSCAN":
-		if c := s.getCache(h); c != nil {
-			return w.WriteBulksSlice(c.([][]byte))
+		flags := command.Flags(4)
+		if c := s.getStaticCache(h); c != nil {
+			return writePairs(c.([]s2pkg.Pair), w, flags)
 		}
-		start := s2pkg.MustParseInt64(command.Get(2))
-		n := s2pkg.MustParseInt64(command.Get(3))
-		data, err := s.QScan(key, start, n, command.Flags(4))
+		data, err := s.QScan(key, command.Int64(2), command.Int64(3), flags)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulksSlice(data)
+		return writePairs(data, w, flags)
 	default:
 		return w.WriteError("unknown command: " + cmd)
 	}

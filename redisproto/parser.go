@@ -59,6 +59,18 @@ func (c *Command) Get(index int) string {
 	return string(c.At(index))
 }
 
+func (c *Command) Int64(index int) int64 {
+	return s2pkg.MustParseInt64(string(c.At(index)))
+}
+
+func (c *Command) Float64(index int) float64 {
+	return s2pkg.MustParseFloatBytes(c.At(index))
+}
+
+func (c *Command) Bytes(index int) []byte {
+	return append([]byte{}, c.At(index)...)
+}
+
 func (c *Command) EqualFold(index int, v string) bool {
 	buf := c.At(index)
 	return strings.EqualFold(*(*string)(unsafe.Pointer(&buf)), v)
@@ -347,20 +359,19 @@ type Flags struct {
 		FUNC      bas.Value
 		TOP       int
 	}
-	INTERSECT   map[string]IntersectFlags
-	LIMIT       int
-	COUNT       int
-	SHARD       int
-	ANY         bool
-	ASC         bool
-	DESC        bool
-	WITHDATA    bool
-	WITHSCORES  bool
-	WITHCOORD   bool
-	WITHDIST    bool
-	WITHHASH    bool
-	WITHINDEXES bool
-	TIMEOUT     time.Duration
+	INTERSECT  map[string]IntersectFlags
+	LIMIT      int
+	COUNT      int
+	SHARD      int
+	ANY        bool
+	ASC        bool
+	DESC       bool
+	WITHDATA   bool
+	WITHSCORES bool
+	WITHCOORD  bool
+	WITHDIST   bool
+	WITHHASH   bool
+	TIMEOUT    time.Duration
 }
 
 func (c Command) Flags(start int) (f Flags) {
@@ -423,7 +434,6 @@ func (c Command) Flags(start int) (f Flags) {
 			f.WITHCOORD = f.WITHCOORD || c.EqualFold(i, "WITHCOORD")
 			f.WITHDIST = f.WITHDIST || c.EqualFold(i, "WITHDIST")
 			f.WITHHASH = f.WITHHASH || c.EqualFold(i, "WITHHASH")
-			f.WITHINDEXES = f.WITHINDEXES || c.EqualFold(i, "WITHINDEXES")
 		}
 	}
 	return

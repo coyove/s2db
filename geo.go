@@ -107,7 +107,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, wm int64, weak time.Duration, command *redisproto.Command) error {
+func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, weak time.Duration, command *redisproto.Command) error {
 	var p []s2pkg.Pair
 	var lat, long float64
 	var key string
@@ -118,21 +118,12 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		key = command.Get(2)
 		options = command.Argv[3:]
 	} else {
-		long, err = s2pkg.ParseFloat(command.Get(2))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		lat, err = s2pkg.ParseFloat(command.Get(3))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
+		long = command.Float64(2)
+		lat = command.Float64(3)
 		options = command.Argv[4:]
 	}
 
-	radius, err := s2pkg.ParseFloat(string(options[0]))
-	if err != nil {
-		return w.WriteError(err.Error())
-	}
+	radius := s2pkg.MustParseFloat(string(options[0]))
 	switch string(options[1]) {
 	case "m":
 	case "km":
@@ -165,7 +156,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 		}
 
 		// s.addCache(wm, name, h, p)
-		s.WeakCache.AddWeight(name, p, int64(s2pkg.SizePairs(p)))
+		s.addWeakCache(h, p, s2pkg.SizePairs(p))
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {

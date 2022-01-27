@@ -124,13 +124,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			return
 		}
 		if first {
-			log.Errorf("start chasing, compact tail: %d, online tail: %d", ct, mt)
+			log.Infof("STAGE 1.5: start chasing, compact tail: %d, online tail: %d", ct, mt)
 		}
 		if mt-ct <= uint64(s.ResponseLogRun)*2 {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 
-		logs, err := s.responseLog(shard, ct+1, false)
+		logs, err := s.respondLog(shard, ct+1, false)
 		if err != nil {
 			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", err)
@@ -154,7 +154,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	log.Info("STAGE 3: onlineDB write lock acquired")
 
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
-	logs, err := s.responseLog(shard, ct+1, true)
+	logs, err := s.respondLog(shard, ct+1, true)
 	if err != nil {
 		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", err)

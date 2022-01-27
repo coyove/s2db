@@ -10,31 +10,23 @@ import (
 	"github.com/mmcloughlin/geohash"
 )
 
-func ParseFloat(a string) (float64, error) {
+func MustParseFloat(a string) float64 {
 	if idx := strings.Index(a, ","); idx > 0 {
 		a, b := a[:idx], a[idx+1:]
 		long, err := strconv.ParseFloat(a, 64)
-		if err != nil {
-			return 0, err
-		}
+		PanicErr(err)
 		lat, err := strconv.ParseFloat(b, 64)
-		if err != nil {
-			return 0, err
-		}
+		PanicErr(err)
 		h := geohash.EncodeIntWithPrecision(lat, long, 52)
-		return float64(h), nil
+		return float64(h)
 	}
-	return strconv.ParseFloat(a, 64)
-}
-
-func ParseFloatBytes(a []byte) (float64, error) {
-	return ParseFloat(*(*string)(unsafe.Pointer(&a)))
+	v, err := strconv.ParseFloat(a, 64)
+	PanicErr(err)
+	return v
 }
 
 func MustParseFloatBytes(a []byte) float64 {
-	f, err := ParseFloatBytes(a)
-	PanicErr(err)
-	return f
+	return MustParseFloat(*(*string)(unsafe.Pointer(&a)))
 }
 
 func FormatFloat(f float64) string {

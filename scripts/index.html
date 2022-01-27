@@ -156,6 +156,12 @@
                 <div class=section-content>
                     <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>open</a></div>
                 </div>
+                {{if .s.MasterAddr}}
+                <div class=section-content>
+                    <div class=section-key>master</div>
+                    <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
+                </div>
+                {{end}}
             </div>
 
         {{if ne .Shard -1}}
@@ -201,14 +207,6 @@
                 </div>
                 {{end}}
                 {{end}}
-                {{end}}
-
-                {{if .s.MasterAddr}}
-                <div class=section-title>master_{{.s.MasterAddr}}</div>
-                <div class=section-content>
-                    <div class=section-key>address</div>
-                    <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
-                </div>
                 {{end}}
             </div>
 

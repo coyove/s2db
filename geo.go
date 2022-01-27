@@ -63,8 +63,8 @@ func (s *Server) runGeoDist(w *redisproto.Writer, name string, command *redispro
 	if math.IsNaN(dist) {
 		return w.WriteBulks()
 	}
-	if string(command.At(4)) == "km" {
-		return w.WriteBulkString(s2pkg.FormatFloat(dist / 1000))
+	if command.EqualFold(4, "km") {
+		dist /= 1000
 	}
 	return w.WriteBulkString(s2pkg.FormatFloat(dist))
 }
@@ -133,10 +133,8 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	}
 
 	flags := (redisproto.Command{Argv: options}).Flags(2)
-	if v, ok := s.Cache.Get(h); ok {
-		p = v.Data.([]s2pkg.Pair)
-	} else if x := s.getWeakCache(h, weak); weak > 0 && x != nil {
-		p = x.([]s2pkg.Pair)
+	if v := s.getCache(h, weak); v != nil {
+		p = v.([]s2pkg.Pair)
 	} else {
 		p, err = s.geoRange(name, key, lat, long, radius, flags.COUNT, flags.ANY, flags.WITHDATA)
 		if err != nil {
@@ -155,16 +153,12 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 			})
 		}
 
-		// s.addCache(wm, name, h, p)
+		s.addStaticCache(name, h, p)
 		s.addWeakCache(h, p, s2pkg.SizePairs(p))
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {
-		var data []string
-		for _, p := range p {
-			data = append(data, p.Member)
-		}
-		return w.WriteBulkStrings(data)
+		return writePairs(p, w, flags)
 	}
 
 	var data []interface{}

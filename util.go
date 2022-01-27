@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
@@ -101,20 +100,6 @@ func joinCommand(cmd ...[]byte) []byte {
 	return buf.Bytes()
 }
 
-func joinCommandString(cmd ...string) []byte {
-	tmp := make([]struct {
-		v   string
-		cap int
-	}, len(cmd))
-	for i := range cmd {
-		tmp[i].v = cmd[i]
-		tmp[i].cap = len(cmd[i])
-	}
-	res := joinCommand(*(*[][]byte)(unsafe.Pointer(&tmp))...)
-	runtime.KeepAlive(tmp)
-	return res
-}
-
 func (s *Server) Info(section string) (data []string) {
 	if section == "" || section == "server" {
 		data = append(data, "# server",
@@ -176,21 +161,20 @@ func (s *Server) Info(section string) (data []string) {
 		var keys []string
 		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
 		sort.Strings(keys)
-		if section == "" || section == "command_avg_lat" {
-			data = append(data, "# command_avg_lat")
+		add := func(f func(*s2pkg.Survey) string) (res []string) {
 			for _, k := range keys {
 				v, _ := s.Survey.Command.Load(k)
-				data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2pkg.Survey).MeanString()))
+				res = append(res, fmt.Sprintf("%v:%v", k, f(v.(*s2pkg.Survey))))
 			}
-			data = append(data, "")
+			return append(res, "")
+		}
+		if section == "" || section == "command_avg_lat" {
+			data = append(data, "# command_avg_lat")
+			data = append(data, add(func(s *s2pkg.Survey) string { return s.MeanString() })...)
 		}
 		if section == "" || section == "command_qps" {
 			data = append(data, "# command_qps")
-			for _, k := range keys {
-				v, _ := s.Survey.Command.Load(k)
-				data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2pkg.Survey).QPSString()))
-			}
-			data = append(data, "")
+			data = append(data, add(func(s *s2pkg.Survey) string { return s.QPSString() })...)
 		}
 	}
 	if section == "" || section == "batch" {
@@ -322,29 +306,11 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-type bigKeysHeap []s2pkg.Pair
-
-func (h bigKeysHeap) Len() int           { return len(h) }
-func (h bigKeysHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
-func (h bigKeysHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-
-func (h *bigKeysHeap) Push(x interface{}) {
-	*h = append(*h, x.(s2pkg.Pair))
-}
-
-func (h *bigKeysHeap) Pop() interface{} {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
-}
-
 func (s *Server) BigKeys(n, shard int) map[string]int {
 	if n <= 0 {
 		n = 10
 	}
-	h := &bigKeysHeap{}
+	h := &s2pkg.PairHeap{}
 	heap.Init(h)
 	for i := range s.db {
 		if shard != -1 && i != shard {

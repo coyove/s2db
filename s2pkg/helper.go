@@ -2,11 +2,124 @@ package s2pkg
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
+	"math"
+	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
+	"sync"
+	"unsafe"
 
+	"github.com/mmcloughlin/geohash"
 	"github.com/sirupsen/logrus"
 )
+
+func MustParseFloat(a string) float64 {
+	if idx := strings.Index(a, ","); idx > 0 {
+		a, b := a[:idx], a[idx+1:]
+		long, err := strconv.ParseFloat(a, 64)
+		PanicErr(err)
+		lat, err := strconv.ParseFloat(b, 64)
+		PanicErr(err)
+		h := geohash.EncodeIntWithPrecision(lat, long, 52)
+		return float64(h)
+	}
+	v, err := strconv.ParseFloat(a, 64)
+	PanicErr(err)
+	return v
+}
+
+func MustParseFloatBytes(a []byte) float64 {
+	return MustParseFloat(*(*string)(unsafe.Pointer(&a)))
+}
+
+func FormatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
+}
+
+func FormatFloatShort(f float64) string {
+	if f != f {
+		return "-.--"
+	}
+	if f < 0.01 && f > 0 {
+		return strconv.FormatFloat(f, 'f', 3, 64)
+	}
+	return strconv.FormatFloat(f, 'f', 2, 64)
+}
+
+func FormatFloatBulk(f float64) []byte {
+	if math.IsNaN(f) {
+		return nil
+	}
+	return []byte(strconv.FormatFloat(f, 'f', -1, 64))
+}
+
+func ParseInt(a string) int {
+	i, _ := strconv.Atoi(a)
+	return i
+}
+
+func MustParseInt(a string) int {
+	i, err := strconv.Atoi(a)
+	if err != nil {
+		panic("invalid integer: " + strconv.Quote(a))
+	}
+	return i
+}
+
+func MustParseInt64(a string) int64 {
+	i, err := strconv.ParseInt(a, 10, 64)
+	if err != nil {
+		panic("invalid integer: " + strconv.Quote(a))
+	}
+	return i
+}
+
+func ParseUint64(a string) uint64 {
+	i, _ := strconv.ParseUint(a, 10, 64)
+	return i
+}
+
+func Uint64ToBytes(i uint64) []byte {
+	v := [8]byte{}
+	binary.BigEndian.PutUint64(v[:], i)
+	return v[:]
+}
+
+func BytesToFloatZero(b []byte) float64 {
+	if len(b) != 8 {
+		return 0
+	}
+	return BytesToFloat(b)
+}
+
+func BytesToFloat(b []byte) float64 {
+	x := binary.BigEndian.Uint64(b)
+	if x>>63 == 1 {
+		x = x << 1 >> 1
+	} else {
+		x = ^x
+	}
+	return math.Float64frombits(x)
+}
+
+func FloatToOrderedUint64(v float64) uint64 {
+	x := math.Float64bits(v)
+	if v >= 0 {
+		x |= 1 << 63
+	} else {
+		x = ^x
+	}
+	return x
+}
+
+func FloatToBytes(v float64) []byte {
+	tmp := [8]byte{}
+	binary.BigEndian.PutUint64(tmp[:8], FloatToOrderedUint64(v))
+	return tmp[:]
+}
 
 func UUID() string {
 	buf := make([]byte, 16)
@@ -54,4 +167,53 @@ func SizePairs(in []Pair) int {
 		sz += len(p.Member) + 8 + len(p.Data)
 	}
 	return sz
+}
+
+func RemoveFile(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return os.Remove(path)
+}
+
+type Locker struct {
+	mu sync.Mutex
+}
+
+func (l *Locker) Unlock() {
+	l.mu.Unlock()
+}
+
+func (l *Locker) Lock(waiting func()) {
+	if *(*int32)(unsafe.Pointer(l)) != 0 && waiting != nil {
+		waiting()
+	}
+	l.mu.Lock()
+}
+
+type LockBox struct {
+	mu sync.Mutex
+	v  interface{}
+}
+
+func (b *LockBox) Lock(v interface{}) (interface{}, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.v != nil {
+		return b.v, false
+	}
+	b.v = v
+	return v, true
+}
+
+func (b *LockBox) Unlock() {
+	b.mu.Lock()
+	b.v = nil
+	b.mu.Unlock()
+}
+
+func PanicErr(err error) {
+	if err != nil {
+		panic(err)
+	}
 }

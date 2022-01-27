@@ -12,6 +12,24 @@ type Pair struct {
 	Data   []byte
 }
 
+type PairHeap []Pair
+
+func (h PairHeap) Len() int           { return len(h) }
+func (h PairHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
+func (h PairHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+
+func (h *PairHeap) Push(x interface{}) {
+	*h = append(*h, x.(Pair))
+}
+
+func (h *PairHeap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+
 type RangeLimit struct {
 	Value     string
 	Float     float64

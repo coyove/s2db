@@ -171,6 +171,7 @@ func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data
 				}
 			}
 		}()
+		// fillPairsData will call ZMData as well (with an empty Flags), but no cache should be stored
 		if flags.Command.ArgCount() > 0 {
 			s.addStaticCache(key, flags.HashCode(), data)
 		}

@@ -302,7 +302,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			"IOPS":     iops,
 			"Disk":     disk,
 			"REPLPath": evalPath,
-			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "commands", "cache"},
+			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 			"Slaves":   s.Slaves.List(),
 			"Shard":    s2pkg.MustParseInt(shard),
 			"ShardNum": ShardNum,

@@ -172,20 +172,26 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.Proxy.MeanString()),
 			"")
 	}
-	if section == "" || section == "commands" {
-		data = append(data, "# commands")
+	if section == "" || section == "command_qps" || section == "command_avg_lat" {
 		var keys []string
 		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
 		sort.Strings(keys)
-		for _, k := range keys {
-			v, _ := s.Survey.Command.Load(k)
-			data = append(data, fmt.Sprintf("%v_qps:%v", k, v.(*s2pkg.Survey).QPSString()))
+		if section == "" || section == "command_avg_lat" {
+			data = append(data, "# command_avg_lat")
+			for _, k := range keys {
+				v, _ := s.Survey.Command.Load(k)
+				data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2pkg.Survey).MeanString()))
+			}
+			data = append(data, "")
 		}
-		for _, k := range keys {
-			v, _ := s.Survey.Command.Load(k)
-			data = append(data, fmt.Sprintf("%v_avg_lat:%v", k, v.(*s2pkg.Survey).MeanString()))
+		if section == "" || section == "command_qps" {
+			data = append(data, "# command_qps")
+			for _, k := range keys {
+				v, _ := s.Survey.Command.Load(k)
+				data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2pkg.Survey).QPSString()))
+			}
+			data = append(data, "")
 		}
-		data = append(data, "")
 	}
 	if section == "" || section == "batch" {
 		data = append(data, "# batch",

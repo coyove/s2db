@@ -50,7 +50,7 @@ var (
 	benchmark   = flag.String("bench", "", "")
 )
 
-//go:embed webui/index.html
+//go:embed scripts/index.html
 var webuiHTML string
 
 func main() {

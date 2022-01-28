@@ -8,14 +8,12 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"math"
 	"math/rand"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -72,13 +70,13 @@ func main() {
 	log.SetReportCaller(true)
 	log.SetFormatter(&s2pkg.LogFormatter{})
 	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "x_s2db.log", MaxSize: 100, MaxBackups: 8, MaxAge: 28, Compress: true,
+		Filename: "log/runtime.log", MaxSize: 100, MaxBackups: 8, MaxAge: 28, Compress: true,
 	}))
 
 	slowLogger = log.New()
 	slowLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
 	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "slow_s2db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 7, Compress: true,
+		Filename: "log/slow.log", MaxSize: 100, MaxBackups: 16, MaxAge: 7, Compress: true,
 	}))
 
 	rdb := redis.NewClient(&redis.Options{
@@ -275,11 +273,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				if v == "-" {
 					parts := [ShardNum]string{}
 					for i := range parts {
-						if s2pkg.ParseInt(shard) == i {
-							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?p=%s'><b>#%d</b> [-]</a></div>", i, s.Password, i)
-						} else {
-							parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?shard=%d&p=%s'><b>#%d</b> [+]</a></div>", i, i, s.Password, i)
-						}
+						parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?shard=%d&p=%s'>#%d</a></div>", i, i, s.Password, i)
 					}
 					return template.HTML(strings.Join(parts[:], ""))
 				}
@@ -312,18 +306,4 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 			"ShardNum": ShardNum,
 		})
 	}
-}
-
-func trilabel(a, b, c float64) (ap, bp, cp string) {
-	text := [3]string{"stat1", "stat5", "stat15"}
-	if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
-		return text[0], text[0], text[0]
-	}
-	if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
-		return text[0], text[0], text[0]
-	}
-	x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
-	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
-	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
-	return
 }

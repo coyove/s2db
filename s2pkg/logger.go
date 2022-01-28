@@ -42,3 +42,28 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	buf.WriteByte('\n')
 	return buf.Bytes(), nil
 }
+
+// type SlowLogs struct {
+// 	Start time.Time
+// 	End   time.Time
+// }
+//
+// func AnalyzeSlowLogs(path string) (sl SlowLogs, err error) {
+// 	f, err := os.Open(path)
+// 	if err != nil {
+// 		return sl, err
+// 	}
+// 	defer f.Close()
+// 	rd := bufio.NewReader(f)
+//
+// 	for {
+// 		line, _ := rd.ReadBytes('\n')
+// 		if len(line) == 0 {
+// 			break
+// 		}
+// 		line = bytes.TrimSpace(line)
+// 		parts := bytes.Split(line, []byte("\t"))
+// 		startTS := MustParseInt64(string(parts[0]))
+// 	}
+// }
+//

@@ -127,7 +127,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 		if first%1000 == 0 {
 			log.Infof("STAGE 1.5: chasing online (% 7d) ct=% 16d, mt=% 16d, diff=%d", first/1000, ct, mt, mt-ct)
 		}
-		if mt-ct <= uint64(s.ResponseLogRun)*2 {
+		if mt-ct <= uint64(s.ResponseLogRun) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 

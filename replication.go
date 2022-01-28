@@ -69,7 +69,7 @@ func (s *Server) SlaveInfo(addr string) (data []string) {
 		data = append(data, "# slave_"+si.RemoteAddr,
 			"name:"+si.ServerName,
 			"version:"+si.Version,
-			"ack_before:"+strconv.FormatInt(time.Now().Unix()-si.LastUpdateUnix, 10),
+			"ack_before:"+time.Since(time.Unix(0, si.LastUpdate)).String(),
 			"listen:"+si.ListenAddr,
 			"logtail:"+joinArray(si.LogTails),
 			fmt.Sprintf("logtail_diff:%v", joinArray(diffs)),
@@ -233,7 +233,7 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 		if len(k) == 8 {
 			first := binary.BigEndian.Uint64(k)
 			if first > start {
-				return fmt.Errorf("master log (%d) truncated as slave request older log (%d)", first, start)
+				return fmt.Errorf("master log (%d) has been compacted, slave failed to request older log (%d)", first, start)
 			}
 		}
 
@@ -266,11 +266,11 @@ type serverInfo struct {
 	// RemoteAddr is the definitive identifier of a server
 	RemoteAddr string `json:"remoteaddr"`
 
-	ServerName     string           `json:"servername"`
-	ListenAddr     string           `json:"listen"`
-	LogTails       [ShardNum]uint64 `json:"logtails"`
-	Version        string           `json:"version"`
-	LastUpdateUnix int64            `json:"lastupdate"`
+	ServerName string           `json:"servername"`
+	ListenAddr string           `json:"listen"`
+	LogTails   [ShardNum]uint64 `json:"logtails"`
+	Version    string           `json:"version"`
+	LastUpdate int64            `json:"lastupdate"`
 
 	purgeTimer *time.Timer
 }
@@ -333,18 +333,18 @@ func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
 		cb(si)
 		si.purgeTimer.Stop()
 		si.purgeTimer.Reset(time.Minute)
-		si.LastUpdateUnix = time.Now().Unix()
+		si.LastUpdate = time.Now().UnixNano()
 		return
 	}
 
 	p := &serverInfo{}
 	p.RemoteAddr = remoteAddr
-	p.LastUpdateUnix = time.Now().Unix()
+	p.LastUpdate = time.Now().UnixNano()
 	p.purgeTimer = time.AfterFunc(time.Minute, func() {
 		s.Lock()
 		defer s.Unlock()
 		si := s.q[remoteAddr]
-		if si != nil && time.Now().Unix()-si.LastUpdateUnix > 50 {
+		if si != nil && time.Since(time.Unix(0, si.LastUpdate)).Seconds() > 50 {
 			delete(s.q, remoteAddr)
 		}
 	})

@@ -88,6 +88,13 @@ func Uint64ToBytes(i uint64) []byte {
 	return v[:]
 }
 
+func BytesToUint64(b []byte) uint64 {
+	if len(b) != 8 {
+		return 0
+	}
+	return binary.BigEndian.Uint64(b)
+}
+
 func BytesToFloatZero(b []byte) float64 {
 	if len(b) != 8 {
 		return 0

@@ -1,3 +1,5 @@
+<!DOCTYPE html>
+<html>
 <head>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <meta charset='utf-8'>
@@ -23,20 +25,40 @@
             white-space: pre-wrap;
             width: 100%;
         }
+        .mono {
+            font-family: Lucida Console, Monaco, Monospace;
+        }
         .section {
             border: solid 1px #ddd;
             border-width: 0 1px;
+            min-height: 3em;
         }
         .section-title {
             padding: 0.2em 0.5em;
             background: #677;
             color: white;
+            cursor: pointer;
         }
         .section-content {
             display: flex;
         }
         .section-content:nth-child(odd) {
             background: rgba(0, 0, 0, 0.067);
+        }
+        .section[id^=s_] .section-title:before {
+            content: '-';
+            display: inline-block;
+            font-family: Lucida Console, Monaco, Monospace;
+            margin-right: 0.5em;
+        }
+        .section[id^=s_][fold=fold] {
+            min-height: initial;
+        }
+        .section[id^=s_][fold=fold] .section-title:before {
+            content: '+';
+        }
+        .section[id^=s_][fold=fold] .section-content {
+            display: none;
         }
         .section-key {
             padding: 0.2em 0.33em;
@@ -52,6 +74,11 @@
             justify-content: right;
             text-align: right;
             font-family: Lucida Console, Monaco, Monospace;
+        }
+        @media only screen and (max-width: 720px) {
+            .section-content { flex-wrap: wrap; }
+            .section-key { font-size: 80%; flex-basis: 100%; }
+            .section-value { flex-basis: 100%; }
         }
         .section-box {
             display: flex;
@@ -119,129 +146,169 @@
     </style>
 </head>
 <body>
-        <div class=section-container>
-            <div class=section>
-                <div class=section-title>[{{.s.ServerName}}]</div>
-                <div class=section-content>
-                    <div class=section-key>start_at</div><div class=section-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
-                </div>
-                {{range $k, $v := .CPU}}
-                <div class=section-content>
-                    <div class=section-key>cpu{{$k}}_usage</div><div class=section-value>{{stat $v}}</div>
-                </div>
-                {{end}}
-                {{range $k, $v := .Disk}}
-                <div class=section-content>
-                    <div class=section-key>data_dir_{{$k}}</div><div class=section-value>{{index $v 0}}/{{index $v 1}}</div>
-                </div>
-                {{end}}
-                {{range $k, $v := .IOPS}}
-                <div class=section-content>
-                    <div class=section-key>disk_{{$k}}_read_iops</div><div class=section-value>{{stat (index $v 0)}}</div>
-                </div>
-                <div class=section-content>
-                    <div class=section-key>disk_{{$k}}_write_iops</div><div class=section-value>{{stat (index $v 1)}}</div>
-                </div>
-                {{end}}
-                <div class=section-content>
-                    <div class=section-key>shard_info</div>
-                    <div class=section-value>
-                        <div class=section-box>{{box32 "-"}}</div>
-                        <style>.box.shard{{.Shard}}{ background: #fed !important }</style>
-                    </div>
-                </div>
-                <div class=section-content>
-                    <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>open</a></div>
-                </div>
-                <div class=section-content>
-                    <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>open</a></div>
-                </div>
-                {{if .s.MasterAddr}}
-                <div class=section-content>
-                    <div class=section-key>master</div>
-                    <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
-                </div>
+    <div class=section-container>
+        <div class=section>
+            <div class='section-title mono' style='text-align:center' onclick='location.href="/?p={{.s.Password}}"'>
+                {{if ne .Shard -1}}
+                :: <u>{{.s.ServerName}}</u> :: shard #{{.Shard}} ::
+                {{else}}
+                :: {{.s.ServerName}} ::
                 {{end}}
             </div>
-
-        {{if ne .Shard -1}}
-            <div class=section>
-                <div class=section-title>shard_{{.Shard}}</div>
-                {{range $i, $v := $.s.ShardInfo .Shard}}
-                {{if $v}}
-                <div class=section-content>
-                    {{$x := kv $v}}
-                    <div class=section-key>{{$x.Key}}</div>
-                    <div class=section-value>
-                        {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                        <div class=section-box>{{box32 $x.Value}}</div>
-                        {{else}}
-                        {{stat $x.Value}}
-                        {{end}}
-                    </div>
-                </div>
-                {{end}}
-                {{end}}
+            <div class=section-content>
+                <div class=section-key>start_at</div><div class=section-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
             </div>
-        {{else}}
-
-            <div class=section>
-                {{range $k, $v := .Slaves}}
-                <div class=section-title>slave_{{$v.RemoteAddr}}</div>
-                <div class=section-content>
-                    <div class=section-key>address</div>
-                    <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
-                </div>
-                {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}
-                {{if and (ne $i 0) $v}}
-                <div class=section-content>
-                    {{$x := kv $v}}
-                    <div class=section-key>{{$x.Key}}</div>
-                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                    <div class=section-value>
-                        <div class=section-box>{{box32 $x.Value}}</div>
-                    </div>
-                    {{else}}
-                    <div class=section-value>{{stat $x.Value}}</div>
-                    {{end}}
-                </div>
-                {{end}}
-                {{end}}
-                {{end}}
+            {{range $k, $v := .CPU}}
+            <div class=section-content>
+                <div class=section-key>cpu{{$k}}_usage</div><div class=section-value>{{stat $v}}</div>
             </div>
-
-            {{range $title, $section := .Sections}}
-            <div class=section>
-                <div class=section-title id=s_{{$section}}>{{$section}}</div>
-                {{range $i, $v := $.s.Info $section}}
-                {{if and (ne $i 0) $v}}
-                <div class=section-content>
-                    {{$x := kv $v}}
-                    <div class=section-key>{{$x.Key}}</div>
-                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                    <div class=section-value>
-                        <div class=section-box>{{box32 $x.Value}}</div>
-                    </div>
-                    {{else}}
-                    <div class=section-value>{{stat $x.Value}}</div>
-                    {{end}}
-                </div>
-                {{end}}
-                {{end}}
-            </div>  
             {{end}}
+            <div class=section-content>
+                <div class=section-key>shard_info</div>
+                <div class=section-value>
+                    <div class=section-box>{{box32 "-"}}</div>
+                    <style>.box.shard{{.Shard}}{ background: #fed !important }</style>
+                </div>
+            </div>
+            <div class=section-content>
+                <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>open</a></div>
+            </div>
+            <div class=section-content>
+                <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>open</a></div>
+            </div>
+            {{if .s.MasterAddr}}
+            <div class=section-content>
+                <div class=section-key>master</div>
+                <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
+            </div>
+            {{end}}
+        </div>
+       
+    {{if ne .Shard -1}}
+        <div class=section>
+            <div class=section-title>shard_{{.Shard}}</div>
+            {{range $i, $v := $.s.ShardInfo .Shard}}
+            {{if and $i $v}}
+            <div class=section-content>
+                {{$x := kv $v}}
+                <div class=section-key>{{$x.Key}}</div>
+                <div class=section-value>
+                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                    <div class=section-box>{{box32 $x.Value}}</div>
+                    {{else}}
+                    {{stat $x.Value}}
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+    {{else}}
+ 
+        <div class=section id=s_host_disk>
+            <div class=section-title>host_disk</div>
+            {{range $k, $v := .Disk}}
+            <div class=section-content>
+                <div class=section-key>data_dir_{{$k}}</div><div class=section-value>{{index $v 0}}/{{index $v 1}}</div>
+            </div>
+            {{end}}
+            {{range $k, $v := .IOPS}}
+            <div class=section-content>
+                <div class=section-key>disk_{{$k}}_read_iops</div><div class=section-value>{{stat (index $v 0)}}</div>
+            </div>
+            <div class=section-content>
+                <div class=section-key>disk_{{$k}}_write_iops</div><div class=section-value>{{stat (index $v 1)}}</div>
+            </div>
+            {{end}}
+        </div>
 
+        {{$slaves := .Slaves}}
+        {{if $slaves}}
+        {{range $k, $v := $slaves}}
+        <div class=section id=s_slave_{{$k}}>
+            <div class=section-title>slave_{{$v.RemoteAddr}}</div>
+            <div class=section-content>
+                <div class=section-key>address</div>
+                <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
+            </div>
+            {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}
+            {{if and (ne $i 0) $v}}
+            <div class=section-content>
+                {{$x := kv $v}}
+                <div class=section-key>{{$x.Key}}</div>
+                {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                <div class=section-value>
+                    <div class=section-box>{{box32 $x.Value}}</div>
+                </div>
+                {{else}}
+                <div class=section-value>{{stat $x.Value}}</div>
+                {{end}}
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+        {{end}}
+        {{end}}
+
+        {{range $title, $section := .Sections}}
+        <div class=section id=s_{{$section}} fold=0>
+            <div class=section-title>{{$section}}</div>
+            {{range $i, $v := $.s.Info $section}}
+            {{if and (ne $i 0) $v}}
+            <div class=section-content>
+                {{$x := kv $v}}
+                <div class=section-key>{{$x.Key}}</div>
+                {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                <div class=section-value>
+                    <div class=section-box>{{box32 $x.Value}}</div>
+                </div>
+                {{else}}
+                <div class=section-value>{{stat $x.Value}}</div>
+                {{end}}
+            </div>
+            {{end}}
+            {{end}}
+        </div>  
+        {{end}}
+
+        <div class=section id=s_self_managed_code>
             <div class=section-title>self_managed_code</div>
-            <div style='border: solid 1px #ddd'>
-            <form method=GET>
+            <div class=section-content>
+            <form method=GET style='width:100%' >
                 <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>
                 <input type=hidden name=p value='{{.s.Password}}'>
                 <button type=submit class=save-btn style='margin:0.5em'>Save</button>
             </form>
             </div>
-        {{end}}
-
-        <div class=section style='border-bottom-width: 1px; text-align: center; padding: 0.5em; font-size: 80%'>
-            s2db console in {{(timeSince .start).Seconds}}s
         </div>
+    {{end}}
+    </div>
+
+    <div class=section style='border-bottom-width: 1px; text-align: center; line-height: 3em; font-size: 80%'>
+        s2db console in {{(timeSince .start).Seconds}}s
+    </div>
+
+    <script>
+        document.querySelectorAll('.section').forEach(function(el, i) {
+            if (el.id.startsWith('s_')) {
+                el.querySelector('.section-title').onclick = function() {
+                    const folds = JSON.parse(localStorage.getItem('folds') || '{}');
+                    if (el.getAttribute('fold') == 'fold') {
+                        el.removeAttribute('fold');
+                        delete folds[el.id];
+                    } else {
+                        el.setAttribute('fold', 'fold');
+                        folds[el.id] = true;
+                    }
+                    localStorage.setItem('folds', JSON.stringify(folds));
+                }
+            }
+            const st = el.querySelector('.section-title');
+            if (st) st.style.backgroundColor = (i % 2) ? '#677' : '#688';
+        })
+        for (const k in JSON.parse(localStorage.getItem('folds') || '{}')) {
+            document.getElementById(k).setAttribute('fold', 'fold');
+        }
+    </script>
 </body>
+</html>

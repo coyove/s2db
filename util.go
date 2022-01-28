@@ -222,16 +222,11 @@ func (s *Server) ShardInfo(shard int) []string {
 		if bk == nil {
 			return nil
 		}
-		stat := bk.Stats()
+		firstKey, _ := bk.Cursor().First()
+		first := s2pkg.BytesToUint64(firstKey)
 		tmp = append(tmp, "", "# log")
-		inuse := stat.LeafInuse + stat.BranchInuse
-		alloc := stat.LeafAlloc + stat.BranchAlloc
-		tmp = append(tmp, fmt.Sprintf("log_count:%d", stat.KeyN))
-		tmp = append(tmp, fmt.Sprintf("log_count_fast:%d", bk.KeyN()))
+		tmp = append(tmp, fmt.Sprintf("log_count:%d", bk.Sequence()-first+1))
 		tmp = append(tmp, fmt.Sprintf("log_tail:%d", bk.Sequence()))
-		tmp = append(tmp, fmt.Sprintf("log_size:%d", inuse))
-		tmp = append(tmp, fmt.Sprintf("log_alloc_size:%d", alloc))
-		tmp = append(tmp, fmt.Sprintf("log_size_ratio:%.2f", float64(inuse)/float64(alloc)))
 		myTail = bk.Sequence()
 		return nil
 	})
@@ -420,4 +415,18 @@ var isCommand = map[string]bool{
 	"GEODIST": true, "GEOPOS": true,
 	"SCAN": true,
 	"QLEN": true, "QHEAD": true, "QINDEX": true, "QSCAN": true,
+}
+
+func trilabel(a, b, c float64) (ap, bp, cp string) {
+	text := [3]string{"stat1", "stat5", "stat15"}
+	if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
+		return text[0], text[0], text[0]
+	}
+	if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
+		return text[0], text[0], text[0]
+	}
+	x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
+	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
+	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
+	return
 }

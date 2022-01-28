@@ -15,3 +15,4 @@ s2db.log
 *.rdb
 deploy.sh
 s.db
+log

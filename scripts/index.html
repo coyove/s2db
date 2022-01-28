@@ -18,7 +18,6 @@
             font-family: Lucida Console, Monaco, Monospace;
             resize: vertical;
             border: none;
-            border-bottom: dotted 1px #ddd;
             padding: 0.2em;
         }
         pre {
@@ -46,16 +45,21 @@
             background: rgba(0, 0, 0, 0.067);
         }
         .section[id^=s_] .section-title:before {
-            content: '-';
-            display: inline-block;
+            content: '\FF0D';
+            display: inline-flex;
             font-family: Lucida Console, Monaco, Monospace;
             margin-right: 0.5em;
+            width: 1.2em; height: 1.2em; line-height: 1.2em;
+            font-size: 80%;
+            border-radius: 50%;
+            background-color: #505858;
+            justify-content: center;
         }
         .section[id^=s_][fold=fold] {
             min-height: initial;
         }
         .section[id^=s_][fold=fold] .section-title:before {
-            content: '+';
+            content: '\FF0B';
         }
         .section[id^=s_][fold=fold] .section-content {
             display: none;
@@ -271,13 +275,15 @@
         </div>  
         {{end}}
 
-        <div class=section id=s_self_managed_code>
+        <div class=section id=s_self_managed_code fold=fold>
             <div class=section-title>self_managed_code</div>
             <div class=section-content>
             <form method=GET style='width:100%' >
                 <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>
                 <input type=hidden name=p value='{{.s.Password}}'>
-                <button type=submit class=save-btn style='margin:0.5em'>Save</button>
+                    <div style='border-top: dotted 1px #ccc;'>
+                    <button type=submit class=save-btn style='margin:0.5em'>Save</button>
+                </div>
             </form>
             </div>
         </div>
@@ -294,8 +300,9 @@
                 el.querySelector('.section-title').onclick = function() {
                     const folds = JSON.parse(localStorage.getItem('folds') || '{}');
                     if (el.getAttribute('fold') == 'fold') {
-                        el.removeAttribute('fold');
                         delete folds[el.id];
+                        if (el.id == 's_self_managed_code') loadEditor();
+                        el.removeAttribute('fold');
                     } else {
                         el.setAttribute('fold', 'fold');
                         folds[el.id] = true;
@@ -307,7 +314,36 @@
             if (st) st.style.backgroundColor = (i % 2) ? '#677' : '#688';
         })
         for (const k in JSON.parse(localStorage.getItem('folds') || '{}')) {
-            document.getElementById(k).setAttribute('fold', 'fold');
+            const el = document.getElementById(k);
+            if (el) el.setAttribute('fold', 'fold');
+        }
+
+        function loadEditor() {
+            if (window.EDITOR_LOADED) {
+                return;
+            }
+            var createScript = function(src, f) {
+                var s = document.createElement("script")
+                s.onload = f;
+                s.src = src;
+                document.body.appendChild(s);
+            }
+            createScript("https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.1/codemirror.min.js", function() {
+                createScript("https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.1/mode/lua/lua.min.js", function() {
+                    var s = document.createElement("link")
+                    s.onload = function() {
+                        window.EDITOR_LOADED = CodeMirror.fromTextArea(document.querySelector('[name=inspector]'), {
+                            lineNumbers: true,
+                            mode: 'lua',
+                        });
+                    };
+                    s.rel = 'stylesheet';
+                    s.type = 'text/css';
+                    s.media = 'all';
+                    s.href = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.1/codemirror.min.css" ;
+                    document.body.appendChild(s);
+                })
+            })
         }
     </script>
 </body>

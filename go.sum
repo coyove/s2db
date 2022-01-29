@@ -6,6 +6,8 @@ github.com/coyove/nj v0.0.0-20220117072501-e622ca564222 h1:xMNMQxZlQ6HDAGzUKJ6X3
 github.com/coyove/nj v0.0.0-20220117072501-e622ca564222/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/coyove/nj v0.0.0-20220121053135-71b2260c47ac h1:xS6gf4XFT56JsiQnnXerOSd/pis4/etYSw6vOQUIOqA=
 github.com/coyove/nj v0.0.0-20220121053135-71b2260c47ac/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
+github.com/coyove/nj v0.0.0-20220129113149-00d0984a01c4 h1:U2Bh+IdM2rwgooPT139cLm1f64vsNn+or+N5/gY45a4=
+github.com/coyove/nj v0.0.0-20220129113149-00d0984a01c4/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

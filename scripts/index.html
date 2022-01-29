@@ -273,19 +273,6 @@
             {{end}}
         </div>  
         {{end}}
-
-        <div class=section id=s_self_managed_code fold=fold>
-            <div class=section-title>self_managed_code</div>
-            <div class=section-content>
-            <form method=GET style='width:100%' >
-                <textarea style='width:100%' rows=20 name=inspector>{{.s.InspectorSource}}</textarea>
-                <input type=hidden name=p value='{{.s.Password}}'>
-                    <div style='border-top: dotted 1px #ccc;'>
-                    <button type=submit class=save-btn style='margin:0.5em'>Save</button>
-                </div>
-            </form>
-            </div>
-        </div>
     {{end}}
     </div>
 
@@ -315,34 +302,6 @@
         for (const k in JSON.parse(localStorage.getItem('folds') || '{}')) {
             const el = document.getElementById(k);
             if (el) el.setAttribute('fold', 'fold');
-        }
-
-        function loadEditor() {
-            if (window.EDITOR_LOADED) {
-                return;
-            }
-            var createScript = function(src, f) {
-                var s = document.createElement("script")
-                s.onload = f;
-                s.src = src;
-                document.body.appendChild(s);
-            }, prefix = "https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.1";
-            createScript(prefix + "/codemirror.min.js", function() {
-                createScript(prefix + "/mode/lua/lua.min.js", function() {
-                    var s = document.createElement("link")
-                    s.onload = function() {
-                        window.EDITOR_LOADED = CodeMirror.fromTextArea(document.querySelector('[name=inspector]'), {
-                            lineNumbers: true,
-                            mode: 'lua',
-                        });
-                    };
-                    s.rel = 'stylesheet';
-                    s.type = 'text/css';
-                    s.media = 'all';
-                    s.href = prefix + "/codemirror.min.css" ;
-                    document.body.appendChild(s);
-                })
-            })
         }
     </script>
 </body>

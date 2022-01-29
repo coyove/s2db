@@ -407,7 +407,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			v, _ := s.getConfig(command.Get(2))
 			return w.WriteBulkString(v)
 		case "SET":
-			found, err := s.updateConfig(command.Get(2), command.Get(3), false)
+			found, err := s.UpdateConfig(command.Get(2), command.Get(3), false)
 			if err != nil {
 				return w.WriteError(err.Error())
 			} else if found {

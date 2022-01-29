@@ -186,7 +186,10 @@ func main() {
 			sp := s2pkg.UUID()
 			http.HandleFunc("/", webInfo(sp, &s))
 			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-				nj.PlaygroundHandler(s.getScriptEnviron())(w, r)
+				nj.PlaygroundHandler("local smc = --<<BRK"+sp+"\n"+
+					s.InspectorSource+"\nBRK"+sp+"\n\n"+
+					"local ok, err = server.UpdateConfig('InspectorSource', smc, false)\n"+
+					"println(ok, err)", s.getScriptEnviron())(w, r)
 			})
 			s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
@@ -207,7 +210,7 @@ func main() {
 	if *serverName != "" {
 		old, _ := s.getConfig("servername")
 		log.Infof("update server name from %q to %q", old, *serverName)
-		if _, err := s.updateConfig("servername", *serverName, false); err != nil {
+		if _, err := s.UpdateConfig("servername", *serverName, false); err != nil {
 			log.Panic(err)
 		}
 	}
@@ -247,7 +250,7 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 		}
 
 		if ins != "" {
-			s.updateConfig("InspectorSource", ins, false)
+			s.UpdateConfig("InspectorSource", ins, false)
 			http.Redirect(w, r, "/?p="+password, http.StatusFound)
 			return
 		}

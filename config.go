@@ -83,9 +83,9 @@ func (s *Server) saveConfig() error {
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
-		log.Error("saveConfig inspector: ", err)
+		return err
 	} else if _, err = p.Run(); err != nil {
-		log.Error("saveConfig inspector: ", err)
+		return err
 	} else {
 		s.SelfManager = p
 	}
@@ -108,7 +108,7 @@ func (s *Server) saveConfig() error {
 	})
 }
 
-func (s *Server) updateConfig(key, value string, force bool) (bool, error) {
+func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	key = strings.ToLower(key)
 	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
@@ -256,7 +256,7 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 			return nil
 		}
 		v := cmd.Val()
-		_, err := s.updateConfig(rf.Name, v, false)
+		_, err := s.UpdateConfig(rf.Name, v, false)
 		if err != nil {
 			errBuf.WriteString(fmt.Sprintf("update(%q): %v ", rf.Name, err))
 			return nil

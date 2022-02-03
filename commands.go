@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -14,6 +15,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/fts"
 	"go.etcd.io/bbolt"
 )
 
@@ -332,4 +334,70 @@ func (s *Server) QHead(key string) (head int64, err error) {
 		return nil
 	})
 	return head, err
+}
+
+func (s *Server) indexSet(key string, id uint32, content string) {
+	idx, _ := s.Index.LoadOrStore(key, fts.New())
+	idx.(*fts.Indexer).Add(id, content)
+}
+
+func (s *Server) indexDel(key string, id uint32) bool {
+	idx, _ := s.Index.Load(key)
+	if i, _ := idx.(*fts.Indexer); i != nil {
+		_, ok := i.Remove(id)
+		return ok
+	}
+	return false
+}
+
+func (s *Server) indexClear(key string) {
+	s.Index.Delete(key)
+}
+
+func (s *Server) indexCard(key string) (sz int) {
+	idx, _ := s.Index.Load(key)
+	if i, _ := idx.(*fts.Indexer); i != nil {
+		sz = i.Cardinality()
+	}
+	return
+}
+
+func (s *Server) indexSize(key string) (sz int) {
+	idx, _ := s.Index.Load(key)
+	if i, _ := idx.(*fts.Indexer); i != nil {
+		sz = i.SizeBytes()
+	}
+	return
+}
+
+func (s *Server) indexSearch(key string, q []string, flags redisproto.Flags) (p []s2pkg.Pair) {
+	idx, _ := s.Index.Load(key)
+	if i, _ := idx.(*fts.Indexer); i != nil {
+		for _, r := range i.TopN(flags.BM25, flags.COUNT, q...) {
+			p = append(p, s2pkg.Pair{Member: strconv.Itoa(int(r.ID)), Score: float64(r.Score)})
+		}
+	}
+	return
+}
+
+func (s *Server) indexBuild(key string, flags redisproto.Flags) {
+	panic("not implemented")
+	// s.pick(key).View(func(tx *bbolt.Tx) error {
+	// 	bk := tx.Bucket([]byte("zset.score." + key))
+	// 	if bk == nil {
+	// 		return nil
+	// 	}
+
+	// 	tmp, _ := s.Index.LoadOrStore(key, fts.New())
+	// 	idx := tmp.(*fts.Indexer)
+	// 	c := bk.Cursor()
+	// 	if flags.DESC {
+	// 		for k, v := c.Last(); len(k) >= 8; k, v = c.Prev() {
+	// 		}
+	// 	} else {
+	// 		for k, v := c.First(); len(k) >= 8; k, v = c.Next() {
+	// 		}
+	// 	}
+	// 	return nil
+	// })
 }

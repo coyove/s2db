@@ -367,6 +367,7 @@ type Flags struct {
 	ANY        bool
 	ASC        bool
 	DESC       bool
+	BM25       bool
 	WITHDATA   bool
 	WITHSCORES bool
 	WITHCOORD  bool
@@ -426,10 +427,10 @@ func (c Command) Flags(start int) (f Flags) {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))
 			i++
 		} else {
-			f.WITHSCORES = f.WITHCOORD || c.EqualFold(i, "WITHSCORES")
 			f.ANY = f.ANY || c.EqualFold(i, "ANY")
 			f.ASC = f.ASC || c.EqualFold(i, "ASC")
 			f.DESC = f.DESC || c.EqualFold(i, "DESC")
+			f.BM25 = f.BM25 || c.EqualFold(i, "BM25")
 			f.WITHDATA = f.WITHDATA || c.EqualFold(i, "WITHDATA")
 			f.WITHSCORES = f.WITHSCORES || c.EqualFold(i, "WITHSCORES")
 			f.WITHCOORD = f.WITHCOORD || c.EqualFold(i, "WITHCOORD")

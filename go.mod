@@ -6,9 +6,8 @@ require (
 	github.com/BurntSushi/toml v0.3.1 // indirect
 	github.com/RoaringBitmap/roaring v0.9.4
 	github.com/adamzy/cedar-go v0.0.0-20170805034717-80a9c64b256d
-	github.com/coyove/nj v0.0.0-20220129113149-00d0984a01c4
+	github.com/coyove/nj v0.0.0-20220206082408-74e34253ed75
 	github.com/go-redis/redis/v8 v8.11.0
-	github.com/issue9/assert v1.4.1
 	github.com/mmcloughlin/geohash v0.10.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.6.1 // indirect

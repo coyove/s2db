@@ -181,8 +181,9 @@ func (idx *Indexer) AvgDocNumTokens() float64 {
 }
 
 type resultHeap struct {
-	rev bool
-	p   []Result
+	rev   bool
+	dedup *roaring.Bitmap
+	p     []Result
 }
 
 func (h resultHeap) Len() int {
@@ -201,7 +202,15 @@ func (h resultHeap) Swap(i, j int) {
 }
 
 func (h *resultHeap) Push(x interface{}) {
-	h.p = append(h.p, x.(Result))
+	if h.dedup == nil {
+		h.dedup = roaring.New()
+	}
+	r := x.(Result)
+	if h.dedup.Contains(r.ID) {
+		return
+	}
+	h.dedup.Add(r.ID)
+	h.p = append(h.p, r)
 }
 
 func (h *resultHeap) Pop() interface{} {

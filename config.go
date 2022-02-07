@@ -298,6 +298,13 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 		Globals: bas.NewObject(0).
 			SetProp("server", bas.ValueOf(s)).
 			SetProp("args", bas.NewArray(a...).ToValue()).
+			SetMethod("flags", func(env *bas.Env) {
+				cmd := redisproto.Command{}
+				for _, v := range env.Stack() {
+					cmd.Argv = append(cmd.Argv, v.Safe().Bytes())
+				}
+				env.A = bas.ValueOf(cmd.Flags(0))
+			}, "").
 			SetMethod("log", func(env *bas.Env) {
 				x := bytes.Buffer{}
 				for _, a := range env.Stack() {

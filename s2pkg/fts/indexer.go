@@ -3,86 +3,177 @@ package fts
 import (
 	"container/heap"
 	"math"
-	"sync"
 
 	"github.com/RoaringBitmap/roaring"
 	"github.com/coyove/nj/bas"
+	"github.com/coyove/s2db/s2pkg"
+	"github.com/sirupsen/logrus"
+	"go.etcd.io/bbolt"
 )
 
-type silo struct {
-	bitmap      *roaring.Bitmap
-	cardinality int
-}
+const (
+	// Reverse index: max number of recorded douments under a single token
+	// The final upper bound is calculated as: max(MaxTokenDocIDs, TotalDocumentsInIndex / 16)
+	MaxTokenDocIDs = 65536
+)
 
 type Indexer struct {
-	mu          sync.RWMutex
-	revert      map[uint32]silo
-	root        map[uint32]Document
-	totalTokens int
+	// mu sync.RWMutex
+	// ri             map[uint32]RevertedIndex
+	// docs           map[uint32]Document
+	// totalDocTokens int
+	name string
+	db   *bbolt.DB
 }
 
-func hash(t bas.Value) uint32 {
-	return uint32(t.HashCode())
-	// return uint32(s2pkg.HashStr(t))
-}
-
-func New() *Indexer {
+func New(name, path string) *Indexer {
+	db, _ := bbolt.Open(path, 0666, nil)
 	return &Indexer{
-		root:   map[uint32]Document{},
-		revert: map[uint32]silo{},
+		db: db,
 	}
 }
 
-func (idx *Indexer) Add(id uint32, content string) {
-	doc := Split(content)
-	if !doc.Valid() {
-		return
+func (idx *Indexer) delDocRI(ri *bbolt.Bucket, token bas.Value, id uint32) bool {
+	h := token.HashCode()
+	b := ri.Get(s2pkg.Uint64ToBytes(h))
+	if len(b) == 0 {
+		return false
 	}
-
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if oldDoc, ok := idx.root[id]; ok {
-		for _, seg := range oldDoc.Tokens {
-			idx.revert[hash(seg.Token)].bitmap.Remove(id)
-			idx.totalTokens--
-		}
+	var i RevertedIndex
+	s2pkg.PanicErr(i.Unmarshal(b))
+	deleted := i.Bitmap.CheckedRemove(id)
+	if deleted {
+		i.Cardinality--
 	}
-	for _, seg := range doc.Tokens {
-		h := hash(seg.Token)
-		s, ok := idx.revert[h]
-		if !ok {
-			s.bitmap = roaring.BitmapOf(id)
-			s.cardinality = 1
-		} else {
-			if !s.bitmap.CheckedAdd(id) {
-				s.cardinality++
+	s2pkg.PanicErr(ri.Put(s2pkg.Uint64ToBytes(h), i.Marshal()))
+	return deleted
+}
+
+func (idx *Indexer) addDocRI(ri *bbolt.Bucket, token bas.Value, id uint32, numDocs int) {
+	h := token.HashCode()
+	var i RevertedIndex
+
+	b := ri.Get(s2pkg.Uint64ToBytes(h))
+	if len(b) == 0 {
+		i.Bitmap = roaring.BitmapOf(id)
+		i.Cardinality = 1
+	} else {
+		s2pkg.PanicErr(i.Unmarshal(b))
+		if i.Bitmap.CheckedAdd(id) {
+			i.Cardinality++
+			// Too many documents under this token, remove oldest one
+			if float64(i.Cardinality) > math.Max(float64(numDocs)/16, MaxTokenDocIDs) {
+				i.Bitmap.Remove(i.Bitmap.Minimum())
+				i.Cardinality--
 			}
 		}
-		idx.revert[h] = s
-		idx.totalTokens++
 	}
-	idx.root[id] = doc
+	s2pkg.PanicErr(ri.Put(s2pkg.Uint64ToBytes(h), i.Marshal()))
 }
 
-func (idx *Indexer) Remove(id uint32) (Document, bool) {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
+func (idx *Indexer) getBucket(tx *bbolt.Tx, readonly bool) (*bbolt.Bucket, *bbolt.Bucket) {
+	if readonly {
+		return tx.Bucket([]byte("index." + idx.name)), tx.Bucket([]byte("index.ri." + idx.name))
+	}
+	bk1, err := tx.CreateBucketIfNotExists([]byte("index." + idx.name))
+	s2pkg.PanicErr(err)
+	bk2, err := tx.CreateBucketIfNotExists([]byte("index.ri." + idx.name))
+	s2pkg.PanicErr(err)
+	return bk1, bk2
+}
 
-	oldDoc, ok := idx.root[id]
-	if !ok {
-		return oldDoc, false
+func (idx *Indexer) getCounter(g *bbolt.Bucket) (int, int) {
+	b := g.Get([]byte("_total_tokens"))
+	c := g.Get([]byte("_total_docs"))
+	return int(s2pkg.BytesToUint64(b)), int(s2pkg.BytesToUint64(c))
+}
+
+func (idx *Indexer) setCounter(g *bbolt.Bucket, v, v2 int) {
+	g.Put([]byte("_total_tokens"), s2pkg.Uint64ToBytes(uint64(v)))
+	g.Put([]byte("_total_docs"), s2pkg.Uint64ToBytes(uint64(v2)))
+}
+
+func (idx *Indexer) getDoc(g *bbolt.Bucket, id uint32) (d Document, found bool) {
+	b := g.Get(s2pkg.Uint64ToBytes(uint64(id)))
+	if len(b) == 0 {
+		return d, false
 	}
-	delete(idx.root, id)
-	for _, seg := range oldDoc.Tokens {
-		h := hash(seg.Token)
-		s := idx.revert[h]
-		s.bitmap.Remove(id)
-		s.cardinality--
-		idx.totalTokens--
-		idx.revert[h] = s
+	s2pkg.PanicErr(d.Unmarshal(b))
+	return d, true
+}
+
+func (idx *Indexer) setDoc(g *bbolt.Bucket, id uint32, d Document) {
+	s2pkg.PanicErr(g.Put(s2pkg.Uint64ToBytes(uint64(id)), d.Marshal()))
+}
+
+func (idx *Indexer) delDoc(g *bbolt.Bucket, id uint32) {
+	s2pkg.PanicErr(g.Delete(s2pkg.Uint64ToBytes(uint64(id))))
+}
+
+func (idx *Indexer) getRI(ri *bbolt.Bucket, token bas.Value) (i RevertedIndex, found bool) {
+	b := ri.Get(s2pkg.Uint64ToBytes(token.HashCode()))
+	if len(b) == 0 {
+		return i, false
 	}
-	return oldDoc, true
+	s2pkg.PanicErr(i.Unmarshal(b))
+	return i, true
+}
+
+func (idx *Indexer) Index(docs map[uint32]string) int {
+	tDocs := make(map[uint32]Document, len(docs))
+	for idx, d := range docs {
+		doc := Split(d)
+		if !doc.Valid() {
+			continue
+		}
+		tDocs[idx] = doc
+	}
+
+	s2pkg.PanicErr(idx.db.Update(func(tx *bbolt.Tx) error {
+		g, ri := idx.getBucket(tx, false)
+		numTokens, numDocs := idx.getCounter(g)
+
+		for id, doc := range tDocs {
+			oldDoc, found := idx.getDoc(g, id)
+			if found {
+				for _, seg := range oldDoc.Tokens {
+					if idx.delDocRI(ri, seg.Token, id) {
+						numTokens--
+					}
+				}
+				numDocs -= 1
+			}
+			for _, seg := range doc.Tokens {
+				idx.addDocRI(ri, seg.Token, id, numDocs)
+			}
+			numDocs += 1
+			numTokens += len(doc.Tokens)
+			idx.setDoc(g, id, doc)
+		}
+		idx.setCounter(g, numTokens, numDocs)
+		return nil
+	}))
+	return len(tDocs)
+}
+
+func (idx *Indexer) Remove(ids []uint32) {
+	s2pkg.PanicErr(idx.db.Update(func(tx *bbolt.Tx) error {
+		g, ri := idx.getBucket(tx, false)
+		numTokens, numDocs := idx.getCounter(g)
+		for _, id := range ids {
+			oldDoc, found := idx.getDoc(g, id)
+			if found {
+				for _, seg := range oldDoc.Tokens {
+					idx.delDocRI(ri, seg.Token, id)
+				}
+				numDocs -= 1
+				numTokens -= len(oldDoc.Tokens)
+				idx.delDoc(g, id)
+			}
+		}
+		idx.setCounter(g, numTokens, numDocs)
+		return nil
+	}))
 }
 
 type Result struct {
@@ -113,71 +204,101 @@ func (idx *Indexer) search(h *resultHeap, content string, bm25 bool, n int) {
 		n = 20
 	}
 
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
+	idx.db.View(func(tx *bbolt.Tx) error {
+		g, ri := idx.getBucket(tx, true)
+		if g == nil || ri == nil {
+			return nil
+		}
+		var first *roaring.Bitmap
+		var riCardinality = map[uint64]int{}
+		for _, s := range q.Tokens {
+			second, ok := idx.getRI(ri, s.Token)
+			if !ok {
+				return nil
+			}
+			riCardinality[s.Token.HashCode()] = second.Cardinality
+			if first == nil {
+				first = second.Bitmap.Clone()
+			} else {
+				first.And(second.Bitmap)
+			}
+		}
 
-	var first *roaring.Bitmap
-	for _, seg := range q.Tokens {
-		second, ok := idx.revert[hash(seg.Token)]
-		if !ok {
-			return
-		}
-		if first == nil {
-			first = second.bitmap.Clone()
-		} else {
-			first.And(second.bitmap)
-		}
-	}
-
-	if first != nil {
-		idfs := make([]float64, len(q.Tokens))
-		for i, s := range q.Tokens {
-			idfs[i] = math.Log2(float64(len(idx.root)) / float64(idx.revert[hash(s.Token)].cardinality+1))
-		}
-		avgDocLength := idx.AvgDocNumTokens()
-		first.Iterate(func(id uint32) bool {
-			sum := 0.0
-			doc := idx.root[id]
+		if first != nil {
+			_, numDocs := idx.getCounter(g)
+			idfs := make([]float64, len(q.Tokens))
 			for i, s := range q.Tokens {
-				frequency := doc.TermFreq(s.Token)
-				if bm25 {
-					k1 := 2.0
-					b := 0.75
-					d := float64(doc.NumTokens)
-					sum += idfs[i] * frequency * (k1 + 1) / (frequency + k1*(1-b+b*d/avgDocLength))
-				} else {
-					sum += frequency * idfs[i]
+				idfs[i] = math.Log2(float64(numDocs) / float64(riCardinality[s.Token.HashCode()]+1))
+			}
+			avgDocLength := idx.avgDocNumTokens(g)
+			first.Iterate(func(id uint32) bool {
+				sum := 0.0
+				doc, ok := idx.getDoc(g, id)
+				if !ok {
+					logrus.Errorf("Indexer: doc %d not found", id)
+					return true
 				}
-			}
-			heap.Push(h, Result{id, float32(sum), doc})
-			if h.Len() > n {
-				heap.Pop(h)
-			}
-			return true
-		})
-	}
+				for i, s := range q.Tokens {
+					frequency := doc.TermFreq(s.Token)
+					if bm25 {
+						k1 := 2.0
+						b := 0.75
+						d := float64(doc.NumTokens)
+						sum += idfs[i] * frequency * (k1 + 1) / (frequency + k1*(1-b+b*d/avgDocLength))
+					} else {
+						sum += frequency * idfs[i]
+					}
+				}
+				heap.Push(h, Result{id, float32(sum), doc})
+				if h.Len() > n {
+					heap.Pop(h)
+				}
+				return true
+			})
+		}
+		return nil
+	})
 }
 
 func (idx *Indexer) SizeBytes() (total int) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	for _, b := range idx.revert {
-		total += int(b.bitmap.GetSizeInBytes()) + 4
-	}
-	for _, doc := range idx.root {
-		total += doc.SizeBytes() + 4
-	}
+	return int(idx.db.Size())
+}
+
+func (idx *Indexer) NumTokens() (total int) {
+	s2pkg.PanicErr(idx.db.View(func(tx *bbolt.Tx) error {
+		if g, _ := idx.getBucket(tx, true); g != nil {
+			total, _ = idx.getCounter(g)
+		}
+		return nil
+	}))
 	return
 }
 
-func (idx *Indexer) Cardinality() (total int) {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return len(idx.root)
+func (idx *Indexer) NumDocuments() (total int) {
+	s2pkg.PanicErr(idx.db.View(func(tx *bbolt.Tx) error {
+		if g, _ := idx.getBucket(tx, true); g != nil {
+			_, total = idx.getCounter(g)
+		}
+		return nil
+	}))
+	return
 }
 
-func (idx *Indexer) AvgDocNumTokens() float64 {
-	return float64(idx.totalTokens) / float64(len(idx.root)+1)
+func (idx *Indexer) AvgDocNumTokens() (r float64) {
+	s2pkg.PanicErr(idx.db.View(func(tx *bbolt.Tx) error {
+		g, _ := idx.getBucket(tx, true)
+		r = idx.avgDocNumTokens(g)
+		return nil
+	}))
+	return
+}
+
+func (idx *Indexer) avgDocNumTokens(g *bbolt.Bucket) (r float64) {
+	if g != nil {
+		nt, nd := idx.getCounter(g)
+		r = float64(nt) / float64(nd+1)
+	}
+	return r
 }
 
 type resultHeap struct {

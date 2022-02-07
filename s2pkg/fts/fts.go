@@ -1,12 +1,17 @@
 package fts
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"sync"
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/sego"
 )
@@ -49,13 +54,76 @@ func AddStopWords(ws ...string) {
 }
 
 type Document struct {
-	NumTokens int
+	NumTokens int64
 	Tokens    []Segmented
 }
 
 type Segmented struct {
-	Token bas.Value
 	Count int
+	Token bas.Value
+}
+
+func (doc Document) Marshal() []byte {
+	p := &bytes.Buffer{}
+	binary.Write(p, binary.BigEndian, doc.NumTokens)
+	binary.Write(p, binary.BigEndian, uint32(len(doc.Tokens)))
+	for _, seg := range doc.Tokens {
+		binary.Write(p, binary.BigEndian, uint32(seg.Count))
+		binary.Write(p, binary.BigEndian, uint32(seg.Token.StrLen()))
+		p.WriteString(seg.Token.Str())
+	}
+	return p.Bytes()
+}
+
+func (doc *Document) Unmarshal(p []byte) error {
+	rd := bytes.NewReader(p)
+	if err := binary.Read(rd, binary.BigEndian, &doc.NumTokens); err != nil {
+		return err
+	}
+	var tokensLen uint32
+	if err := binary.Read(rd, binary.BigEndian, &tokensLen); err != nil {
+		return err
+	}
+	doc.Tokens = make([]Segmented, tokensLen)
+	for i := 0; i < int(tokensLen); i++ {
+		var seg Segmented
+		var count uint32
+		if err := binary.Read(rd, binary.BigEndian, &count); err != nil {
+			return err
+		}
+		seg.Count = int(count)
+		if err := binary.Read(rd, binary.BigEndian, &count); err != nil {
+			return err
+		}
+		buf := make([]byte, count)
+		if _, err := io.ReadFull(rd, buf); err != nil {
+			return err
+		}
+		seg.Token = bas.UnsafeStr(buf)
+		doc.Tokens[i] = seg
+	}
+	return nil
+}
+
+type RevertedIndex struct {
+	Bitmap      *roaring.Bitmap
+	Cardinality int
+}
+
+func (ri RevertedIndex) Marshal() []byte {
+	p := &bytes.Buffer{}
+	binary.Write(p, binary.BigEndian, uint32(ri.Cardinality))
+	ri.Bitmap.WriteTo(p)
+	return p.Bytes()
+}
+
+func (ri *RevertedIndex) Unmarshal(p []byte) error {
+	if len(p) < 4 {
+		return fmt.Errorf("RevertedIndex: invalid bytes")
+	}
+	ri.Cardinality = int(binary.BigEndian.Uint32(p[:4]))
+	ri.Bitmap = roaring.New()
+	return ri.Bitmap.UnmarshalBinary(p[4:])
 }
 
 var segMap = sync.Pool{

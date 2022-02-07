@@ -1,11 +1,8 @@
 package fts
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"math/rand"
-	"os"
 	"testing"
 	"time"
 )
@@ -62,54 +59,64 @@ var text = `河北固安发现2名阳性人员，系共同居住的母女
 `
 
 func TestTokenizerAddRemove(t *testing.T) {
-	idx := New()
+	idx := New("name", "test")
+	fmt.Println(idx.NumDocuments())
 	rand.Seed(time.Now().Unix())
 	start := time.Now()
-	const N = 1e4
+	m := map[uint32]string{}
+	const N = 1e3
 	for i := 0; i < N; i++ {
 		start := rand.Intn(len(text) / 2)
 		end := start + rand.Intn(len(text)/2)
-		idx.Add(uint32(i), text[start:end])
+		m[uint32(i)] = text[start:end]
+		if i%100 == 99 {
+			cnt := idx.Index(m)
+			m = map[uint32]string{}
+			fmt.Println("index", i, cnt)
+		}
 	}
-	for _, i := range rand.Perm(N) {
-		idx.Remove(uint32(i))
+	// fmt.Println(idx.TopN(true, 10, "中国"))
+	fmt.Println(idx.NumDocuments())
+	tmp := []uint32{}
+	for ii, i := range rand.Perm(N) {
+		tmp = append(tmp, uint32(i))
+		if ii%100 == 99 {
+			idx.Remove(tmp)
+			tmp = tmp[:0]
+			fmt.Println("remove", ii)
+		}
 	}
-	if idx.Cardinality() != 0 || idx.totalTokens != 0 {
-		t.FailNow()
+	if idx.NumDocuments() != 0 || idx.NumTokens() != 0 {
+		t.Fatal(idx.NumDocuments(), idx.NumTokens())
 	}
-	fmt.Println(time.Since(start), idx.Cardinality(), idx.totalTokens)
+	fmt.Println(time.Since(start), idx.NumDocuments(), idx.NumTokens())
 }
 
 func TestTokenizer(t *testing.T) {
-	idx := New()
-
-	f, _ := os.Open("C:/Users/coyove/Downloads/zhwiki-latest-pages-articles.xml/zhwiki-latest-pages-articles.xml")
-	defer f.Close()
-	rd := bufio.NewReader(f)
-	for i := 0; ; {
-		line, _ := rd.ReadBytes('\n')
-		if len(line) == 0 {
-			fmt.Println(i)
-			break
-		}
-		line = bytes.TrimSpace(line)
-		if !bytes.HasPrefix(line, []byte("<")) {
-			i++
-			if i%10000 == 0 {
-				fmt.Println(i, idx.SizeBytes())
-			}
-			idx.Add(uint32(i), string(line))
-		}
-		if i == 200000 {
-			break
-		}
-	}
-
-	// for i, p := range strings.Split(text, "\n") {
-	// 	idx.Add(uint32(i), p)
-	// }
-	fmt.Println(idx.SizeBytes(), idx.AvgDocNumTokens())
-	for _, a := range idx.TopN(true, 40, "原神") {
-		fmt.Println(a.ID, a.Tokens)
-	}
+	idx := New("name", "test")
+	fmt.Println(idx.TopN(true, 100, "中国"))
+	//
+	// 	for i := 0; i < 1e5; i++ {
+	// 		idx.Index(uint32(i), "a")
+	// 	}
+	//
+	// 	if (idx.revert[hash(bas.Str("a"))].Cardinality) != MaxTokenDocIDs {
+	// 		t.FailNow()
+	// 	}
+	//
+	// 	if len(idx.root) != 1e5 {
+	// 		t.FailNow()
+	// 	}
+	//
+	// 	if idx.totalTokens != 1e5 {
+	// 		t.FailNow()
+	// 	}
+	//
+	// 	for i := 0; i < 1e5; i++ {
+	// 		idx.Remove(uint32(i))
+	// 	}
+	//
+	// 	if (idx.revert[hash(bas.Str("a"))].Cardinality) != 0 {
+	// 		t.FailNow()
+	// 	}
 }

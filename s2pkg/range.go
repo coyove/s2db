@@ -2,8 +2,6 @@ package s2pkg
 
 import (
 	"strings"
-
-	"go.etcd.io/bbolt"
 )
 
 type Pair struct {
@@ -84,9 +82,9 @@ func NewScoreRL(v string) (r RangeLimit) {
 	return r
 }
 
-func (o *RangeOptions) TranslateOffset(keyName string, bk *bbolt.Bucket) {
+func (o *RangeOptions) TranslateOffset(keyName string, sizeof func() int) {
 	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
-		n := bk.KeyN()
+		n := sizeof()
 		if o.OffsetStart < 0 {
 			o.OffsetStart += n
 		}

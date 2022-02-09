@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"math"
 	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -223,4 +224,34 @@ func PanicErr(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func Match(pattern string, text string) bool {
+	if strings.HasPrefix(pattern, "^[") {
+		for i, d := 2, 1; i < len(pattern); i++ {
+			c, pc := pattern[i], pattern[i-1]
+			if c == ']' && pc != '\\' {
+				d--
+				if d == 0 {
+					if m, err := filepath.Match(pattern[2:i], text); err != nil {
+						logrus.Error("Match: invalid pattern:", err)
+					} else if m {
+						return false
+					}
+					return Match(pattern[i+1:], text)
+				}
+			}
+			if c == '[' && pc != '\\' {
+				d++
+			}
+		}
+	}
+	if strings.HasPrefix(pattern, "\\^") {
+		pattern = pattern[1:]
+	}
+	m, err := filepath.Match(pattern, text)
+	if err != nil {
+		logrus.Error("Match: invalid pattern:", err)
+	}
+	return m
 }

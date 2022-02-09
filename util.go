@@ -301,7 +301,21 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-func (s *Server) BigKeys(n, shard int) map[string]int {
+func (s *Server) TypeofKey(key string) (t string) {
+	t = "none"
+	s.pick(key).View(func(tx *bbolt.Tx) error {
+		if bk := tx.Bucket([]byte("zset.score." + key)); bk != nil {
+			t = "zset"
+		}
+		if bk := tx.Bucket([]byte("q." + key)); bk != nil {
+			t = "queue"
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Server) BigKeys(n, shard int) []s2pkg.Pair {
 	if n <= 0 {
 		n = 10
 	}
@@ -317,10 +331,11 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 					return nil
 				}
 				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, s2pkg.Pair{Member: "--z--" + string(name[5:]), Score: float64(bk.KeyN())})
+					heap.Push(h, s2pkg.Pair{Member: string(name[5:]), Score: float64(sizeOfBucket(bk))})
 				}
 				if bytes.HasPrefix(name, []byte("q.")) {
-					heap.Push(h, s2pkg.Pair{Member: "--q--" + string(name[2:]), Score: float64(bk.KeyN())})
+					_, _, l := queueLenImpl(bk)
+					heap.Push(h, s2pkg.Pair{Member: string(name[2:]), Score: float64(l)})
 				}
 				if h.Len() > n {
 					heap.Pop(h)
@@ -329,10 +344,10 @@ func (s *Server) BigKeys(n, shard int) map[string]int {
 			})
 		})
 	}
-	x := map[string]int{}
+	var x []s2pkg.Pair
 	for h.Len() > 0 {
 		p := heap.Pop(h).(s2pkg.Pair)
-		x[p.Member] = int(p.Score)
+		x = append(x, p)
 	}
 	return x
 }
@@ -429,4 +444,11 @@ func trilabel(a, b, c float64) (ap, bp, cp string) {
 	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
 	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
 	return
+}
+
+func sizeOfBucket(bk *bbolt.Bucket) int64 {
+	if seq := bk.Sequence(); seq > 0 {
+		return int64(seq)
+	}
+	return int64(bk.KeyN())
 }

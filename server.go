@@ -432,6 +432,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		default:
 			return w.WriteBulkString(strings.Join(s.Info(n), "\r\n"))
 		}
+	case "TYPE":
+		return w.WriteBulk([]byte(s.TypeofKey(key)))
 	case "DUMPSHARD":
 		path := command.Get(2)
 		if path == "" {

@@ -69,3 +69,24 @@ func TestMetrics2(t *testing.T) {
 	fmt.Println(s.Count)
 	fmt.Println(s.Ts)
 }
+
+func TestMatch(t *testing.T) {
+	if !Match("^[123]abc", "abc") {
+		t.Fatal()
+	}
+	if Match("^[123]abc", "123abc") {
+		t.Fatal()
+	}
+	if Match("^[123]^[456]abc", "456abc") {
+		t.Fatal()
+	}
+	if !Match("\\^[123]^[456]abc", "^3^6abc") {
+		t.Fatal()
+	}
+	if !Match("^[\\[]abc", "abc") {
+		t.Fatal()
+	}
+	if !Match("^[\\]\\[]abc", "abc") {
+		t.Fatal()
+	}
+}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -96,7 +95,7 @@ func TestFloatBytesComparison(t *testing.T) {
 
 func BenchmarkGlobMatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		filepath.Match("ab*e", "abccccccd")
+		s2pkg.Match("ab*e", "abccccccd")
 	}
 }
 

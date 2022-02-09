@@ -218,7 +218,7 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 		if bk == nil {
 			return
 		}
-		opt.TranslateOffset(key, bk)
+		opt.TranslateOffset(key, func() int { return int(sizeOfBucket(bk)) })
 
 		c := bk.Cursor()
 		do := func(k, dataBuf []byte) error {
@@ -399,9 +399,14 @@ func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bu
 func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []s2pkg.Pair, nextCursor string, err error) {
 	count++
 	if err := s.Foreach(cursor, shard, func(k string, bk *bbolt.Bucket) bool {
+		if match != "" {
+			if m, _ := filepath.Match(match, k); !m {
+				return true
+			}
+		}
 		pairs = append(pairs, s2pkg.Pair{
 			Member: k,
-			Score:  float64(bk.Stats().KeyN),
+			Score:  float64(sizeOfBucket(bk)),
 		})
 		return len(pairs) < count
 	}); err != nil {

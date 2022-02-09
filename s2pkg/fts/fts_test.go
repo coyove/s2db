@@ -3,6 +3,7 @@ package fts
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,16 +60,20 @@ var text = `河北固安发现2名阳性人员，系共同居住的母女
 `
 
 func TestTokenizerAddRemove(t *testing.T) {
-	idx := New("name", "test")
-	fmt.Println(idx.NumDocuments())
+	MaxTokenDocIDs = 100
+
 	rand.Seed(time.Now().Unix())
+	db, _ := Open("test")
+	idx := db.Open("name")
+	defer db.Close()
+
 	start := time.Now()
 	m := map[uint32]string{}
 	const N = 1e3
 	for i := 0; i < N; i++ {
 		start := rand.Intn(len(text) / 2)
-		end := start + rand.Intn(len(text)/2)
-		m[uint32(i)] = text[start:end]
+		end := start + rand.Intn(len(text)/2-1)
+		m[uint32(i)] = text[start : end+1]
 		if i%100 == 99 {
 			cnt := idx.Index(m)
 			m = map[uint32]string{}
@@ -76,47 +81,32 @@ func TestTokenizerAddRemove(t *testing.T) {
 		}
 	}
 	// fmt.Println(idx.TopN(true, 10, "中国"))
-	fmt.Println(idx.NumDocuments())
-	tmp := []uint32{}
+	m = map[uint32]string{}
 	for ii, i := range rand.Perm(N) {
-		tmp = append(tmp, uint32(i))
+		m[uint32(i)] = ""
 		if ii%100 == 99 {
-			idx.Remove(tmp)
-			tmp = tmp[:0]
+			idx.Index(m)
+			m = map[uint32]string{}
 			fmt.Println("remove", ii)
 		}
 	}
-	if idx.NumDocuments() != 0 || idx.NumTokens() != 0 {
-		t.Fatal(idx.NumDocuments(), idx.NumTokens())
+	if s := idx.Stat(); s.NumDocuments != 0 || s.NumTokens != 0 {
+		t.Fatal(s.NumDocuments, s.NumTokens)
 	}
-	fmt.Println(time.Since(start), idx.NumDocuments(), idx.NumTokens())
+	fmt.Println(time.Since(start))
 }
 
 func TestTokenizer(t *testing.T) {
-	idx := New("name", "test")
+	db, _ := Open("test")
+	idx := db.Open("name")
+
+	for i, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fmt.Println(i, idx.Index(map[uint32]string{uint32(i): line}))
+	}
+
 	fmt.Println(idx.TopN(true, 100, "中国"))
-	//
-	// 	for i := 0; i < 1e5; i++ {
-	// 		idx.Index(uint32(i), "a")
-	// 	}
-	//
-	// 	if (idx.revert[hash(bas.Str("a"))].Cardinality) != MaxTokenDocIDs {
-	// 		t.FailNow()
-	// 	}
-	//
-	// 	if len(idx.root) != 1e5 {
-	// 		t.FailNow()
-	// 	}
-	//
-	// 	if idx.totalTokens != 1e5 {
-	// 		t.FailNow()
-	// 	}
-	//
-	// 	for i := 0; i < 1e5; i++ {
-	// 		idx.Remove(uint32(i))
-	// 	}
-	//
-	// 	if (idx.revert[hash(bas.Str("a"))].Cardinality) != 0 {
-	// 		t.FailNow()
-	// 	}
 }

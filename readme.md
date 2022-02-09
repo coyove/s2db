@@ -47,6 +47,7 @@ ZADD key longitude,latitude member
 ZINCRBY key increment memebr
 ZREM key member [member ...]
 ZREMRANGEBY[LEX|SCORE|RANK] key left right
+ZCARD key
 ZCOUNT key min max
 Z[M]SCORE key member
 Z[REV]RANK key member
@@ -57,10 +58,7 @@ GEORADIUS[_RO] key longitude latitude radius m|km [WITHCOORD] [WITHDIST] [WITHHA
 GEORADIUSBYMEMBER[_RO] key member radius m|km [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]
     # Behaves exactly like redis.
 
-ZCARD key [MATCH pattern]
-    # Behaves similar to redis but considerably slower because it scans all data on disk. Use with cautions.
-
-ZCOUNTLEX key min max
+ZCOUNTLEX key min max [MATCH pattern]
     # Behaves similar to 'ZCOUNT', but sorts lexicographically.
 
 ZMDATA key member [member ...]

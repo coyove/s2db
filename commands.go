@@ -5,17 +5,13 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/fts"
 	"go.etcd.io/bbolt"
 )
 
@@ -98,21 +94,10 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) 
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
 }
 
-func (s *Server) ZCard(key string, match string) (count int64) {
+func (s *Server) ZCard(key string) (count int64) {
 	s.pick(key).View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("zset." + key))
-		if bk == nil {
-			return nil
-		}
-		if match != "" {
-			c := bk.Cursor()
-			for k, _ := c.First(); len(k) > 0; k, _ = c.Next() {
-				if m, _ := filepath.Match(match, *(*string)(unsafe.Pointer(&k))); m {
-					count++
-				}
-			}
-		} else {
-			count = int64(bk.KeyN())
+		if bk := tx.Bucket([]byte("zset.score." + key)); bk != nil {
+			count = int64(bk.Sequence())
 		}
 		return nil
 	})
@@ -196,6 +181,7 @@ func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
 			return err
 		}
 	}
+	bkScore.SetSequence(bkScore.Sequence() - uint64(len(pairs)))
 	return writeLog(tx, dd)
 }
 
@@ -336,68 +322,68 @@ func (s *Server) QHead(key string) (head int64, err error) {
 	return head, err
 }
 
-func (s *Server) indexSet(key string, id uint32, content string) {
-	idx, _ := s.Index.LoadOrStore(key, fts.New())
-	idx.(*fts.Indexer).Add(id, content)
-}
-
-func (s *Server) indexDel(key string, id uint32) bool {
-	idx, _ := s.Index.Load(key)
-	if i, _ := idx.(*fts.Indexer); i != nil {
-		_, ok := i.Remove(id)
-		return ok
-	}
-	return false
-}
-
-func (s *Server) indexClear(key string) {
-	s.Index.Delete(key)
-}
-
-func (s *Server) indexCard(key string) (sz int) {
-	idx, _ := s.Index.Load(key)
-	if i, _ := idx.(*fts.Indexer); i != nil {
-		sz = i.Cardinality()
-	}
-	return
-}
-
-func (s *Server) indexSize(key string) (sz int) {
-	idx, _ := s.Index.Load(key)
-	if i, _ := idx.(*fts.Indexer); i != nil {
-		sz = i.SizeBytes()
-	}
-	return
-}
-
-func (s *Server) indexSearch(key string, q []string, flags redisproto.Flags) (p []s2pkg.Pair) {
-	idx, _ := s.Index.Load(key)
-	if i, _ := idx.(*fts.Indexer); i != nil {
-		for _, r := range i.TopN(flags.BM25, flags.COUNT, q...) {
-			p = append(p, s2pkg.Pair{Member: strconv.Itoa(int(r.ID)), Score: float64(r.Score)})
-		}
-	}
-	return
-}
-
-func (s *Server) indexBuild(key string, flags redisproto.Flags) {
-	panic("not implemented")
-	// s.pick(key).View(func(tx *bbolt.Tx) error {
-	// 	bk := tx.Bucket([]byte("zset.score." + key))
-	// 	if bk == nil {
-	// 		return nil
-	// 	}
-
-	// 	tmp, _ := s.Index.LoadOrStore(key, fts.New())
-	// 	idx := tmp.(*fts.Indexer)
-	// 	c := bk.Cursor()
-	// 	if flags.DESC {
-	// 		for k, v := c.Last(); len(k) >= 8; k, v = c.Prev() {
-	// 		}
-	// 	} else {
-	// 		for k, v := c.First(); len(k) >= 8; k, v = c.Next() {
-	// 		}
-	// 	}
-	// 	return nil
-	// })
-}
+// func (s *Server) indexSet(key string, id uint32, content string) {
+// 	idx, _ := s.Index.LoadOrStore(key, fts.New())
+// 	idx.(*fts.Index).Add(id, content)
+// }
+//
+// func (s *Server) indexDel(key string, id uint32) bool {
+// 	idx, _ := s.Index.Load(key)
+// 	if i, _ := idx.(*fts.Index); i != nil {
+// 		_, ok := i.Remove(id)
+// 		return ok
+// 	}
+// 	return false
+// }
+//
+// func (s *Server) indexClear(key string) {
+// 	s.Index.Delete(key)
+// }
+//
+// func (s *Server) indexCard(key string) (sz int) {
+// 	idx, _ := s.Index.Load(key)
+// 	if i, _ := idx.(*fts.Index); i != nil {
+// 		sz = i.Cardinality()
+// 	}
+// 	return
+// }
+//
+// func (s *Server) indexSize(key string) (sz int) {
+// 	idx, _ := s.Index.Load(key)
+// 	if i, _ := idx.(*fts.Index); i != nil {
+// 		sz = i.SizeBytes()
+// 	}
+// 	return
+// }
+//
+// func (s *Server) indexSearch(key string, q []string, flags redisproto.Flags) (p []s2pkg.Pair) {
+// 	idx, _ := s.Index.Load(key)
+// 	if i, _ := idx.(*fts.Index); i != nil {
+// 		for _, r := range i.TopN(flags.BM25, flags.COUNT, q...) {
+// 			p = append(p, s2pkg.Pair{Member: strconv.Itoa(int(r.ID)), Score: float64(r.Score)})
+// 		}
+// 	}
+// 	return
+// }
+//
+// func (s *Server) indexBuild(key string, flags redisproto.Flags) {
+// 	panic("not implemented")
+// 	// s.pick(key).View(func(tx *bbolt.Tx) error {
+// 	// 	bk := tx.Bucket([]byte("zset.score." + key))
+// 	// 	if bk == nil {
+// 	// 		return nil
+// 	// 	}
+//
+// 	// 	tmp, _ := s.Index.LoadOrStore(key, fts.New())
+// 	// 	idx := tmp.(*fts.Indexer)
+// 	// 	c := bk.Cursor()
+// 	// 	if flags.DESC {
+// 	// 		for k, v := c.Last(); len(k) >= 8; k, v = c.Prev() {
+// 	// 		}
+// 	// 	} else {
+// 	// 		for k, v := c.First(); len(k) >= 8; k, v = c.Next() {
+// 	// 		}
+// 	// 	}
+// 	// 	return nil
+// 	// })
+// }

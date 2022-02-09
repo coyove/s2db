@@ -22,7 +22,6 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -528,7 +527,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.addWeakCache(h, data, s2pkg.SizeBytes(data))
 		return w.WriteBulks(data...)
 	case "ZCARD":
-		return w.WriteInt(s.ZCard(key, command.Flags(2).MATCH))
+		return w.WriteInt(s.ZCard(key))
 	case "ZCOUNT", "ZCOUNTBYLEX":
 		if v := s.getCache(h, weak); v != nil {
 			return w.WriteInt(int64(v.(int)))
@@ -622,32 +621,31 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return writePairs(data, w, flags)
 	// case "IDXBUILD":
-	case "IDXSET":
-		s.indexSet(key, uint32(command.Int64(2)), command.Get(3))
-	case "IDXDEL":
-		if s.indexDel(key, uint32(command.Int64(2))) {
-			return w.WriteInt(1)
-		}
-		return w.WriteInt(0)
-	case "IDXCLEAR":
-		s.indexClear(key)
-	case "IDXSIZE":
-		return w.WriteInt(int64(s.indexSize(key)))
-	case "IDXCARD":
-		return w.WriteInt(int64(s.indexCard(key)))
-	case "IDXSEARCH":
-		flags := command.Flags(3)
-		return writePairs(s.indexSearch(key, strings.Split(command.Get(2), " OR "), flags), w, flags)
-	case "IDXADDWORDS":
-		fts.AddWords(restCommandsToKeys(1, command)...)
-		s.Index = sync.Map{}
-	case "IDXADDSTOPWORDS":
-		fts.AddStopWords(restCommandsToKeys(1, command)...)
-		s.Index = sync.Map{}
-	case "IDXTOKENS":
-		return w.WriteBulkStrings(fts.SplitSimple(key))
+	// 	case "IDXSET":
+	// 		s.indexSet(key, uint32(command.Int64(2)), command.Get(3))
+	// 	case "IDXDEL":
+	// 		if s.indexDel(key, uint32(command.Int64(2))) {
+	// 			return w.WriteInt(1)
+	// 		}
+	// 		return w.WriteInt(0)
+	// 	case "IDXCLEAR":
+	// 		s.indexClear(key)
+	// 	case "IDXSIZE":
+	// 		return w.WriteInt(int64(s.indexSize(key)))
+	// 	case "IDXCARD":
+	// 		return w.WriteInt(int64(s.indexCard(key)))
+	// 	case "IDXSEARCH":
+	// 		flags := command.Flags(3)
+	// 		return writePairs(s.indexSearch(key, strings.Split(command.Get(2), " OR "), flags), w, flags)
+	// 	case "IDXADDWORDS":
+	// 		fts.AddWords(restCommandsToKeys(1, command)...)
+	// 		s.Index = sync.Map{}
+	// 	case "IDXADDSTOPWORDS":
+	// 		fts.AddStopWords(restCommandsToKeys(1, command)...)
+	// 		s.Index = sync.Map{}
+	// 	case "IDXTOKENS":
+	// 		return w.WriteBulkStrings(fts.SplitSimple(key))
 	default:
 		return w.WriteError("unknown command: " + cmd)
 	}
-	return w.WriteSimpleString("OK")
 }

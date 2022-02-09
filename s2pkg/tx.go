@@ -107,5 +107,6 @@ type BucketWalker struct {
 	Total           *int64
 	QueueDrops      *int64
 	QueueDeletes    *int64
+	ZSetCardFix     *int64
 	Logger          *logrus.Entry
 }

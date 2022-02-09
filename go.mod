@@ -8,12 +8,14 @@ require (
 	github.com/adamzy/cedar-go v0.0.0-20170805034717-80a9c64b256d
 	github.com/coyove/nj v0.0.0-20220206082408-74e34253ed75
 	github.com/go-redis/redis/v8 v8.11.0
+	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/mmcloughlin/geohash v0.10.0
 	github.com/sirupsen/logrus v1.8.1
 	github.com/stretchr/testify v1.6.1 // indirect
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4 // indirect
 	golang.org/x/sys v0.0.0-20210823070655-63515b42dcdf
+	google.golang.org/protobuf v1.26.0 // indirect
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

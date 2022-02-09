@@ -283,7 +283,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	slaveMinLogtail, useSlaveLogtail := s.calcSlaveLogtail(shard)
 
-	var total, queueDrops, queueDeletes int64
+	var total, queueDrops, queueDeletes, zsetCardFix int64
 
 	tmptx, err := s2pkg.CreateLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
@@ -356,6 +356,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			Total:           &total,
 			QueueDrops:      &queueDrops,
 			QueueDeletes:    &queueDeletes,
+			ZSetCardFix:     &zsetCardFix,
 			Logger:          log,
 		}
 	}
@@ -363,13 +364,16 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: queue drops: %d, queue deletes: %d, limited tx: %v", queueDrops, queueDeletes, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
+		queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
 	return tmptx.Finish()
 }
 
 func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 	now := time.Now().UnixNano()
 	isQueue := strings.HasPrefix(p.BucketName, "q.")
+	isZSetScore := strings.HasPrefix(p.BucketName, "zset.score.")
+	keyCount := uint64(0)
 	if err := p.Bucket.ForEach(func(k, v []byte) error {
 		// Truncate WAL logs
 		if len(p.LogtailStartBuf) > 0 && bytes.Compare(k, p.LogtailStartBuf) < 0 {
@@ -386,6 +390,7 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		}
 
 		atomic.AddInt64(p.Total, 1)
+		keyCount++
 		return p.Tx.Put(&s2pkg.OnetimeLimitedTxPut{
 			BkName: p.BucketName,
 			Seq:    p.Bucket.Sequence(),
@@ -401,13 +406,18 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		BkName: p.BucketName,
 		Seq:    p.Bucket.Sequence(),
 		Finishing: func(tx *bbolt.Tx, tmpb *bbolt.Bucket) error {
+			seq := tmpb.Sequence()
 			if len(p.LogtailStartBuf) > 0 {
 				k, _ := tmpb.Cursor().Last()
 				if len(k) != 8 {
-					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.LogtailStartBuf, k, tmpb.Sequence(), p.Total)
+					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.LogtailStartBuf, k, seq, p.Total)
 				} else {
-					p.Logger.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), tmpb.Sequence(), p.Total)
+					p.Logger.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), seq, p.Total)
 				}
+			}
+			if isZSetScore && keyCount != seq {
+				tmpb.SetSequence(keyCount)
+				atomic.AddInt64(p.ZSetCardFix, 1)
 			}
 			if isQueue {
 				if k, _ := tmpb.Cursor().Last(); len(k) == 0 {

@@ -90,6 +90,8 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent fl
 				return nil, err
 			}
 		}
+
+		bkScore.SetSequence(bkScore.Sequence() + uint64(added))
 		if ch {
 			return added + updated, writeLog(tx, dd)
 		}
@@ -127,6 +129,7 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 		}
 		scoreBuf := bkName.Get([]byte(member))
 		score := 0.0
+		added := false
 
 		var dataBuf []byte
 		if len(scoreBuf) != 0 {
@@ -138,6 +141,7 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 			score = s2pkg.BytesToFloat(scoreBuf)
 		} else {
 			dataBuf = []byte("")
+			added = true
 		}
 
 		if by == 0 {
@@ -152,6 +156,9 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) func(tx *b
 		}
 		if err := bkScore.Put([]byte(string(scoreBuf)+member), dataBuf); err != nil {
 			return 0, err
+		}
+		if added {
+			bkScore.SetSequence(bkScore.Sequence() + 1)
 		}
 		return score + by, writeLog(tx, dd)
 	}

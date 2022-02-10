@@ -226,6 +226,10 @@ func PanicErr(err error) {
 	}
 }
 
+func MatchBinary(pattern string, buf []byte) bool {
+	return Match(pattern, *(*string)(unsafe.Pointer(&buf)))
+}
+
 func Match(pattern string, text string) bool {
 	if strings.HasPrefix(pattern, "^[") {
 		for i, d := 2, 1; i < len(pattern); i++ {

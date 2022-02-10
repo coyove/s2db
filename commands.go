@@ -94,6 +94,42 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) 
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
 }
 
+func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int, error) {
+	if len(members) == 0 {
+		return 0, nil
+	}
+	cmd := &redisproto.Command{Argv: [][]byte{[]byte("ZADD"), []byte(key), []byte("DATA")}}
+	for _, m := range members {
+		cmd.Argv = append(cmd.Argv, s2pkg.FormatFloatBulk(m.Score), []byte(m.Member), m.Data)
+	}
+	v, err := s.runPreparedTx(key, deferred, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
+	if err != nil {
+		return 0, err
+	}
+	if deferred {
+		return 0, nil
+	}
+	return v.(int), nil
+}
+
+func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) {
+	if len(members) == 0 {
+		return 0, nil
+	}
+	cmd := &redisproto.Command{Argv: [][]byte{[]byte("ZREM"), []byte(key)}}
+	for _, m := range members {
+		cmd.Argv = append(cmd.Argv, []byte(m))
+	}
+	v, err := s.runPreparedTx(key, deferred, prepareZRem(key, members, dumpCommand(cmd)))
+	if err != nil {
+		return 0, err
+	}
+	if deferred {
+		return 0, nil
+	}
+	return v.(int), nil
+}
+
 func (s *Server) ZCard(key string) (count int64) {
 	s.pick(key).View(func(tx *bbolt.Tx) error {
 		if bk := tx.Bucket([]byte("zset.score." + key)); bk != nil {

@@ -22,6 +22,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -84,7 +85,6 @@ type Server struct {
 		compactLocker     s2pkg.Locker
 	}
 	ConfigDB *bbolt.DB
-	Index    sync.Map
 }
 
 func Open(path string, configOpened chan bool) (*Server, error) {
@@ -127,6 +127,7 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 	x.rdbCache.OnEvicted = func(k s2pkg.LRUKey, v interface{}) {
 		log.Info("rdbCache(", k, ") close: ", v.(*redis.Client).Close())
 	}
+	fts.LoadDict(x.loadDict(), false)
 	return x, nil
 }
 
@@ -320,13 +321,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	)
 	cmd = strings.TrimSuffix(cmd, "WEAK")
 
-	if cmd == "UNLINK" || cmd == "DEL" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") {
+	if cmd == "UNLINK" || cmd == "DEL" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") || strings.HasPrefix(cmd, "IDX") {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
 			return w.WriteError("invalid name which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
 		// UNLINK can be executed on slaves because it's a maintenance command,
 		// but it will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
-		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") {
+		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") || cmd == "IDXADD" || cmd == "IDXDEL" {
 			if s.RedirectWrites != "" {
 				start := time.Now()
 				v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
@@ -622,31 +623,18 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteError(err.Error())
 		}
 		return writePairs(data, w, flags)
-	// case "IDXBUILD":
-	// 	case "IDXSET":
-	// 		s.indexSet(key, uint32(command.Int64(2)), command.Get(3))
-	// 	case "IDXDEL":
-	// 		if s.indexDel(key, uint32(command.Int64(2))) {
-	// 			return w.WriteInt(1)
-	// 		}
-	// 		return w.WriteInt(0)
-	// 	case "IDXCLEAR":
-	// 		s.indexClear(key)
-	// 	case "IDXSIZE":
-	// 		return w.WriteInt(int64(s.indexSize(key)))
-	// 	case "IDXCARD":
-	// 		return w.WriteInt(int64(s.indexCard(key)))
-	// 	case "IDXSEARCH":
-	// 		flags := command.Flags(3)
-	// 		return writePairs(s.indexSearch(key, strings.Split(command.Get(2), " OR "), flags), w, flags)
-	// 	case "IDXADDWORDS":
-	// 		fts.AddWords(restCommandsToKeys(1, command)...)
-	// 		s.Index = sync.Map{}
-	// 	case "IDXADDSTOPWORDS":
-	// 		fts.AddStopWords(restCommandsToKeys(1, command)...)
-	// 		s.Index = sync.Map{}
-	// 	case "IDXTOKENS":
-	// 		return w.WriteBulkStrings(fts.SplitSimple(key))
+	}
+
+	switch cmd {
+	case "IDXADD":
+		return w.WriteIntOrError(s.runIndexBuild(key, command))
+	case "IDXDEL":
+		return w.WriteInt(int64(s.IndexDel(restCommandsToKeys(1, command))))
+	case "IDXDOCS":
+		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
+	case "IDXSEARCH":
+		flags := command.Flags(3)
+		return writePairs(s.IndexSearch(key, command.Get(2), flags), w, flags)
 	default:
 		return w.WriteError("unknown command: " + cmd)
 	}

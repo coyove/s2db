@@ -1,5 +1,5 @@
 # go get -u github.com/coyove/script@master
-SRC='main.go util.go server.go commands.go range.go replication.go geo.go preparer.go runner.go compact.go config.go'
+SRC='main.go util.go server.go commands.go range.go replication.go geo.go preparer.go runner.go compact.go config.go fts.go'
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then

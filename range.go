@@ -5,10 +5,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"path/filepath"
 	"sort"
 	"time"
-	"unsafe"
 
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
@@ -138,11 +136,7 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 		c := bk.Cursor()
 		do := func(k, sc []byte) error {
 			if opt.LexMatch != "" {
-				m, err := filepath.Match(opt.LexMatch, string(k))
-				if err != nil {
-					return err
-				}
-				if !m {
+				if !s2pkg.MatchBinary(opt.LexMatch, k) {
 					return nil
 				}
 			}
@@ -224,21 +218,13 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 		do := func(k, dataBuf []byte) error {
 			key := string(k[8:])
 			if opt.LexMatch != "" {
-				if m, err := filepath.Match(opt.LexMatch, key); err != nil {
-					return err
-				} else if !m {
+				if !s2pkg.Match(opt.LexMatch, key) {
 					return nil
 				}
 			}
 			if opt.ScoreMatchData != "" {
-				if m, err := filepath.Match(opt.ScoreMatchData, key); err != nil {
-					return err
-				} else if !m {
-					if m, err := filepath.Match(opt.ScoreMatchData, *(*string)(unsafe.Pointer(&dataBuf))); err != nil {
-						return err
-					} else if !m {
-						return nil
-					}
+				if !s2pkg.Match(opt.ScoreMatchData, key) && !s2pkg.MatchBinary(opt.ScoreMatchData, dataBuf) {
+					return nil
 				}
 			}
 			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:8])}
@@ -400,7 +386,7 @@ func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs 
 	count++
 	if err := s.Foreach(cursor, shard, func(k string, bk *bbolt.Bucket) bool {
 		if match != "" {
-			if m, _ := filepath.Match(match, k); !m {
+			if m := s2pkg.Match(match, k); !m {
 				return true
 			}
 		}

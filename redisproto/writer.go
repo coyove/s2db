@@ -125,6 +125,10 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			continue
 		}
 		switch v := v.(type) {
+		case []string:
+			if err := w.WriteBulkStrings(v); err != nil {
+				return err
+			}
 		case []byte:
 			if err := w.WriteBulk(v); err != nil {
 				return err

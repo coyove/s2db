@@ -1,60 +1,59 @@
 package fts
 
 import (
-	"bytes"
-	"encoding/binary"
-	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/RoaringBitmap/roaring"
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/sego"
 	"github.com/golang/protobuf/proto"
 )
 
 var (
-	extraWords     []byte
-	extraStopWords []byte
-	seg            sego.Segmenter
-	st             sego.StopTokens
-	loaded         sync.WaitGroup
+	seg    sego.Segmenter
+	st     sego.StopTokens
+	loaded sync.WaitGroup
 )
 
 func init() {
 	loaded.Add(1)
+}
+
+func LoadDict(words []string, reload bool) {
 	go func() {
-		seg.LoadDictionary(nil)
-		st.Init(nil)
-		loaded.Done()
+		var extraWords, extraStopWords []byte
+		for _, w := range words {
+			if strings.HasPrefix(w, "$.") {
+				extraStopWords = append(extraStopWords, w...)
+				extraStopWords = append(extraStopWords, '\n')
+			} else {
+				extraWords = append(extraWords, w...)
+				extraWords = append(extraWords, []byte(" 10 n\n")...)
+			}
+		}
+		if reload {
+			var seg2 sego.Segmenter
+			var st2 sego.StopTokens
+			seg2.LoadDictionary(extraWords)
+			st2.Init(extraStopWords)
+			seg = seg2
+			st = st2
+		} else {
+			seg.LoadDictionary(extraWords)
+			st.Init(extraStopWords)
+			loaded.Done()
+		}
 	}()
-}
-
-func AddWords(ws ...string) {
-	for _, w := range ws {
-		extraWords = append(extraWords, []byte(w+" 10 n\n")...)
-	}
-	loaded.Wait()
-	var seg2 sego.Segmenter
-	seg2.LoadDictionary(extraWords)
-	seg = seg2
-}
-
-func AddStopWords(ws ...string) {
-	for _, w := range ws {
-		extraStopWords = append(extraStopWords, []byte(w+"\n")...)
-	}
-	loaded.Wait()
-	var st2 sego.StopTokens
-	st2.Init(extraStopWords)
-	st = st2
 }
 
 type Document struct {
 	NumTokens int64        `protobuf:"varint,1,opt,name=num_tokens"`
 	Tokens    []*Segmented `protobuf:"bytes,2,rep,name=tokens"`
+	Prefixs   []string     `protobuf:"bytes,3,rep,name=prefixs"`
 }
 
 type Segmented struct {
@@ -67,26 +66,10 @@ func (doc *Document) String() string          { return proto.CompactTextString(d
 func (*Document) ProtoMessage()               {}
 func (*Document) Descriptor() ([]byte, []int) { return nil, []int{0} }
 
-type RevertedIndex struct {
-	Bitmap      *roaring.Bitmap
-	Cardinality int
-}
-
-func (ri *RevertedIndex) Marshal() []byte {
-	p := bytes.Buffer{}
-	binary.Write(&p, binary.BigEndian, uint32(ri.Cardinality))
-	buf, _ := ri.Bitmap.MarshalBinary()
-	p.Write(buf)
-	return p.Bytes()
-}
-
-func (ri *RevertedIndex) Unmarshal(p []byte) error {
-	if len(p) < 4 {
-		return fmt.Errorf("RevertedIndex: invalid buffer")
-	}
-	ri.Cardinality = int(binary.BigEndian.Uint32(p))
-	ri.Bitmap = roaring.New()
-	return ri.Bitmap.UnmarshalBinary(p[4:])
+func (doc *Document) MarshalBinary() []byte {
+	buf, err := proto.Marshal(doc)
+	s2pkg.PanicErr(err)
+	return buf
 }
 
 var segMap = sync.Pool{

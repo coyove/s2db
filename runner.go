@@ -25,6 +25,23 @@ func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pk
 	return
 }
 
+func (s *Server) runPreparedTx(key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error)) (interface{}, error) {
+	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
+	if s.Closed {
+		return nil, fmt.Errorf("server closing stage")
+	}
+
+	s.db[shardIndex(key)].batchTx <- t
+	if deferred {
+		return nil, nil
+	}
+	out := <-t.out
+	if err, _ := out.(error); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Server) runPreparedTxAndWrite(key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
 	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
 	if s.Closed {

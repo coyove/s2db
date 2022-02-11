@@ -15,12 +15,12 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) runIndexBuild(key string, command *redisproto.Command) (int64, error) {
-	// IDXADD id content key1 ... keyN
-	return int64(s.IndexDoc(key, command.Get(2), restCommandsToKeys(3, command))), nil
-}
+const (
+	FTSDocsStoreKey = "_docs_"
+	FTSDictKey      = "_words_"
+)
 
-func (s *Server) IndexDoc(id, content string, riKeys []string) int {
+func (s *Server) IndexAdd(id, content string, riKeys []string) int {
 	if len(riKeys) == 0 {
 		return 0
 	}
@@ -42,7 +42,7 @@ func (s *Server) IndexDoc(id, content string, riKeys []string) int {
 
 	// (Re)add document
 	f = append(f, func() {
-		s.ZAdd(s.DocsStoreKey, true, []s2pkg.Pair{{
+		s.ZAdd(FTSDocsStoreKey, true, []s2pkg.Pair{{
 			Score:  float64(doc.NumTokens),
 			Member: id,
 			Data:   doc.MarshalBinary(),
@@ -73,7 +73,7 @@ func (s *Server) IndexDel(id string) int {
 }
 
 func (s *Server) indexRemoveFuncs(id string) (f []func()) {
-	tOldDocBytes, err := s.ZMData(s.DocsStoreKey, []string{id}, redisproto.Flags{})
+	tOldDocBytes, err := s.ZMData(FTSDocsStoreKey, []string{id}, redisproto.Flags{})
 	s2pkg.PanicErr(err)
 	buf := tOldDocBytes[0]
 	if len(buf) == 0 {
@@ -81,7 +81,7 @@ func (s *Server) indexRemoveFuncs(id string) (f []func()) {
 	}
 
 	f = append(f, func() {
-		s.ZRem(s.DocsStoreKey, true, []string{id})
+		s.ZRem(FTSDocsStoreKey, true, []string{id})
 	})
 
 	// Remove document in reverted index
@@ -104,7 +104,7 @@ func (s *Server) runIndexDocsInfo(docIds []string) (infos []interface{}) {
 }
 
 func (s *Server) IndexDocsInfo(docIds []string) (infos [][]string) {
-	tOldDocsBytes, err := s.ZMData(s.DocsStoreKey, docIds, redisproto.Flags{})
+	tOldDocsBytes, err := s.ZMData(FTSDocsStoreKey, docIds, redisproto.Flags{})
 	s2pkg.PanicErr(err)
 
 	for i, buf := range tOldDocsBytes {
@@ -134,7 +134,7 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 		return
 	}
 
-	numDocs := s.ZCard(s.DocsStoreKey)
+	numDocs := s.ZCard(FTSDocsStoreKey)
 	if numDocs == 0 {
 		return
 	}
@@ -223,7 +223,7 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 	}
 
 	res, ids := h.ToArray()
-	scores, err := s.ZMScore(s.DocsStoreKey, ids, 0)
+	scores, err := s.ZMScore(FTSDocsStoreKey, ids, 0)
 	s2pkg.PanicErr(err)
 
 	for i := range res {
@@ -256,11 +256,11 @@ func seekCursor(c *bbolt.Cursor, key []byte, max int) ([]byte, []byte) {
 }
 
 func (s *Server) ReloadDict() {
-	fts.LoadDict(s.loadDict(), true)
+	fts.LoadDict(s.loadDict())
 }
 
 func (s *Server) loadDict() (words []string) {
-	p, err := s.ZRange(false, s.DocsStoreKey+"words", 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
+	p, err := s.ZRange(false, FTSDictKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
 	s2pkg.PanicErr(err)
 	for _, p := range p {
 		words = append(words, p.Member)

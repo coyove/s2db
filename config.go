@@ -41,7 +41,6 @@ type ServerConfig struct {
 	CompactNoBackup   int // disable backup files when compacting, dangerous when you are master
 	StopLogPull       int
 	InspectorSource   string
-	DocsStoreKey      string // TODO: concurrent changes while indexing
 }
 
 func (s *Server) loadConfig() error {
@@ -79,9 +78,6 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactTxSize, 20000)
 	ifZero(&s.CompactTxWorkers, 1)
 	ifZero(&s.DumpSafeMargin, 16)
-	if s.DocsStoreKey == "" {
-		s.DocsStoreKey = "_docs_"
-	}
 
 	s.Cache = s2pkg.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
 	s.WeakCache = s2pkg.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)
@@ -333,11 +329,6 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 			}, "").
 			SetMethod("tokenize", func(e *bas.Env) {
 				e.A = bas.ValueOf(fts.SplitSimple(e.Str(0)))
-			}, "").
-			SetMethod("getPendingUnlinks", func(e *bas.Env) { // ) []string {
-				v, err := getPendingUnlinks(s.db[e.Int(0)].DB)
-				s2pkg.PanicErr(err)
-				e.A = bas.ValueOf(v)
 			}, "").
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}

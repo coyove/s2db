@@ -16,38 +16,26 @@ import (
 var (
 	seg    sego.Segmenter
 	st     sego.StopTokens
-	loaded sync.WaitGroup
+	loader sync.Once
 )
 
-func init() {
-	loaded.Add(1)
-}
-
-func LoadDict(words []string, reload bool) {
-	go func() {
-		var extraWords, extraStopWords []byte
-		for _, w := range words {
-			if strings.HasPrefix(w, "$.") {
-				extraStopWords = append(extraStopWords, w...)
-				extraStopWords = append(extraStopWords, '\n')
-			} else {
-				extraWords = append(extraWords, w...)
-				extraWords = append(extraWords, []byte(" 10 n\n")...)
-			}
-		}
-		if reload {
-			var seg2 sego.Segmenter
-			var st2 sego.StopTokens
-			seg2.LoadDictionary(extraWords)
-			st2.Init(extraStopWords)
-			seg = seg2
-			st = st2
+func LoadDict(words []string) {
+	var extraWords, extraStopWords []byte
+	for _, w := range words {
+		if strings.HasPrefix(w, "$.") {
+			extraStopWords = append(extraStopWords, w...)
+			extraStopWords = append(extraStopWords, '\n')
 		} else {
-			seg.LoadDictionary(extraWords)
-			st.Init(extraStopWords)
-			loaded.Done()
+			extraWords = append(extraWords, w...)
+			extraWords = append(extraWords, []byte(" 10 n\n")...)
 		}
-	}()
+	}
+	var seg2 sego.Segmenter
+	var st2 sego.StopTokens
+	seg2.LoadDictionary(extraWords)
+	st2.Init(extraStopWords)
+	seg = seg2
+	st = st2
 }
 
 type Document struct {
@@ -90,7 +78,11 @@ func Split(content string) (doc Document) {
 		return
 	}
 
-	loaded.Wait()
+	loader.Do(func() {
+		seg.LoadDictionary(nil)
+		st.Init(nil)
+	})
+
 	buf := struct {
 		s string
 		a int

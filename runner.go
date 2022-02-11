@@ -25,11 +25,18 @@ func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pk
 	return
 }
 
-func (s *Server) runPreparedTx(key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error)) (interface{}, error) {
+func (s *Server) runPreparedTx(cmd, key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error)) (interface{}, error) {
 	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
 	if s.Closed {
 		return nil, fmt.Errorf("server closing stage")
 	}
+
+	defer func(start time.Time) {
+		diffMs := time.Since(start).Milliseconds()
+		s.Survey.SysWrite.Incr(diffMs)
+		x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
+		x.(*s2pkg.Survey).Incr(diffMs)
+	}(time.Now())
 
 	s.db[shardIndex(key)].batchTx <- t
 	if deferred {
@@ -42,19 +49,13 @@ func (s *Server) runPreparedTx(key string, deferred bool, f func(tx *bbolt.Tx) (
 	return out, nil
 }
 
-func (s *Server) runPreparedTxAndWrite(key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
-	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
-	if s.Closed {
-		return fmt.Errorf("server closing stage")
+func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
+	out, err := s.runPreparedTx(cmd, key, deferred, f)
+	if err != nil {
+		return w.WriteError(err.Error())
 	}
-
-	s.db[shardIndex(key)].batchTx <- t
 	if deferred {
 		return w.WriteSimpleString("OK")
-	}
-	out := <-t.out
-	if err, _ := out.(error); err != nil {
-		return w.WriteError(err.Error())
 	}
 	switch res := out.(type) {
 	case int:

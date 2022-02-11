@@ -94,7 +94,7 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) 
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
 }
 
-func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int, error) {
+func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int64, error) {
 	if len(members) == 0 {
 		return 0, nil
 	}
@@ -102,14 +102,14 @@ func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int, err
 	for _, m := range members {
 		cmd.Argv = append(cmd.Argv, s2pkg.FormatFloatBulk(m.Score), []byte(m.Member), m.Data)
 	}
-	v, err := s.runPreparedTx(key, deferred, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
+	v, err := s.runPreparedTx("ZADD", key, deferred, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
 	if err != nil {
 		return 0, err
 	}
 	if deferred {
 		return 0, nil
 	}
-	return v.(int), nil
+	return int64(v.(int)), nil
 }
 
 func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) {
@@ -120,7 +120,7 @@ func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) 
 	for _, m := range members {
 		cmd.Argv = append(cmd.Argv, []byte(m))
 	}
-	v, err := s.runPreparedTx(key, deferred, prepareZRem(key, members, dumpCommand(cmd)))
+	v, err := s.runPreparedTx("ZREM", key, deferred, prepareZRem(key, members, dumpCommand(cmd)))
 	if err != nil {
 		return 0, err
 	}

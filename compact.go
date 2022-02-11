@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coyove/nj/typ"
+	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
@@ -265,14 +266,13 @@ func (s *Server) startCronjobs() {
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	tmp, err := getPendingUnlinks(odb)
-	if err != nil {
-		return err
+	unlinksKey := getPendingUnlinksKey(shard)
+	unlinks, _ := s.ZRange(true, unlinksKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
+	unlinkp := make(map[string]bool, len(unlinks))
+	for _, n := range unlinks {
+		unlinkp[n.Member] = true
 	}
-	unlinkp := make(map[string]bool, len(tmp))
-	for _, n := range tmp {
-		unlinkp[n] = true
-	}
+	unlinkp[unlinksKey] = true // "unlinks" key itself will also be unlinked
 
 	// open a tx on old db for read
 	tx, err := odb.Begin(false)
@@ -283,7 +283,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	slaveMinLogtail, useSlaveLogtail := s.calcSlaveLogtail(shard)
 
-	var total, queueDrops, queueDeletes, zsetCardFix int64
+	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
 
 	tmptx, err := s2pkg.CreateLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
@@ -309,15 +309,25 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	for key, _ := c.First(); key != nil; key, _ = c.Next() {
 		bucketName := string(key)
+		keyName := bucketName
 		isQueue := strings.HasPrefix(bucketName, "q.")
 		isZSetScore := strings.HasPrefix(bucketName, "zset.score.")
 		isZSet := !isZSetScore && strings.HasPrefix(bucketName, "zset.")
 
-		// Drop unlinked buckets, "unlink" bucket itself will be dropped during every compaction
-		if bucketName == "unlink" ||
-			(isZSetScore && unlinkp[bucketName[11:]]) ||
-			(isZSet && unlinkp[bucketName[5:]]) ||
-			(isQueue && unlinkp[bucketName[2:]]) {
+		if isQueue {
+			keyName = keyName[2:]
+		} else if isZSetScore {
+			keyName = keyName[11:]
+		} else if isZSet {
+			keyName = keyName[5:]
+		}
+
+		// Drop unlinked buckets
+		if unlinkp[keyName] {
+			if !isZSetScore { // zsets have 2 buckets, we count only one of them
+				s.removeCache(keyName)
+				unlinksDrops++
+			}
 			continue
 		}
 
@@ -364,8 +374,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
-		queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: unlinks: %d/%d, queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
+		unlinksDrops, len(unlinkp), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
 	return tmptx.Finish()
 }
 
@@ -438,23 +448,8 @@ func decUint64(v uint64, d uint64) uint64 {
 	return 0
 }
 
-func getPendingUnlinks(db *bbolt.DB) (names []string, err error) {
-	if err := db.View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("unlink"))
-		if bk == nil {
-			return nil
-		}
-		bk.ForEach(func(k, v []byte) error {
-			if bytes.Equal(v, []byte("unlink")) {
-				names = append(names, string(k))
-			}
-			return nil
-		})
-		return nil
-	}); err != nil {
-		return nil, err
-	}
-	return
+func getPendingUnlinksKey(shard int) string {
+	return "_unlinks_\t" + strconv.Itoa(shard)
 }
 
 func (s *Server) calcSlaveLogtail(shard int) (slaveMinLogtail uint64, useSlaveLogtail bool) {

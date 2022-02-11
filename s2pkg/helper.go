@@ -150,6 +150,10 @@ func HashStr2(s string) (h [2]uint64) {
 func HashStr(s string) (h uint64) {
 	h = 5381
 	for i := 0; i < len(s); i++ {
+		if s[i] == '\t' {
+			h, _ = strconv.ParseUint(s[i+1:], 10, 64)
+			return h
+		}
 		h = h*33 + uint64(s[i])
 	}
 	return h

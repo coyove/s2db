@@ -480,6 +480,7 @@ func TestIndex(t *testing.T) {
 		fmt.Println(rdb.Do(ctx, "idxadd", i, line, "fts").Result())
 	}
 	time.Sleep(time.Second * 10)
+	s.Close()
 }
 
 func TestGeo(t *testing.T) {

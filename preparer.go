@@ -12,6 +12,8 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+var ErrBigDelete = fmt.Errorf("can't delete big keys directly, use 'UNLINK key' command")
+
 func prepareDel(key string, dd []byte) func(tx *bbolt.Tx) (count interface{}, err error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bkName := tx.Bucket([]byte("zset." + key))
@@ -22,7 +24,7 @@ func prepareDel(key string, dd []byte) func(tx *bbolt.Tx) (count interface{}, er
 				return 0, writeLog(tx, dd)
 			}
 			if _, _, l := queueLenImpl(bkQ); l > 65536 {
-				return 0, fmt.Errorf("too many members to delete, use 'unlink' instead")
+				return 0, ErrBigDelete
 			}
 			if err := tx.DeleteBucket([]byte("q." + key)); err != nil {
 				return 0, err
@@ -30,7 +32,7 @@ func prepareDel(key string, dd []byte) func(tx *bbolt.Tx) (count interface{}, er
 			return 1, writeLog(tx, dd)
 		}
 		if bkScore.Sequence() > 65536 {
-			return 0, fmt.Errorf("too many members to delete, use 'unlink' instead")
+			return 0, ErrBigDelete
 		}
 		if err := tx.DeleteBucket([]byte("zset." + key)); err != nil {
 			return 0, err

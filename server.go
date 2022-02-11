@@ -127,7 +127,7 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 	x.rdbCache.OnEvicted = func(k s2pkg.LRUKey, v interface{}) {
 		log.Info("rdbCache(", k, ") close: ", v.(*redis.Client).Close())
 	}
-	fts.LoadDict(x.loadDict(), false)
+	fts.LoadDict(x.loadDict())
 	return x, nil
 }
 
@@ -313,37 +313,29 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 
 func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *redisproto.Command) error {
 	var (
-		cmd         = strings.ToUpper(command.Get(0))
-		isRev       = strings.HasPrefix(cmd, "ZREV")
-		key         = command.Get(1)
-		weak        = parseWeakFlag(command) // weak parsing comes first
-		isReadWrite byte
+		cmd   = strings.TrimSuffix(strings.ToUpper(command.Get(0)), "WEAK")
+		isRev = strings.HasPrefix(cmd, "ZREV")
+		key   = command.Get(1)
+		weak  = parseWeakFlag(command) // weak parsing comes first
+		start = time.Now()
 	)
-	cmd = strings.TrimSuffix(cmd, "WEAK")
 
-	if cmd == "UNLINK" || cmd == "DEL" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "Z") || strings.HasPrefix(cmd, "GEO") || strings.HasPrefix(cmd, "IDX") {
+	if isWriteCommand[cmd] {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
-			return w.WriteError("invalid name which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
+			return w.WriteError("invalid key name, which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
-		// UNLINK can be executed on slaves because it's a maintenance command,
-		// but it will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
-		if cmd == "DEL" || cmd == "ZADD" || cmd == "ZINCRBY" || cmd == "QAPPEND" || strings.HasPrefix(cmd, "ZREM") || cmd == "IDXADD" || cmd == "IDXDEL" {
-			if s.RedirectWrites != "" {
-				start := time.Now()
-				v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
-				s.Survey.Proxy.Incr(int64(time.Since(start).Milliseconds()))
-				if err != nil {
-					return w.WriteError(err.Error())
-				}
-				return w.WriteObject(v)
-			} else if s.ReadOnly {
-				return w.WriteError("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
-			} else if s.ServerName == "" {
-				return w.WriteError("server name not set, writes are omitted")
+		// UNLINK will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
+		if s.RedirectWrites != "" {
+			v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
+			s.Survey.Proxy.Incr(int64(time.Since(start).Milliseconds()))
+			if err != nil {
+				return w.WriteError(err.Error())
 			}
-			isReadWrite = 'w'
-		} else {
-			isReadWrite = 'r'
+			return w.WriteObject(v)
+		} else if s.ReadOnly {
+			return w.WriteError("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
+		} else if s.ServerName == "" {
+			return w.WriteError("server name not set, writes are omitted")
 		}
 	}
 
@@ -358,17 +350,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), remoteAddr.(*net.TCPAddr).IP, command)
 				s.Survey.SlowLogs.Incr(diffMs)
 			}
-			if isReadWrite == 'r' {
+			if isReadCommand[cmd] {
 				s.Survey.SysRead.Incr(diffMs)
-			} else if isReadWrite == 'w' {
-				s.Survey.SysWrite.Incr(diffMs)
-			}
-			if isCommand[cmd] {
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 				x.(*s2pkg.Survey).Incr(diffMs)
 			}
 		}
-	}(time.Now())
+	}(start)
 
 	var p []s2pkg.Pair
 	var err error
@@ -473,34 +461,22 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkStrings(logs)
 	}
 
-	// Special
-	switch cmd {
-	case "UNLINK":
-		if err := s.pick(key).Update(func(tx *bbolt.Tx) error {
-			bk, err := tx.CreateBucketIfNotExists([]byte("unlink"))
-			if err != nil {
-				return err
-			}
-			return bk.Put([]byte(key), []byte("unlink"))
-		}); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
-	}
-
 	// Client space write commands
 	deferred := parseDeferFlag(command)
 	switch cmd {
+	case "UNLINK":
+		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e6}
+		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), false, []s2pkg.Pair{p}))
 	case "DEL":
-		return s.runPreparedTxAndWrite(key, false, parseDel(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, false, parseDel(cmd, key, command), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(key, deferred, parseDel(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(key, deferred, parseZAdd(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(key, deferred, parseZIncrBy(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command), w)
 	case "QAPPEND":
-		return s.runPreparedTxAndWrite(key, deferred, parseQAppend(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseQAppend(cmd, key, command), w)
 	}
 
 	h := command.HashCode()
@@ -626,8 +602,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	}
 
 	switch cmd {
-	case "IDXADD":
-		return w.WriteIntOrError(s.runIndexBuild(key, command))
+	case "IDXADD": // IDXADD id content key1 ... keyN
+		return w.WriteInt(int64(s.IndexAdd(key, command.Get(2), restCommandsToKeys(3, command))))
 	case "IDXDEL":
 		return w.WriteInt(int64(s.IndexDel(key)))
 	case "IDXDOCS":

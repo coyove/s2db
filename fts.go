@@ -11,6 +11,7 @@ import (
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/golang/protobuf/proto"
+	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -37,7 +38,7 @@ func (s *Server) IndexDoc(id, content string, riKeys []string) int {
 	}
 
 	// Remove existed document
-	f := s.indexRemoveFuncs([]string{id})
+	f := s.indexRemoveFuncs(id)
 
 	// (Re)add document
 	f = append(f, func() {
@@ -63,40 +64,35 @@ func (s *Server) IndexDoc(id, content string, riKeys []string) int {
 	return len(f)
 }
 
-func (s *Server) IndexDel(docIds []string) int {
-	f := s.indexRemoveFuncs(docIds)
+func (s *Server) IndexDel(id string) int {
+	f := s.indexRemoveFuncs(id)
 	for _, ff := range f {
 		ff()
 	}
 	return len(f)
 }
 
-func (s *Server) indexRemoveFuncs(docIds []string) (f []func()) {
-	tOldDocsBytes, err := s.ZMData(s.DocsStoreKey, docIds, redisproto.Flags{})
+func (s *Server) indexRemoveFuncs(id string) (f []func()) {
+	tOldDocBytes, err := s.ZMData(s.DocsStoreKey, []string{id}, redisproto.Flags{})
 	s2pkg.PanicErr(err)
-
-	// Remove documents in 'key'
-	f = append(f, func() {
-		s.ZRem(s.DocsStoreKey, true, docIds)
-	})
-
-	// Remove documents in reverted index
-	for i, buf := range tOldDocsBytes {
-		if len(buf) == 0 {
-			continue
-		}
-		var oldDoc fts.Document
-		var docId = docIds[i]
-		s2pkg.PanicErr(proto.Unmarshal(buf, &oldDoc))
-		f = append(f, func() {
-			for _, t := range oldDoc.Tokens {
-				for _, p := range oldDoc.Prefixs {
-					s.ZRem(p+t.Token, true, []string{docId})
-				}
-			}
-		})
+	buf := tOldDocBytes[0]
+	if len(buf) == 0 {
+		return
 	}
 
+	f = append(f, func() {
+		s.ZRem(s.DocsStoreKey, true, []string{id})
+	})
+
+	// Remove document in reverted index
+	var oldDoc fts.Document
+	s2pkg.PanicErr(proto.Unmarshal(buf, &oldDoc))
+	for _, t := range oldDoc.Tokens {
+		for _, p := range oldDoc.Prefixs {
+			k := p + t.Token
+			f = append(f, func() { s.ZRem(k, true, []string{id}) })
+		}
+	}
 	return f
 }
 
@@ -197,7 +193,7 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 			}
 			if cmp := bytes.Compare(name, head); cmp == 0 {
 				aligned++
-			} else if cmp > 0 {
+			} else if cmp < 0 {
 				head = name
 			}
 			idftf += s2pkg.BytesToFloat(tf) * idfs[i]
@@ -219,10 +215,7 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 			break
 		}
 		if idftf == idftf {
-			heap.Push(&h, fts.Result{
-				ID:    string(start),
-				Score: idftf,
-			})
+			heap.Push(&h, fts.Result{ID: string(start), Score: idftf})
 			if h.Len() > flags.COUNT {
 				heap.Pop(&h)
 			}
@@ -243,16 +236,20 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 
 func seekCursor(c *bbolt.Cursor, key []byte, max int) ([]byte, []byte) {
 	if key == nil {
-		return c.First()
+		return c.Last()
 	}
 
 	w := 0
-	for k, v := c.Next(); len(k) > 0; k, v = c.Next() {
-		if bytes.Compare(k, key) >= 0 {
+	for k, v := c.Prev(); len(k) > 0; k, v = c.Prev() {
+		if bytes.Compare(k, key) <= 0 {
 			return k, v
 		}
 		if w++; max > 0 && w > max {
-			return c.Seek(key)
+			k, v := c.Seek(key)
+			if !bytes.Equal(k, key) {
+				k, v = c.Prev()
+			}
+			return k, v
 		}
 	}
 	return nil, nil
@@ -268,5 +265,6 @@ func (s *Server) loadDict() (words []string) {
 	for _, p := range p {
 		words = append(words, p.Member)
 	}
+	log.Info("loadDict: count=", len(words))
 	return
 }

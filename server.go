@@ -629,7 +629,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "IDXADD":
 		return w.WriteIntOrError(s.runIndexBuild(key, command))
 	case "IDXDEL":
-		return w.WriteInt(int64(s.IndexDel(restCommandsToKeys(1, command))))
+		return w.WriteInt(int64(s.IndexDel(key)))
 	case "IDXDOCS":
 		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
 	case "IDXSEARCH":

@@ -87,11 +87,14 @@ func (w *Writer) WriteError(s string) error {
 	return err
 }
 
-func (w *Writer) WriteIntOrError(v int64, err error) error {
+func (w *Writer) WriteIntOrError(v interface{}, err error) error {
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
-	return w.WriteInt(v)
+	if u, ok := v.(uint64); ok {
+		return w.WriteInt(int64(u))
+	}
+	return w.WriteInt(reflect.ValueOf(v).Int())
 }
 
 func (w *Writer) WriteObject(v interface{}) error {
@@ -181,7 +184,6 @@ func (w *Writer) WriteBulks(bulks ...[]byte) error {
 
 // WriteObjectsSlice works like WriteObjects, it useful when args is a slice that can be nil,
 // in that case WriteObjects(nil) will understand as response 1 element array (nil element)
-// see https://gitlab.litatom.com/zhangzezhong/zset/redisproto/issues/4 for details.
 func (w *Writer) WriteObjectsSlice(args []interface{}) error {
 	return w.WriteObjects(args...)
 }

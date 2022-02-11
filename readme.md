@@ -34,6 +34,12 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 ```bash
 DEL key
     # Delete one key (ONE key only).
+    # Big zsets and queues (with more than 65536 members) can only be deleted using 'UNLINK'.
+
+UNLINK key
+    # Unlink the key, which will get deleted during compaction.
+	# Unlinking will introduce unconsistency when slave and master have different compacting time windows,
+    # caller must make sure that unlinked keys will never be used and useful again.
 
 ZADD key [--DEFER--] [NX|XX] [CH] [FILL fill_percent] score member [score member ...]
     # Behaves exactly like redis. '--DEFER--' makes the operation deferred so the command will return 'OK' immediately.
@@ -64,23 +70,21 @@ ZCOUNTLEX key min max [MATCH pattern]
 ZMDATA key member [member ...]
     # Retrieve the data attached to the members.
 
-ZRANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [INTERSECT key2 [INTERSECT key3 ...]] [TWOHOPS endpoint] [WITHSCORES] [WITHDATA]
+ZRANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES] [WITHDATA] [INTERSECT key2 [INTERSECT key3 ...]] [MERGE key2 [MERGE key3 ...]] [MERGEFUNC code] [TWOHOPS endpoint]
     # Behaves similar to redis, except that 'offset' in LIMIT must be 0 if provided.
     # INTERSECT: returned members will exist in every key: 'key', 'key2', ... 
-    # TWOHOPS: find every member in 'key' who (as a zset) contains 'endpoint' (ZSCORE member endpoint)
+    # MERGE: for every member in 'key', merge its score with other scores in 'key2', 'key3', ...
+    # TWOHOPS: consider every member in 'key' pointes to a zset with the same name, find those members who contains 'endpoint' (ZSCORE member endpoint)
 
 SCAN cursor [SHARD shard] [MATCH pattern] [COUNT count]
     # Scan keys in database (or in a particular shard).
-
-UNLINK key
-    # Unlink the key, it will get deleted during compaction.
 ```
 
 # Weak Cache
 Read commands like `ZRANGE` or `ZMDATA` will store results into a weak cache. Cached values will not be returned in the preceding requests unless you append `WEAK sec` to your commands, e.g.: `ZRANGE key start end WEAK 30` means returning cached results of `ZRANGE` if they are younger than 30 seconds.
 
 # Web Console
-Web console can be accessed at the same address as flag `-l` identified, to disable it, use flag `-no-web`.
+Web console can be accessed at the same address as flag `-l` identified, e.g.: `http://127.0.0.1:6379`. To disable it, use flag `-no-web`.
 
 # Compaction
 To enable compaction, execute: `CONFIG SET CompactJobType <Type>`, where `<Type>` can be (`hh` ranges `00-23`, `mm` ranges `00-59`):

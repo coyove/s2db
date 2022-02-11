@@ -70,7 +70,7 @@ func restCommandsToKeys(i int, command *redisproto.Command) []string {
 	return keys
 }
 
-func writePairs(in []s2pkg.Pair, w *redisproto.Writer, flags redisproto.Flags) error {
+func redisPairs(in []s2pkg.Pair, flags redisproto.Flags) []string {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Member)
@@ -81,7 +81,7 @@ func writePairs(in []s2pkg.Pair, w *redisproto.Writer, flags redisproto.Flags) e
 			data = append(data, string(p.Data))
 		}
 	}
-	return w.WriteBulkStrings(data)
+	return data
 }
 
 func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {

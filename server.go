@@ -324,7 +324,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
 			return w.WriteError("invalid key name, which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
 		}
-		// UNLINK will introduce unconsistency when slave and master have different compacting time window (where unlinks will happen)
 		if s.RedirectWrites != "" {
 			v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
 			s.Survey.Proxy.Incr(int64(time.Since(start).Milliseconds()))
@@ -332,9 +331,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 				return w.WriteError(err.Error())
 			}
 			return w.WriteObject(v)
-		} else if s.ReadOnly {
+		}
+		if s.ReadOnly {
 			return w.WriteError("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
-		} else if s.ServerName == "" {
+		}
+		if s.ServerName == "" {
 			return w.WriteError("server name not set, writes are omitted")
 		}
 	}
@@ -369,14 +370,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
-		p, err := nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		v, err := p.Run()
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
+		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...)))
 		return w.WriteBulkString(v.String())
 	case "PING":
 		if key == "" {
@@ -415,12 +409,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteBulkStrings(s.listConfig())
 		}
 	case "INFO":
-		switch n := strings.ToLower(key); {
-		case (n >= "0" && n <= "9") || (n >= "10" && n <= "31"):
-			return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(n)), "\r\n"))
-		default:
-			return w.WriteBulkString(strings.Join(s.Info(n), "\r\n"))
+		if (key >= "0" && key <= "9") || (key >= "10" && key <= "31") {
+			return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
 		}
+		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
 	case "TYPE":
 		return w.WriteBulk([]byte(s.TypeofKey(key)))
 	case "DUMPSHARD":
@@ -439,13 +431,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Log related commands
 	switch cmd {
 	case "LOGTAIL":
-		var c uint64
 		if key != "" {
-			c, err = s.myLogTail(s2pkg.MustParseInt(key))
-		} else {
-			c, err = s.myLogTail(-1)
+			return w.WriteIntOrError(s.myLogTail(s2pkg.MustParseInt(key)))
 		}
-		return w.WriteIntOrError(int64(c), err)
+		return w.WriteIntOrError(s.myLogTail(-1))
 	case "REQUESTLOG":
 		start := s2pkg.ParseUint64(command.Get(2))
 		if start == 0 {
@@ -461,7 +450,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkStrings(logs)
 	}
 
-	// Client space write commands
+	// Write commands
 	deferred := parseDeferFlag(command)
 	switch cmd {
 	case "UNLINK":
@@ -480,7 +469,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	}
 
 	h := command.HashCode()
-	// Client space read commands
+	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
 		s, err := s.ZMScore(key, restCommandsToKeys(2, command), weak)
@@ -513,11 +502,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		// ZCOUNT name start end [MATCH X]
 		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
 		s.addWeakCache(h, c, 1)
-		return w.WriteInt(int64(c))
+		return w.WriteIntOrError(c, err)
 	case "ZRANK", "ZREVRANK":
 		var c int
 		if v := s.getCache(h, weak); v != nil {
@@ -538,7 +524,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
 		if v := s.getCache(h, weak); v != nil {
-			return writePairs(v.([]s2pkg.Pair), w, flags)
+			return w.WriteBulkStrings(redisPairs(v.([]s2pkg.Pair), flags))
 		}
 		start, end := command.Get(2), command.Get(3)
 		if end == "" {
@@ -556,11 +542,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteError(err.Error())
 		}
 		s.addWeakCache(h, p, s2pkg.SizePairs(p))
-		return writePairs(p, w, flags)
-	case "GEORADIUS", "GEORADIUS_RO":
-		return s.runGeoRadius(w, false, key, h, weak, command)
-	case "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
-		return s.runGeoRadius(w, true, key, h, weak, command)
+		return w.WriteBulkStrings(redisPairs(p, flags))
+	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
+		byMember := cmd == "GEORADIUSBYMEMBER" || cmd == "GEORADIUSBYMEMBER_RO"
+		return s.runGeoRadius(w, byMember, key, h, weak, command)
 	case "GEODIST":
 		return s.runGeoDist(w, key, command)
 	case "GEOPOS":
@@ -571,14 +556,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		keys := []interface{}{}
-		for _, p := range p {
-			keys = append(keys, p.Member)
-			if flags.WITHSCORES {
-				keys = append(keys, s2pkg.FormatFloat(p.Score))
-			}
-		}
-		return w.WriteObjects(next, keys)
+		return w.WriteObjects(next, redisPairs(p, flags))
 	case "QLEN":
 		return w.WriteIntOrError(s.QLength(key))
 	case "QHEAD":
@@ -592,15 +570,16 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "QSCAN":
 		flags := command.Flags(4)
 		if c := s.getStaticCache(h); c != nil {
-			return writePairs(c.([]s2pkg.Pair), w, flags)
+			return w.WriteBulkStrings(redisPairs(c.([]s2pkg.Pair), flags))
 		}
 		data, err := s.QScan(key, command.Int64(2), command.Int64(3), flags)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return writePairs(data, w, flags)
+		return w.WriteBulkStrings(redisPairs(data, flags))
 	}
 
+	// Index commands
 	switch cmd {
 	case "IDXADD": // IDXADD id content key1 ... keyN
 		return w.WriteInt(int64(s.IndexAdd(key, command.Get(2), restCommandsToKeys(3, command))))
@@ -610,8 +589,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
 	case "IDXSEARCH":
 		flags := command.Flags(3)
-		return writePairs(s.IndexSearch(key, command.Get(2), flags), w, flags)
-	default:
-		return w.WriteError("unknown command: " + cmd)
+		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key, command.Get(2), flags), flags))
 	}
+
+	return w.WriteError("unknown command: " + cmd)
 }

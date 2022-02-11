@@ -158,7 +158,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {
-		return writePairs(p, w, flags)
+		return w.WriteBulkStrings(redisPairs(p, flags))
 	}
 
 	var data []interface{}

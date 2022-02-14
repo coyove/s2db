@@ -235,31 +235,52 @@ func MatchBinary(pattern string, buf []byte) bool {
 }
 
 func Match(pattern string, text string) bool {
-	if strings.HasPrefix(pattern, "^[") {
-		for i, d := 2, 1; i < len(pattern); i++ {
-			c, pc := pattern[i], pattern[i-1]
-			if c == ']' && pc != '\\' {
-				d--
-				if d == 0 {
-					if m, err := filepath.Match(pattern[2:i], text); err != nil {
-						logrus.Error("Match: invalid pattern:", err)
-					} else if m {
-						return false
-					}
-					return Match(pattern[i+1:], text)
-				}
-			}
-			if c == '[' && pc != '\\' {
-				d++
-			}
+	rp, rest := ExtractHeadCirc(pattern)
+	if rp != "" {
+		if m, err := filepath.Match(rp, text); err != nil {
+			logrus.Errorf("Match: invalid pattern: `%s` %v", rp, err)
+		} else if m {
+			return false
 		}
+		return Match(rest, text)
 	}
-	if strings.HasPrefix(pattern, "\\^") {
-		pattern = pattern[1:]
-	}
-	m, err := filepath.Match(pattern, text)
+	m, err := filepath.Match(rest, text)
 	if err != nil {
-		logrus.Error("Match: invalid pattern:", err)
+		logrus.Errorf("Match: invalid pattern: `%s` %v", pattern, err)
 	}
 	return m
+}
+
+func ExtractAllHeadCirc(text string) ([]string, string) {
+	var res []string
+	for {
+		rp, rest := ExtractHeadCirc(text)
+		if rp != "" {
+			res = append(res, rp)
+			text = rest
+		} else {
+			return res, rest
+		}
+	}
+}
+
+func ExtractHeadCirc(text string) (string, string) {
+	if strings.HasPrefix(text, "^[") {
+		eol := strings.Index(text, "\n")
+		if eol > 2 {
+			line := strings.TrimSpace(text[2:eol])
+			if strings.HasPrefix(line, "\"") && strings.HasSuffix(line, "\"") {
+				rp, err := strconv.Unquote(line)
+				if err != nil {
+					logrus.Errorf("ExtractHeadCirc: invalid quoted string: `%s` %v", line, err)
+				}
+				line = rp
+			}
+			return line, text[eol+1:]
+		}
+	}
+	if strings.HasPrefix(text, "\\^") {
+		text = text[1:]
+	}
+	return "", text
 }

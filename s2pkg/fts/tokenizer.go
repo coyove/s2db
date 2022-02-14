@@ -83,10 +83,12 @@ func Split(content string) (doc Document) {
 		st.Init(nil)
 	})
 
+	rp, rest := s2pkg.ExtractAllHeadCirc(content)
+
 	buf := struct {
 		s string
 		a int
-	}{content, len(content)}
+	}{rest, len(rest)}
 
 	tmp := segMap.Get().(map[string]int)
 	for _, s := range seg.Segment(*(*[]byte)(unsafe.Pointer(&buf))) {
@@ -100,6 +102,16 @@ func Split(content string) (doc Document) {
 		tmp[t]++
 		doc.NumTokens++
 	}
+
+	for _, pdk := range rp {
+		if idx := strings.Index(pdk, ","); idx > 0 { // form: count,token
+			count := s2pkg.MustParseInt64(pdk[:idx])
+			token := pdk[idx+1:]
+			doc.NumTokens += count
+			tmp[token] += int(count)
+		}
+	}
+
 	for k, sz := range tmp {
 		delete(tmp, k)
 		doc.Tokens = append(doc.Tokens, &Segmented{Token: k, Count: int64(sz)})

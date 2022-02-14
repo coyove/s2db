@@ -38,41 +38,28 @@ func (s *Server) IndexAdd(id, content string, riKeys []string) int {
 	}
 
 	// Remove existed document
-	f := s.indexRemoveFuncs(id)
+	cnt := s.IndexDel(id)
 
 	// (Re)add document
-	f = append(f, func() {
-		s.ZAdd(FTSDocsStoreKey, true, []s2pkg.Pair{{
-			Score:  float64(doc.NumTokens),
-			Member: id,
-			Data:   doc.MarshalBinary(),
-		}})
-	})
+	s.ZAdd(FTSDocsStoreKey, true, []s2pkg.Pair{{
+		Score:  float64(doc.NumTokens),
+		Member: id,
+		Data:   doc.MarshalBinary(),
+	}})
+	cnt++
 
 	// (Re)add document into reverted indices
 	for _, p := range riKeys {
 		for _, t := range tokens {
-			k := p + t.Member
-			ri := s2pkg.Pair{Member: id, Score: t.Score}
-			f = append(f, func() { s.ZAdd(k, true, []s2pkg.Pair{ri}) })
+			s.ZAdd(p+t.Member, true, []s2pkg.Pair{{Member: id, Score: t.Score}})
 		}
 	}
+	cnt += len(riKeys) * len(tokens)
 
-	for _, ff := range f {
-		ff()
-	}
-	return len(f)
+	return cnt
 }
 
-func (s *Server) IndexDel(id string) int {
-	f := s.indexRemoveFuncs(id)
-	for _, ff := range f {
-		ff()
-	}
-	return len(f)
-}
-
-func (s *Server) indexRemoveFuncs(id string) (f []func()) {
+func (s *Server) IndexDel(id string) (cnt int) {
 	tOldDocBytes, err := s.ZMData(FTSDocsStoreKey, []string{id}, redisproto.Flags{})
 	s2pkg.PanicErr(err)
 	buf := tOldDocBytes[0]
@@ -80,20 +67,20 @@ func (s *Server) indexRemoveFuncs(id string) (f []func()) {
 		return
 	}
 
-	f = append(f, func() {
-		s.ZRem(FTSDocsStoreKey, true, []string{id})
-	})
+	s.ZRem(FTSDocsStoreKey, true, []string{id})
+	cnt++
 
 	// Remove document in reverted index
 	var oldDoc fts.Document
 	s2pkg.PanicErr(proto.Unmarshal(buf, &oldDoc))
 	for _, t := range oldDoc.Tokens {
 		for _, p := range oldDoc.Prefixs {
-			k := p + t.Token
-			f = append(f, func() { s.ZRem(k, true, []string{id}) })
+			s.ZRem(p+t.Token, true, []string{id})
 		}
 	}
-	return f
+
+	cnt += len(oldDoc.Tokens) * len(oldDoc.Prefixs)
+	return
 }
 
 func (s *Server) runIndexDocsInfo(docIds []string) (infos []interface{}) {

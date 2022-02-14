@@ -37,7 +37,7 @@ func (s *Server) IndexAdd(id, content string, riKeys []string) int {
 		tokens = append(tokens, s2pkg.Pair{Member: s.Token, Score: doc.TermFreq(s.Token)})
 	}
 
-	// Remove existed document
+	// Remove existed document. TODO: diff old and new documents to get changed tokens
 	cnt := s.IndexDel(id)
 
 	// (Re)add document
@@ -115,12 +115,33 @@ func (s *Server) IndexDocsInfo(docIds []string) (infos [][]string) {
 	return
 }
 
-func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Flags) (docs []s2pkg.Pair) {
-	q := fts.Split(content)
-	if !q.Valid() {
+func (s *Server) IndexSearch(key string, contents []string, flags redisproto.Flags) (docs []s2pkg.Pair) {
+	var h fts.ResultHeap
+	h.Rev = true
+	for _, c := range contents {
+		q := fts.Split(c)
+		if !q.Valid() {
+			continue
+		}
+		s.indexSearchHeap(&h, key, q, flags)
+	}
+
+	if h.Len() == 0 {
 		return
 	}
 
+	res, ids := h.ToArray()
+	scores, err := s.ZMScore(FTSDocsStoreKey, ids, 0)
+	s2pkg.PanicErr(err)
+	for i := range res {
+		if !math.IsNaN(scores[i]) {
+			docs = append(docs, s2pkg.Pair{Member: ids[i], Score: res[i].Score})
+		}
+	}
+	return
+}
+
+func (s *Server) indexSearchHeap(h *fts.ResultHeap, key string, q fts.Document, flags redisproto.Flags) {
 	numDocs := s.ZCard(FTSDocsStoreKey)
 	if numDocs == 0 {
 		return
@@ -140,7 +161,7 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 	}()
 
 	for _, tok := range q.Tokens {
-		riKey := prefix + tok.Token
+		riKey := key + tok.Token
 
 		tx, err := s.pick(riKey).Begin(false)
 		if err != nil {
@@ -193,8 +214,6 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 
 	var start []byte
 	var idftf float64
-	var h fts.ResultHeap
-	h.Rev = true
 
 	for startTime := time.Now(); time.Since(startTime) < flags.TIMEOUT; {
 		start, idftf = move(start)
@@ -202,23 +221,12 @@ func (s *Server) IndexSearch(prefix string, content string, flags redisproto.Fla
 			break
 		}
 		if idftf == idftf {
-			heap.Push(&h, fts.Result{ID: string(start), Score: idftf})
+			heap.Push(h, fts.Result{ID: string(start), Score: idftf})
 			if h.Len() > flags.COUNT {
-				heap.Pop(&h)
+				heap.Pop(h)
 			}
 		}
 	}
-
-	res, ids := h.ToArray()
-	scores, err := s.ZMScore(FTSDocsStoreKey, ids, 0)
-	s2pkg.PanicErr(err)
-
-	for i := range res {
-		if scores[i] == scores[i] {
-			docs = append(docs, s2pkg.Pair{Member: ids[i], Score: res[i].Score})
-		}
-	}
-	return
 }
 
 func seekCursor(c *bbolt.Cursor, key []byte, max int) ([]byte, []byte) {

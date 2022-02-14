@@ -332,11 +332,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			}
 			return w.WriteObject(v)
 		}
-		if s.ReadOnly {
-			return w.WriteError("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
-		}
-		if s.ServerName == "" {
-			return w.WriteError("server name not set, writes are omitted")
+		if err := s.checkWritable(); err != nil {
+			return w.WriteError(err.Error())
 		}
 	}
 
@@ -408,10 +405,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		default:
 			return w.WriteBulkStrings(s.listConfig())
 		}
+	case "INFOSHARD":
+		return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
 	case "INFO":
-		if (key >= "0" && key <= "9") || (key >= "10" && key <= "31") {
-			return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
-		}
 		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
 	case "TYPE":
 		return w.WriteBulk([]byte(s.TypeofKey(key)))
@@ -559,20 +555,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteObjects(next, redisPairs(p, flags))
 	case "QLEN":
 		return w.WriteIntOrError(s.QLength(key))
-	case "QHEAD":
-		return w.WriteIntOrError(s.QHead(key))
-	case "QINDEX":
-		v, err := s.QGet(key, command.Int64(2))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteBulk(v)
 	case "QSCAN":
 		flags := command.Flags(4)
 		if c := s.getStaticCache(h); c != nil {
 			return w.WriteBulkStrings(redisPairs(c.([]s2pkg.Pair), flags))
 		}
-		data, err := s.QScan(key, command.Int64(2), command.Int64(3), flags)
+		data, err := s.QScan(key, command.Get(2), command.Int64(3), flags)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -589,8 +577,18 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
 	case "IDXSEARCH":
 		flags := command.Flags(3)
-		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key, command.Get(2), flags), flags))
+		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key,
+			strings.Split(command.Get(2), flags.SEPARATOR), flags), flags))
 	}
 
 	return w.WriteError("unknown command: " + cmd)
+}
+
+func (s *Server) checkWritable() error {
+	if s.ReadOnly {
+		return fmt.Errorf("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
+	} else if s.ServerName == "" {
+		return fmt.Errorf("server name not set, writes are omitted")
+	}
+	return nil
 }

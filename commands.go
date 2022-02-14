@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -95,6 +96,9 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) 
 }
 
 func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int64, error) {
+	if err := s.checkWritable(); err != nil {
+		return 0, err
+	}
 	if len(members) == 0 {
 		return 0, nil
 	}
@@ -113,6 +117,9 @@ func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int64, e
 }
 
 func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) {
+	if err := s.checkWritable(); err != nil {
+		return 0, err
+	}
 	if len(members) == 0 {
 		return 0, nil
 	}
@@ -221,6 +228,21 @@ func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	return writeLog(tx, dd)
 }
 
+func (s *Server) QAppend(key string, deferred bool, data []byte, max int) (int64, error) {
+	if err := s.checkWritable(); err != nil {
+		return 0, err
+	}
+	cmd := &redisproto.Command{Argv: [][]byte{[]byte("QAPPEND"), []byte(key), data, []byte("COUNT"), []byte(strconv.Itoa(max))}}
+	v, err := s.runPreparedTx("QAPPEND", key, deferred, prepareQAppend(key, data, int64(max), nil, dumpCommand(cmd)))
+	if err != nil {
+		return 0, err
+	}
+	if deferred {
+		return 0, nil
+	}
+	return v.(int64), nil
+}
+
 func parseQAppend(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	value := command.Bytes(2)
 	flags := command.Flags(3)
@@ -262,7 +284,7 @@ func (s *Server) QLength(key string) (count int64, err error) {
 	return count, err
 }
 
-func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) (data []s2pkg.Pair, err error) {
+func (s *Server) QScan(key string, startString string, n int64, flags redisproto.Flags) (data []s2pkg.Pair, err error) {
 	desc := false
 	if n < 0 {
 		n = -n
@@ -271,6 +293,16 @@ func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) (data
 	if n > int64(s2pkg.RangeHardLimit) {
 		n = int64(s2pkg.RangeHardLimit)
 	}
+
+	var start int64
+	var absoluteStart bool
+	if strings.HasPrefix(startString, "!") {
+		start = s2pkg.MustParseInt64(startString[1:])
+		absoluteStart = true
+	} else {
+		start = s2pkg.MustParseInt64(startString)
+	}
+
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		err := func() error {
 			bk := tx.Bucket([]byte("q." + key))
@@ -282,10 +314,14 @@ func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) (data
 				return nil
 			}
 
-			if start <= 0 {
-				start = last + start
+			if absoluteStart {
 			} else {
-				start = first + start - 1
+				// Relative start
+				if start <= 0 {
+					start = last + start
+				} else {
+					start = first + start - 1
+				}
 			}
 
 			if start < first || start > last {
@@ -316,110 +352,3 @@ func (s *Server) QScan(key string, start, n int64, flags redisproto.Flags) (data
 	})
 	return data, err
 }
-
-func (s *Server) QGet(key string, idx int64) ([]byte, error) {
-	var data []byte
-	err := s.pick(key).View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("q." + key))
-		if bk == nil {
-			return nil
-		}
-		first, last, count := queueLenImpl(bk)
-		if count == 0 {
-			return nil
-		}
-
-		if idx <= 0 {
-			idx += last
-		}
-		if idx < first || idx > last {
-			return nil
-		}
-
-		c := bk.Cursor()
-		startBuf := s2pkg.Uint64ToBytes(uint64(idx))
-		k, v := c.Seek(startBuf)
-		if !bytes.HasPrefix(k, startBuf) {
-			return fmt.Errorf("fatal: missing key")
-		}
-		data = v
-		return nil
-	})
-	return data, err
-}
-
-func (s *Server) QHead(key string) (head int64, err error) {
-	err = s.pick(key).View(func(tx *bbolt.Tx) error {
-		if bk := tx.Bucket([]byte("q." + key)); bk != nil {
-			head, _, _ = queueLenImpl(bk)
-		}
-		return nil
-	})
-	return head, err
-}
-
-// func (s *Server) indexSet(key string, id uint32, content string) {
-// 	idx, _ := s.Index.LoadOrStore(key, fts.New())
-// 	idx.(*fts.Index).Add(id, content)
-// }
-//
-// func (s *Server) indexDel(key string, id uint32) bool {
-// 	idx, _ := s.Index.Load(key)
-// 	if i, _ := idx.(*fts.Index); i != nil {
-// 		_, ok := i.Remove(id)
-// 		return ok
-// 	}
-// 	return false
-// }
-//
-// func (s *Server) indexClear(key string) {
-// 	s.Index.Delete(key)
-// }
-//
-// func (s *Server) indexCard(key string) (sz int) {
-// 	idx, _ := s.Index.Load(key)
-// 	if i, _ := idx.(*fts.Index); i != nil {
-// 		sz = i.Cardinality()
-// 	}
-// 	return
-// }
-//
-// func (s *Server) indexSize(key string) (sz int) {
-// 	idx, _ := s.Index.Load(key)
-// 	if i, _ := idx.(*fts.Index); i != nil {
-// 		sz = i.SizeBytes()
-// 	}
-// 	return
-// }
-//
-// func (s *Server) indexSearch(key string, q []string, flags redisproto.Flags) (p []s2pkg.Pair) {
-// 	idx, _ := s.Index.Load(key)
-// 	if i, _ := idx.(*fts.Index); i != nil {
-// 		for _, r := range i.TopN(flags.BM25, flags.COUNT, q...) {
-// 			p = append(p, s2pkg.Pair{Member: strconv.Itoa(int(r.ID)), Score: float64(r.Score)})
-// 		}
-// 	}
-// 	return
-// }
-//
-// func (s *Server) indexBuild(key string, flags redisproto.Flags) {
-// 	panic("not implemented")
-// 	// s.pick(key).View(func(tx *bbolt.Tx) error {
-// 	// 	bk := tx.Bucket([]byte("zset.score." + key))
-// 	// 	if bk == nil {
-// 	// 		return nil
-// 	// 	}
-//
-// 	// 	tmp, _ := s.Index.LoadOrStore(key, fts.New())
-// 	// 	idx := tmp.(*fts.Indexer)
-// 	// 	c := bk.Cursor()
-// 	// 	if flags.DESC {
-// 	// 		for k, v := c.Last(); len(k) >= 8; k, v = c.Prev() {
-// 	// 		}
-// 	// 	} else {
-// 	// 		for k, v := c.First(); len(k) >= 8; k, v = c.Next() {
-// 	// 		}
-// 	// 	}
-// 	// 	return nil
-// 	// })
-// }

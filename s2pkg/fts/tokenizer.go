@@ -16,8 +16,16 @@ import (
 var (
 	seg    sego.Segmenter
 	st     sego.StopTokens
-	loader sync.Once
+	loader sync.WaitGroup
 )
+
+func InitDict(words []string) {
+	loader.Add(1)
+	go func() {
+		LoadDict(words)
+		loader.Done()
+	}()
+}
 
 func LoadDict(words []string) {
 	var extraWords, extraStopWords []byte
@@ -78,11 +86,7 @@ func Split(content string) (doc Document) {
 		return
 	}
 
-	loader.Do(func() {
-		seg.LoadDictionary(nil)
-		st.Init(nil)
-	})
-
+	loader.Wait()
 	rp, rest := s2pkg.ExtractAllHeadCirc(content)
 
 	buf := struct {

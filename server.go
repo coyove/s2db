@@ -46,7 +46,7 @@ type Server struct {
 	ln, lnLocal, lnWeb net.Listener
 
 	rdb      *redis.Client
-	rdbCache *s2pkg.LRUCache
+	rdbCache *s2pkg.MasterLRU
 
 	ServerConfig
 	ReadOnly         bool   // server is readonly
@@ -58,8 +58,8 @@ type Server struct {
 	DataPath         string // location of config database
 	RedirectWrites   string
 	SelfManager      *bas.Program
-	Cache            *s2pkg.KeyedLRUCache
-	WeakCache        *s2pkg.LRUCache
+	Cache            *s2pkg.MasterLRU
+	WeakCache        *s2pkg.MasterLRU
 	Slaves           slaves
 	Master           serverInfo
 	CompactLock      s2pkg.LockBox
@@ -69,7 +69,7 @@ type Server struct {
 		Connections             int64
 		SysRead, SysWrite       s2pkg.Survey
 		SysWriteDiscards        s2pkg.Survey
-		CacheReq, WeakCacheReq  s2pkg.Survey
+		CacheReq, CacheSize     s2pkg.Survey
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
@@ -123,11 +123,10 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
-	x.rdbCache = s2pkg.NewLRUCache(1)
-	x.rdbCache.OnEvicted = func(k s2pkg.LRUKey, v interface{}) {
-		log.Info("rdbCache(", k, ") close: ", v.(*redis.Client).Close())
-	}
-	fts.LoadDict(x.loadDict())
+	x.rdbCache = s2pkg.NewMasterLRU(1, func(kv s2pkg.LRUKeyValue) {
+		log.Info("rdbCache(", kv.SlaveKey, ") close: ", kv.Value.(*redis.Client).Close())
+	})
+	fts.InitDict(x.loadDict())
 	return x, nil
 }
 
@@ -142,7 +141,7 @@ func (s *Server) Close() error {
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
 	}
-	s.rdbCache.Info(func(k s2pkg.LRUKey, v interface{}, a, b int64) { errs <- v.(*redis.Client).Close() })
+	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
 
 	wg := sync.WaitGroup{}
 	for i := range s.db {
@@ -468,15 +467,18 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
-		s, err := s.ZMScore(key, restCommandsToKeys(2, command), weak)
-		if err != nil {
-			return w.WriteError(err.Error())
+		x, cached := s.getCache(h, weak).([]float64)
+		if !cached {
+			x, err = s.ZMScore(key, restCommandsToKeys(2, command), command.Flags(-1))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
 		}
 		if cmd == "ZSCORE" {
-			return w.WriteBulk(s2pkg.FormatFloatBulk(s[0]))
+			return w.WriteBulk(s2pkg.FormatFloatBulk(x[0]))
 		}
 		var data [][]byte
-		for _, s := range s {
+		for _, s := range x {
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
 		return w.WriteBulks(data...)
@@ -484,11 +486,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if v := s.getCache(h, weak); v != nil {
 			return w.WriteBulks(v.([][]byte)...)
 		}
-		data, err := s.ZMData(key, restCommandsToKeys(2, command), redisproto.Flags{Command: *command})
+		data, err := s.ZMData(key, restCommandsToKeys(2, command), command.Flags(-1))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addWeakCache(h, data, s2pkg.SizeBytes(data))
 		return w.WriteBulks(data...)
 	case "ZCARD":
 		return w.WriteInt(s.ZCard(key))
@@ -497,20 +498,15 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
-		c, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
-		s.addWeakCache(h, c, 1)
-		return w.WriteIntOrError(c, err)
+		return w.WriteIntOrError(s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4)))
 	case "ZRANK", "ZREVRANK":
-		var c int
-		if v := s.getCache(h, weak); v != nil {
-			c = v.(int)
-		} else {
+		c, cached := s.getCache(h, weak).(int)
+		if !cached {
 			// COMMAND name key COUNT X
 			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addWeakCache(h, c, 1)
 		}
 		if c == -1 {
 			return w.WriteBulk(nil)
@@ -537,7 +533,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addWeakCache(h, p, s2pkg.SizePairs(p))
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
 		byMember := cmd == "GEORADIUSBYMEMBER" || cmd == "GEORADIUSBYMEMBER_RO"
@@ -557,12 +552,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteIntOrError(s.QLength(key))
 	case "QSCAN":
 		flags := command.Flags(4)
-		if c := s.getStaticCache(h); c != nil {
-			return w.WriteBulkStrings(redisPairs(c.([]s2pkg.Pair), flags))
-		}
-		data, err := s.QScan(key, command.Get(2), command.Int64(3), flags)
-		if err != nil {
-			return w.WriteError(err.Error())
+		data, cached := s.getCache(h, weak).([]s2pkg.Pair)
+		if !cached {
+			data, err = s.QScan(key, command.Get(2), command.Int64(3), flags)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
 		}
 		return w.WriteBulkStrings(redisPairs(data, flags))
 	}

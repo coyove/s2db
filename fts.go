@@ -131,7 +131,7 @@ func (s *Server) IndexSearch(key string, contents []string, flags redisproto.Fla
 	}
 
 	res, ids := h.ToArray()
-	scores, err := s.ZMScore(FTSDocsStoreKey, ids, 0)
+	scores, err := s.ZMScore(FTSDocsStoreKey, ids, redisproto.Flags{})
 	s2pkg.PanicErr(err)
 	for i := range res {
 		if !math.IsNaN(scores[i]) {

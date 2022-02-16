@@ -26,7 +26,6 @@ type ServerConfig struct {
 	ServerName        string
 	Password          string
 	CacheSize         int
-	CacheKeyMaxLen    int
 	WeakCacheSize     int
 	SlowLimit         int // ms
 	ResponseLogRun    int
@@ -63,12 +62,11 @@ func (s *Server) loadConfig() error {
 	}); err != nil {
 		return err
 	}
-	return s.saveConfig()
+	return s.saveConfig(true)
 }
 
-func (s *Server) saveConfig() error {
+func (s *Server) saveConfig(cacheSizeChanged bool) error {
 	ifZero(&s.CacheSize, 1024)
-	ifZero(&s.CacheKeyMaxLen, 100)
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
 	ifZero(&s.ResponseLogRun, 200)
@@ -79,8 +77,10 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactTxWorkers, 1)
 	ifZero(&s.DumpSafeMargin, 16)
 
-	s.Cache = s2pkg.NewKeyedLRUCache(int64(s.CacheSize) * 1024 * 1024)
-	s.WeakCache = s2pkg.NewLRUCache(int64(s.WeakCacheSize) * 1024 * 1024)
+	if cacheSizeChanged {
+		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
+		s.WeakCache = s2pkg.NewMasterLRU(int64(s.WeakCacheSize), nil)
+	}
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -143,7 +143,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return errSafeExit
 	})
 	if found {
-		if err := s.saveConfig(); err != nil {
+		if err := s.saveConfig(key == "cachesize" || key == "weakcachesize"); err != nil {
 			s.ServerConfig = old
 			return false, err
 		}
@@ -213,7 +213,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 		cli = c.(*redis.Client)
 		return
 	}
-	defer func() { s.rdbCache.Add(addr, cli) }()
+	defer func() { s.rdbCache.Add("", addr, cli) }()
 
 	config := &redis.Options{Addr: addr}
 	if addr == "" || strings.EqualFold(addr, "local") {

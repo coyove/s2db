@@ -7,7 +7,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
@@ -147,31 +146,28 @@ func (s *Server) ZCard(key string) (count int64) {
 	return
 }
 
-func (s *Server) ZMScore(key string, keys []string, weak time.Duration) (scores []float64, err error) {
+func (s *Server) ZMScore(key string, keys []string, flags redisproto.Flags) (scores []float64, err error) {
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("missing keys")
 	}
-	for _, k := range keys {
-		if score, ok := s.getWeakCache(s2pkg.HashStr2(k), weak).(float64); ok {
-			scores = append(scores, score)
-		} else {
-			scores = append(scores, math.NaN())
-		}
+	for range keys {
+		scores = append(scores, math.NaN())
 	}
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		bkName := tx.Bucket([]byte("zset." + key))
 		if bkName == nil {
 			return nil
 		}
-		for i, key := range keys {
+		for i, k := range keys {
 			if !math.IsNaN(scores[i]) {
 				continue
 			}
-			if scoreBuf := bkName.Get([]byte(key)); len(scoreBuf) != 0 {
+			if scoreBuf := bkName.Get([]byte(k)); len(scoreBuf) != 0 {
 				scores[i] = s2pkg.BytesToFloat(scoreBuf)
-				h := s2pkg.HashStr2(key)
-				s.addWeakCache(h, scores[i], 1)
 			}
+		}
+		if flags.Command.ArgCount() > 0 {
+			s.addCache(key, flags.HashCode(), scores)
 		}
 		return nil
 	})
@@ -203,7 +199,7 @@ func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data
 		}()
 		// fillPairsData will call ZMData as well (with an empty Flags), but no cache should be stored
 		if flags.Command.ArgCount() > 0 {
-			s.addStaticCache(key, flags.HashCode(), data)
+			s.addCache(key, flags.HashCode(), data)
 		}
 		return nil
 	})
@@ -346,7 +342,7 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 			return nil
 		}()
 		if err == nil {
-			s.addStaticCache(key, flags.HashCode(), data)
+			s.addCache(key, flags.HashCode(), data)
 		}
 		return err
 	})

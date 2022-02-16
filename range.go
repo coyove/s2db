@@ -24,7 +24,7 @@ var (
 )
 
 func (s *Server) ZCount(lex bool, key string, start, end string, flags redisproto.Flags) (int, error) {
-	onSuccess := func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), count) }
+	onSuccess := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), count) }
 	ro := s2pkg.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
@@ -51,7 +51,7 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.F
 		Limit:       flags.LIMIT,
 		WithData:    flags.WITHDATA,
 		Append:      s2pkg.DefaultRangeAppend,
-	}), func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), p) })
+	}), func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) })
 	return p, err
 }
 
@@ -80,7 +80,7 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 }
 
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
-	success := func(p []s2pkg.Pair, count int) { s.addStaticCache(key, flags.Command.HashCode(), p) }
+	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
 	if flags.INTERSECT != nil {
 		bkm, goahead, close := s.prepareIntersectBuckets(flags)
 		defer close()
@@ -329,7 +329,7 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 		if rank == flags.COUNT+1 {
 			rank = -1
 		}
-		s.addStaticCache(key, flags.HashCode(), rank)
+		s.addCache(key, flags.HashCode(), rank)
 		return nil
 	})
 	return

@@ -207,14 +207,12 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "cache" {
 		data = append(data, "# cache",
+			fmt.Sprintf("cache_avg_size:%v", s.Survey.CacheSize.MeanString()),
 			fmt.Sprintf("cache_req_qps:%v", s.Survey.CacheReq),
 			fmt.Sprintf("cache_hit_qps:%v", s.Survey.CacheHit),
-			fmt.Sprintf("cache_obj_count:%v", s.Cache.Len()),
-			fmt.Sprintf("cache_size:%v", s.Cache.Weight()),
-			fmt.Sprintf("weak_cache_req_qps:%v", s.Survey.WeakCacheReq),
 			fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCacheHit),
-			fmt.Sprintf("weak_cache_obj_count:%v", s.WeakCache.Len()),
-			fmt.Sprintf("weak_cache_size:%v", s.WeakCache.Weight()),
+			fmt.Sprintf("cache_obj_count:%v/%v", s.Cache.Len(), s.Cache.Cap()),
+			fmt.Sprintf("weak_cache_obj_count:%v/%v", s.WeakCache.Len(), s.WeakCache.Cap()),
 			"")
 	}
 	if section == "" {
@@ -389,32 +387,20 @@ func closeAllReadTxs(txs []*bbolt.Tx) {
 }
 
 func (s *Server) removeCache(key string) {
-	s.Cache.Remove(key)
+	s.Cache.Delete(key)
 }
 
-func (s *Server) getCache(h [2]uint64, ttl time.Duration) interface{} {
-	if v := s.getStaticCache(h); v != nil {
-		return v
-	}
-	return s.getWeakCache(h, ttl)
-}
-
-func (s *Server) getStaticCache(h [2]uint64) interface{} {
+func (s *Server) getCache(h string, ttl time.Duration) interface{} {
 	s.Survey.CacheReq.Incr(1)
 	v, ok := s.Cache.Get(h)
-	if !ok {
-		return nil
+	if ok {
+		s.Survey.CacheHit.Incr(1)
+		return v
 	}
-	s.Survey.CacheHit.Incr(1)
-	return v.Data
-}
-
-func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
 	if ttl == 0 {
 		return nil
 	}
-	s.Survey.WeakCacheReq.Incr(1)
-	v, ok := s.WeakCache.Get(h)
+	v, ok = s.WeakCache.Get(h)
 	if !ok {
 		return nil
 	}
@@ -425,12 +411,15 @@ func (s *Server) getWeakCache(h [2]uint64, ttl time.Duration) interface{} {
 	return nil
 }
 
-func (s *Server) addStaticCache(key string, h [2]uint64, data interface{}) {
-	s.Cache.Add(key, h, data, s.ServerConfig.CacheKeyMaxLen)
-}
-
-func (s *Server) addWeakCache(h [2]uint64, data interface{}, size int) {
-	s.WeakCache.AddWeight(h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, int64(size))
+func (s *Server) addCache(key string, h string, data interface{}) {
+	s.Cache.Add(key, h, data)
+	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()})
+	switch data := data.(type) {
+	case []s2pkg.Pair:
+		s.Survey.CacheSize.Incr(int64(s2pkg.SizePairs(data)))
+	case [][]byte:
+		s.Survey.CacheSize.Incr(int64(s2pkg.SizeBytes(data)))
+	}
 }
 
 func trilabel(a, b, c float64) (ap, bp, cp string) {

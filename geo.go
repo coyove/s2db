@@ -107,7 +107,7 @@ func (s *Server) runGeoPos(w *redisproto.Writer, name string, command *redisprot
 	return w.WriteObjectsSlice(data)
 }
 
-func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h [2]uint64, weak time.Duration, command *redisproto.Command) error {
+func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, h string, weak time.Duration, command *redisproto.Command) error {
 	var p []s2pkg.Pair
 	var lat, long float64
 	var key string
@@ -153,8 +153,7 @@ func (s *Server) runGeoRadius(w *redisproto.Writer, byMember bool, name string, 
 			})
 		}
 
-		s.addStaticCache(name, h, p)
-		s.addWeakCache(h, p, s2pkg.SizePairs(p))
+		s.addCache(name, h, p)
 	}
 
 	if !flags.WITHHASH && !flags.WITHCOORD && !flags.WITHDIST && !flags.WITHDATA {

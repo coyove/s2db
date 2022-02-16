@@ -43,8 +43,9 @@ func (p *ProtocolError) Error() string {
 }
 
 type Command struct {
-	Argv [][]byte
-	last bool
+	Argv     [][]byte
+	last     bool
+	hashcode string
 }
 
 func (c *Command) At(index int) []byte {
@@ -384,6 +385,9 @@ func (c Command) Flags(start int) (f Flags) {
 	f.SHARD = -1
 	f.TIMEOUT = time.Second
 	f.SEPARATOR = " OR "
+	if start == -1 {
+		return
+	}
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
@@ -460,8 +464,11 @@ func splitCode(c Command, key string) (string, bas.Value) {
 	return key, bas.Nil
 }
 
-func (in Command) HashCode() (h [2]uint64) {
-	h = [2]uint64{0, 5381}
+func (in Command) HashCode() string {
+	if in.hashcode != "" {
+		return in.hashcode
+	}
+	h := [2]uint64{0, 5381}
 	for _, buf := range in.Argv {
 		for _, b := range buf {
 			old := h[1]
@@ -472,5 +479,7 @@ func (in Command) HashCode() (h [2]uint64) {
 		}
 		h[1]++
 	}
-	return h
+	x := *(*[16]byte)(unsafe.Pointer(&h))
+	in.hashcode = string(x[:])
+	return in.hashcode
 }

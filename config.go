@@ -26,6 +26,7 @@ type ServerConfig struct {
 	ServerName        string
 	Password          string
 	CacheSize         int
+	CacheObjMaxSize   int // kb
 	WeakCacheSize     int
 	SlowLimit         int // ms
 	ResponseLogRun    int
@@ -62,11 +63,12 @@ func (s *Server) loadConfig() error {
 	}); err != nil {
 		return err
 	}
-	return s.saveConfig(true)
+	return s.saveConfig()
 }
 
-func (s *Server) saveConfig(cacheSizeChanged bool) error {
+func (s *Server) saveConfig() error {
 	ifZero(&s.CacheSize, 1024)
+	ifZero(&s.CacheObjMaxSize, 1024)
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
 	ifZero(&s.ResponseLogRun, 200)
@@ -77,9 +79,15 @@ func (s *Server) saveConfig(cacheSizeChanged bool) error {
 	ifZero(&s.CompactTxWorkers, 1)
 	ifZero(&s.DumpSafeMargin, 16)
 
-	if cacheSizeChanged {
+	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
+	} else {
+		s.Cache.SetNewCap(int64(s.CacheSize))
+	}
+	if s.WeakCache == nil {
 		s.WeakCache = s2pkg.NewMasterLRU(int64(s.WeakCacheSize), nil)
+	} else {
+		s.WeakCache.SetNewCap(int64(s.WeakCacheSize))
 	}
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
@@ -143,7 +151,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return errSafeExit
 	})
 	if found {
-		if err := s.saveConfig(key == "cachesize" || key == "weakcachesize"); err != nil {
+		if err := s.saveConfig(); err != nil {
 			s.ServerConfig = old
 			return false, err
 		}

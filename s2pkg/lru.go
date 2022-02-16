@@ -51,6 +51,12 @@ func (m *MasterLRU) Len() int { return len(m.hot) + len(m.cold) }
 
 func (m *MasterLRU) Cap() int { return int(m.lenMax) }
 
+func (m *MasterLRU) SetNewCap(cap int64) {
+	m.mu.Lock()
+	m.lruCap = cap
+	m.mu.Unlock()
+}
+
 func (m *MasterLRU) Add(masterKey, slaveKey string, value interface{}) {
 	if slaveKey == "" {
 		panic("slave key can't be empty")

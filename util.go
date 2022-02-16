@@ -21,6 +21,7 @@ import (
 
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -412,14 +413,22 @@ func (s *Server) getCache(h string, ttl time.Duration) interface{} {
 }
 
 func (s *Server) addCache(key string, h string, data interface{}) {
-	s.Cache.Add(key, h, data)
-	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()})
+	var sz int
 	switch data := data.(type) {
 	case []s2pkg.Pair:
-		s.Survey.CacheSize.Incr(int64(s2pkg.SizePairs(data)))
+		sz = s2pkg.SizePairs(data)
 	case [][]byte:
-		s.Survey.CacheSize.Incr(int64(s2pkg.SizeBytes(data)))
+		sz = s2pkg.SizeBytes(data)
 	}
+	if sz > 0 {
+		if sz > s.CacheObjMaxSize*1024 {
+			logrus.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
+			return
+		}
+		s.Survey.CacheSize.Incr(int64(sz))
+	}
+	s.Cache.Add(key, h, data)
+	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()})
 }
 
 func trilabel(a, b, c float64) (ap, bp, cp string) {

@@ -14,21 +14,21 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 4. Replications are done asynchronously and passively, master won't request any info from slaves.
 
 # Configuration Fields
-- `ServerName`: server's name
-- `CacheSize`: memory cache size in megabytes
-- `CacheKeyMaxLen`: max cached results per key
-- `WeakCacheSize`: weak memory cache size in megabytes
-- `SlowLimit`: record slow log running longer than X ms
-- `ResponseLogRun`: max log entries replied by the master
-- `ResponseLogSize`: max size (bytes) of logs replied by the master
-- `BatchMaxRun`: batch operations size
-- `CompactJobType`: compaction job type
-- `CompactLogHead`: number of log entries preserved during compaction
-- `CompactTxSize`: max transaction size during compaction
-- `CompactTmpDir`: temporal location for the compacted database, by default it is located in the data directory
-- `CompactTxWorkers`: number of workers used to compact a shard
-- `CompactNoBackup`: don't backup the old database after compaction
-- `StopLogPull`: stop pulling logs from master
+- `ServerName (string)`: server's name
+- `CacheSize (int)`: cache size
+- `WeakCacheSize (int)`: weak cache size
+- `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object
+- `SlowLimit (int, milliseconds)`: threshold of recording commands into slow logs
+- `ResponseLogRun (int)`: max log entries replied by the master
+- `ResponseLogSize (int, bytes)`: max size of logs replied by the master
+- `BatchMaxRun (int)`: batch operations size
+- `CompactJobType (int)`: compaction job type, see [compaction](#compaction)
+- `CompactLogHead (int)`: number of log entries preserved during compaction
+- `CompactTxSize (int)`: max transaction size during compaction
+- `CompactTmpDir (string)`: temporal location for the compacted database, by default it's located in the data directory
+- `CompactTxWorkers (int)`: number of workers used to compact a shard
+- `CompactNoBackup (int, 0|1)`: don't backup the old database after compaction
+- `StopLogPull (int, 0|1)`: stop pulling logs from master
 
 # Commands
 ```bash
@@ -38,7 +38,7 @@ DEL key
 
 UNLINK key
     # Unlink the key, which will get deleted during compaction.
-	# Unlinking will introduce unconsistency when slave and master have different compacting time windows,
+    # Unlinking will introduce unconsistency when slave and master have different compacting time windows,
     # caller must make sure that unlinked keys will never be used and useful again.
 
 ZADD key [--DEFER--] [NX|XX] [CH] [FILL fill_percent] score member [score member ...]
@@ -70,10 +70,11 @@ ZCOUNTLEX key min max [MATCH pattern]
 ZMDATA key member [member ...]
     # Retrieve the data attached to the members.
 
-ZRANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES] [WITHDATA] [INTERSECT key2 [INTERSECT key3 ...]] [MERGE key2 [MERGE key3 ...]] [MERGEFUNC code] [TWOHOPS endpoint]
-    # Behaves similar to redis, except that 'offset' in LIMIT must be 0 if provided.
-    # INTERSECT: returned members will exist in every key: 'key', 'key2', ... 
-    # MERGE: for every member in 'key', merge its score with other scores in 'key2', 'key3', ...
+ZRANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES] [WITHDATA] [INTERSECT ...] [NOTINTERSECT ...] [MERGE ... [MERGEFUNC code]] [TWOHOPS endpoint]
+    # Behaves similar to redis, except that 'offset' in LIMIT must be 0 if provided
+    # INTERSECT: returned members must exist in all provided keys, e.g.: ZRANGEBYLEX key - + INTERSECT key2 INTERSECT key3
+    # NOTINTERSECT: returned members must not exist in all provided keys, e.g.: ZRANGEBYLEX key - + NOTINTERSECT key2 NOTINTERSECT key3
+    # MERGE: for every member in 'key', merge its score with scores in provided keys, e.g.: ZRANGEBYLEX key - + MERGE key2 MERGE key3
     # TWOHOPS: consider every member in 'key' pointes to a zset with the same name, find those members who contains 'endpoint' (ZSCORE member endpoint)
 
 SCAN cursor [SHARD shard] [MATCH pattern] [COUNT count]
@@ -81,10 +82,13 @@ SCAN cursor [SHARD shard] [MATCH pattern] [COUNT count]
 ```
 
 # Weak Cache
-Read commands like `ZRANGE` or `ZMDATA` will store results into a weak cache. Cached values will not be returned in the preceding requests unless you append `WEAK sec` to your commands, e.g.: `ZRANGE key start end WEAK 30` means returning cached results of `ZRANGE` if they are younger than 30 seconds.
+Read commands like `ZRANGE` or `ZMSCORE` will store results in a weak cache.
+These cached values will not be returned to clients unless they append `WEAK sec` to requests,
+e.g.: `ZRANGE key start end WEAK 30` means returning cached results of `ZRANGE` if they are just cached in less than 30 seconds.
 
 # Web Console
-Web console can be accessed at the same address as flag `-l` identified, e.g.: `http://127.0.0.1:6379`. To disable it, use flag `-no-web`.
+Web console can be accessed at the same address as flag `-l` identified, e.g.: `http://127.0.0.1:6379` and `http://127.0.0.1:6379/debug/pprof/`.
+To disable it, use flag `-no-web-console`.
 
 # Compaction
 To enable compaction, execute: `CONFIG SET CompactJobType <Type>`, where `<Type>` can be (`hh` ranges `00-23`, `mm` ranges `00-59`):

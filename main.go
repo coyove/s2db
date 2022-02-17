@@ -34,7 +34,7 @@ var (
 	masterPassword = flag.String("mp", "", "")
 
 	listenAddr = flag.String("l", ":6379", "listen address")
-	noWebUI    = flag.Bool("no-web", false, "disable web console interface")
+	noWebUI    = flag.Bool("no-web-console", false, "disable web console interface")
 	serverName = flag.String("n", "", "same as: CONFIG SET servername <Name>")
 	dataDir    = flag.String("d", "test", "data directory")
 

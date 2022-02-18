@@ -31,21 +31,23 @@ var (
 	Version = ""
 
 	masterAddr     = flag.String("master", "", "connect to master server, form: master_name@ip:port")
-	masterPassword = flag.String("mp", "", "")
+	masterPassword = flag.String("mp", "", "connect to master server with password")
+	listenAddr     = flag.String("l", ":6379", "listen address")
+	dataDir        = flag.String("d", "test", "data directory")
+	readOnly       = flag.Bool("ro", false, "start server as read-only")
+	masterMode     = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
 
-	listenAddr = flag.String("l", ":6379", "listen address")
-	noWebUI    = flag.Bool("no-web-console", false, "disable web console interface")
-	serverName = flag.String("n", "", "same as: CONFIG SET servername <Name>")
-	dataDir    = flag.String("d", "test", "data directory")
-
+	noWebUI     = flag.Bool("no-web-console", false, "disable web console interface")
 	showLogTail = flag.String("logtail", "", "")
-
-	readOnly   = flag.Bool("ro", false, "start server as read-only")
-	masterMode = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
-
 	showVersion = flag.Bool("v", false, "print s2db version")
 	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark   = flag.String("bench", "", "")
+	configSet   = func() (f [4]*string) {
+		for i := range f {
+			f[i] = flag.String("C"+strconv.Itoa(i), "", "update config before serving, form: key=value")
+		}
+		return f
+	}()
 )
 
 //go:embed scripts/index.html
@@ -181,24 +183,26 @@ func main() {
 		case <-time.After(time.Second * 30):
 			log.Panic("failed to open database, locked by others?")
 		}
-		if !*noWebUI {
-			fullyOpened.Lock()
-			sp := s2pkg.UUID()
-			http.HandleFunc("/", webInfo(sp, &s))
-			http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-				nj.PlaygroundHandler("local smc = --<<BRK"+sp+"\n"+
-					s.InspectorSource+"\nBRK"+sp+"\n\n"+
-					"local ok, err = server.UpdateConfig('InspectorSource', smc, false)\n"+
-					"println(ok, err)", s.getScriptEnviron())(w, r)
-			})
-			s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				log.Panic(err)
-			}
-			log.Info("serving HTTP info and pprof at ", s.lnWeb.Addr())
-			fullyOpened.Unlock()
-			log.Error("http: ", http.Serve(s.lnWeb, nil))
+		if *noWebUI {
+			log.Info("web console and pprof disabled")
+			return
 		}
+		fullyOpened.Lock()
+		sp := s2pkg.UUID()
+		http.HandleFunc("/", webConsole(sp, &s))
+		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
+			nj.PlaygroundHandler("local smc = --<<BRK"+sp+"\n"+
+				s.InspectorSource+"\nBRK"+sp+"\n\n"+
+				"local ok, err = server.UpdateConfig('InspectorSource', smc, false)\n"+
+				"println(ok, err)", s.getScriptEnviron())(w, r)
+		})
+		s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			log.Panic(err)
+		}
+		log.Info("serving web console and pprof at ", s.lnWeb.Addr())
+		fullyOpened.Unlock()
+		log.Error("http: ", http.Serve(s.lnWeb, nil))
 	}()
 	fullyOpened.Lock()
 	s, err = Open(*dataDir, configOpened)
@@ -207,11 +211,14 @@ func main() {
 	}
 	fullyOpened.Unlock()
 
-	if *serverName != "" {
-		old, _ := s.getConfig("servername")
-		log.Infof("update server name from %q to %q", old, *serverName)
-		if _, err := s.UpdateConfig("servername", *serverName, false); err != nil {
-			log.Panic(err)
+	for _, cd := range configSet {
+		if idx := strings.Index(*cd, "="); idx != -1 {
+			key, value := (*cd)[:idx], (*cd)[idx+1:]
+			old, _ := s.getConfig(key)
+			log.Infof("update %s from %q to %q", key, old, value)
+			if _, err := s.UpdateConfig(key, value, false); err != nil {
+				log.Panic(err)
+			}
 		}
 	}
 
@@ -231,7 +238,7 @@ func main() {
 	s.Serve(*listenAddr)
 }
 
-func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
+func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s, q := *ps, r.URL.Query()
 		shard := q.Get("shard")
@@ -287,26 +294,12 @@ func webInfo(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.R
 				return template.HTML(strings.Join(parts, ""))
 			},
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
-			"stat": func(s string) template.HTML {
-				var a, b, c float64
-				if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
-					return template.HTML(s)
-				}
-				al, bl, cl := trilabel(a, b, c)
-				return template.HTML(fmt.Sprintf("<div class=stat><div class=%s>%s</div><div class=%s>%s</div><div class=%s>%s</div></div>",
-					al, s2pkg.FormatFloatShort(a), bl, s2pkg.FormatFloatShort(b), cl, s2pkg.FormatFloatShort(c)))
-			},
+			"stat":      makeHTMLStat,
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s":        s,
-			"start":    time.Now(),
-			"CPU":      cpu,
-			"IOPS":     iops,
-			"Disk":     disk,
-			"REPLPath": evalPath,
+			"s": s, "start": time.Now(), "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 			"Slaves":   s.Slaves.List(),
-			"Shard":    s2pkg.MustParseInt(shard),
-			"ShardNum": ShardNum,
+			"Shard":    s2pkg.MustParseInt(shard), "ShardNum": ShardNum,
 		})
 	}
 }

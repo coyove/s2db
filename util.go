@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
+	"html/template"
 	"io/ioutil"
 	"math"
 	"math/rand"
@@ -243,14 +244,13 @@ func (s *Server) ShardInfo(shard int) []string {
 		}
 		firstKey, _ := bk.Cursor().First()
 		first := s2pkg.BytesToUint64(firstKey)
-		tmp = append(tmp, "", "# log")
 		tmp = append(tmp, fmt.Sprintf("log_count:%d", bk.Sequence()-first+1))
 		tmp = append(tmp, fmt.Sprintf("log_tail:%d", bk.Sequence()))
 		myTail = bk.Sequence()
 		return nil
 	})
 	minTail := uint64(math.MaxUint64)
-	tmp = append(tmp, "", "# slave_log", fmt.Sprintf("slave_queue:%d", len(s.Slaves.q)))
+	tmp = append(tmp, fmt.Sprintf("slave_queue:%d", len(s.Slaves.q)))
 	s.Slaves.Foreach(func(si *serverInfo) {
 		tail := si.LogTails[shard]
 		if tail < minTail {
@@ -431,18 +431,27 @@ func (s *Server) addCache(key string, h string, data interface{}) {
 	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()})
 }
 
-func trilabel(a, b, c float64) (ap, bp, cp string) {
-	text := [3]string{"stat1", "stat5", "stat15"}
-	if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
-		return text[0], text[0], text[0]
+func makeHTMLStat(s string) template.HTML {
+	var a, b, c float64
+	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
+		return template.HTML(s)
 	}
-	if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
-		return text[0], text[0], text[0]
+	trilabel := func(a, b, c float64) (ap, bp, cp string) {
+		text := [3]string{"stat1", "stat5", "stat15"}
+		if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
+			return text[0], text[0], text[0]
+		}
+		if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
+			return text[0], text[0], text[0]
+		}
+		x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
+		sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
+		*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
+		return
 	}
-	x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
-	sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
-	*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
-	return
+	al, bl, cl := trilabel(a, b, c)
+	return template.HTML(fmt.Sprintf("<div class=stat><div class=%s>%s</div><div class=%s>%s</div><div class=%s>%s</div></div>",
+		al, s2pkg.FormatFloatShort(a), bl, s2pkg.FormatFloatShort(b), cl, s2pkg.FormatFloatShort(c)))
 }
 
 func sizeOfBucket(bk *bbolt.Bucket) int64 {

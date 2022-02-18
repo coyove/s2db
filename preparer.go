@@ -207,7 +207,7 @@ func prepareZRemRangeByScore(key string, start, end string, dd []byte) func(tx *
 	}
 }
 
-func prepareQAppend(key string, value []byte, max int64, appender func(string) bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
+func prepareQAppend(key string, value []byte, max, ts int64, appender func(string) bool, dd []byte) func(tx *bbolt.Tx) (interface{}, error) {
 	return func(tx *bbolt.Tx) (interface{}, error) {
 		bk, err := tx.CreateBucketIfNotExists([]byte("q." + key))
 		if err != nil {
@@ -235,7 +235,11 @@ func prepareQAppend(key string, value []byte, max int64, appender func(string) b
 
 			key := make([]byte, 16)
 			binary.BigEndian.PutUint64(key, id)
-			binary.BigEndian.PutUint64(key[8:], uint64(time.Now().UnixNano()))
+
+			if ts == 0 {
+				ts = time.Now().UnixNano()
+			}
+			binary.BigEndian.PutUint64(key[8:], uint64(ts))
 
 			if err := bk.Put(key, value); err != nil {
 				return nil, err

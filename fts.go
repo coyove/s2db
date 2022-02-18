@@ -10,7 +10,6 @@ import (
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/s2pkg/fts"
-	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -72,7 +71,7 @@ func (s *Server) IndexDel(id string) (cnt int) {
 
 	// Remove document in reverted index
 	var oldDoc fts.Document
-	s2pkg.PanicErr(proto.Unmarshal(buf, &oldDoc))
+	oldDoc.UnmarshalBinary(buf)
 	for _, t := range oldDoc.Tokens {
 		for _, p := range oldDoc.Prefixs {
 			s.ZRem(p+t.Token, true, []string{id})
@@ -101,7 +100,7 @@ func (s *Server) IndexDocsInfo(docIds []string) (infos [][]string) {
 
 		var lines []string
 		var oldDoc fts.Document
-		s2pkg.PanicErr(proto.Unmarshal(buf, &oldDoc))
+		oldDoc.UnmarshalBinary(buf)
 
 		lines = append(lines, docIds[i])
 		for _, t := range oldDoc.Tokens {

@@ -366,6 +366,7 @@ type Flags struct {
 	LIMIT      int
 	COUNT      int
 	SHARD      int
+	NANOTS     *int64
 	ANY        bool
 	ASC        bool
 	DESC       bool
@@ -389,7 +390,11 @@ func (c Command) Flags(start int) (f Flags) {
 		return
 	}
 	for i := start; i < c.ArgCount(); i++ {
-		if c.EqualFold(i, "COUNT") {
+		if c.EqualFold(i, "_NANOTS") {
+			f.NANOTS = new(int64)
+			*f.NANOTS = s2pkg.MustParseInt64(c.Get(i + 1))
+			i++
+		} else if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "SHARD") {

@@ -68,6 +68,10 @@ func (doc *Document) MarshalBinary() []byte {
 	return buf
 }
 
+func (doc *Document) UnmarshalBinary(p []byte) {
+	s2pkg.PanicErr(proto.Unmarshal(p, doc))
+}
+
 var segMap = sync.Pool{
 	New: func() interface{} {
 		return map[string]int{}

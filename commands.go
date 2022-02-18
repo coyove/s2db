@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
@@ -224,21 +225,6 @@ func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	return writeLog(tx, dd)
 }
 
-func (s *Server) QAppend(key string, deferred bool, data []byte, max int) (int64, error) {
-	if err := s.checkWritable(); err != nil {
-		return 0, err
-	}
-	cmd := &redisproto.Command{Argv: [][]byte{[]byte("QAPPEND"), []byte(key), data, []byte("COUNT"), []byte(strconv.Itoa(max))}}
-	v, err := s.runPreparedTx("QAPPEND", key, deferred, prepareQAppend(key, data, int64(max), nil, dumpCommand(cmd)))
-	if err != nil {
-		return 0, err
-	}
-	if deferred {
-		return 0, nil
-	}
-	return v.(int64), nil
-}
-
 func parseQAppend(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
 	value := command.Bytes(2)
 	flags := command.Flags(3)
@@ -252,7 +238,14 @@ func parseQAppend(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) 
 			}
 		}
 	}
-	return prepareQAppend(key, value, int64(flags.COUNT), m, dumpCommand(command))
+	var ts int64
+	if flags.NANOTS == nil {
+		ts = time.Now().UnixNano()
+		command.Argv = append(command.Argv, []byte("_NANOTS"), []byte(strconv.FormatInt(ts, 10)))
+	} else {
+		ts = *flags.NANOTS
+	}
+	return prepareQAppend(key, value, int64(flags.COUNT), ts, m, dumpCommand(command))
 }
 
 func queueLenImpl(bk *bbolt.Bucket) (int64, int64, int64) {
@@ -290,15 +283,6 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 		n = int64(s2pkg.RangeHardLimit)
 	}
 
-	var start int64
-	var absoluteStart bool
-	if strings.HasPrefix(startString, "!") {
-		start = s2pkg.MustParseInt64(startString[1:])
-		absoluteStart = true
-	} else {
-		start = s2pkg.MustParseInt64(startString)
-	}
-
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		err := func() error {
 			bk := tx.Bucket([]byte("q." + key))
@@ -309,10 +293,34 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 			if count == 0 {
 				return nil
 			}
+			c := bk.Cursor()
 
-			if absoluteStart {
+			var start int64
+			if strings.HasPrefix(startString, ":") {
+				// Timestamp start
+				ts := s2pkg.MustParseInt64(startString[1:])
+				i, j := first, last+1
+				for i < j {
+					mid, midts, ok := qMidCursor(c, i, j)
+					if !ok {
+						return nil
+					}
+					if midts < ts {
+						i = mid + 1
+					} else {
+						j = mid
+					}
+				}
+				if i < first && i > last {
+					return nil
+				}
+				start = i
+			} else if strings.HasPrefix(startString, "!") {
+				// Absolute start
+				start = s2pkg.MustParseInt64(startString[1:])
 			} else {
 				// Relative start
+				start = s2pkg.MustParseInt64(startString)
 				if start <= 0 {
 					start = last + start
 				} else {
@@ -324,7 +332,6 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 				return nil
 			}
 
-			c := bk.Cursor()
 			startBuf := s2pkg.Uint64ToBytes(uint64(start))
 			k, v := c.Seek(startBuf)
 			if !bytes.HasPrefix(k, startBuf) {
@@ -332,7 +339,11 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 			}
 			for len(data) < int(n) && len(k) == 16 {
 				idx := binary.BigEndian.Uint64(k[:8])
-				data = append(data, s2pkg.Pair{Member: string(v), Score: float64(idx)})
+				p := s2pkg.Pair{Member: string(v), Score: float64(idx)}
+				if flags.WITHDATA {
+					p.Data = []byte(strconv.FormatUint(binary.BigEndian.Uint64(k[8:]), 10))
+				}
+				data = append(data, p)
 				if desc {
 					k, v = c.Prev()
 				} else {
@@ -347,4 +358,27 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 		return err
 	})
 	return data, err
+}
+
+func qMidCursor(c *bbolt.Cursor, start, end int64) (int64, int64, bool) {
+	end--
+	if end < start {
+		panic("qMidCursor: invalid end")
+	}
+	var startBuf, midBuf, endBuf [16]byte
+	binary.BigEndian.PutUint64(startBuf[:8], uint64(start))
+	binary.BigEndian.PutUint64(midBuf[:8], uint64((start+end)/2))
+	binary.BigEndian.PutUint64(endBuf[:8], uint64(end))
+	binary.BigEndian.PutUint64(endBuf[8:], math.MaxUint64)
+
+	k, _ := c.Seek(midBuf[:])
+	if len(k) != 16 {
+		panic("qMidCursor: shouldn't happen")
+	}
+	if bytes.Compare(k, endBuf[:]) > 0 || bytes.Compare(k, startBuf[:]) < 0 {
+		return 0, 0, false
+	}
+	idx := int64(binary.BigEndian.Uint64(k[:8]))
+	ts := int64(binary.BigEndian.Uint64(k[8:]))
+	return idx, ts, true
 }

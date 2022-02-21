@@ -296,7 +296,7 @@ func (s *Server) QScan(key string, startString string, n int64, flags redisproto
 			c := bk.Cursor()
 
 			var start int64
-			if strings.HasPrefix(startString, ":") {
+			if strings.HasPrefix(startString, "@") {
 				// Timestamp start
 				ts := s2pkg.MustParseInt64(startString[1:])
 				i, j := first, last+1

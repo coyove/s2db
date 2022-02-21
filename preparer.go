@@ -216,7 +216,7 @@ func prepareQAppend(key string, value []byte, max, ts int64, appender func(strin
 
 		var xid uint64
 		if bytes.EqualFold(value, []byte("--TRIM--")) {
-			// QAPPEND <Name> --TRIM-- <Max> is a trick to trim the head of a queue
+			// QAPPEND <Name> --TRIM-- COUNT <Max> is a trick to trim the head of a queue
 			xid = bk.Sequence()
 		} else {
 			if appender != nil {

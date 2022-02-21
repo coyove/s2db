@@ -253,14 +253,17 @@ func (s *Server) schedCompactionJob() {
 }
 
 func (s *Server) startCronjobs() {
-	run := func(d time.Duration) {
-		for ; !s.Closed; time.Sleep(d - time.Second) {
-			s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
+	var run func(time.Duration)
+	run = func(d time.Duration) {
+		if s.Closed {
+			return
 		}
+		time.AfterFunc(d, func() { run(d) })
+		s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
 	}
-	go run(time.Second * 30)
-	go run(time.Second * 60)
-	go run(time.Second * 300)
+	run(time.Second * 30)
+	run(time.Second * 60)
+	run(time.Second * 300)
 }
 
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {

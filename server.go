@@ -63,6 +63,7 @@ type Server struct {
 	Slaves           slaves
 	Master           serverInfo
 	CompactLock      s2pkg.LockBox
+	EvalLock         sync.Mutex
 
 	Survey struct {
 		StartAt                 time.Time
@@ -366,6 +367,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
+		s.EvalLock.Lock()
+		defer s.EvalLock.Unlock()
 		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...)))
 		return w.WriteBulkString(v.String())
 	case "PING":

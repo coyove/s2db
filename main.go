@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/binary"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"html/template"
@@ -244,9 +245,25 @@ func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *htt
 		shard := q.Get("shard")
 		password := q.Get("p")
 		ins := q.Get("inspector")
+		chartSources := strings.Split(q.Get("chart"), ",")
 
 		if shard == "" {
 			shard = "-1"
+		}
+
+		if len(chartSources) > 0 && chartSources[0] != "" {
+			w.Header().Add("Content-Type", "text/json")
+			data, _ := s.GetMetricsPairs(0, 0, chartSources...)
+			if len(data) == 0 {
+				w.Write([]byte("[]"))
+				return
+			}
+			m := []interface{}{data[0].Timestamp}
+			for _, d := range data {
+				m = append(m, d.Value)
+			}
+			json.NewEncoder(w).Encode(m)
+			return
 		}
 
 		if s.Password != "" && s.Password != password {
@@ -297,9 +314,10 @@ func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *htt
 			"stat":      makeHTMLStat,
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": time.Now(), "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
-			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
-			"Slaves":   s.Slaves.List(),
-			"Shard":    s2pkg.MustParseInt(shard), "ShardNum": ShardNum,
+			"Sections":     []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+			"Slaves":       s.Slaves.List(),
+			"MetricsNames": s.ListMetricsNames(),
+			"Shard":        s2pkg.MustParseInt(shard), "ShardNum": ShardNum,
 		})
 	}
 }

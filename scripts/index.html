@@ -147,6 +147,8 @@
             background-color: #667777dd;
         }
     </style>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js"></script>
 </head>
 <body>
     <div class=section-container>
@@ -273,6 +275,20 @@
             {{end}}
         </div>  
         {{end}}
+
+        <div class=section id=s_chart fold=0>
+            <div class=section-title>chart</div>
+            <div class=section-content style='flex-direction: column;'>
+                <div>
+                    <select onchange='loadChart(this.value)'>
+                        {{range .MetricsNames}}
+                        <option>{{.}}</option>
+                        {{end}}
+                    </select>
+                </div>
+                <div id=chart></div>
+            </div>
+        </div>
     {{end}}
     </div>
 
@@ -281,6 +297,37 @@
     </div>
 
     <script>
+        function loadChart(src) {
+            fetch('?chart=' + src).then(response => response.json()).then(function(data) {
+                const opts = {
+                    title: src,
+                    id: "chart1",
+                    class: "my-chart",
+                    width: 800,
+                    height: 400,
+                    series: [
+                        {},
+                        {
+                            // initial toggled state (optional)
+                            show: true,
+                            spanGaps: false,
+                            // in-legend display
+                            label: src,
+                            value: (self, rawValue) => rawValue.toFixed(3),
+                            // series style
+                            stroke: "red",
+                            width: 2,
+                            fill: "rgba(255, 0, 0, 0.3)",
+                        }
+                    ],
+                };
+
+                const el = document.getElementById('chart');
+                if (el.hasChildNodes()) el.innerHTML = '';
+                window.UPLOT = new uPlot(opts, data, el);
+            });
+        }
+
         document.querySelectorAll('.section').forEach(function(el, i) {
             if (el.id.startsWith('s_')) {
                 el.querySelector('.section-title').onclick = function() {

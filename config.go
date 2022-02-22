@@ -471,6 +471,21 @@ func (s *Server) AppendMetricsPairs(pairs []s2pkg.Pair, ttl time.Duration) error
 	return err
 }
 
+func (s *Server) ListMetricsNames() (names []string) {
+	s.ConfigDB.View(func(tx *bbolt.Tx) error {
+		c := tx.Cursor()
+		for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
+			subbk := tx.Bucket(bkNameBuf)
+			if subbk == nil {
+				continue
+			}
+			names = append(names, string(bkNameBuf[9:]))
+		}
+		return nil
+	})
+	return
+}
+
 func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
 	if endNano == 0 && startNano == 0 {
 		startNano, endNano = time.Now().UnixNano()-int64(time.Hour), time.Now().UnixNano()

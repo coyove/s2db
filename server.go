@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -103,6 +104,7 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		configOpened <- true // indicate the opening process is running normally
 	}
 	x.DataPath = path
+	fullDataFiles, _ := ioutil.ReadDir(path)
 	for i := range x.db {
 		fn, err := x.GetShardFilename(i)
 		if err != nil {
@@ -110,6 +112,7 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		}
 		shardPath := filepath.Join(path, fn)
 		log.Info("open shard #", i, " of ", shardPath)
+		deleteUnusedDataFile(path, fullDataFiles, i, fn)
 		start := time.Now()
 		db, err := bbolt.Open(shardPath, 0666, bboltOptions)
 		if err != nil {

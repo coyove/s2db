@@ -154,6 +154,7 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("db_size:%v", sz),
 			fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
 			fmt.Sprintf("configdb_size_mb:%.2f", float64(s.ConfigDB.Size())/1024/1024),
+			fmt.Sprintf("configdb_freelist_size:%v", s.ConfigDB.FreelistSize()/1024),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			"")
 	}
@@ -459,4 +460,19 @@ func sizeOfBucket(bk *bbolt.Bucket) int64 {
 		return int64(seq)
 	}
 	return int64(bk.KeyN())
+}
+
+func deleteUnusedDataFile(root string, files []os.FileInfo, shard int, useName string) {
+	prefix := fmt.Sprintf("shard%d.", shard)
+	for _, f := range files { // TODO: faster
+		if strings.HasPrefix(f.Name(), prefix) {
+			if f.Name() == prefix+"bak" {
+				continue
+			}
+			if f.Name() != useName {
+				full := filepath.Join(root, f.Name())
+				logrus.Infof("delete orphan shard %s: %v", full, os.Remove(full))
+			}
+		}
+	}
 }

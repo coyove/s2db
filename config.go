@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -424,4 +425,93 @@ func (s *Server) UpdateShardFilename(i int, fn string) error {
 		}
 		return bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(fn))
 	})
+}
+
+func (s *Server) AppendMetricsPairs(pairs []s2pkg.Pair, ttl time.Duration) error {
+	start := time.Now()
+	now := start.UnixNano() - int64(60*time.Second)
+	pairs = append(pairs, s2pkg.Pair{Member: "Connections", Score: float64(s.Survey.Connections)})
+	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
+	for i := 0; i < rv.NumField(); i++ {
+		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
+			m, n := sv.Metrics(), rt.Field(i).Name
+			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+		}
+	}
+	s.Survey.Command.Range(func(k, v interface{}) bool {
+		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
+		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+		return true
+	})
+	err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
+		for _, mp := range pairs {
+			subbk, err := tx.CreateBucketIfNotExists([]byte("_metrics_" + mp.Member))
+			if err != nil {
+				return err
+			}
+			subbk.FillPercent = 0.9
+			if err := subbk.Put(s2pkg.Uint64ToBytes(uint64(now)), s2pkg.FloatToBytes(mp.Score)); err != nil {
+				return err
+			}
+			c := subbk.Cursor()
+			for k, _ := c.First(); len(k) == 8; k, _ = c.Next() {
+				if ts := int64(binary.BigEndian.Uint64(k)); time.Duration(now-ts) <= ttl {
+					break
+				}
+				if err := subbk.Delete(k); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if diff := time.Since(start); diff.Milliseconds() > int64(s.SlowLimit) {
+		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, diff.Seconds(), "127.0.0.1", "metrics")
+	}
+	return err
+}
+
+func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
+	if endNano == 0 && startNano == 0 {
+		startNano, endNano = time.Now().UnixNano()-int64(time.Hour), time.Now().UnixNano()
+	}
+	res := map[string]s2pkg.GroupedMetrics{}
+	err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
+		c := tx.Cursor()
+		getter := func(bkNameBuf []byte) {
+			subbk := tx.Bucket(bkNameBuf)
+			if subbk == nil {
+				return
+			}
+			bkName := string(bkNameBuf[9:])
+			subc := subbk.Cursor() // TODO: fast lookup
+			for k, v := subc.First(); len(k) == 8; k, v = subc.Next() {
+				ts := int64(binary.BigEndian.Uint64(k))
+				if ts >= startNano && ts <= endNano {
+					a := res[bkName]
+					a.Name = bkName
+					a.Value = append(a.Value, s2pkg.BytesToFloat(v))
+					a.Timestamp = append(a.Timestamp, ts/1e9/60*60)
+					res[bkName] = a
+				}
+				if ts > endNano {
+					break
+				}
+			}
+		}
+		if len(names) > 0 {
+			for _, n := range names {
+				getter([]byte("_metrics_" + n))
+			}
+		} else {
+			for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
+				getter(bkNameBuf)
+			}
+		}
+		return nil
+	})
+	for _, p := range res {
+		m = append(m, p)
+	}
+	return
 }

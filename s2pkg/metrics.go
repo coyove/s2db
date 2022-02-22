@@ -88,3 +88,9 @@ func (s *Survey) Metrics() (m metrics) {
 	}
 	return
 }
+
+type GroupedMetrics struct {
+	Name      string
+	Timestamp []int64 // seconds
+	Value     []float64
+}

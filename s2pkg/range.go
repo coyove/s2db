@@ -5,9 +5,9 @@ import (
 )
 
 type Pair struct {
-	Member string
-	Score  float64
-	Data   []byte
+	Member string  `protobuf:"bytes,1,opt,name=member"`
+	Score  float64 `protobuf:"fixed64,2,opt,name=score"`
+	Data   []byte  `protobuf:"bytes,3,opt,name=data"`
 }
 
 type PairHeap []Pair

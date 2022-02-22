@@ -253,17 +253,24 @@ func (s *Server) schedCompactionJob() {
 }
 
 func (s *Server) startCronjobs() {
-	var run func(time.Duration)
-	run = func(d time.Duration) {
+	var run func(time.Duration, bool)
+	run = func(d time.Duration, m bool) {
 		if s.Closed {
 			return
 		}
-		time.AfterFunc(d, func() { run(d) })
-		s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
+		time.AfterFunc(d, func() { run(d, m) })
+		if m {
+			if err := s.AppendMetricsPairs(nil, time.Hour*24*30); err != nil {
+				log.Error("AppendMetricsPairs: ", err)
+			}
+		} else {
+			s.runInspectFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
+		}
 	}
-	run(time.Second * 30)
-	run(time.Second * 60)
-	run(time.Second * 300)
+	run(time.Second*30, false)
+	run(time.Second*60, false)
+	run(time.Second*60, true)
+	run(time.Second*300, false)
 }
 
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {

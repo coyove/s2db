@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"regexp"
@@ -41,6 +42,7 @@ type ServerConfig struct {
 	CompactDumpTmpDir string
 	CompactNoBackup   int // disable backup files when compacting, dangerous when you are master
 	StopLogPull       int
+	DisableMetrics    int
 	InspectorSource   string
 }
 
@@ -505,7 +507,11 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 				if ts >= startNano && ts <= endNano {
 					a := res[bkName]
 					a.Name = bkName
-					a.Value = append(a.Value, s2pkg.BytesToFloat(v))
+					vf := s2pkg.BytesToFloat(v)
+					if math.IsNaN(vf) {
+						vf = 0
+					}
+					a.Value = append(a.Value, vf)
 					a.Timestamp = append(a.Timestamp, ts/1e9/60*60)
 					res[bkName] = a
 				}
@@ -525,8 +531,23 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 		}
 		return nil
 	})
+	return fillMetricsHoles(res, startNano, endNano), err
+}
+
+func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, startNano, endNano int64) (m []s2pkg.GroupedMetrics) {
+	mints, maxts := startNano/1e9/60*60, endNano/1e9/60*60
 	for _, p := range res {
+		for c, ts := 0, mints; ts <= maxts; ts += 60 {
+			if c >= len(p.Timestamp) {
+				p.Timestamp = append(p.Timestamp, ts)
+				p.Value = append(p.Value, 0)
+			} else if p.Timestamp[c] != ts {
+				p.Timestamp = append(p.Timestamp[:c], append([]int64{ts}, p.Timestamp[c:]...)...)
+				p.Value = append(p.Value[:c], append([]float64{0}, p.Value[c:]...)...)
+			}
+			c++
+		}
 		m = append(m, p)
 	}
-	return
+	return m
 }

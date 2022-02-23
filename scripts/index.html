@@ -14,12 +14,6 @@
             margin: 0.5em;
             font-family: Arial, Helvetica, sans-serif;
         }
-        textarea {
-            font-family: Lucida Console, Monaco, Monospace;
-            resize: vertical;
-            border: none;
-            padding: 0.2em;
-        }
         pre {
             white-space: pre-wrap;
             width: 100%;
@@ -91,25 +85,12 @@
             width: 100%;
         }
         .section-box .box {
-            width: 12.5%;
+            width: 20%;
             overflow: hidden;
             padding: 0.1em;
             font-size: 80%;
         }
-        .section-box .box.shard:hover {
-            background-color: #ffeedd80;
-        }
-        .section-box .box:nth-child(2), .section-box .box:nth-child(4), .section-box .box:nth-child(6), .section-box .box:nth-child(8),
-        .section-box .box:nth-child(9), .section-box .box:nth-child(11), .section-box .box:nth-child(13), .section-box .box:nth-child(15),
-        .section-box .box:nth-child(18), .section-box .box:nth-child(20), .section-box .box:nth-child(22), .section-box .box:nth-child(24),
-        .section-box .box:nth-child(25), .section-box .box:nth-child(27), .section-box .box:nth-child(29), .section-box .box:nth-child(31) {
-            background: rgba(0, 0, 0, 0.04);
-        }
-        .box a {
-            text-decoration: none;
-            color: #233;
-            display: block;
-        }
+        .section-box .box:nth-child(odd) { background: rgba(0, 0, 0, 0.04) }
         .stat {
             display: inline-flex;
             background-color: #fafbfc;
@@ -117,13 +98,8 @@
             padding-right: 0.25em;
             overflow: hidden;
         }
-        .stat div:first-child:before {
-            margin: 0 0.25em 0 0;
-        }
-        .stat div {
-            display: inline-flex; 
-            font-size: 80%;
-        }
+        .stat div { display: inline-flex; font-size: 80%; }
+        .stat div:first-child:before { margin: 0 0.25em 0 0; }
         .stat .stat1:before  { background: #fed; }
         .stat .stat5:before  { background: #fc8; }
         .stat .stat15:before { background: #f88; }
@@ -135,30 +111,14 @@
             width: 0;
             height: 100%;
         }
-        .save-btn {
-            display: block;
-            padding: 0.5em 1em;
-            border: none;
-            background-color: #677;
-            color: white;
-            box-shadow: 0 2px 1px #666, 0 2px 1px #666;
-        }
-        .save-btn:hover {
-            background-color: #667777dd;
-        }
+        .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}.uplot {font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";line-height: 1.5;width: min-content;}.u-title {text-align: center;font-size: 18px;font-weight: bold;}.u-wrap {position: relative;user-select: none;}.u-over, .u-under {position: absolute;}.u-under {overflow: hidden;}.uplot canvas {display: block;position: relative;width: 100%;height: 100%;}.u-legend {font-size: 14px;margin: auto;text-align: center;}.u-inline {display: block;}.u-inline * {display: inline-block;}.u-inline tr {margin-right: 16px;}.u-legend th {font-weight: 600;}.u-legend th > * {vertical-align: middle;display: inline-block;}.u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: content-box !important;}.u-inline.u-live th::after {content: ":";vertical-align: middle;}.u-inline:not(.u-live) .u-value {display: none;}.u-series > * {padding: 4px;}.u-series th {cursor: pointer;}.u-legend .u-off > * {opacity: 0.3;}.u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}.u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;z-index: 100;}.u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}.u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}.u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;pointer-events: none;will-change: transform;z-index: 100;/*this has to be !important since we set inline "background" shorthand */background-clip: content-box !important;}.u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
     </style>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js"></script>
 </head>
 <body>
     <div class=section-container>
         <div class=section>
             <div class='section-title mono' style='text-align:center' onclick='location.href="/?p={{.s.Password}}"'>
-                {{if ne .Shard -1}}
-                :: <u>{{.s.ServerName}}</u> :: shard #{{.Shard}} ::
-                {{else}}
                 :: {{.s.ServerName}} ::
-                {{end}}
             </div>
             <div class=section-content>
                 <div class=section-key>start_at</div><div class=section-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
@@ -168,13 +128,6 @@
                 <div class=section-key>cpu{{$k}}_usage</div><div class=section-value>{{stat $v}}</div>
             </div>
             {{end}}
-            <div class=section-content>
-                <div class=section-key>shard_info</div>
-                <div class=section-value>
-                    <div class=section-box>{{box32 "-"}}</div>
-                    <style>.box.shard{{.Shard}}{ background: #fed !important }</style>
-                </div>
-            </div>
             <div class=section-content>
                 <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>open</a></div>
             </div>
@@ -189,27 +142,6 @@
             {{end}}
         </div>
        
-    {{if ne .Shard -1}}
-        <div class=section>
-            <div class=section-title>shard_{{.Shard}}</div>
-            {{range $i, $v := $.s.ShardInfo .Shard}}
-            {{if and $i $v}}
-            <div class=section-content>
-                {{$x := kv $v}}
-                <div class=section-key>{{$x.Key}}</div>
-                <div class=section-value>
-                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                    <div class=section-box>{{box32 $x.Value}}</div>
-                    {{else}}
-                    {{stat $x.Value}}
-                    {{end}}
-                </div>
-            </div>
-            {{end}}
-            {{end}}
-        </div>
-    {{else}}
- 
         <div class=section id=s_host_disk>
             <div class=section-title>host_disk</div>
             {{range $k, $v := .Disk}}
@@ -276,20 +208,59 @@
         </div>  
         {{end}}
 
-        <div class=section id=s_chart fold=0>
+        <div class=section id=s_chart fold=fold>
             <div class=section-title>chart</div>
             <div class=section-content style='flex-direction: column;'>
-                <div>
-                    <select onchange='loadChart(this.value)'>
-                        {{range .MetricsNames}}
-                        <option>{{.}}</option>
-                        {{end}}
-                    </select>
+                <div style='padding: 0.25em; white-space: nowrap'>
+                    <div style='display:none'><select id='chart-source-tmpl' style='margin:0 0.25em'>
+                        {{range .MetricsNames}}<option>{{.}}</option>{{end}}
+                    </select></div>
+                    <div id='chart-source' style='display: inline-block;'></div>
+                    <button onclick="addChartSource()">+</button>&emsp;
+                    <input type="date" id="chart-start" name="chart-start"> -
+                    <input type="date" id="chart-end" name="chart-end">
+                    <button id='chart-view-btn' disabled onclick="loadChart()">View</button>
+                    <script>
+                        document.getElementById('chart-start').valueAsDate = new Date();
+                        document.getElementById('chart-end').valueAsDate = new Date(new Date().getTime() + 86400000);
+                        function addChartSource(first) {
+                            const sl = document.getElementById('chart-source-tmpl').cloneNode(true);
+                            const del = document.createElement('button');
+                            del.style.margin = '0 0.25em 0 0';
+                            del.innerText = '-';
+                            del.onclick = function() { sl.parentNode.removeChild(sl); del.parentNode.removeChild(del) }
+                            document.getElementById('chart-source').appendChild(sl);
+                            if (!first) document.getElementById('chart-source').appendChild(del);
+                        }
+                        addChartSource(true);
+                    </script>
                 </div>
                 <div id=chart></div>
             </div>
         </div>
-    {{end}}
+
+        {{range $shard, $info := .ShardInfo}}
+        {{if $info}}
+        <div class=section id=s_shard{{$shard}} fold=fold>
+            <div class=section-title>shard{{$shard}}</div>
+            {{range $i, $v := $info}}
+            {{if and $i $v}}
+            <div class=section-content>
+                {{$x := kv $v}}
+                <div class=section-key>{{$x.Key}}</div>
+                <div class=section-value>
+                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
+                    <div class=section-box>{{box32 $x.Value}}</div>
+                    {{else}}
+                    {{stat $x.Value}}
+                    {{end}}
+                </div>
+            </div>
+            {{end}}
+            {{end}}
+        </div>
+        {{end}}
+        {{end}}
     </div>
 
     <div class=section style='border-bottom-width: 1px; text-align: center; line-height: 3em; font-size: 80%'>
@@ -297,31 +268,35 @@
     </div>
 
     <script>
-        function loadChart(src) {
-            fetch('?chart=' + src).then(response => response.json()).then(function(data) {
+        function loadChart() {
+            const src = [];
+            document.querySelectorAll('#chart-source select').forEach(function(sl) { src.push(sl.value) });
+            const offset = new Date().getTimezoneOffset() * 60000;
+            const start = document.getElementById('chart-start').valueAsDate.getTime() + offset;
+            const end = document.getElementById('chart-end').valueAsDate.getTime() + offset;
+            fetch('?chart=' + src.join(',') + '&chart-start=' + start + '&chart-end=' + end).
+            then(response => response.json()).
+            then(function(data) {
+                const dataStart = data[0][0] * 1000, dataEnd = data[0][data[0].length - 1] * 1000;
                 const opts = {
-                    title: src,
                     id: "chart1",
-                    class: "my-chart",
+                    title: (new Date(dataStart).toLocaleDateString()) + '-' + (new Date(dataEnd).toLocaleDateString()),
                     width: 800,
                     height: 400,
-                    series: [
-                        {},
-                        {
-                            // initial toggled state (optional)
-                            show: true,
-                            spanGaps: false,
-                            // in-legend display
-                            label: src,
-                            value: (self, rawValue) => rawValue.toFixed(3),
-                            // series style
-                            stroke: "red",
-                            width: 2,
-                            fill: "rgba(255, 0, 0, 0.3)",
-                        }
-                    ],
+                    series: [{}],
                 };
-
+                for (var i = 1; i < data.length; i++) {
+                    const l = 110 + i * 40;
+                    opts.series.push({
+                        show: true,
+                        spanGaps: false,
+                        label: src[i-1],
+                        width: 1,
+                        value: (self, rawValue) => rawValue.toFixed(3),
+                        stroke: "hsla(" + l + ", 50%, 47%, 1)",
+                        fill: "hsla(" + l + ", 50%, 47%, 0.3)",
+                    })
+                }
                 const el = document.getElementById('chart');
                 if (el.hasChildNodes()) el.innerHTML = '';
                 window.UPLOT = new uPlot(opts, data, el);
@@ -334,7 +309,12 @@
                     const folds = JSON.parse(localStorage.getItem('folds') || '{}');
                     if (el.getAttribute('fold') == 'fold') {
                         delete folds[el.id];
-                        if (el.id == 's_self_managed_code') loadEditor();
+                        if (el.id == 's_chart' && !el.SCRIPT) {
+                            el.SCRIPT = document.createElement('script');
+                            el.SCRIPT.src = 'https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js';
+                            el.SCRIPT.onload = function() { document.getElementById('chart-view-btn').removeAttribute('disabled') }
+                            document.body.appendChild(el.SCRIPT);
+                        }
                         el.removeAttribute('fold');
                     } else {
                         el.setAttribute('fold', 'fold');

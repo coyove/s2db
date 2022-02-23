@@ -190,7 +190,7 @@ func main() {
 		}
 		fullyOpened.Lock()
 		sp := s2pkg.UUID()
-		http.HandleFunc("/", webConsole(sp, &s))
+		http.HandleFunc("/", webConsole(sp, s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
 			nj.PlaygroundHandler("local smc = --<<BRK"+sp+"\n"+
 				s.InspectorSource+"\nBRK"+sp+"\n\n"+
@@ -239,21 +239,14 @@ func main() {
 	s.Serve(*listenAddr)
 }
 
-func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *http.Request) {
+func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s, q := *ps, r.URL.Query()
-		shard := q.Get("shard")
-		password := q.Get("p")
-		ins := q.Get("inspector")
-		chartSources := strings.Split(q.Get("chart"), ",")
+		q := r.URL.Query()
 
-		if shard == "" {
-			shard = "-1"
-		}
-
-		if len(chartSources) > 0 && chartSources[0] != "" {
+		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
+			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
 			w.Header().Add("Content-Type", "text/json")
-			data, _ := s.GetMetricsPairs(0, 0, chartSources...)
+			data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
 			if len(data) == 0 {
 				w.Write([]byte("[]"))
 				return
@@ -266,17 +259,18 @@ func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *htt
 			return
 		}
 
-		if s.Password != "" && s.Password != password {
-			w.Header().Add("Content-Type", "text/html")
-			w.WriteHeader(400)
-			w.Write([]byte("* password required"))
+		if s.Password != "" && s.Password != q.Get("p") {
+			w.Write([]byte("s2db: password required"))
 			return
 		}
 
-		if ins != "" {
-			s.UpdateConfig("InspectorSource", ins, false)
-			http.Redirect(w, r, "/?p="+password, http.StatusFound)
-			return
+		shardInfos, wg := [ShardNum][]string{}, sync.WaitGroup{}
+		if q.Get("noshard") != "1" {
+			for i := 0; i < ShardNum; i++ {
+				wg.Add(1)
+				go func(i int) { shardInfos[i] = s.ShardInfo(i); wg.Done() }(i)
+			}
+			wg.Wait()
 		}
 
 		sp := []string{}
@@ -297,14 +291,7 @@ func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *htt
 				return
 			},
 			"box32": func(v string) template.HTML {
-				if v == "-" {
-					parts := [ShardNum]string{}
-					for i := range parts {
-						parts[i] = fmt.Sprintf("<div class='box shard shard%d'><a href='?shard=%d&p=%s'>#%d</a></div>", i, i, s.Password, i)
-					}
-					return template.HTML(strings.Join(parts[:], ""))
-				}
-				parts := strings.Split(v, " ")
+				parts := strings.Split(v+"   ", " ")
 				for i, p := range parts {
 					parts[i] = "<div class=box>" + p + "</div>"
 				}
@@ -314,10 +301,9 @@ func webConsole(evalPath string, ps **Server) func(w http.ResponseWriter, r *htt
 			"stat":      makeHTMLStat,
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": time.Now(), "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
-			"Sections":     []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
-			"Slaves":       s.Slaves.List(),
+			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+			"Slaves":   s.Slaves.List(), "ShardInfo": shardInfos,
 			"MetricsNames": s.ListMetricsNames(),
-			"Shard":        s2pkg.MustParseInt(shard), "ShardNum": ShardNum,
 		})
 	}
 }

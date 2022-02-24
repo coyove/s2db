@@ -242,6 +242,7 @@ func main() {
 func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		start := time.Now()
 
 		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
 			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
@@ -300,7 +301,7 @@ func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 			"stat":      makeHTMLStat,
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "start": time.Now(), "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
+			"s": s, "start": start, "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 			"Slaves":   s.Slaves.List(), "ShardInfo": shardInfos,
 			"MetricsNames": s.ListMetricsNames(),

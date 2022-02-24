@@ -112,6 +112,7 @@
             height: 100%;
         }
         .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}.uplot {font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";line-height: 1.5;width: min-content;}.u-title {text-align: center;font-size: 18px;font-weight: bold;}.u-wrap {position: relative;user-select: none;}.u-over, .u-under {position: absolute;}.u-under {overflow: hidden;}.uplot canvas {display: block;position: relative;width: 100%;height: 100%;}.u-legend {font-size: 14px;margin: auto;text-align: center;}.u-inline {display: block;}.u-inline * {display: inline-block;}.u-inline tr {margin-right: 16px;}.u-legend th {font-weight: 600;}.u-legend th > * {vertical-align: middle;display: inline-block;}.u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: content-box !important;}.u-inline.u-live th::after {content: ":";vertical-align: middle;}.u-inline:not(.u-live) .u-value {display: none;}.u-series > * {padding: 4px;}.u-series th {cursor: pointer;}.u-legend .u-off > * {opacity: 0.3;}.u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}.u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;z-index: 100;}.u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}.u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}.u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;pointer-events: none;will-change: transform;z-index: 100;/*this has to be !important since we set inline "background" shorthand */background-clip: content-box !important;}.u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
+        #chart1 { margin: 0 auto }
     </style>
 </head>
 <body>
@@ -211,7 +212,7 @@
         <div class=section id=s_chart fold=fold>
             <div class=section-title>chart</div>
             <div class=section-content style='flex-direction: column;'>
-                <div style='padding: 0.25em; white-space: nowrap'>
+                <div id='chart-ctrl' style='padding: 0.25em'>
                     <div style='display:none'><select id='chart-source-tmpl' style='margin:0 0.25em'>
                         {{range .MetricsNames}}<option>{{.}}</option>{{end}}
                     </select></div>
@@ -219,7 +220,8 @@
                     <button onclick="addChartSource()">+</button>&emsp;
                     <input type="date" id="chart-start" name="chart-start"> -
                     <input type="date" id="chart-end" name="chart-end">
-                    <button id='chart-view-btn' disabled onclick="loadChart()">View</button>
+                    <button disabled onclick="loadChart()">View</button>&emsp;
+                    <button disabled onclick="loadChart(true)">Reset</button>
                     <script>
                         document.getElementById('chart-start').valueAsDate = new Date();
                         document.getElementById('chart-end').valueAsDate = new Date(new Date().getTime() + 86400000);
@@ -235,7 +237,7 @@
                         addChartSource(true);
                     </script>
                 </div>
-                <div id=chart></div>
+                <div id=chart style="width: 100%; padding: 0 0.5em"></div>
             </div>
         </div>
 
@@ -268,20 +270,29 @@
     </div>
 
     <script>
-        function loadChart() {
-            const src = [];
+        function loadChart(reset) {
+            if (reset && window.UPLOT) {
+                window.UPLOT.setScale('x', {min: window.UPLOT.RANGE[0] / 1000, max: window.UPLOT.RANGE[1] / 1000})
+                return
+            }
+
+            const src = [], offset = new Date().getTimezoneOffset() * 60000;
             document.querySelectorAll('#chart-source select').forEach(function(sl) { src.push(sl.value) });
-            const offset = new Date().getTimezoneOffset() * 60000;
+
             const start = document.getElementById('chart-start').valueAsDate.getTime() + offset;
             const end = document.getElementById('chart-end').valueAsDate.getTime() + offset;
+            const old_range = window.UPLOT ? [window.UPLOT.scales.x.min, window.UPLOT.scales.x.max] : [start / 1000, end / 1000];
+
             fetch('?chart=' + src.join(',') + '&chart-start=' + start + '&chart-end=' + end).
             then(response => response.json()).
             then(function(data) {
+                const el = document.getElementById('chart');
+                if (el.hasChildNodes()) el.innerHTML = '';
                 const dataStart = data[0][0] * 1000, dataEnd = data[0][data[0].length - 1] * 1000;
                 const opts = {
                     id: "chart1",
-                    title: (new Date(dataStart).toLocaleDateString()) + '-' + (new Date(dataEnd).toLocaleDateString()),
-                    width: 800,
+                    title: (new Date(dataStart).toLocaleString()) + '-' + (new Date(dataEnd).toLocaleString()),
+                    width: el.getBoundingClientRect().width - 80,
                     height: 400,
                     series: [{}],
                 };
@@ -297,9 +308,11 @@
                         fill: "hsla(" + l + ", 50%, 47%, 0.3)",
                     })
                 }
-                const el = document.getElementById('chart');
-                if (el.hasChildNodes()) el.innerHTML = '';
                 window.UPLOT = new uPlot(opts, data, el);
+                window.UPLOT.RANGE = [start, end];
+                if (old_range[0] % 60 != 0 || old_range[1] % 60 != 0) {
+                    window.UPLOT.setScale('x', {min: old_range[0], max: old_range[1]})
+                }
             });
         }
 
@@ -312,7 +325,9 @@
                         if (el.id == 's_chart' && !el.SCRIPT) {
                             el.SCRIPT = document.createElement('script');
                             el.SCRIPT.src = 'https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js';
-                            el.SCRIPT.onload = function() { document.getElementById('chart-view-btn').removeAttribute('disabled') }
+                            el.SCRIPT.onload = function() {
+                                document.querySelectorAll('#chart-ctrl [disabled]').forEach((el) => el.removeAttribute('disabled'));
+                            }
                             document.body.appendChild(el.SCRIPT);
                         }
                         el.removeAttribute('fold');

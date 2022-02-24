@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"hash/crc32"
 	"net"
 	"runtime/debug"
 	"strconv"
@@ -182,7 +184,7 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
 		for _, x := range cmds {
-			command, err := splitCommand(x)
+			command, err := splitCommandBase64(x)
 			if err != nil {
 				return fmt.Errorf("fatal: invalid payload: %q", x)
 			}
@@ -237,9 +239,20 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 			}
 		}
 
+		sumCheck := crc32.NewIEEE()
+		sumBuf := make([]byte, 4)
 		for i := start; i <= myLogtail; i++ {
 			data := bk.Get(s2pkg.Uint64ToBytes(uint64(i)))
-			if data[0] == 0x93 {
+			if data[0] == 0x94 {
+				sum32 := data[len(data)-4:]
+				data = data[1 : len(data)-4]
+				sumCheck.Reset()
+				sumCheck.Write(data)
+				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+					return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
+				}
+				logs = append(logs, base64.URLEncoding.EncodeToString(data))
+			} else if data[0] == 0x93 {
 				logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))
 			} else {
 				logs = append(logs, string(data))

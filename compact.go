@@ -261,7 +261,7 @@ func (s *Server) startCronjobs() {
 		time.AfterFunc(d, func() { run(d, m) })
 		if m {
 			if s.DisableMetrics != 1 {
-				if err := s.AppendMetricsPairs(nil, time.Hour*24*30); err != nil {
+				if err := s.appendMetricsPairs(time.Hour * 24 * 30); err != nil {
 					log.Error("AppendMetricsPairs: ", err)
 				}
 			}

@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
+	"hash/crc32"
 	"html/template"
+	"io"
 	"io/ioutil"
 	"math"
 	"math/rand"
@@ -108,7 +110,7 @@ func dumpCommand(cmd *redisproto.Command) []byte {
 	return joinCommand(cmd.Argv...)
 }
 
-func splitCommand(in string) (*redisproto.Command, error) {
+func splitCommandBase64(in string) (*redisproto.Command, error) {
 	command := &redisproto.Command{}
 	buf, _ := base64.URLEncoding.DecodeString(in)
 	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.Argv)
@@ -117,9 +119,10 @@ func splitCommand(in string) (*redisproto.Command, error) {
 
 func joinCommand(cmd ...[]byte) []byte {
 	buf := &bytes.Buffer{}
-	buf.WriteByte(0x93)
-	gob.NewEncoder(buf).Encode(cmd)
-	return buf.Bytes()
+	buf.WriteByte(0x94)
+	h := crc32.NewIEEE()
+	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd)
+	return append(buf.Bytes(), h.Sum(nil)...)
 }
 
 func (s *Server) Info(section string) (data []string) {

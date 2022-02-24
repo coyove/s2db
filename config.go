@@ -429,7 +429,8 @@ func (s *Server) UpdateShardFilename(i int, fn string) error {
 	})
 }
 
-func (s *Server) AppendMetricsPairs(pairs []s2pkg.Pair, ttl time.Duration) error {
+func (s *Server) appendMetricsPairs(ttl time.Duration) error {
+	var pairs []s2pkg.Pair
 	start := time.Now()
 	now := start.UnixNano() - int64(60*time.Second)
 	pairs = append(pairs, s2pkg.Pair{Member: "Connections", Score: float64(s.Survey.Connections)})
@@ -495,10 +496,10 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	res := map[string]s2pkg.GroupedMetrics{}
 	err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
 		c := tx.Cursor()
-		getter := func(bkNameBuf []byte) {
+		getter := func(bkNameBuf []byte) string {
 			subbk := tx.Bucket(bkNameBuf)
 			if subbk == nil {
-				return
+				return ""
 			}
 			bkName := string(bkNameBuf[9:])
 			subc := subbk.Cursor() // TODO: fast lookup
@@ -511,14 +512,20 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 					if math.IsNaN(vf) {
 						vf = 0
 					}
-					a.Value = append(a.Value, vf)
-					a.Timestamp = append(a.Timestamp, ts/1e9/60*60)
+					tsMin := ts / 1e9 / 60 * 60
+					if len(a.Timestamp) > 0 && a.Timestamp[len(a.Timestamp)-1] == tsMin {
+						a.Value[len(a.Value)-1] = vf
+					} else {
+						a.Value = append(a.Value, vf)
+						a.Timestamp = append(a.Timestamp, tsMin)
+					}
 					res[bkName] = a
 				}
 				if ts > endNano {
 					break
 				}
 			}
+			return bkName
 		}
 		if len(names) > 0 {
 			for _, n := range names {
@@ -526,17 +533,20 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 			}
 		} else {
 			for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
-				getter(bkNameBuf)
+				if bkName := getter(bkNameBuf); bkName != "" {
+					names = append(names, bkName)
+				}
 			}
 		}
 		return nil
 	})
-	return fillMetricsHoles(res, startNano, endNano), err
+	return fillMetricsHoles(res, names, startNano, endNano), err
 }
 
-func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, startNano, endNano int64) (m []s2pkg.GroupedMetrics) {
+func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, startNano, endNano int64) (m []s2pkg.GroupedMetrics) {
 	mints, maxts := startNano/1e9/60*60, endNano/1e9/60*60
-	for _, p := range res {
+	for _, name := range names {
+		p := res[name]
 		for c, ts := 0, mints; ts <= maxts; ts += 60 {
 			if c >= len(p.Timestamp) {
 				p.Timestamp = append(p.Timestamp, ts)

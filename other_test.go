@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"hash/crc32"
 	"math"
 	"math/rand"
 	"regexp"
@@ -26,7 +27,13 @@ func TestCommandJoinSplit(t *testing.T) {
 			b = append(b, x)
 		}
 		x := joinCommand(b...)
-		cmd2, _ := splitCommand(base64.URLEncoding.EncodeToString(x[1:]))
+		sum32 := x[len(x)-4:]
+		h := crc32.NewIEEE()
+		h.Write(x[1 : len(x)-4])
+		if !bytes.Equal(h.Sum(nil), sum32) {
+			t.Fatal(sum32)
+		}
+		cmd2, _ := splitCommandBase64(base64.URLEncoding.EncodeToString(x[1 : len(x)-4]))
 		for i := 0; i < cmd2.ArgCount(); i++ {
 			if !bytes.Equal(cmd2.At(i), b[i]) {
 				t.FailNow()

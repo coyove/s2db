@@ -192,9 +192,8 @@ func main() {
 		sp := s2pkg.UUID()
 		http.HandleFunc("/", webConsole(sp, s))
 		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			nj.PlaygroundHandler("local smc = --<<BRK"+sp+"\n"+
-				s.InspectorSource+"\nBRK"+sp+"\n\n"+
-				"local ok, err = server.UpdateConfig('InspectorSource', smc, false)\n"+
+			nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+sp+". DO NOT EDIT THIS LINE\n\n"+
+				"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+sp+"'), false)\n"+
 				"println(ok, err)", s.getScriptEnviron())(w, r)
 		})
 		s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")

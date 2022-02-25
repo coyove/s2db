@@ -74,7 +74,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	dumpSize, err := x.DB.Dump(dumpPath, s.DumpSafeMargin*1024*1024)
 	if err != nil {
 		log.Error("dump DB: ", err)
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	log.Info("STAGE 0: dump finished: ", dumpSize)
@@ -82,18 +82,18 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	compactDB, err := bbolt.Open(compactPath, 0666, bboltOptions)
 	if err != nil {
 		log.Error("open compactDB: ", err)
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	dumpDB, err := bbolt.Open(dumpPath, 0666, bboltReadonlyOptions)
 	if err != nil {
 		log.Errorf("open dumpDB: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
 		log.Errorf("defragdb error: %v, closeDumpErr=%v, closeCompactErr=%v", err, dumpDB.Close(), compactDB.Close())
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, closeDumpErr=%v, removeDumpErr=%v",
@@ -111,18 +111,18 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			return nil
 		}); err != nil {
 			log.Errorf("get compactDB tail: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runInspectFunc("compactonerror", err)
+			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
 		mt, err = s.myLogTail(shard)
 		if err != nil {
 			log.Errorf("get shard tail: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runInspectFunc("compactonerror", err)
+			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
 		if ct > mt {
 			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d, closeCompactErr=%v", ct, mt, compactDB.Close())
-			s.runInspectFunc("compactonerror", err)
+			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
 		if first%1000 == 0 {
@@ -135,12 +135,12 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 		logs, err := s.respondLog(shard, ct+1, false)
 		if err != nil {
 			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runInspectFunc("compactonerror", err)
+			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
 		if _, err := runLog(logs, compactDB); err != nil {
 			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runInspectFunc("compactonerror", err)
+			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
 	}
@@ -159,12 +159,12 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	logs, err := s.respondLog(shard, ct+1, true)
 	if err != nil {
 		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	if _, err := runLog(logs, compactDB); err != nil {
 		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
@@ -172,7 +172,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	// STAGE 5: now compactDB and onlineDB are identical, time to make compactDB officially online
 	if err := s.UpdateShardFilename(shard, compactFilename); err != nil {
 		log.Errorf("update shard filename: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runInspectFunc("compactonerror", err)
+		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
 

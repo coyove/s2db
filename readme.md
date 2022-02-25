@@ -29,6 +29,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `CompactTxWorkers (int)`: number of workers used to compact a shard
 - `CompactNoBackup (int, 0|1)`: don't backup the old database after compaction
 - `StopLogPull (int, 0|1)`: stop pulling logs from master
+- `DisableMetrics (int, 0|1)`: disable internal metrics recording
 - `InspectorSource (string)`: internal script code, see [self-managed code](#Self-managed%20Code)
 
 # Commands
@@ -171,3 +172,4 @@ By implementing certain functions in `InspectorSource`, s2db users (like devops)
 5. `function compactonstart(shard)`: fired when each shard starts compacting.
 6. `function compactonfinish(shard)`: fired when each shard finishes compacting.
 7. `function compactonresume(shard)`: fired when a shard resumes compacting.
+7. `function compactonerror(shard, error)`: fired when compacting encountered error.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -57,7 +58,6 @@ type Server struct {
 	MasterNameAssert string // when pulling logs, use this name to ensure the right master
 	MasterPassword   string // master password
 	DataPath         string // location of config database
-	RedirectWrites   string
 	SelfManager      *bas.Program
 	Cache            *s2pkg.MasterLRU
 	WeakCache        *s2pkg.MasterLRU
@@ -75,8 +75,8 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
-		Proxy, SlowLogs         s2pkg.Survey
-		Command                 sync.Map
+		SlowLogs                s2pkg.Survey
+		Command, Proxy          sync.Map
 	}
 
 	db [ShardNum]struct {
@@ -127,7 +127,7 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
-	x.rdbCache = s2pkg.NewMasterLRU(1, func(kv s2pkg.LRUKeyValue) {
+	x.rdbCache = s2pkg.NewMasterLRU(4, func(kv s2pkg.LRUKeyValue) {
 		log.Info("rdbCache(", kv.SlaveKey, ") close: ", kv.Value.(*redis.Client).Close())
 	})
 	fts.InitDict(x.loadDict())
@@ -323,17 +323,25 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		start = time.Now()
 	)
 
+	if s.RedisProxy != "" && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+		proxies := strings.Split(s.RedisProxy, ",")
+		useProxy := proxies[0]
+		if !isWriteCommand[cmd] {
+			useProxy = proxies[rand.Intn(len(proxies))]
+		}
+		v, err := s.getRedis(useProxy).Do(context.Background(), command.Args()...).Result()
+		useProxy = useProxy[strings.Index(useProxy, "@")+1:]
+		sv, _ := s.Survey.Proxy.LoadOrStore(useProxy, new(s2pkg.Survey))
+		sv.(*s2pkg.Survey).Incr(int64(time.Since(start).Milliseconds()))
+		if err != nil && err != redis.Nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteObject(v)
+	}
+
 	if isWriteCommand[cmd] {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
 			return w.WriteError("invalid key name, which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
-		}
-		if s.RedirectWrites != "" {
-			v, err := s.getRedis(s.RedirectWrites).Do(context.Background(), command.Args()...).Result()
-			s.Survey.Proxy.Incr(int64(time.Since(start).Milliseconds()))
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			return w.WriteObject(v)
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
@@ -348,7 +356,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			diff := time.Since(start)
 			diffMs := diff.Milliseconds()
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
-				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), remoteAddr.(*net.TCPAddr).IP, command)
+				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), getRemoteIP(remoteAddr), command)
 				s.Survey.SlowLogs.Incr(diffMs)
 			}
 			if isReadCommand[cmd] {

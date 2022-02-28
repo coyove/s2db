@@ -179,8 +179,6 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
 			fmt.Sprintf("slow_logs_qps:%v", s.Survey.SlowLogs.QPSString()),
 			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
-			fmt.Sprintf("proxy_write_qps:%v", s.Survey.Proxy.String()),
-			fmt.Sprintf("proxy_write_avg_lat:%v", s.Survey.Proxy.MeanString()),
 			"")
 	}
 	if section == "" || section == "command_qps" || section == "command_avg_lat" {
@@ -376,11 +374,13 @@ func (s *Server) BigKeys(n, shard int) []s2pkg.Pair {
 }
 
 func getRemoteIP(addr net.Addr) net.IP {
-	tcp, _ := addr.(*net.TCPAddr)
-	if tcp == nil {
-		return net.IPv4bcast
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return addr.IP
+	case *net.UnixAddr:
+		return net.IPv4(127, 0, 0, 1)
 	}
-	return tcp.IP
+	return net.IPv4bcast
 }
 
 func closeAllReadTxs(txs []*bbolt.Tx) {

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coyove/nj"
@@ -44,6 +46,8 @@ type ServerConfig struct {
 	StopLogPull       int
 	DisableMetrics    int
 	InspectorSource   string
+	RedisProxy        string // form: write [read1 [read2 ...]]
+	RedisProxyOptions string
 }
 
 func (s *Server) loadConfig() error {
@@ -154,6 +158,17 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return errSafeExit
 	})
 	if found {
+		if key == "redisproxyoptions" {
+			clients := []*redis.Client{}
+			s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool {
+				clients = append(clients, kv.Value.(*redis.Client))
+				return true
+			})
+			s.rdbCache.Clear()
+			for _, c := range clients {
+				c.Close()
+			}
+		}
 		if err := s.saveConfig(); err != nil {
 			s.ServerConfig = old
 			return false, err
@@ -220,34 +235,60 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 }
 
 func (s *Server) getRedis(addr string) (cli *redis.Client) {
-	if c, ok := s.rdbCache.Get(addr); ok {
+	if addr == "" {
+		addr = "local"
+	}
+	xaddr := addr
+	if c, ok := s.rdbCache.Get(xaddr); ok {
 		cli = c.(*redis.Client)
 		return
 	}
-	defer func() { s.rdbCache.Add("", addr, cli) }()
+	defer func() { s.rdbCache.Add("", xaddr, cli) }()
+
+	opt := func(in *redis.Options) *redis.Options {
+		if s.RedisProxyOptions == "" {
+			return in
+		}
+		q, err := url.ParseQuery(s.RedisProxyOptions)
+		if err != nil {
+			log.Error("getRedis: failed to parse options: ", s.RedisProxyOptions)
+			return in
+		}
+		rv := reflect.ValueOf(in).Elem()
+		for k, vs := range q {
+			rv.FieldByName(k).SetInt(s2pkg.MustParseInt64(vs[0]))
+		}
+		log.Info("getRedis: options debug: ", in)
+		return in
+	}
 
 	config := &redis.Options{Addr: addr}
-	if addr == "" || strings.EqualFold(addr, "local") {
+	if strings.Contains(addr, "@") {
+		parts := strings.SplitN(addr, "@", 2)
+		addr = parts[1]
+		config.Password = parts[0]
+		config.Addr = addr
+	}
+
+	if strings.EqualFold(addr, "LOCAL") {
 		config.Network = "unix"
 		config.Addr = s.lnLocal.Addr().String()
-		return redis.NewClient(config)
+		config.Password = s.Password
+		return redis.NewClient(opt(config))
 	}
+
 	si := s.Slaves.Get(addr)
 	if si != nil {
 		_, port, _ := net.SplitHostPort(si.ListenAddr)
 		config.Addr = si.RemoteAddr + ":" + port
-		return redis.NewClient(config)
+		return redis.NewClient(opt(config))
 	}
-	if strings.Contains(addr, "@") {
-		parts := strings.SplitN(addr, "@", 2)
-		config.Password = parts[0]
-		config.Addr = parts[1]
-	}
+
 	if strings.EqualFold(addr, "MASTER") {
 		config.Addr = s.MasterAddr
 		config.Password = s.MasterPassword
 	}
-	return redis.NewClient(config)
+	return redis.NewClient(opt(config))
 }
 
 func (s *Server) CopyConfig(remoteAddr, key string) error {
@@ -441,11 +482,15 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
 		}
 	}
-	s.Survey.Command.Range(func(k, v interface{}) bool {
-		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
-		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
-		return true
-	})
+	ranger := func(sm sync.Map, prefix string) {
+		sm.Range(func(k, v interface{}) bool {
+			m, n := v.(*s2pkg.Survey).Metrics(), prefix+k.(string)
+			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+			return true
+		})
+	}
+	ranger(s.Survey.Proxy, "Proxy")
+	ranger(s.Survey.Command, "Cmd")
 	err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 		for _, mp := range pairs {
 			subbk, err := tx.CreateBucketIfNotExists([]byte("_metrics_" + mp.Member))
@@ -560,4 +605,8 @@ func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, start
 		m = append(m, p)
 	}
 	return m
+}
+
+func (s *Server) DeleteMetrics(name string) error {
+	return s.ConfigDB.Update(func(tx *bbolt.Tx) error { return tx.DeleteBucket([]byte("_metrics_" + name)) })
 }

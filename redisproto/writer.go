@@ -98,6 +98,12 @@ func (w *Writer) WriteIntOrError(v interface{}, err error) error {
 }
 
 func (w *Writer) WriteObject(v interface{}) error {
+	if v == nil {
+		return w.WriteBulk(nil)
+	}
+	if objs, ok := v.([]interface{}); ok {
+		return w.WriteObjectsSlice(objs)
+	}
 	switch rv := reflect.ValueOf(v); rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return w.WriteInt(rv.Int())

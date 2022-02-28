@@ -557,7 +557,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return s.runGeoPos(w, key, command)
 	case "SCAN":
 		flags := command.Flags(2)
-		p, next, err := s.Scan(key, flags.MATCH, flags.SHARD, flags.COUNT)
+		p, next, err := s.Scan(key, flags)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

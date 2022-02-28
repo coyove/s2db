@@ -382,21 +382,25 @@ func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bu
 	return nil
 }
 
-func (s *Server) Scan(cursor string, match string, shard int, count int) (pairs []s2pkg.Pair, nextCursor string, err error) {
-	count++
-	if err := s.Foreach(cursor, shard, func(k string, bk *bbolt.Bucket) bool {
-		if match != "" {
-			if m := s2pkg.Match(match, k); !m {
+func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair, nextCursor string, err error) {
+	count, timedout, start := flags.COUNT+1, "", time.Now()
+	if err := s.Foreach(cursor, flags.SHARD, func(k string, bk *bbolt.Bucket) bool {
+		if flags.MATCH != "" {
+			if m := s2pkg.Match(flags.MATCH, k); !m {
 				return true
 			}
 		}
-		pairs = append(pairs, s2pkg.Pair{
-			Member: k,
-			Score:  float64(sizeOfBucket(bk)),
-		})
+		if time.Since(start) > flags.TIMEOUT {
+			timedout = k
+			return false
+		}
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(sizeOfBucket(bk))})
 		return len(pairs) < count
 	}); err != nil {
 		return nil, "", err
+	}
+	if timedout != "" {
+		return nil, timedout, nil
 	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member

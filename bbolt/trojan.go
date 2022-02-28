@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 
@@ -77,4 +78,16 @@ func (b *DB) Dump(path string, safeSizeMargin int) (int64, error) {
 		return 0, err
 	}
 	return dumpFile.Seek(0, 2)
+}
+
+func (b *DB) DumpTo(w io.Writer, safeSizeMargin int) error {
+	sz := b.Size()
+	if sz == -1 {
+		return fmt.Errorf("failed to get db size")
+	}
+	// Re-mmap data file to a larger size, hopefully big enough so that read tx won't block writes
+	if err := b.Update(func(tx *Tx) error { return b.mmap(int(sz) + safeSizeMargin) }); err != nil {
+		return err
+	}
+	return b.View(func(tx *Tx) error { _, err := tx.WriteTo(w); return err })
 }

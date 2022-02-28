@@ -243,6 +243,16 @@ func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.
 		q := r.URL.Query()
 		start := time.Now()
 
+		if dumpShard := q.Get("dump"); dumpShard != "" {
+			w.Header().Add("Content-Type", "application/octet-stream")
+			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
+			if err := s.db[s2pkg.MustParseInt(dumpShard)].DumpTo(w, m); err != nil {
+				log.Errorf("http dumper #%d: %v", dumpShard, err)
+			}
+			log.Infof("http dumper #%d finished in %v", dumpShard, time.Since(start))
+			return
+		}
+
 		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
 			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
 			w.Header().Add("Content-Type", "text/json")

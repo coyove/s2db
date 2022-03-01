@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -286,14 +285,20 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	}
 	unlinkp[unlinksKey] = true // "unlinks" key itself will also be unlinked
 
-	// open a tx on old db for read
 	tx, err := odb.Begin(false)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	slaveMinLogtail, useSlaveLogtail := s.calcSlaveLogtail(shard)
+	// As being master, server can't purge logs which slaves don't have yet,
+	// this is the best effort we can make because slaves maybe offline so it is still possible to over-purge.
+	// If server is in master mode but no slave info can be collected, no log compaction will be made.
+	slaveMinLogtail, useSlaveLogtail := s.Slaves.MinLogtail(shard)
+	if !useSlaveLogtail && s.MasterMode {
+		log.Infof("fatal: (master mode) failed to collect shard info from slaves, no log compaction will be made")
+		slaveMinLogtail, useSlaveLogtail = 0, true
+	}
 
 	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
 
@@ -365,8 +370,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 				logtailStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
 			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", logtailStart, slaveMinLogtail, b.Sequence())
-			logtailStartBuf = make([]byte, 8)
-			binary.BigEndian.PutUint64(logtailStartBuf, logtailStart)
+			logtailStartBuf = s2pkg.Uint64ToBytes(logtailStart)
 		}
 
 		bucketIn <- &s2pkg.BucketWalker{
@@ -375,11 +379,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			Tx:              tmptx,
 			QueueTTL:        queueTTL,
 			LogtailStartBuf: logtailStartBuf,
-			Total:           &total,
-			QueueDrops:      &queueDrops,
-			QueueDeletes:    &queueDeletes,
-			ZSetCardFix:     &zsetCardFix,
-			Logger:          log,
+			// Metrics
+			Total: &total, QueueDrops: &queueDrops, QueueDeletes: &queueDeletes, ZSetCardFix: &zsetCardFix, Logger: log,
 		}
 	}
 
@@ -462,24 +463,4 @@ func decUint64(v uint64, d uint64) uint64 {
 
 func getPendingUnlinksKey(shard int) string {
 	return "_unlinks_\t" + strconv.Itoa(shard)
-}
-
-func (s *Server) calcSlaveLogtail(shard int) (slaveMinLogtail uint64, useSlaveLogtail bool) {
-	var min uint64 = math.MaxUint64
-	s.Slaves.Foreach(func(si *serverInfo) {
-		if si.LogTails[shard] < min {
-			min = si.LogTails[shard]
-		}
-	})
-	if min != math.MaxUint64 {
-		// If master have any slaves, it can't purge logs which slaves don't have yet
-		// This is the best effort we can make because slaves maybe offline so it is still possible to over-purge
-		slaveMinLogtail = min
-		useSlaveLogtail = true
-	} else if s.MasterMode {
-		log.Infof("FATAL(master mode): failed to collect shard info #%d from slaves, no log compaction will be made", shard)
-		slaveMinLogtail = 0
-		useSlaveLogtail = true
-	}
-	return
 }

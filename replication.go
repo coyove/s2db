@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
+	"math"
 	"net"
 	"runtime/debug"
 	"strconv"
@@ -363,4 +364,15 @@ func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
 	})
 	cb(p)
 	s.q[remoteAddr] = p
+}
+
+func (s *slaves) MinLogtail(shard int) (minTail uint64, exist bool) {
+	minTail = math.MaxUint64
+	s.Foreach(func(si *serverInfo) {
+		tail := si.LogTails[shard]
+		if tail < minTail {
+			minTail, exist = tail, true
+		}
+	})
+	return
 }

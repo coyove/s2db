@@ -251,17 +251,14 @@ func (s *Server) ShardInfo(shard int) []string {
 		myTail = bk.Sequence()
 		return nil
 	})
-	minTail := uint64(math.MaxUint64)
-	tmp = append(tmp, fmt.Sprintf("slave_queue:%d", len(s.Slaves.q)))
+	tmp = append(tmp, fmt.Sprintf("slaves:%d", s.Slaves.Len()))
 	s.Slaves.Foreach(func(si *serverInfo) {
-		tail := si.LogTails[shard]
-		if tail < minTail {
-			minTail = tail
-		}
-		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", si.RemoteAddr, tail))
+		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", si.RemoteAddr, si.LogTails[shard]))
 	})
-	tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
-	tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
+	if minTail, exist := s.Slaves.MinLogtail(shard); exist {
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
+	}
 	tmp = append(tmp, "")
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
 }

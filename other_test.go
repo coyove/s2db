@@ -89,6 +89,14 @@ func TestFloatBytesComparison(t *testing.T) {
 	do(2)
 	do(math.Float64frombits(0x7FEFFFFFFFFFFFFF)) // max float64 below +inf
 
+	for i := 0; i < 1e6; i++ {
+		a := rand.Float64()
+		b := rand.Float64()*math.Float64frombits(0x7FEFFFFFFFFFFFFF) + 1
+		if s := bytes.Compare(s2pkg.FloatToBytes(a), s2pkg.FloatToBytes(b)); s != -1 {
+			t.Fatal(a, b, s)
+		}
+	}
+
 	fmt.Println(s2pkg.FloatToBytes(math.Inf(1)))
 	fmt.Println(s2pkg.FloatToBytes(math.Float64frombits(0x7FEFFFFFFFFFFFFF)))
 	fmt.Println(s2pkg.FloatToBytes(math.Inf(-1)))

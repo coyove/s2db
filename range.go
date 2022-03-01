@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/heap"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -91,7 +92,10 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 		ro.Append = genIntersectFunc(bkm, flags)
 		success = func([]s2pkg.Pair, int) {}
 	} else if flags.TWOHOPS.ENDPOINT != "" {
-		txs, close := s.openAllTx()
+		txs, close, err := s.openAllTx()
+		if err != nil {
+			return nil, err
+		}
 		defer close()
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
@@ -335,48 +339,42 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 	return
 }
 
-func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bucket) bool) error {
-	startShard := 0
-	if cursor != "" {
-		startShard = shardIndex(cursor)
+func (s *Server) Foreach(cursor string, f func(k, typ string, bk ...*bbolt.Bucket) bool) (err error) {
+	txs, close, err := s.openAllTx()
+	if err != nil {
+		return err
 	}
-	if shard >= 0 {
-		startShard = shard
-	}
+	defer close()
 
-	for ; startShard < ShardNum; startShard++ {
-		err := s.db[startShard].View(func(tx *bbolt.Tx) error {
-			c := tx.Cursor()
-			k, _ := c.First()
-			if cursor != "" {
-				k, _ = c.Seek([]byte("q." + cursor)) // 'q.' comes first, then 'zset.'
-			}
-
-			for ; len(k) > 0; k, _ = c.Next() {
-				var key []byte
-				if bytes.HasPrefix(k, []byte("zset.score")) {
-					continue
-				} else if bytes.HasPrefix(k, []byte("zset.")) {
-					key = k[5:]
-				} else if bytes.HasPrefix(k, []byte("q.")) {
-					key = k[2:]
-				} else {
-					continue
-				}
-				if !f(string(key), tx.Bucket(k)) {
-					return errSafeExit
-				}
-			}
-			return nil
-		})
-		if err == errSafeExit {
-			return nil
-		} else if err != nil {
-			return err
+	var cursorsZ, cursorsQ [ShardNum]*bbolt.Cursor
+	keys := &s2pkg.PairHeap{CompareData: true}
+	for i := range s.db {
+		cursorsZ[i], cursorsQ[i] = txs[i].Cursor(), txs[i].Cursor()
+		if k, _ := cursorsQ[i].Seek([]byte("q." + cursor)); bytes.HasPrefix(k, []byte("q.")) {
+			heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[2:], Member: "queue"})
 		}
-		cursor = ""
-		if shard >= 0 {
-			break
+		if k, _ := cursorsZ[i].Seek([]byte("zset.score." + cursor)); bytes.HasPrefix(k, []byte("zset.score.")) {
+			heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[11:], Member: "zset"})
+		}
+	}
+
+	for cont := true; keys.Len() > 0 && cont; {
+		p := heap.Pop(keys).(s2pkg.Pair)
+		name := string(p.Data)
+		if p.Member == "queue" {
+			cont = f(name, "queue", txs[int(p.Score)].Bucket([]byte("q."+name)))
+			if k, _ := cursorsQ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("q.")) {
+				p.Data = k[2:]
+				heap.Push(keys, p)
+			}
+		}
+		if p.Member == "zset" {
+			tx := txs[int(p.Score)]
+			cont = f(name, "zset", tx.Bucket([]byte("zset."+name)), tx.Bucket([]byte("zset.score."+name)))
+			if k, _ := cursorsZ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("zset.score.")) {
+				p.Data = k[11:]
+				heap.Push(keys, p)
+			}
 		}
 	}
 	return nil
@@ -384,17 +382,15 @@ func (s *Server) Foreach(cursor string, shard int, f func(k string, bk *bbolt.Bu
 
 func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair, nextCursor string, err error) {
 	count, timedout, start := flags.COUNT+1, "", time.Now()
-	if err := s.Foreach(cursor, flags.SHARD, func(k string, bk *bbolt.Bucket) bool {
-		if flags.MATCH != "" {
-			if m := s2pkg.Match(flags.MATCH, k); !m {
-				return true
-			}
+	if err := s.Foreach(cursor, func(k, typ string, bk ...*bbolt.Bucket) bool {
+		if flags.MATCH != "" && !s2pkg.Match(flags.MATCH, k) {
+			return true
 		}
 		if time.Since(start) > flags.TIMEOUT {
 			timedout = k
 			return false
 		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(sizeOfBucket(bk))})
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(sizeOfBucket(bk[0]))})
 		return len(pairs) < count
 	}); err != nil {
 		return nil, "", err
@@ -456,16 +452,16 @@ func (s *Server) prepareMergeBuckets(flags redisproto.Flags) (bkm []*bbolt.Bucke
 	return bkm, func() { closeAllReadTxs(txs) }
 }
 
-func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func()) {
+func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func(), err error) {
 	for i := range s.db {
 		tx, err := s.db[i].Begin(false)
 		if err != nil {
-			log.Errorf("openAllTx(%d): %v", i, err)
-			continue
+			closeAllReadTxs(txs[:])
+			return txs, nil, err
 		}
 		txs[i] = tx
 	}
-	return txs, func() { closeAllReadTxs(txs[:]) }
+	return txs, func() { closeAllReadTxs(txs[:]) }, nil
 }
 
 func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {

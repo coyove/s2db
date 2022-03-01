@@ -266,19 +266,20 @@ func (s *Server) ShardInfo(shard int) []string {
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
 }
 
-func (s *Server) WaitFirstSlaveCatchUp(timeout float64) (*serverInfo, error) {
+func (s *Server) ReadonlyWait(timeout float64) (*serverInfo, error) {
+	s.ReadOnly = true
 	_, mine, _, err := s.myLogTails()
 	if err != nil {
 		return nil, err
 	}
-	for start := time.Now(); time.Since(start).Seconds() < timeout; {
+	for start := time.Now(); time.Since(start).Seconds() < timeout; time.Sleep(time.Millisecond * 200) {
 		var first *serverInfo
 		s.Slaves.Foreach(func(si *serverInfo) {
 			var total uint64
 			for _, v := range si.LogTails {
 				total += v
 			}
-			if total == mine {
+			if total >= mine {
 				first = si
 			}
 		})

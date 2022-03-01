@@ -1,6 +1,7 @@
 package s2pkg
 
 import (
+	"bytes"
 	"strings"
 )
 
@@ -10,21 +11,39 @@ type Pair struct {
 	Data   []byte  `protobuf:"bytes,3,opt,name=data"`
 }
 
-type PairHeap []Pair
+type PairHeap struct {
+	CompareMember bool
+	CompareData   bool
+	Pairs         []Pair
+}
 
-func (h PairHeap) Len() int           { return len(h) }
-func (h PairHeap) Less(i, j int) bool { return h[i].Score < h[j].Score }
-func (h PairHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *PairHeap) Len() int {
+	return len(h.Pairs)
+}
+
+func (h *PairHeap) Less(i, j int) bool {
+	if h.CompareData {
+		return bytes.Compare(h.Pairs[i].Data, h.Pairs[j].Data) == -1
+	}
+	if h.CompareMember {
+		return h.Pairs[i].Member < h.Pairs[j].Member
+	}
+	return h.Pairs[i].Score < h.Pairs[j].Score
+}
+
+func (h *PairHeap) Swap(i, j int) {
+	h.Pairs[i], h.Pairs[j] = h.Pairs[j], h.Pairs[i]
+}
 
 func (h *PairHeap) Push(x interface{}) {
-	*h = append(*h, x.(Pair))
+	h.Pairs = append(h.Pairs, x.(Pair))
 }
 
 func (h *PairHeap) Pop() interface{} {
-	old := *h
+	old := h.Pairs
 	n := len(old)
 	x := old[n-1]
-	*h = old[0 : n-1]
+	h.Pairs = old[0 : n-1]
 	return x
 }
 

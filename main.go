@@ -247,9 +247,9 @@ func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.
 			w.Header().Add("Content-Type", "application/octet-stream")
 			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
 			if err := s.db[s2pkg.MustParseInt(dumpShard)].DumpTo(w, m); err != nil {
-				log.Errorf("http dumper #%d: %v", dumpShard, err)
+				log.Errorf("http dumper #%s: %v", dumpShard, err)
 			}
-			log.Infof("http dumper #%d finished in %v", dumpShard, time.Since(start))
+			log.Infof("http dumper #%s finished in %v", dumpShard, time.Since(start))
 			return
 		}
 

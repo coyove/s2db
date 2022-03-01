@@ -216,7 +216,7 @@ func (s *Server) Serve(addr string) error {
 	go s.schedCompactionJob() // TODO: close signal
 
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
-		s.runInspectFunc("compactonresume", s2pkg.MustParseInt(v))
+		s.runInspectFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
 
 	runner := func(ln net.Listener) {

@@ -365,7 +365,6 @@ type Flags struct {
 	INTERSECT  map[string]IntersectFlags
 	LIMIT      int
 	COUNT      int
-	SHARD      int
 	NANOTS     *int64
 	ANY        bool
 	ASC        bool
@@ -383,7 +382,6 @@ func (c Command) Flags(start int) (f Flags) {
 	f.Command = c
 	f.LIMIT = s2pkg.RangeHardLimit
 	f.COUNT = s2pkg.RangeHardLimit
-	f.SHARD = -1
 	f.TIMEOUT = time.Second
 	f.SEPARATOR = " OR "
 	if start == -1 {
@@ -396,9 +394,6 @@ func (c Command) Flags(start int) (f Flags) {
 			i++
 		} else if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
-			i++
-		} else if c.EqualFold(i, "SHARD") {
-			f.SHARD = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
 			if c.Get(i+1) != "0" {

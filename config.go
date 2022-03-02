@@ -43,8 +43,9 @@ type ServerConfig struct {
 	CompactTxWorkers  int
 	CompactDumpTmpDir string
 	CompactNoBackup   int // disable backup files when compacting, dangerous when you are master
-	StopLogPull       int
-	DisableMetrics    int
+	StopLogPull       int // 0|1
+	DisableMetrics    int // 0|1
+	DisableWebConsole int // 0|1
 	InspectorSource   string
 	RedisProxy        string // form: write [read1 [read2 ...]]
 	RedisProxyOptions string
@@ -192,7 +193,7 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 }
 
 func (s *Server) listConfig() []string {
-	list := []string{"readonly:" + strconv.FormatBool(s.ReadOnly)}
+	list := []string{"readonly:" + strconv.Itoa(s.ReadOnly)}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		name := strings.ToLower(f.Name)
 		value := fmt.Sprint(fv.Interface())

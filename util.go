@@ -251,7 +251,6 @@ func (s *Server) ShardInfo(shard int) []string {
 		myTail = bk.Sequence()
 		return nil
 	})
-	tmp = append(tmp, fmt.Sprintf("slaves:%d", s.Slaves.Len()))
 	s.Slaves.Foreach(func(si *serverInfo) {
 		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", si.RemoteAddr, si.LogTails[shard]))
 	})
@@ -264,7 +263,7 @@ func (s *Server) ShardInfo(shard int) []string {
 }
 
 func (s *Server) ReadonlyWait(timeout float64) (*serverInfo, error) {
-	s.ReadOnly = true
+	s.ReadOnly = 1
 	_, mine, _, err := s.myLogTails()
 	if err != nil {
 		return nil, err
@@ -438,22 +437,7 @@ func makeHTMLStat(s string) template.HTML {
 	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
 		return template.HTML(s)
 	}
-	trilabel := func(a, b, c float64) (ap, bp, cp string) {
-		text := [3]string{"stat1", "stat5", "stat15"}
-		if (a == 0 && b == 0 && c == 0) || (a != a && b != b && c != c) {
-			return text[0], text[0], text[0]
-		}
-		if math.Abs(a-b)/a < 0.01 && math.Abs(a-c)/a < 0.01 {
-			return text[0], text[0], text[0]
-		}
-		x := [3][2]interface{}{{&ap, a}, {&bp, b}, {&cp, c}}
-		sort.Slice(x[:], func(i, j int) bool { return x[i][1].(float64) < x[j][1].(float64) })
-		*x[0][0].(*string), *x[1][0].(*string), *x[2][0].(*string) = text[0], text[1], text[2]
-		return
-	}
-	al, bl, cl := trilabel(a, b, c)
-	return template.HTML(fmt.Sprintf("<div class=stat><div class=%s>%s</div><div class=%s>%s</div><div class=%s>%s</div></div>",
-		al, s2pkg.FormatFloatShort(a), bl, s2pkg.FormatFloatShort(b), cl, s2pkg.FormatFloatShort(c)))
+	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s", s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
 }
 
 func sizeOfBucket(bk *bbolt.Bucket) int64 {

@@ -37,7 +37,7 @@ func z(s float64, m string) *redis.Z {
 }
 
 func TestZSet(t *testing.T) {
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 	time.Sleep(time.Second)
 
@@ -351,7 +351,7 @@ func TestZSet(t *testing.T) {
 }
 
 func TestIntersect(t *testing.T) {
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 
 	ctx := context.TODO()
@@ -391,7 +391,7 @@ func TestIntersect(t *testing.T) {
 }
 
 func TestQueue(t *testing.T) {
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 
 	ctx := context.TODO()
@@ -466,7 +466,7 @@ func TestIndex(t *testing.T) {
     必看 | 真香开箱：牛年12生肖幸运色 2021整体运势
 `
 
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 
 	ctx := context.TODO()
@@ -484,7 +484,7 @@ func TestIndex(t *testing.T) {
 }
 
 func TestGeo(t *testing.T) {
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 
 	ctx := context.TODO()
@@ -628,7 +628,7 @@ func TestZSetCache(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 	ctx := context.TODO()
 
-	s, _ := Open("test", nil)
+	s, _ := Open("test")
 	go s.Serve(":6666")
 	time.Sleep(time.Second)
 

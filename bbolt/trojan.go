@@ -1,12 +1,13 @@
 package bbolt
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
@@ -37,14 +38,15 @@ func (b *DB) FreelistSize() int {
 }
 
 func (b *DB) FreelistDistribution() string {
-	var c bytes.Buffer
+	var c []string
 	b.Update(func(tx *Tx) error {
 		for size, bm := range b.freelist.freemaps {
-			c.WriteString(strconv.Itoa(int(size)) + ":" + strconv.Itoa(len(bm)) + " ")
+			c = append(c, strconv.Itoa(int(size))+":"+strconv.Itoa(len(bm)))
 		}
 		return nil
 	})
-	return c.String()
+	sort.Strings(c)
+	return strings.Join(c, " ")
 }
 
 func (b *DB) Size() int64 {

@@ -37,6 +37,7 @@ const (
 var (
 	bboltOptions = &bbolt.Options{
 		FreelistType: bbolt.FreelistMapType,
+		Timeout:      time.Second * 10,
 	}
 	bboltReadonlyOptions = &bbolt.Options{
 		FreelistType: bbolt.FreelistMapType,
@@ -45,13 +46,13 @@ var (
 )
 
 type Server struct {
-	ln, lnLocal, lnWeb net.Listener
+	ln, lnLocal, lnWebConsole net.Listener
 
 	rdb      *redis.Client
 	rdbCache *s2pkg.MasterLRU
 
 	ServerConfig
-	ReadOnly         bool   // server is readonly
+	ReadOnly         int    // server is 0: writable, 1: readonly, 2: switchwrite
 	Closed           bool   // server close flag
 	MasterMode       bool   // I AM MASTER server
 	MasterAddr       string // connect master address
@@ -89,7 +90,7 @@ type Server struct {
 	ConfigDB *bbolt.DB
 }
 
-func Open(path string, configOpened chan bool) (*Server, error) {
+func Open(path string) (*Server, error) {
 	os.MkdirAll(path, 0777)
 	var err error
 	x := &Server{}
@@ -99,9 +100,6 @@ func Open(path string, configOpened chan bool) (*Server, error) {
 	}
 	if err := x.loadConfig(); err != nil {
 		return nil, err
-	}
-	if configOpened != nil {
-		configOpened <- true // indicate the opening process is running normally
 	}
 	x.DataPath = path
 	fullDataFiles, _ := ioutil.ReadDir(path)
@@ -141,6 +139,7 @@ func (s *Server) Close() error {
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
 	errs <- s.lnLocal.Close()
+	errs <- s.lnWebConsole.Close()
 	errs <- s.ConfigDB.Close()
 	if s.rdb != nil {
 		errs <- s.rdb.Close()
@@ -179,27 +178,24 @@ func (s *Server) Close() error {
 	return nil
 }
 
-func (s *Server) Serve(addr string) error {
-	listener, err := net.Listen("tcp", addr)
+func (s *Server) Serve(addr string) (err error) {
+	unixSocketPath := filepath.Join(os.TempDir(), fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().Unix()))
+	s.ln, err = net.Listen("tcp", addr)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
-
-	listenerLocal, err := net.Listen("unix", filepath.Join(os.TempDir(),
-		fmt.Sprintf("_s2db_%d_%d.sock", os.Getpid(), time.Now().Unix())))
+	s.lnLocal, err = net.Listen("unix", unixSocketPath)
 	if err != nil {
-		log.Error(err)
 		return err
 	}
-
-	s.ln = listener
-	s.lnLocal = listenerLocal
+	s.lnWebConsole, err = net.Listen("unix", unixSocketPath+"_http")
+	if err != nil {
+		return err
+	}
 	s.Survey.StartAt = time.Now()
 
-	log.Info("listening on ", listener.Addr(), " and ", listenerLocal.Addr())
+	log.Infof("listening on: redis=%v, local=%v[_http], master=%v", s.ln.Addr(), unixSocketPath, s.MasterAddr)
 	if s.MasterAddr != "" {
-		log.Info("contacting master ", s.MasterAddr)
 		s.rdb = redis.NewClient(&redis.Options{
 			Addr:     s.MasterAddr,
 			Password: s.MasterPassword,
@@ -209,62 +205,65 @@ func (s *Server) Serve(addr string) error {
 		}
 	}
 
-	s.startCronjobs()
-	for i := range s.db {
-		go s.batchWorker(i)
-	}
-	go s.schedCompactionJob() // TODO: close signal
-
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
 		s.runInspectFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
 
-	runner := func(ln net.Listener) {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				if !s.Closed {
-					log.Error("accept: ", err, " current connections: ", s.Survey.Connections)
-					continue
-				} else {
+	for i := range s.db {
+		go s.batchWorker(i)
+	}
+	go s.startCronjobs()
+	go s.schedCompactionJob() // TODO: close signal
+	go s.webConsoleServer()
+	go s.acceptor(s.lnLocal)
+	s.acceptor(s.ln)
+	return nil
+}
+
+func (s *Server) acceptor(ln net.Listener) {
+	webConsoleClient := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", s.lnWebConsole.Addr().String())
+			},
+		},
+	}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if !s.Closed {
+				log.Error("accept: ", err, " current connections: ", s.Survey.Connections)
+				continue
+			} else {
+				return
+			}
+		}
+		go func() {
+			rd := bufio.NewReader(conn)
+			switch buf, _ := rd.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
+			case "GET ", "POST", "HEAD":
+				req, err := http.ReadRequest(rd)
+				if err != nil {
+					log.Errorf("httpmux: invalid request: %q, %v", buf, err)
 					return
 				}
-			}
-			go func() {
-				rd := bufio.NewReader(conn)
-				if s.lnWeb != nil {
-					buf, _ := rd.Peek(4)
-					switch *(*string)(unsafe.Pointer(&buf)) {
-					case "GET ", "POST", "HEAD":
-						req, err := http.ReadRequest(rd)
-						if err != nil {
-							log.Errorf("httpmux: invalid request: %q, %v", buf, err)
-							return
-						}
-						req.URL, _ = url.Parse(req.RequestURI)
-						req.URL.Scheme = "http"
-						req.URL.Host = s.lnWeb.Addr().String()
-						req.RequestURI = ""
-						resp, err := http.DefaultClient.Do(req)
-						if err != nil {
-							log.Error("httpmux: invalid response: ", err)
-							return
-						}
-						resp.Write(conn)
-						conn.Close()
-						return
-					}
+				req.URL, _ = url.Parse(req.RequestURI)
+				req.URL.Scheme, req.URL.Host, req.RequestURI = "http", "127.0.0.1", ""
+				resp, err := webConsoleClient.Do(req)
+				if err != nil {
+					log.Error("httpmux: invalid response: ", err)
+					return
 				}
+				resp.Write(conn)
+				conn.Close()
+			default:
 				s.handleConnection(struct {
 					io.Reader
 					io.WriteCloser
 				}{rd, conn}, conn.RemoteAddr())
-			}()
-		}
+			}
+		}()
 	}
-	go runner(s.lnLocal)
-	runner(s.ln)
-	return nil
 }
 
 func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) {
@@ -319,7 +318,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		cmd   = strings.TrimSuffix(strings.ToUpper(command.Get(0)), "WEAK")
 		isRev = strings.HasPrefix(cmd, "ZREV")
 		key   = command.Get(1)
-		weak  = parseWeakFlag(command) // weak parsing comes first
+		weak  = parseWeakFlag(command)
 		start = time.Now()
 	)
 
@@ -346,6 +345,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
 		}
+	}
+
+	if cmd == "SWITCHWRITE" {
+		s.StopLogPull = 1
+		s.ReadOnly = 2
+		log.Info("SWITCHWRITE(2) log-pulling stopped")
+		return w.WriteSimpleString("OK")
 	}
 
 	defer func(start time.Time) {
@@ -463,7 +469,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	deferred := parseDeferFlag(command)
 	switch cmd {
 	case "UNLINK":
-		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e6}
+		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e9}
 		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), false, []s2pkg.Pair{p}))
 	case "DEL":
 		return s.runPreparedTxAndWrite(cmd, key, false, parseDel(cmd, key, command), w)
@@ -594,7 +600,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 }
 
 func (s *Server) checkWritable() error {
-	if s.ReadOnly {
+	if s.ReadOnly == 1 {
 		return fmt.Errorf("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
 	} else if s.ServerName == "" {
 		return fmt.Errorf("server name not set, writes are omitted")

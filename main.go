@@ -10,7 +10,6 @@ import (
 	"html/template"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -35,15 +34,14 @@ var (
 	masterPassword = flag.String("mp", "", "connect to master server with password")
 	listenAddr     = flag.String("l", ":6379", "listen address")
 	dataDir        = flag.String("d", "test", "data directory")
-	readOnly       = flag.Bool("ro", false, "start server as read-only")
+	readOnly       = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
 	masterMode     = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
 
-	noWebUI     = flag.Bool("no-web-console", false, "disable web console interface")
 	showLogTail = flag.String("logtail", "", "")
 	showVersion = flag.Bool("v", false, "print s2db version")
 	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark   = flag.String("bench", "", "")
-	configSet   = func() (f [4]*string) {
+	configSet   = func() (f [6]*string) {
 		for i := range f {
 			f[i] = flag.String("C"+strconv.Itoa(i), "", "update config before serving, form: key=value")
 		}
@@ -174,42 +172,10 @@ func main() {
 
 	log.Info("version: ", Version)
 
-	var s *Server
-	var err error
-	var configOpened = make(chan bool)
-	var fullyOpened sync.Mutex
-	go func() {
-		select {
-		case <-configOpened:
-		case <-time.After(time.Second * 30):
-			log.Panic("failed to open database, locked by others?")
-		}
-		if *noWebUI {
-			log.Info("web console and pprof disabled")
-			return
-		}
-		fullyOpened.Lock()
-		sp := s2pkg.UUID()
-		http.HandleFunc("/", webConsole(sp, s))
-		http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-			nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+sp+". DO NOT EDIT THIS LINE\n\n"+
-				"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+sp+"'), false)\n"+
-				"println(ok, err)", s.getScriptEnviron())(w, r)
-		})
-		s.lnWeb, err = net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			log.Panic(err)
-		}
-		log.Info("serving web console and pprof at ", s.lnWeb.Addr())
-		fullyOpened.Unlock()
-		log.Error("http: ", http.Serve(s.lnWeb, nil))
-	}()
-	fullyOpened.Lock()
-	s, err = Open(*dataDir, configOpened)
+	s, err := Open(*dataDir)
 	if err != nil {
 		log.Panic(err)
 	}
-	fullyOpened.Unlock()
 
 	for _, cd := range configSet {
 		if idx := strings.Index(*cd, "="); idx != -1 {
@@ -234,14 +200,22 @@ func main() {
 
 	s.MasterMode = *masterMode
 	s.MasterPassword = *masterPassword
-	s.ReadOnly = *readOnly || s.MasterAddr != ""
-	s.Serve(*listenAddr)
+	if *readOnly || s.MasterAddr != "" {
+		s.ReadOnly = 1
+	}
+	log.Error(s.Serve(*listenAddr))
 }
 
-func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.Request) {
-	return func(w http.ResponseWriter, r *http.Request) {
+func (s *Server) webConsoleServer() {
+	sp := s2pkg.UUID()
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		start := time.Now()
+
+		if s.DisableWebConsole == 1 {
+			w.Write([]byte("s2db: web console disabled"))
+			return
+		}
 
 		if dumpShard := q.Get("dump"); dumpShard != "" {
 			w.Header().Add("Content-Type", "application/octet-stream")
@@ -293,27 +267,36 @@ func webConsole(evalPath string, s *Server) func(w http.ResponseWriter, r *http.
 		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
 		w.Header().Add("Content-Type", "text/html")
 		template.Must(template.New("").Funcs(template.FuncMap{
-			"kv": func(s string) (r struct{ Key, Value string }) {
-				r.Key = s
+			"kv": func(s string) template.HTML {
+				var r struct{ Key, Value template.HTML }
+				r.Key = template.HTML(s)
 				if idx := strings.Index(s, ":"); idx > 0 {
-					r.Key, r.Value = s[:idx], s[idx+1:]
+					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
 				}
-				return
-			},
-			"box32": func(v string) template.HTML {
-				parts := strings.Split(v+"   ", " ")
-				for i, p := range parts {
-					parts[i] = "<div class=box>" + p + "</div>"
+				if strings.Count(string(r.Value), " ") == 31 {
+					parts := strings.Split(string(r.Value)+"   ", " ")
+					for i, p := range parts {
+						parts[i] = "<div class=box>" + p + "</div>"
+					}
+					r.Value = template.HTML("<div class=section-box>" + strings.Join(parts, "") + "</div>")
+				} else {
+					r.Value = makeHTMLStat(string(r.Value))
 				}
-				return template.HTML(strings.Join(parts, ""))
+				return template.HTML(fmt.Sprintf("<div class=s-key>%v</div><div class=s-value>%v</div>", r.Key, r.Value))
 			},
-			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 			"stat":      makeHTMLStat,
+			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "start": start, "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": evalPath,
+			"s": s, "start": start, "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": sp,
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 			"Slaves":   s.Slaves.List(), "ShardInfo": shardInfos,
 			"MetricsNames": s.ListMetricsNames(),
 		})
-	}
+	})
+	http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
+		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+sp+". DO NOT EDIT THIS LINE\n\n"+
+			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+sp+"'), false)\n"+
+			"println(ok, err)", s.getScriptEnviron())(w, r)
+	})
+	go http.Serve(s.lnWebConsole, nil)
 }

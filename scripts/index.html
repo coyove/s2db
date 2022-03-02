@@ -26,19 +26,20 @@
             border-width: 0 1px;
             min-height: 3em;
         }
-        .section-title {
+        .s-title {
             padding: 0.2em 0.5em;
             background: #677;
             color: white;
             cursor: pointer;
         }
-        .section-content {
-            display: flex;
-        }
-        .section-content:nth-child(odd) {
-            background: rgba(0, 0, 0, 0.067);
-        }
-        .section[id^=s_] .section-title:before {
+        .s-content { display: flex; }
+        .s-content:nth-child(odd) { background: rgba(0, 0, 0, 0.067); }
+        .s-content2 { width: 50% }
+        .s-content2:nth-child(odd) { border-right: solid 1px rgba(0, 0, 0, 0.1) }
+        .s-content.shard-row:first-child .s-key { font-family: Lucida Console, Monaco, Monospace; font-weight: bold; }
+        .s-content.shard-row:first-child .s-value { display: none }
+        .s-content.shard-row:first-child { background-color: #fed }
+        .section[id^=s_] .s-title:before {
             content: ' ';
             background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTc5MiIgaGVpZ2h0PSIxNzkyIiB2aWV3Qm94PSIwIDAgMTc5MiAxNzkyIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxjaXJjbGUgY3g9IjkwMCIgY3k9IjkwMCIgcj0iNzAwIiBmaWxsPSIjZWVlIi8+PHBhdGggZD0iTTEzNDQgOTYwdi0xMjhxMC0yNi0xOS00NXQtNDUtMTloLTc2OHEtMjYgMC00NSAxOXQtMTkgNDV2MTI4cTAgMjYgMTkgNDV0NDUgMTloNzY4cTI2IDAgNDUtMTl0MTktNDV6bTMyMC02NHEwIDIwOS0xMDMgMzg1LjV0LTI3OS41IDI3OS41LTM4NS41IDEwMy0zODUuNS0xMDMtMjc5LjUtMjc5LjUtMTAzLTM4NS41IDEwMy0zODUuNSAyNzkuNS0yNzkuNSAzODUuNS0xMDMgMzg1LjUgMTAzIDI3OS41IDI3OS41IDEwMyAzODUuNXoiIGZpbGw9IiM1MDU4NTgiLz48L3N2Zz4=");
             display: inline-flex;
@@ -50,19 +51,19 @@
         .section[id^=s_][fold=fold] {
             min-height: initial;
         }
-        .section[id^=s_][fold=fold] .section-title:before {
+        .section[id^=s_][fold=fold] .s-title:before {
             content: ' ';
             background-image: url("data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTc5MiIgaGVpZ2h0PSIxNzkyIiB2aWV3Qm94PSIwIDAgMTc5MiAxNzkyIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjxjaXJjbGUgY3g9IjkwMCIgY3k9IjkwMCIgcj0iNzAwIiBmaWxsPSIjZWVlIi8+PHBhdGggZD0iTTEzNDQgOTYwdi0xMjhxMC0yNi0xOS00NXQtNDUtMTloLTI1NnYtMjU2cTAtMjYtMTktNDV0LTQ1LTE5aC0xMjhxLTI2IDAtNDUgMTl0LTE5IDQ1djI1NmgtMjU2cS0yNiAwLTQ1IDE5dC0xOSA0NXYxMjhxMCAyNiAxOSA0NXQ0NSAxOWgyNTZ2MjU2cTAgMjYgMTkgNDV0NDUgMTloMTI4cTI2IDAgNDUtMTl0MTktNDV2LTI1NmgyNTZxMjYgMCA0NS0xOXQxOS00NXptMzIwLTY0cTAgMjA5LTEwMyAzODUuNXQtMjc5LjUgMjc5LjUtMzg1LjUgMTAzLTM4NS41LTEwMy0yNzkuNS0yNzkuNS0xMDMtMzg1LjUgMTAzLTM4NS41IDI3OS41LTI3OS41IDM4NS41LTEwMyAzODUuNSAxMDMgMjc5LjUgMjc5LjUgMTAzIDM4NS41eiIgZmlsbD0iIzUwNTg1OCIvPjwvc3ZnPg==");
         }
-        .section[id^=s_][fold=fold] .section-content {
+        .section[id^=s_][fold=fold] .s-content {
             display: none;
         }
-        .section-key {
+        .s-key {
             padding: 0.2em 0.33em;
             flex-basis: 25%;
             flex-grow: 1;
         }
-        .section-value {
+        .s-value {
             padding: 0.2em 0.33em;
             flex-basis: 75%;
             flex-grow: 1;
@@ -72,10 +73,17 @@
             text-align: right;
             font-family: Lucida Console, Monaco, Monospace;
         }
+        @media only screen and (min-width: 1250px) {
+            .s-content2 { width: 25% }
+            .s-content2:nth-child(even) { border-right: solid 1px rgba(0, 0, 0, 0.1) }
+            .s-content2:nth-child(4n) { border: none }
+        }
         @media only screen and (max-width: 720px) {
-            .section-content { flex-wrap: wrap; }
-            .section-key { font-size: 80%; flex-basis: 100%; }
-            .section-value { flex-basis: 100%; }
+            .s-content { flex-wrap: wrap; }
+            .s-content2 {width: 100%; border: none }
+            .s-key { font-size: 80%; flex-basis: 100%; }
+            .shard-row { font-size: 100% !important }
+            .s-value { flex-basis: 100%; }
         }
         .section-box {
             display: flex;
@@ -90,27 +98,8 @@
             padding: 0.1em;
             font-size: 80%;
         }
+        .shard-row { font-size: 80% }
         .section-box .box:nth-child(odd) { background: rgba(0, 0, 0, 0.04) }
-        .stat {
-            display: inline-flex;
-            background-color: #fafbfc;
-            border: solid 1px #ccc;
-            padding-right: 0.25em;
-            overflow: hidden;
-        }
-        .stat div { display: inline-flex; font-size: 80%; }
-        .stat div:first-child:before { margin: 0 0.25em 0 0; }
-        .stat .stat1:before  { background: #fed; }
-        .stat .stat5:before  { background: #fc8; }
-        .stat .stat15:before { background: #f88; }
-        .stat div:before {
-            content: '';
-            padding: 0 3px;
-            margin: 0 0.25em;
-            display: inline-block;
-            width: 0;
-            height: 100%;
-        }
         .uplot, .uplot *, .uplot *::before, .uplot *::after {box-sizing: border-box;}.uplot {font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";line-height: 1.5;width: min-content;}.u-title {text-align: center;font-size: 18px;font-weight: bold;}.u-wrap {position: relative;user-select: none;}.u-over, .u-under {position: absolute;}.u-under {overflow: hidden;}.uplot canvas {display: block;position: relative;width: 100%;height: 100%;}.u-legend {font-size: 14px;margin: auto;text-align: center;}.u-inline {display: block;}.u-inline * {display: inline-block;}.u-inline tr {margin-right: 16px;}.u-legend th {font-weight: 600;}.u-legend th > * {vertical-align: middle;display: inline-block;}.u-legend .u-marker {width: 1em;height: 1em;margin-right: 4px;background-clip: content-box !important;}.u-inline.u-live th::after {content: ":";vertical-align: middle;}.u-inline:not(.u-live) .u-value {display: none;}.u-series > * {padding: 4px;}.u-series th {cursor: pointer;}.u-legend .u-off > * {opacity: 0.3;}.u-select {background: rgba(0,0,0,0.07);position: absolute;pointer-events: none;}.u-cursor-x, .u-cursor-y {position: absolute;left: 0;top: 0;pointer-events: none;will-change: transform;z-index: 100;}.u-hz .u-cursor-x, .u-vt .u-cursor-y {height: 100%;border-right: 1px dashed #607D8B;}.u-hz .u-cursor-y, .u-vt .u-cursor-x {width: 100%;border-bottom: 1px dashed #607D8B;}.u-cursor-pt {position: absolute;top: 0;left: 0;border-radius: 50%;pointer-events: none;will-change: transform;z-index: 100;/*this has to be !important since we set inline "background" shorthand */background-clip: content-box !important;}.u-select.u-off, .u-cursor-x.u-off, .u-cursor-y.u-off, .u-cursor-pt.u-off {display: none;}
         #chart1 { margin: 0 auto }
     </style>
@@ -118,100 +107,69 @@
 <body>
     <div class=section-container>
         <div class=section>
-            <div class='section-title mono' style='text-align:center' onclick='location.href="/?p={{.s.Password}}"'>
+            <div class='s-title mono' style='text-align:center' onclick='location.href="/?p={{.s.Password}}"'>
                 :: {{.s.ServerName}} ::
             </div>
-            <div class=section-content>
-                <div class=section-key>start_at</div><div class=section-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
+            <div class=s-content>
+                <div class=s-key>start_at</div><div class=s-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>
             </div>
             {{range $k, $v := .CPU}}
-            <div class=section-content>
-                <div class=section-key>cpu{{$k}}_usage</div><div class=section-value>{{stat $v}}</div>
+            <div class=s-content>
+                <div class=s-key>cpu{{$k}}_usage</div><div class=s-value>{{stat $v}}</div>
             </div>
             {{end}}
-            <div class=section-content>
-                <div class=section-key>repl_console</div><div class=section-value><a href='/{{.REPLPath}}'>open</a></div>
+            <div class=s-content>
+                <div class=s-key>repl_console</div><div class=s-value><a href='/{{.REPLPath}}'>open</a></div>
             </div>
-            <div class=section-content>
-                <div class=section-key>golang_pprof</div><div class=section-value><a href='/debug/pprof/'>open</a></div>
+            <div class=s-content>
+                <div class=s-key>golang_pprof</div><div class=s-value><a href='/debug/pprof/'>open</a></div>
             </div>
             {{if .s.MasterAddr}}
-            <div class=section-content>
-                <div class=section-key>master</div>
-                <div class=section-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
+            <div class=s-content>
+                <div class=s-key>master</div>
+                <div class=s-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
             </div>
             {{end}}
         </div>
        
         <div class=section id=s_host_disk>
-            <div class=section-title>host_disk</div>
+            <div class=s-title>host_disk</div>
             {{range $k, $v := .Disk}}
-            <div class=section-content>
-                <div class=section-key>data_dir_{{$k}}</div><div class=section-value>{{index $v 0}}/{{index $v 1}}</div>
+            <div class=s-content>
+                <div class=s-key>data_dir_{{$k}}</div><div class=s-value>{{index $v 0}}/{{index $v 1}}</div>
             </div>
             {{end}}
             {{range $k, $v := .IOPS}}
-            <div class=section-content>
-                <div class=section-key>disk_{{$k}}_read_iops</div><div class=section-value>{{stat (index $v 0)}}</div>
+            <div class=s-content>
+                <div class=s-key>disk_{{$k}}_read_iops</div><div class=s-value>{{stat (index $v 0)}}</div>
             </div>
-            <div class=section-content>
-                <div class=section-key>disk_{{$k}}_write_iops</div><div class=section-value>{{stat (index $v 1)}}</div>
+            <div class=s-content>
+                <div class=s-key>disk_{{$k}}_write_iops</div><div class=s-value>{{stat (index $v 1)}}</div>
             </div>
             {{end}}
         </div>
 
-        {{$slaves := .Slaves}}
-        {{if $slaves}}
-        {{range $k, $v := $slaves}}
+        {{range $k, $v := .Slaves}}
         <div class=section id=s_slave_{{$k}}>
-            <div class=section-title>slave_{{$v.RemoteAddr}}</div>
-            <div class=section-content>
-                <div class=section-key>address</div>
-                <div class=section-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
+            <div class=s-title>slave_{{$v.RemoteAddr}}</div>
+            <div class=s-content>
+                <div class=s-key>address</div>
+                <div class=s-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
             </div>
-            {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}
-            {{if and (ne $i 0) $v}}
-            <div class=section-content>
-                {{$x := kv $v}}
-                <div class=section-key>{{$x.Key}}</div>
-                {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                <div class=section-value>
-                    <div class=section-box>{{box32 $x.Value}}</div>
-                </div>
-                {{else}}
-                <div class=section-value>{{stat $x.Value}}</div>
-                {{end}}
-            </div>
-            {{end}}
-            {{end}}
+            {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}{{if and $i $v}}<div class=s-content>{{kv $v}}</div>{{end}}{{end}}
         </div>
-        {{end}}
         {{end}}
 
         {{range $title, $section := .Sections}}
         <div class=section id=s_{{$section}} fold=0>
-            <div class=section-title>{{$section}}</div>
-            {{range $i, $v := $.s.Info $section}}
-            {{if and (ne $i 0) $v}}
-            <div class=section-content>
-                {{$x := kv $v}}
-                <div class=section-key>{{$x.Key}}</div>
-                {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                <div class=section-value>
-                    <div class=section-box>{{box32 $x.Value}}</div>
-                </div>
-                {{else}}
-                <div class=section-value>{{stat $x.Value}}</div>
-                {{end}}
-            </div>
-            {{end}}
-            {{end}}
+            <div class=s-title>{{$section}}</div>
+            {{range $i, $v := $.s.Info $section}}{{if and $i $v}}<div class=s-content>{{kv $v}}</div>{{end}}{{end}}
         </div>  
         {{end}}
 
         <div class=section id=s_chart fold=fold>
-            <div class=section-title>chart</div>
-            <div class=section-content style='flex-direction: column;'>
+            <div class=s-title>chart</div>
+            <div class=s-content style='flex-direction: column;'>
                 <div id='chart-ctrl' style='padding: 0.25em'>
                     <div style='display:none'><select id='chart-source-tmpl' style='margin:0 0.25em'>
                         {{range .MetricsNames}}<option>{{.}}</option>{{end}}
@@ -241,31 +199,19 @@
             </div>
         </div>
 
-        {{range $shard, $info := .ShardInfo}}
-        {{if $info}}
-        <div class=section id=s_shard{{$shard}} fold=fold>
-            <div class=section-title>shard{{$shard}}</div>
-            {{range $i, $v := $info}}
-            {{if and $i $v}}
-            <div class=section-content>
-                {{$x := kv $v}}
-                <div class=section-key>{{$x.Key}}</div>
-                <div class=section-value>
-                    {{if or (eq $x.Key "db_freelist_size") (eq $x.Key "logtail") (eq $x.Key "logtail_diff")}}
-                    <div class=section-box>{{box32 $x.Value}}</div>
-                    {{else}}
-                    {{stat $x.Value}}
-                    {{end}}
+        <div class=section id=s_shards fold=fold>
+            <div class=s-title>shards</div>
+            <div class=s-content style="display: flex; flex-wrap: wrap;">
+            {{range $shard, $info := .ShardInfo}}
+                <div class=s-content2>
+                {{range $i, $v := $info}}<div class='s-content shard-row shard-row-{{$shard}}'>{{kv $v}}</div>{{end}}
                 </div>
+            {{end}}
             </div>
-            {{end}}
-            {{end}}
         </div>
-        {{end}}
-        {{end}}
     </div>
 
-    <div class=section style='border-bottom-width: 1px; text-align: center; line-height: 3em; font-size: 80%'>
+    <div class=section style='border-width: 1px; text-align: center; line-height: 3em; font-size: 80%'>
         s2db console in {{(timeSince .start).Seconds}}s
     </div>
 
@@ -318,7 +264,7 @@
 
         document.querySelectorAll('.section').forEach(function(el, i) {
             if (el.id.startsWith('s_')) {
-                el.querySelector('.section-title').onclick = function() {
+                el.querySelector('.s-title').onclick = function() {
                     const folds = JSON.parse(localStorage.getItem('folds') || '{}');
                     if (el.getAttribute('fold') == 'fold') {
                         delete folds[el.id];
@@ -338,7 +284,7 @@
                     localStorage.setItem('folds', JSON.stringify(folds));
                 }
             }
-            const st = el.querySelector('.section-title');
+            const st = el.querySelector('.s-title');
             if (st) st.style.backgroundColor = (i % 2) ? '#677' : '#688';
         })
         for (const k in JSON.parse(localStorage.getItem('folds') || '{}')) {

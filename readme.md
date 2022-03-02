@@ -30,6 +30,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `CompactNoBackup (int, 0|1)`: don't backup the old database after compaction
 - `StopLogPull (int, 0|1)`: stop pulling logs from master
 - `DisableMetrics (int, 0|1)`: disable internal metrics recording
+- `DisableWebConsole (int, 0|1)`: disable web console, see [web console](#Web%20Console)
 - `InspectorSource (string)`: internal script code, see [self-managed code](#Self-managed%20Code)
 
 # Commands
@@ -146,7 +147,6 @@ e.g.: `ZRANGE key start end WEAK 30` means returning cached results of this comm
 
 # Web Console
 Web console can be accessed at the same address as flag `-l` identified, e.g.: `http://127.0.0.1:6379` and `http://127.0.0.1:6379/debug/pprof/`.
-To disable it, use flag `-no-web-console`.
 
 # Compaction
 To enable compaction, execute: `CONFIG SET CompactJobType <Type>`, where `<Type>` can be (`hh` ranges `00-23`, `mm` ranges `00-59`):
@@ -156,12 +156,12 @@ To enable compaction, execute: `CONFIG SET CompactJobType <Type>`, where `<Type>
 - `2hh`: Compaction starts at hh:00 UTC+0 everyday, the process will take place every 30 min, compacting shard from #0 to #31 sequenitally.
 - `6mm`: Compaction starts at unix epoch + `mm` minutes, the process will take place every hour like above.
 
-Compactions are done in the background which reqiures enough disk space to store the temporal compacted database file. When done compacting, s2db will use this file to replace the online one, during which all writes will be hung up.
+Compaction process reqiures enough disk space to store the temporal compacted database file (of a single shard). When done, s2db will use the compacted one to replace the online shard, during which all writes to this shard will be hung up.
 
 Compaction consumes a lot of disk resources, by default it is written to the data directory, therefore, same device as the online one. To minimize the impaction to online requests and maximize the compacting speed, you can set a temporal dump location on another device by setting `CompactTmpDir`.
 
 # Built-in Scripts
-s2db use a lua-dialect called 'nj' as its script engine, to learn more, refer to this [repo](https://github.com/coyove/nj).
+s2db use a Lua dialect called 'nj' as its script engine, to learn more, refer to this [repo](https://github.com/coyove/nj).
 
 # Self-managed Code
 By implementing certain functions in `InspectorSource`, s2db users (like devops) can manipulate database directly and internally:
@@ -171,5 +171,5 @@ By implementing certain functions in `InspectorSource`, s2db users (like devops)
 4. `function queuettl(queuename)`: return how old (seconds) a member in a queue can be preserved during compaction, 0 means no expiration.
 5. `function compactonstart(shard)`: fired when each shard starts compacting.
 6. `function compactonfinish(shard)`: fired when each shard finishes compacting.
-7. `function compactonresume(shard)`: fired when a shard resumes compacting.
 7. `function compactonerror(shard, error)`: fired when compacting encountered error.
+8. `function compactnotfinished(shard)`: fired when compacting not finished properly.

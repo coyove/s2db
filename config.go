@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"net"
-	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coyove/nj"
@@ -33,6 +30,7 @@ type ServerConfig struct {
 	CacheObjMaxSize   int // kb
 	WeakCacheSize     int
 	SlowLimit         int // ms
+	PingTimeout       int // ms
 	ResponseLogRun    int
 	ResponseLogSize   int // kb
 	DumpSafeMargin    int // mb
@@ -41,14 +39,13 @@ type ServerConfig struct {
 	CompactLogHead    int
 	CompactTxSize     int
 	CompactTxWorkers  int
-	CompactDumpTmpDir string
-	CompactNoBackup   int // disable backup files when compacting, dangerous when you are master
-	StopLogPull       int // 0|1
-	DisableMetrics    int // 0|1
-	DisableWebConsole int // 0|1
+	CompactDumpTmpDir string // use a temporal directory to store dumped shard
+	CompactNoBackup   int    // 0|1 disable backup files when compacting
+	StopLogPull       int    // 0|1
+	DisableMetrics    int    // 0|1
+	DisableWebConsole int    // 0|1
+	SlaveStandby      int    // 0|1
 	InspectorSource   string
-	RedisProxy        string // form: write [read1 [read2 ...]]
-	RedisProxyOptions string
 }
 
 func (s *Server) loadConfig() error {
@@ -86,6 +83,10 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactTxSize, 20000)
 	ifZero(&s.CompactTxWorkers, 1)
 	ifZero(&s.DumpSafeMargin, 16)
+	ifZero(&s.PingTimeout, 5000)
+	if s.ServerName == "" {
+		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())
+	}
 
 	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
@@ -159,17 +160,6 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return errSafeExit
 	})
 	if found {
-		if key == "redisproxyoptions" {
-			clients := []*redis.Client{}
-			s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool {
-				clients = append(clients, kv.Value.(*redis.Client))
-				return true
-			})
-			s.rdbCache.Clear()
-			for _, c := range clients {
-				c.Close()
-			}
-		}
 		if err := s.saveConfig(); err != nil {
 			s.ServerConfig = old
 			return false, err
@@ -236,60 +226,21 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 }
 
 func (s *Server) getRedis(addr string) (cli *redis.Client) {
-	if addr == "" {
-		addr = "local"
+	switch addr {
+	case "", "local", "LOCAL":
+		return s.LocalRedis
+	case "master", "MASTER":
+		return s.MasterRedis
 	}
-	xaddr := addr
-	if c, ok := s.rdbCache.Get(xaddr); ok {
-		cli = c.(*redis.Client)
-		return
+	cfg, err := redisproto.ParseConnString(addr)
+	s2pkg.PanicErr(err)
+	if cli, ok := s.rdbCache.Get(cfg.Raw); ok {
+		return cli.(*redis.Client)
 	}
-	defer func() { s.rdbCache.Add("", xaddr, cli) }()
-
-	opt := func(in *redis.Options) *redis.Options {
-		if s.RedisProxyOptions == "" {
-			return in
-		}
-		q, err := url.ParseQuery(s.RedisProxyOptions)
-		if err != nil {
-			log.Error("getRedis: failed to parse options: ", s.RedisProxyOptions)
-			return in
-		}
-		rv := reflect.ValueOf(in).Elem()
-		for k, vs := range q {
-			rv.FieldByName(k).SetInt(s2pkg.MustParseInt64(vs[0]))
-		}
-		log.Info("getRedis: options debug: ", in)
-		return in
-	}
-
-	config := &redis.Options{Addr: addr}
-	if strings.Contains(addr, "@") {
-		parts := strings.SplitN(addr, "@", 2)
-		addr = parts[1]
-		config.Password = parts[0]
-		config.Addr = addr
-	}
-
-	if strings.EqualFold(addr, "LOCAL") {
-		config.Network = "unix"
-		config.Addr = s.lnLocal.Addr().String()
-		config.Password = s.Password
-		return redis.NewClient(opt(config))
-	}
-
-	si := s.Slaves.Get(addr)
-	if si != nil {
-		_, port, _ := net.SplitHostPort(si.ListenAddr)
-		config.Addr = si.RemoteAddr + ":" + port
-		return redis.NewClient(opt(config))
-	}
-
-	if strings.EqualFold(addr, "MASTER") {
-		config.Addr = s.MasterAddr
-		config.Password = s.MasterPassword
-	}
-	return redis.NewClient(opt(config))
+	cli = redis.NewClient(cfg.Options)
+	s.rdbCache.Delete(cfg.Addr)
+	s.rdbCache.Add(cfg.Addr, cfg.Raw, cli)
+	return
 }
 
 func (s *Server) CopyConfig(remoteAddr, key string) error {
@@ -483,15 +434,11 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
 		}
 	}
-	ranger := func(sm sync.Map, prefix string) {
-		sm.Range(func(k, v interface{}) bool {
-			m, n := v.(*s2pkg.Survey).Metrics(), prefix+k.(string)
-			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
-			return true
-		})
-	}
-	ranger(s.Survey.Proxy, "Proxy")
-	ranger(s.Survey.Command, "Cmd")
+	s.Survey.Command.Range(func(k, v interface{}) bool {
+		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
+		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+		return true
+	})
 	err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 		for _, mp := range pairs {
 			subbk, err := tx.CreateBucketIfNotExists([]byte("_metrics_" + mp.Member))

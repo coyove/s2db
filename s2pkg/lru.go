@@ -61,6 +61,9 @@ func (m *MasterLRU) Add(masterKey, slaveKey string, value interface{}) {
 	if slaveKey == "" {
 		panic("slave key can't be empty")
 	}
+	if masterKey == slaveKey {
+		panic("master and slave key can't be identical")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

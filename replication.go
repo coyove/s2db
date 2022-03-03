@@ -7,12 +7,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"math"
 	"net"
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	s2pkg "github.com/coyove/s2db/s2pkg"
@@ -52,34 +50,31 @@ func (s *Server) myLogTail(shard int) (total uint64, err error) {
 	return combined, err
 }
 
-func (s *Server) SlaveInfo(addr string) (data []string) {
-	tails, combined, _, err := s.myLogTails()
-	if err != nil {
-		return []string{"error:" + err.Error()}
-	}
-
-	data = []string{}
-	diffs := [ShardNum]int64{}
-	s.Slaves.Foreach(func(si *serverInfo) {
-		if addr != "" && si.RemoteAddr != addr {
-			return
+func (s *Server) SlaveInfo() (data []string) {
+	if s.Slave.ServerName != "" {
+		tails, combined, _, err := s.myLogTails()
+		if err != nil {
+			return []string{"error:" + err.Error()}
 		}
+		diffs := [ShardNum]int64{}
 		lt := int64(0)
-		for i, t := range si.LogTails {
+		si := s.Slave
+		for i, t := range si.Logtails {
 			lt += int64(t)
 			diffs[i] = int64(tails[i]) - int64(t)
 		}
-		data = append(data, "# slave_"+si.RemoteAddr,
+		data = append(data, "# slave",
 			"name:"+si.ServerName,
+			"address:"+si.RemoteAddr,
 			"version:"+si.Version,
-			"ack_before:"+time.Since(time.Unix(0, si.LastUpdate)).String(),
+			fmt.Sprintf("ack_before:%v(%v)", si.AckBefore(), s.IsAcked(si)),
 			"listen:"+si.ListenAddr,
-			"logtail:"+joinArray(si.LogTails),
+			"logtail:"+joinArray(si.Logtails),
 			fmt.Sprintf("logtail_diff:%v", joinArray(diffs)),
 			fmt.Sprintf("logtail_diff_sum:%d", int64(combined)-lt),
 			"",
 		)
-	})
+	}
 	return append(data, "")
 }
 
@@ -96,8 +91,9 @@ func (s *Server) requestLogPuller(shard int) {
 	}()
 
 	for !s.Closed {
+		wait := time.Millisecond * time.Duration(s.PingTimeout) / 2
 		ping := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
-		s.rdb.Process(ctx, ping)
+		s.MasterRedis.Process(ctx, ping)
 		parts := strings.Split(ping.Val(), " ")
 		if len(parts) != 3 {
 			if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
@@ -107,19 +103,18 @@ func (s *Server) requestLogPuller(shard int) {
 			} else {
 				log.Error("ping: invalid response: ", ping.Val(), ping.Err())
 			}
-			time.Sleep(time.Second * 10)
+			time.Sleep(wait)
 			continue
 		}
-		s.Master = serverInfo{
-			ServerName: parts[1],
-			Version:    parts[2],
-		}
+		s.Master.ServerName = parts[1]
+		s.Master.Version = parts[2]
+		s.Master.LastUpdate = time.Now().UnixNano()
 		if s.Master.ServerName == "" {
 			log.Error("master responded empty server name")
-			time.Sleep(time.Second * 10)
+			time.Sleep(wait)
 			continue
 		}
-		if s.Master.ServerName != s.MasterNameAssert {
+		if s.Master.ServerName != s.MasterConfig.Name {
 			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
 			break
 		}
@@ -136,7 +131,7 @@ func (s *Server) requestLogPuller(shard int) {
 		myLogtail, err := s.myLogTail(shard)
 		if err != nil {
 			if err == bbolt.ErrDatabaseNotOpen {
-				time.Sleep(time.Second * 5)
+				time.Sleep(wait)
 				continue
 			}
 			log.Error("read local log index: ", err)
@@ -144,7 +139,7 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
-		if err := s.rdb.Process(ctx, cmd); err != nil {
+		if err := s.MasterRedis.Process(ctx, cmd); err != nil {
 			if strings.Contains(err.Error(), "refused") {
 				if shard == 0 {
 					log.Error("master not alive")
@@ -152,7 +147,7 @@ func (s *Server) requestLogPuller(shard int) {
 			} else if err != redis.Nil {
 				log.Error("request log from master: ", err)
 			}
-			time.Sleep(time.Second * 2)
+			time.Sleep(wait)
 			continue
 		}
 
@@ -236,7 +231,7 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 		if len(k) == 8 {
 			first := binary.BigEndian.Uint64(k)
 			if first > start {
-				return fmt.Errorf("master log (%d) has been compacted, slave failed to request older log (%d)", first, start)
+				return fmt.Errorf("master log (head=%d) has been compacted, slave failed to request older log (%d)", first, start)
 			}
 		}
 
@@ -271,108 +266,24 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 	return
 }
 
-type slaves struct {
-	sync.RWMutex
-	q map[string]*serverInfo
-}
-
 type serverInfo struct {
-	// RemoteAddr is the definitive identifier of a server
-	RemoteAddr string `json:"remoteaddr"`
-
+	RemoteAddr string           `json:"remoteaddr"`
 	ServerName string           `json:"servername"`
 	ListenAddr string           `json:"listen"`
-	LogTails   [ShardNum]uint64 `json:"logtails"`
+	Logtails   [ShardNum]uint64 `json:"logtails"`
 	Version    string           `json:"version"`
 	LastUpdate int64            `json:"lastupdate"`
+}
 
-	purgeTimer *time.Timer
+func (s *Server) IsAcked(si serverInfo) bool {
+	return si.AckBefore() < time.Duration(s.PingTimeout)*time.Millisecond
+}
+
+func (si *serverInfo) AckBefore() time.Duration {
+	return time.Since(time.Unix(0, si.LastUpdate))
 }
 
 func (si *serverInfo) RemoteConnectAddr() string {
 	_, port, _ := net.SplitHostPort(si.ListenAddr)
 	return si.RemoteAddr + ":" + port
-}
-
-func (s *slaves) Get(ip string) *serverInfo {
-	s.RLock()
-	defer s.RUnlock()
-	si := s.q[ip]
-	if si != nil {
-		return si
-	}
-	for _, si := range s.q {
-		if si.ServerName == ip {
-			return si
-		}
-	}
-	return nil
-}
-
-func (s *slaves) Foreach(cb func(*serverInfo)) {
-	s.RLock()
-	defer s.RUnlock()
-	for _, sv := range s.q {
-		cb(sv)
-	}
-}
-
-func (s *slaves) List() []*serverInfo {
-	s.RLock()
-	defer s.RUnlock()
-	si := []*serverInfo{}
-	for _, sv := range s.q {
-		si = append(si, sv)
-	}
-	return si
-}
-
-func (s *slaves) Len() (l int) {
-	s.RLock()
-	l = len(s.q)
-	s.RUnlock()
-	return
-}
-
-func (s *slaves) Update(remoteAddr string, cb func(*serverInfo)) {
-	s.Lock()
-	defer s.Unlock()
-
-	if s.q == nil {
-		s.q = map[string]*serverInfo{}
-	}
-
-	si := s.q[remoteAddr]
-	if si != nil {
-		cb(si)
-		si.purgeTimer.Stop()
-		si.purgeTimer.Reset(time.Minute)
-		si.LastUpdate = time.Now().UnixNano()
-		return
-	}
-
-	p := &serverInfo{}
-	p.RemoteAddr = remoteAddr
-	p.LastUpdate = time.Now().UnixNano()
-	p.purgeTimer = time.AfterFunc(time.Minute, func() {
-		s.Lock()
-		defer s.Unlock()
-		si := s.q[remoteAddr]
-		if si != nil && time.Since(time.Unix(0, si.LastUpdate)).Seconds() > 50 {
-			delete(s.q, remoteAddr)
-		}
-	})
-	cb(p)
-	s.q[remoteAddr] = p
-}
-
-func (s *slaves) MinLogtail(shard int) (minTail uint64, exist bool) {
-	minTail = math.MaxUint64
-	s.Foreach(func(si *serverInfo) {
-		tail := si.LogTails[shard]
-		if tail < minTail {
-			minTail, exist = tail, true
-		}
-	})
-	return
 }

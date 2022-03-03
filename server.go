@@ -1,22 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
-	"math/rand"
 	"net"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -46,26 +41,26 @@ var (
 )
 
 type Server struct {
-	ln, lnLocal, lnWebConsole net.Listener
+	ln, lnLocal  net.Listener
+	lnWebConsole *s2pkg.LocalListener
+	rdbCache     *s2pkg.MasterLRU
 
-	rdb      *redis.Client
-	rdbCache *s2pkg.MasterLRU
+	LocalRedis   *redis.Client
+	MasterRedis  *redis.Client
+	MasterConfig redisproto.RedisConfig
+	Master       serverInfo
+	Slave        serverInfo
 
 	ServerConfig
-	ReadOnly         int    // server is 0: writable, 1: readonly, 2: switchwrite
-	Closed           bool   // server close flag
-	MasterMode       bool   // I AM MASTER server
-	MasterAddr       string // connect master address
-	MasterNameAssert string // when pulling logs, use this name to ensure the right master
-	MasterPassword   string // master password
-	DataPath         string // location of config database
-	SelfManager      *bas.Program
-	Cache            *s2pkg.MasterLRU
-	WeakCache        *s2pkg.MasterLRU
-	Slaves           slaves
-	Master           serverInfo
-	CompactLock      s2pkg.LockBox
-	EvalLock         sync.Mutex
+	ReadOnly           int    // server is 0: writable, 1: readonly, 2: switchwrite
+	Closed             bool   // server close flag
+	MasterMode         bool   // I AM MASTER server
+	DataPath           string // location of data and config database
+	SelfManager        *bas.Program
+	Cache              *s2pkg.MasterLRU
+	WeakCache          *s2pkg.MasterLRU
+	CompactLock        s2pkg.LockBox
+	EvalLock, PingLock sync.Mutex
 
 	Survey struct {
 		StartAt                 time.Time
@@ -76,8 +71,8 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
-		SlowLogs                s2pkg.Survey
-		Command, Proxy          sync.Map
+		SlowLogs, StandbyProxy  s2pkg.Survey
+		Command                 sync.Map
 	}
 
 	db [ShardNum]struct {
@@ -90,10 +85,9 @@ type Server struct {
 	ConfigDB *bbolt.DB
 }
 
-func Open(path string) (*Server, error) {
+func Open(path string) (x *Server, err error) {
 	os.MkdirAll(path, 0777)
-	var err error
-	x := &Server{}
+	x = &Server{DataPath: path}
 	x.ConfigDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
 	if err != nil {
 		return nil, err
@@ -101,7 +95,8 @@ func Open(path string) (*Server, error) {
 	if err := x.loadConfig(); err != nil {
 		return nil, err
 	}
-	x.DataPath = path
+
+	// Load shards
 	fullDataFiles, _ := ioutil.ReadDir(path)
 	for i := range x.db {
 		fn, err := x.GetShardFilename(i)
@@ -125,6 +120,7 @@ func Open(path string) (*Server, error) {
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 	}
+
 	x.rdbCache = s2pkg.NewMasterLRU(4, func(kv s2pkg.LRUKeyValue) {
 		log.Info("rdbCache(", kv.SlaveKey, ") close: ", kv.Value.(*redis.Client).Close())
 	})
@@ -141,9 +137,10 @@ func (s *Server) Close() error {
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
 	errs <- s.ConfigDB.Close()
-	if s.rdb != nil {
-		errs <- s.rdb.Close()
+	if s.MasterConfig.Name != "" {
+		errs <- s.MasterRedis.Close()
 	}
+	errs <- s.LocalRedis.Close()
 	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
 
 	wg := sync.WaitGroup{}
@@ -153,7 +150,7 @@ func (s *Server) Close() error {
 			defer wg.Done()
 			db := &s.db[i]
 			errs <- db.Close()
-			if s.rdb != nil {
+			if s.MasterConfig.Name != "" {
 				<-db.pullerCloseSignal
 			}
 			close(db.batchTx)
@@ -179,27 +176,21 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) Serve(addr string) (err error) {
-	unixSocketPath := filepath.Join(os.TempDir(), fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().Unix()))
 	s.ln, err = net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s.lnLocal, err = net.Listen("unix", unixSocketPath)
+	s.lnLocal, err = net.Listen("unix", filepath.Join(os.TempDir(),
+		fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().Unix())))
 	if err != nil {
 		return err
 	}
-	s.lnWebConsole, err = net.Listen("unix", unixSocketPath+"_http")
-	if err != nil {
-		return err
-	}
+	s.lnWebConsole = s2pkg.NewLocalListener()
+	s.LocalRedis = redis.NewClient(&redis.Options{Network: "unix", Addr: s.lnLocal.Addr().String(), Password: s.Password})
 	s.Survey.StartAt = time.Now()
 
-	log.Infof("listening on: redis=%v, local=%v[_http], master=%v", s.ln.Addr(), unixSocketPath, s.MasterAddr)
-	if s.MasterAddr != "" {
-		s.rdb = redis.NewClient(&redis.Options{
-			Addr:     s.MasterAddr,
-			Password: s.MasterPassword,
-		})
+	log.Infof("listening on: redis=%v, local=%v, master=%v", s.ln.Addr(), s.lnLocal.Addr(), s.MasterConfig.Name)
+	if s.MasterConfig.Name != "" {
 		for i := range s.db {
 			go s.requestLogPuller(i)
 		}
@@ -221,13 +212,6 @@ func (s *Server) Serve(addr string) (err error) {
 }
 
 func (s *Server) acceptor(ln net.Listener) {
-	webConsoleClient := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", s.lnWebConsole.Addr().String())
-			},
-		},
-	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -239,39 +223,19 @@ func (s *Server) acceptor(ln net.Listener) {
 			}
 		}
 		go func() {
-			rd := bufio.NewReader(conn)
-			switch buf, _ := rd.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
+			c := s2pkg.NewBufioConn(conn, &s.Survey.Connections)
+			switch buf, _ := c.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
 			case "GET ", "POST", "HEAD":
-				req, err := http.ReadRequest(rd)
-				if err != nil {
-					log.Errorf("httpmux: invalid request: %q, %v", buf, err)
-					return
-				}
-				req.URL, _ = url.Parse(req.RequestURI)
-				req.URL.Scheme, req.URL.Host, req.RequestURI = "http", "127.0.0.1", ""
-				resp, err := webConsoleClient.Do(req)
-				if err != nil {
-					log.Error("httpmux: invalid response: ", err)
-					return
-				}
-				resp.Write(conn)
-				conn.Close()
+				s.lnWebConsole.Feed(c)
 			default:
-				s.handleConnection(struct {
-					io.Reader
-					io.WriteCloser
-				}{rd, conn}, conn.RemoteAddr())
+				s.handleConnection(c)
 			}
 		}()
 	}
 }
 
-func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) {
-	defer func() {
-		conn.Close()
-		atomic.AddInt64(&s.Survey.Connections, -1)
-	}()
-	atomic.AddInt64(&s.Survey.Connections, 1)
+func (s *Server) handleConnection(conn s2pkg.BufioConn) {
+	defer conn.Close()
 	parser := redisproto.NewParser(conn)
 	writer := redisproto.NewWriter(conn, log.StandardLogger())
 	var ew error
@@ -283,7 +247,7 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 				ew = writer.WriteError(err.Error())
 			} else {
 				if err != io.EOF {
-					log.Info(err, " closed connection to ", remoteAddr)
+					log.Info(err, " closed connection to ", conn.RemoteAddr())
 				}
 				break
 			}
@@ -292,16 +256,13 @@ func (s *Server) handleConnection(conn io.ReadWriteCloser, remoteAddr net.Addr) 
 				if command.EqualFold(0, "AUTH") && command.Get(1) == s.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
-				} else if command.EqualFold(0, "INFO") {
-					goto RUN
 				} else {
 					writer.WriteError("NOAUTH")
 				}
 				writer.Flush()
 				continue
 			}
-		RUN:
-			ew = s.runCommand(writer, remoteAddr, command)
+			ew = s.runCommand(writer, conn.RemoteAddr(), command)
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -322,16 +283,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		start = time.Now()
 	)
 
-	if s.RedisProxy != "" && (isWriteCommand[cmd] || isReadCommand[cmd]) {
-		proxies := strings.Split(s.RedisProxy, ",")
-		useProxy := proxies[0]
-		if !isWriteCommand[cmd] {
-			useProxy = proxies[rand.Intn(len(proxies))]
+	if s.SlaveStandby == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+		if s.Slave.ServerName == "" {
+			return w.WriteError("stand-by: slave not ready")
 		}
-		v, err := s.getRedis(useProxy).Do(context.Background(), command.Args()...).Result()
-		useProxy = useProxy[strings.Index(useProxy, "@")+1:]
-		sv, _ := s.Survey.Proxy.LoadOrStore(useProxy, new(s2pkg.Survey))
-		sv.(*s2pkg.Survey).Incr(int64(time.Since(start).Milliseconds()))
+		v, err := s.getRedis(s.Slave.RemoteConnectAddr()).Do(context.Background(), command.Args()...).Result()
+		s.Survey.StandbyProxy.Incr(int64(time.Since(start).Milliseconds()))
 		if err != nil && err != redis.Nil {
 			return w.WriteError(err.Error())
 		}
@@ -392,12 +349,22 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if key == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
+
+		s.PingLock.Lock()
+		defer s.PingLock.Unlock()
 		if strings.EqualFold(key, "FROM") {
-			s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
-				info.ListenAddr = command.Get(2)
-				info.ServerName = command.Get(3)
-				info.Version = command.Get(4)
-			})
+			ip := getRemoteIP(remoteAddr).String()
+			if s.Slave.RemoteAddr != "" && s.Slave.RemoteAddr != ip {
+				if s.IsAcked(s.Slave) {
+					return w.WriteSimpleString("PONG ?")
+				}
+				log.Infof("slave switch: %v(%v) to %v", s.Slave.RemoteAddr, s.Slave.AckBefore(), ip)
+			}
+			s.Slave.RemoteAddr = ip
+			s.Slave.ListenAddr = command.Get(2)
+			s.Slave.ServerName = command.Get(3)
+			s.Slave.Version = command.Get(4)
+			s.Slave.LastUpdate = time.Now().UnixNano()
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
 		return w.WriteSimpleString(key)
@@ -451,6 +418,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteIntOrError(s.myLogTail(-1))
 	case "REQUESTLOG":
+		if s.MasterConfig.Name != "" && !s.IsAcked(s.Master) {
+			return w.WriteError("broken master replication link")
+		}
 		start := s2pkg.ParseUint64(command.Get(2))
 		if start == 0 {
 			return w.WriteError("request at zero offset")
@@ -459,9 +429,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.Slaves.Update(getRemoteIP(remoteAddr).String(), func(info *serverInfo) {
-			info.LogTails[s2pkg.MustParseInt(key)] = start - 1
-		})
+		// REQUESTLOG doesn't care who requested logs, but will only update Slave info if ip address matched
+		if s.Slave.RemoteAddr == getRemoteIP(remoteAddr).String() {
+			s.Slave.Logtails[s2pkg.MustParseInt(key)] = start - 1
+			s.Slave.LastUpdate = time.Now().UnixNano()
+		}
 		return w.WriteBulkStrings(logs)
 	}
 

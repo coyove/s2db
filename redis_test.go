@@ -22,6 +22,7 @@ import (
 
 func init() {
 	slowLogger = log.New()
+	testFlag = true
 }
 
 func assertEqual(a, b interface{}) {

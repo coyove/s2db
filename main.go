@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coyove/nj"
+	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -30,12 +31,11 @@ import (
 var (
 	Version = ""
 
-	masterAddr     = flag.String("master", "", "connect to master server, form: master_name@ip:port")
-	masterPassword = flag.String("mp", "", "connect to master server with password")
-	listenAddr     = flag.String("l", ":6379", "listen address")
-	dataDir        = flag.String("d", "test", "data directory")
-	readOnly       = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
-	masterMode     = flag.Bool("M", false, "tag server as master, so it knows its role when losing connections to slaves")
+	masterConnString = flag.String("master", "", "connect to master server, minimal form: <Ip>:<Port>/?Name=<MasterName>")
+	listenAddr       = flag.String("l", ":6379", "listen address")
+	dataDir          = flag.String("d", "test", "data directory")
+	readOnly         = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
+	masterMode       = flag.Bool("M", false, "tag server as master even it may not have any slaves")
 
 	showLogTail = flag.String("logtail", "", "")
 	showVersion = flag.Bool("v", false, "print s2db version")
@@ -47,12 +47,13 @@ var (
 		}
 		return f
 	}()
+
+	testFlag   = false
+	slowLogger *log.Logger
 )
 
 //go:embed scripts/index.html
 var webuiHTML string
-
-var slowLogger *log.Logger
 
 func main() {
 	flag.Parse()
@@ -188,25 +189,34 @@ func main() {
 		}
 	}
 
-	if *masterAddr != "" {
-		parts := strings.Split(*masterAddr, "@")
-		if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) == 0 {
-			log.Error("invalid master address, form: master_name@ip:port")
+	if *masterConnString != "" {
+		s.MasterConfig, err = redisproto.ParseConnString(*masterConnString)
+		if err != nil {
+			log.Error("invalid master endpoint: ", err)
 			return
 		}
-		s.MasterNameAssert = parts[0]
-		s.MasterAddr = parts[1]
+		if s.MasterConfig.Name == "" {
+			log.Error("master name must be provided")
+			return
+		}
+		if s.ServerName == "" {
+			log.Error("slave name must be provided, use flag: '-C0 ServerName=<Name>'")
+			return
+		}
+		s.MasterRedis = s.MasterConfig.GetClient()
 	}
 
 	s.MasterMode = *masterMode
-	s.MasterPassword = *masterPassword
-	if *readOnly || s.MasterAddr != "" {
+	if *readOnly || s.MasterConfig.Name != "" {
 		s.ReadOnly = 1
 	}
 	log.Error(s.Serve(*listenAddr))
 }
 
 func (s *Server) webConsoleServer() {
+	if testFlag {
+		return
+	}
 	sp := s2pkg.UUID()
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -288,8 +298,8 @@ func (s *Server) webConsoleServer() {
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start, "CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": sp,
-			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
-			"Slaves":   s.Slaves.List(), "ShardInfo": shardInfos,
+			"Sections":     []string{"server", "server_misc", "replication", "slave", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+			"ShardInfo":    shardInfos,
 			"MetricsNames": s.ListMetricsNames(),
 		})
 	})

@@ -3,6 +3,7 @@ package redisproto
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
@@ -44,5 +45,12 @@ func BenchmarkFlags(b *testing.B) {
 	}}
 	for i := 0; i < b.N; i++ {
 		cmd.Flags(2)
+	}
+}
+
+func TestConnString(t *testing.T) {
+	a, _ := ParseConnString("a?Name=name&ReadTimeout=1e9")
+	if a.ReadTimeout != time.Second || a.Name != "name" {
+		t.Fail()
 	}
 }

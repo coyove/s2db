@@ -294,10 +294,11 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	// As being master, server can't purge logs which slaves don't have yet,
 	// this is the best effort we can make because slaves maybe offline so it is still possible to over-purge.
 	// If server is in master mode but no slave info can be collected, no log compaction will be made.
-	slaveMinLogtail, useSlaveLogtail := s.Slaves.MinLogtail(shard)
+	useSlaveLogtail := s.Slave.ServerName != ""
+	slaveLogtail := s.Slave.Logtails[shard]
 	if !useSlaveLogtail && s.MasterMode {
 		log.Infof("fatal: (master mode) failed to collect shard info from slaves, no log compaction will be made")
-		slaveMinLogtail, useSlaveLogtail = 0, true
+		slaveLogtail, useSlaveLogtail = 0, true
 	}
 
 	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
@@ -362,14 +363,14 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 				queueTTL = int(res.Int())
 			}
 		} else if bucketName == "wal" {
-			logtailStart := decUint64(slaveMinLogtail, uint64(s.CompactLogHead))
+			logtailStart := decUint64(slaveLogtail, uint64(s.CompactLogHead))
 			if !useSlaveLogtail {
 				logtailStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			} else if logtailStart >= b.Sequence() {
-				log.Infof("STAGE 0.1: dumping took too long, slave logs surpass dumped logs: slave log: %d, log tail: %d", slaveMinLogtail, b.Sequence())
+				log.Infof("STAGE 0.1: dumping took too long, slave logs surpass dumped logs: slave log: %d, log tail: %d", slaveLogtail, b.Sequence())
 				logtailStart = decUint64(b.Sequence(), uint64(s.CompactLogHead))
 			}
-			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", logtailStart, slaveMinLogtail, b.Sequence())
+			log.Infof("STAGE 0.1: truncate logs using start: %d, slave tail: %d, log tail: %d", logtailStart, slaveLogtail, b.Sequence())
 			logtailStartBuf = s2pkg.Uint64ToBytes(logtailStart)
 		}
 

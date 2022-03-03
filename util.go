@@ -130,7 +130,8 @@ func (s *Server) Info(section string) (data []string) {
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
 			fmt.Sprintf("servername:%v", s.ServerName),
-			fmt.Sprintf("listen:%v", s.ln.Addr().String()),
+			fmt.Sprintf("listen:%v", s.ln.Addr()),
+			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
@@ -162,13 +163,24 @@ func (s *Server) Info(section string) (data []string) {
 			"")
 	}
 	if section == "" || section == "replication" {
-		data = append(data, "# replication",
-			fmt.Sprintf("master_mode:%v", s.MasterMode),
-			fmt.Sprintf("master:%v", s.MasterAddr),
-			fmt.Sprintf("master_name:%v", s.Master.ServerName),
-			fmt.Sprintf("master_version:%v", s.Master.Version),
-			fmt.Sprintf("slaves:%v", s.Slaves.Len()),
-			"")
+		data = append(data, "# replication", fmt.Sprintf("master_mode:%v", s.MasterMode))
+		if s.MasterConfig.Name != "" {
+			data = append(data,
+				fmt.Sprintf("master_conn:%v", s.MasterConfig.Raw),
+				fmt.Sprintf("master_name:%v", s.Master.ServerName),
+				fmt.Sprintf("master_version:%v", s.Master.Version),
+				fmt.Sprintf("master_ack:%v", s.IsAcked(s.Master)),
+				fmt.Sprintf("master_ack_before:%v", s.Master.AckBefore()))
+		}
+		if s.Slave.ServerName != "" {
+			data = append(data,
+				fmt.Sprintf("slave_name:%v", s.Slave.ServerName),
+				fmt.Sprintf("slave_address:%v", s.Slave.RemoteAddr),
+				fmt.Sprintf("slave_version:%v", s.Slave.Version),
+				fmt.Sprintf("slave_ack:%v", s.IsAcked(s.Slave)),
+				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()))
+		}
+		data = append(data, "")
 	}
 	if section == "" || section == "sys_rw_stats" {
 		data = append(data, "# sys_rw_stats",
@@ -219,8 +231,8 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("weak_cache_obj_count:%v/%v", s.WeakCache.Len(), s.WeakCache.Cap()),
 			"")
 	}
-	if section == "" {
-		data = append(data, s.SlaveInfo(section)...)
+	if section == "" || section == "slave" {
+		data = append(data, s.SlaveInfo()...)
 	}
 	return
 }
@@ -247,44 +259,42 @@ func (s *Server) ShardInfo(shard int) []string {
 		firstKey, _ := bk.Cursor().First()
 		first := s2pkg.BytesToUint64(firstKey)
 		tmp = append(tmp, fmt.Sprintf("log_count:%d", bk.Sequence()-first+1))
-		tmp = append(tmp, fmt.Sprintf("log_tail:%d", bk.Sequence()))
+		tmp = append(tmp, fmt.Sprintf("logtail:%d", bk.Sequence()))
 		myTail = bk.Sequence()
 		return nil
 	})
-	s.Slaves.Foreach(func(si *serverInfo) {
-		tmp = append(tmp, fmt.Sprintf("slave_%v_logtail:%d", si.RemoteAddr, si.LogTails[shard]))
-	})
-	if minTail, exist := s.Slaves.MinLogtail(shard); exist {
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_min:%d", minTail))
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(minTail)))
+	if s.Slave.ServerName != "" {
+		tail := s.Slave.Logtails[shard]
+		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(tail)))
 	}
 	tmp = append(tmp, "")
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
 }
 
-func (s *Server) ReadonlyWait(timeout float64) (*serverInfo, error) {
-	s.ReadOnly = 1
-	_, mine, _, err := s.myLogTails()
-	if err != nil {
-		return nil, err
-	}
-	for start := time.Now(); time.Since(start).Seconds() < timeout; time.Sleep(time.Millisecond * 200) {
-		var first *serverInfo
-		s.Slaves.Foreach(func(si *serverInfo) {
-			var total uint64
-			for _, v := range si.LogTails {
-				total += v
-			}
-			if total >= mine {
-				first = si
-			}
-		})
-		if first != nil {
-			return first, nil
-		}
-	}
-	return nil, nil
-}
+// func (s *Server) ReadonlyWait(timeout float64) (*serverInfo, error) {
+// 	s.ReadOnly = 1
+// 	_, mine, _, err := s.myLogTails()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	for start := time.Now(); time.Since(start).Seconds() < timeout; time.Sleep(time.Millisecond * 200) {
+// 		var first *serverInfo
+// 		s.Slaves.Foreach(func(si *serverInfo) {
+// 			var total uint64
+// 			for _, v := range si.Logtails {
+// 				total += v
+// 			}
+// 			if total >= mine {
+// 				first = si
+// 			}
+// 		})
+// 		if first != nil {
+// 			return first, nil
+// 		}
+// 	}
+// 	return nil, nil
+// }
 
 func ifZero(v *int, v2 int) {
 	if *v <= 0 {

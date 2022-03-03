@@ -124,10 +124,16 @@
             <div class=s-content>
                 <div class=s-key>golang_pprof</div><div class=s-value><a href='/debug/pprof/'>open</a></div>
             </div>
-            {{if .s.MasterAddr}}
+            {{if .s.MasterConfig.Name}}
             <div class=s-content>
                 <div class=s-key>master</div>
-                <div class=s-value><a href="http://{{.s.MasterAddr}}">{{.s.MasterNameAssert}}</a></div>
+                <div class=s-value><a href="http://{{.s.MasterConfig.Addr}}">{{.s.MasterConfig.Name}}</a></div>
+            </div>
+            {{end}}
+            {{if .s.Slave.ServerName}}
+            <div class=s-content>
+                <div class=s-key>slave</div>
+                <div class=s-value><a href="http://{{.s.Slave.RemoteConnectAddr}}">{{.s.Slave.RemoteConnectAddr}}</a></div>
             </div>
             {{end}}
         </div>
@@ -148,17 +154,6 @@
             </div>
             {{end}}
         </div>
-
-        {{range $k, $v := .Slaves}}
-        <div class=section id=s_slave_{{$k}}>
-            <div class=s-title>slave_{{$v.RemoteAddr}}</div>
-            <div class=s-content>
-                <div class=s-key>address</div>
-                <div class=s-value><a href="http://{{$v.RemoteConnectAddr}}">{{$v.RemoteConnectAddr}}</a></div>
-            </div>
-            {{range $i, $v := $.s.SlaveInfo $v.RemoteAddr}}{{if and $i $v}}<div class=s-content>{{kv $v}}</div>{{end}}{{end}}
-        </div>
-        {{end}}
 
         {{range $title, $section := .Sections}}
         <div class=section id=s_{{$section}} fold=0>

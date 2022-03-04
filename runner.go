@@ -25,8 +25,12 @@ func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pk
 	return
 }
 
-func (s *Server) runPreparedTx(cmd, key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error)) (interface{}, error) {
-	t := &batchTask{f: f, key: key, out: make(chan interface{}, 1)}
+type preparedTx struct {
+	f func(tx *bbolt.Tx) (interface{}, error)
+}
+
+func (s *Server) runPreparedTx(cmd, key string, deferred bool, ptx preparedTx) (interface{}, error) {
+	t := &batchTask{f: ptx.f, key: key, out: make(chan interface{}, 1)}
 	if s.Closed {
 		return nil, fmt.Errorf("server closing stage")
 	}
@@ -49,8 +53,8 @@ func (s *Server) runPreparedTx(cmd, key string, deferred bool, f func(tx *bbolt.
 	return out, nil
 }
 
-func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, f func(tx *bbolt.Tx) (interface{}, error), w *redisproto.Writer) error {
-	out, err := s.runPreparedTx(cmd, key, deferred, f)
+func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, ptx preparedTx, w *redisproto.Writer) error {
+	out, err := s.runPreparedTx(cmd, key, deferred, ptx)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}

@@ -188,13 +188,13 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 			name := command.Get(1)
 			switch cmd {
 			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-				_, err = parseDel(cmd, name, command)(tx)
+				_, err = parseDel(cmd, name, command).f(tx)
 			case "ZADD":
-				_, err = parseZAdd(cmd, name, command)(tx)
+				_, err = parseZAdd(cmd, name, command).f(tx)
 			case "ZINCRBY":
-				_, err = parseZIncrBy(cmd, name, command)(tx)
+				_, err = parseZIncrBy(cmd, name, command).f(tx)
 			case "QAPPEND":
-				_, err = parseQAppend(cmd, name, command)(tx)
+				_, err = parseQAppend(cmd, name, command).f(tx)
 			default:
 				return fmt.Errorf("fatal: not a write command: %q", cmd)
 			}

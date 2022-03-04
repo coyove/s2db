@@ -30,7 +30,7 @@ func writeLog(tx *bbolt.Tx, dd []byte) error {
 	return bk.Put(s2pkg.Uint64ToBytes(id), dd)
 }
 
-func parseZAdd(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZAdd(cmd, key string, command *redisproto.Command) preparedTx {
 	var xx, nx, ch, data bool
 	var fillPercent float64
 	var idx = 2
@@ -70,7 +70,7 @@ func parseZAdd(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (in
 	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
 }
 
-func parseDel(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseDel(cmd, key string, command *redisproto.Command) preparedTx {
 	dd := dumpCommand(command)
 	switch cmd {
 	case "DEL":
@@ -91,7 +91,7 @@ func parseDel(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (int
 	}
 }
 
-func parseZIncrBy(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseZIncrBy(cmd, key string, command *redisproto.Command) preparedTx {
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
 }
 
@@ -225,7 +225,7 @@ func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	return writeLog(tx, dd)
 }
 
-func parseQAppend(cmd, key string, command *redisproto.Command) func(*bbolt.Tx) (interface{}, error) {
+func parseQAppend(cmd, key string, command *redisproto.Command) preparedTx {
 	value := command.Bytes(2)
 	flags := command.Flags(3)
 

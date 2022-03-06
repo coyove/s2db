@@ -131,7 +131,7 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 }
 
 func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
-	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
+	return func(tx s2pkg.LogTx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset." + key))
 		if bk == nil {
 			return
@@ -211,7 +211,7 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 }
 
 func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
-	return func(tx *bbolt.Tx) (pairs []s2pkg.Pair, count int, err error) {
+	return func(tx s2pkg.LogTx) (pairs []s2pkg.Pair, count int, err error) {
 		bk := tx.Bucket([]byte("zset.score." + key))
 		if bk == nil {
 			return

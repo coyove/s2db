@@ -7,6 +7,11 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+type LogTx struct {
+	Logs map[uint64][]byte
+	*bbolt.Tx
+}
+
 type LimitedTx struct {
 	mu       sync.Mutex
 	db       *bbolt.DB

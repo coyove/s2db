@@ -179,6 +179,7 @@ func (s *Server) requestLogPuller(shard int) {
 func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
+		ltx := s2pkg.LogTx{Tx: tx}
 		for _, x := range cmds {
 			command, err := splitCommandBase64(x)
 			if err != nil {
@@ -188,13 +189,13 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 			name := command.Get(1)
 			switch cmd {
 			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-				_, err = parseDel(cmd, name, command).f(tx)
+				_, err = parseDel(cmd, name, command).f(ltx)
 			case "ZADD":
-				_, err = parseZAdd(cmd, name, command).f(tx)
+				_, err = parseZAdd(cmd, name, command).f(ltx)
 			case "ZINCRBY":
-				_, err = parseZIncrBy(cmd, name, command).f(tx)
+				_, err = parseZIncrBy(cmd, name, command).f(ltx)
 			case "QAPPEND":
-				_, err = parseQAppend(cmd, name, command).f(tx)
+				_, err = parseQAppend(cmd, name, command).f(ltx)
 			default:
 				return fmt.Errorf("fatal: not a write command: %q", cmd)
 			}

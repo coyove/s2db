@@ -9,13 +9,12 @@ import (
 	"unsafe"
 
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"go.etcd.io/bbolt"
 )
 
 var ErrBigDelete = fmt.Errorf("can't delete big keys directly, use 'UNLINK key' command")
 
 func prepareDel(key string, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		bkName := tx.Bucket([]byte("zset." + key))
 		bkScore := tx.Bucket([]byte("zset.score." + key))
 		if bkName == nil || bkScore == nil {
@@ -46,7 +45,7 @@ func prepareDel(key string, dd []byte) preparedTx {
 }
 
 func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent float64, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
 		if err != nil {
 			return nil, err
@@ -104,7 +103,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent fl
 }
 
 func prepareZRem(key string, keys []string, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (count interface{}, err error) {
+	f := func(tx s2pkg.LogTx) (count interface{}, err error) {
 		bkName := tx.Bucket([]byte("zset." + key))
 		if bkName == nil {
 			return 0, writeLog(tx, dd)
@@ -123,7 +122,7 @@ func prepareZRem(key string, keys []string, dd []byte) preparedTx {
 }
 
 func prepareZIncrBy(key string, member string, by float64, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (newValue interface{}, err error) {
+	f := func(tx s2pkg.LogTx) (newValue interface{}, err error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
 		if err != nil {
 			return 0, err
@@ -171,7 +170,7 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) preparedTx
 }
 
 func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		_, c, err := rangeScore(key, MinScoreRange, MaxScoreRange, s2pkg.RangeOptions{
 			OffsetStart: start,
 			OffsetEnd:   end,
@@ -185,7 +184,7 @@ func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
 }
 
 func prepareZRemRangeByLex(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		rangeStart := s2pkg.NewLexRL(start)
 		rangeEnd := s2pkg.NewLexRL(end)
 		_, c, err := rangeLex(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
@@ -201,7 +200,7 @@ func prepareZRemRangeByLex(key string, start, end string, dd []byte) preparedTx 
 }
 
 func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		_, c, err := rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), s2pkg.RangeOptions{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
@@ -215,7 +214,7 @@ func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedT
 }
 
 func prepareQAppend(key string, value []byte, max, ts int64, appender func(string) bool, dd []byte) preparedTx {
-	f := func(tx *bbolt.Tx) (interface{}, error) {
+	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		bk, err := tx.CreateBucketIfNotExists([]byte("q." + key))
 		if err != nil {
 			return nil, err

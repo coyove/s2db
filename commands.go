@@ -20,13 +20,16 @@ func (s *Server) pick(key string) *bbolt.DB {
 	return s.db[shardIndex(key)].DB
 }
 
-func writeLog(tx *bbolt.Tx, dd []byte) error {
+func writeLog(tx s2pkg.LogTx, dd []byte) error {
 	bk, err := tx.CreateBucketIfNotExists([]byte("wal"))
 	if err != nil {
 		return err
 	}
 	bk.FillPercent = 0.9
 	id, _ := bk.NextSequence()
+	if tx.Logs != nil {
+		tx.Logs[id] = dd
+	}
 	return bk.Put(s2pkg.Uint64ToBytes(id), dd)
 }
 
@@ -207,7 +210,7 @@ func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data
 	return
 }
 
-func deletePair(tx *bbolt.Tx, key string, pairs []s2pkg.Pair, dd []byte) error {
+func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	bkName := tx.Bucket([]byte("zset." + key))
 	bkScore := tx.Bucket([]byte("zset.score." + key))
 	if bkScore == nil || bkName == nil {

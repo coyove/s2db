@@ -12,11 +12,11 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-type rangeFunc func(*bbolt.Tx) ([]s2pkg.Pair, int, error)
+type rangeFunc func(s2pkg.LogTx) ([]s2pkg.Pair, int, error)
 
 func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
-		pairs, count, err = f(tx)
+		pairs, count, err = f(s2pkg.LogTx{Tx: tx})
 		if err == nil {
 			success(pairs, count)
 		}
@@ -26,7 +26,7 @@ func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pk
 }
 
 type preparedTx struct {
-	f func(tx *bbolt.Tx) (interface{}, error)
+	f func(tx s2pkg.LogTx) (interface{}, error)
 }
 
 func (s *Server) runPreparedTx(cmd, key string, deferred bool, ptx preparedTx) (interface{}, error) {
@@ -74,7 +74,7 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, ptx prepa
 }
 
 type batchTask struct {
-	f   func(*bbolt.Tx) (interface{}, error)
+	f   func(s2pkg.LogTx) (interface{}, error)
 	key string
 	out chan interface{}
 }
@@ -138,12 +138,13 @@ EXIT:
 func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
+	logs := make(map[uint64][]byte, len(tasks))
 	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
 	s.db[shard].compactLocker.Lock(func() { log.Info("runner is waiting for compactor") })
-	err := s.db[shard].Update(func(tx *bbolt.Tx) error {
-		var err error
+	err := s.db[shard].Update(func(tx *bbolt.Tx) (err error) {
+		ltx := s2pkg.LogTx{Logs: logs, Tx: tx}
 		for i, t := range tasks {
-			outs[i], err = t.f(tx)
+			outs[i], err = t.f(ltx)
 			if err != nil {
 				return err
 			}

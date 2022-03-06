@@ -73,6 +73,28 @@ func TestMetrics2(t *testing.T) {
 	fmt.Println(s.Ts)
 }
 
+func TestBuoy(t *testing.T) {
+	b := IndexedBuffer{}
+	for _, i := range rand.Perm(IndexedBufferCap) {
+		b.Add(uint64(i+1), nil)
+	}
+	if b.lower != 1 {
+		t.FailNow()
+	}
+	if _, ok := b.GetRange(1, 1); !ok {
+		t.FailNow()
+	}
+	for _, i := range rand.Perm(100) {
+		b.Add(uint64(i+1+IndexedBufferCap), nil)
+	}
+	if b.lower != 101 {
+		t.FailNow()
+	}
+	if _, ok := b.GetRange(100, 10); ok {
+		t.FailNow()
+	}
+}
+
 func TestDoubleMapLRU(t *testing.T) {
 	type op struct {
 		add bool

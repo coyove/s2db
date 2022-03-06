@@ -284,3 +284,47 @@ func ExtractHeadCirc(text string) (string, string) {
 	}
 	return "", text
 }
+
+const IndexedBufferCap = 10000
+
+type IndexedBuffer struct {
+	mu    sync.Mutex
+	lower uint64
+	m     map[uint64][]byte
+}
+
+func (b *IndexedBuffer) Add(id uint64, buf []byte) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if id == 0 {
+		return false
+	}
+	if _, exist := b.m[id]; exist {
+		return false
+	}
+	if b.m == nil {
+		b.m = map[uint64][]byte{}
+	}
+	if b.lower == 0 || id < b.lower {
+		b.lower = id
+	}
+	b.m[id] = buf
+	for len(b.m) > IndexedBufferCap {
+		delete(b.m, b.lower)
+		b.lower++
+	}
+	return true
+}
+
+func (b *IndexedBuffer) GetRange(start uint64, n int) (data [][]byte, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := start; i <= start+uint64(n); i++ {
+		buf, ok := b.m[i]
+		if !ok {
+			return nil, false
+		}
+		data = append(data, buf)
+	}
+	return data, true
+}

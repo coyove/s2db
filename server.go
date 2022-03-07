@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -137,7 +136,7 @@ func (s *Server) Close() error {
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
 	errs <- s.ConfigDB.Close()
-	if s.MasterConfig.Name != "" {
+	if s.MasterRedis != nil {
 		errs <- s.MasterRedis.Close()
 	}
 	errs <- s.LocalRedis.Close()
@@ -150,10 +149,8 @@ func (s *Server) Close() error {
 			defer wg.Done()
 			db := &s.db[i]
 			errs <- db.Close()
-			if s.MasterConfig.Name != "" {
-				<-db.pullerCloseSignal
-			}
 			close(db.batchTx)
+			<-db.pullerCloseSignal
 			<-db.batchCloseSignal
 		}(i)
 	}
@@ -190,18 +187,13 @@ func (s *Server) Serve(addr string) (err error) {
 	s.Survey.StartAt = time.Now()
 
 	log.Infof("listening on: redis=%v, local=%v, master=%v", s.ln.Addr(), s.lnLocal.Addr(), s.MasterConfig.Name)
-	if s.MasterConfig.Name != "" {
-		for i := range s.db {
-			go s.requestLogPuller(i)
-		}
-	}
-
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
 		s.runInspectFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
 
 	for i := range s.db {
 		go s.batchWorker(i)
+		go s.requestLogPuller(i)
 	}
 	go s.startCronjobs()
 	go s.schedCompactionJob() // TODO: close signal
@@ -283,17 +275,17 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		start = time.Now()
 	)
 
-	if s.SlaveStandby == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
-		if s.Slave.ServerName == "" {
-			return w.WriteError("stand-by: slave not ready")
-		}
-		v, err := s.getRedis(s.Slave.RemoteConnectAddr()).Do(context.Background(), command.Args()...).Result()
-		s.Survey.StandbyProxy.Incr(int64(time.Since(start).Milliseconds()))
-		if err != nil && err != redis.Nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteObject(v)
-	}
+	// if s.SlaveStandby == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+	// 	if s.Slave.ServerName == "" {
+	// 		return w.WriteError("stand-by: slave not ready")
+	// 	}
+	// 	v, err := s.getRedis(s.Slave.RemoteConnectAddr()).Do(context.Background(), command.Args()...).Result()
+	// 	s.Survey.StandbyProxy.Incr(int64(time.Since(start).Milliseconds()))
+	// 	if err != nil && err != redis.Nil {
+	// 		return w.WriteError(err.Error())
+	// 	}
+	// 	return w.WriteObject(v)
+	// }
 
 	if isWriteCommand[cmd] {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {

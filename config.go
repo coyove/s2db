@@ -25,6 +25,7 @@ import (
 
 type ServerConfig struct {
 	ServerName        string
+	Master            string
 	Password          string
 	CacheSize         int
 	CacheObjMaxSize   int // kb
@@ -44,7 +45,6 @@ type ServerConfig struct {
 	StopLogPull       int    // 0|1
 	DisableMetrics    int    // 0|1
 	DisableWebConsole int    // 0|1
-	SlaveStandby      int    // 0|1
 	InspectorSource   string
 }
 
@@ -87,7 +87,6 @@ func (s *Server) saveConfig() error {
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())
 	}
-
 	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
 	} else {
@@ -106,6 +105,19 @@ func (s *Server) saveConfig() error {
 		return err
 	} else {
 		s.SelfManager = p
+	}
+
+	if s.ServerConfig.Master != "" {
+		cfg, err := redisproto.ParseConnString(s.ServerConfig.Master)
+		if err != nil {
+			return err
+		}
+		s.MasterConfig = cfg
+		if s.MasterRedis != nil {
+			s.MasterRedis.Close()
+		}
+		s.MasterRedis = cfg.GetClient()
+		s.ReadOnly = 1
 	}
 
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
@@ -410,6 +422,10 @@ func (s *Server) GetShardFilename(i int) (fn string, err error) {
 		fn = "shard" + strconv.Itoa(i)
 	}
 	return
+}
+
+func (s *Server) MakeShardFilename(shard int) string {
+	return "shard" + strconv.Itoa(shard) + "." + fmt.Sprintf("%013d", time.Now().UnixNano()/1e6)
 }
 
 func (s *Server) UpdateShardFilename(i int, fn string) error {

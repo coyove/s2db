@@ -1,9 +1,12 @@
 package s2pkg
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"hash/crc32"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -327,4 +330,47 @@ func (b *IndexedBuffer) GetRange(start uint64, n int) (data [][]byte, ok bool) {
 		data = append(data, buf)
 	}
 	return data, true
+}
+
+func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err error) {
+	var last []byte
+	h, p := crc32.NewIEEE(), make([]byte, 32*1024)
+	for {
+		n, err := r.Read(p)
+		if n > 0 {
+			last = append(last, p[:n]...)
+			if len(last) >= 4 {
+				x := len(last) - 4
+				h.Write(last[:x])
+
+				ew, err := w.Write(last[:x])
+				if ew != x {
+					return total + ew, false, io.ErrShortWrite
+				}
+				if err != nil {
+					return total + ew, false, err
+				}
+
+				copy(last, last[x:])
+				last = last[:4]
+			}
+			total += n
+			if f != nil {
+				f(total)
+			}
+		}
+		if err != nil {
+			if len(last) < 4 {
+				return total, false, io.ErrShortBuffer
+			}
+			if len(last) > 4 {
+				panic("CopyCrc32: shouldn't happen")
+			}
+			ok = bytes.Equal(h.Sum(nil), last)
+			if err == io.EOF {
+				err = nil
+			}
+			return total, ok, err
+		}
+	}
 }

@@ -1,8 +1,11 @@
 package s2pkg
 
 import (
+	"bytes"
 	"container/list"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -92,6 +95,38 @@ func TestBuoy(t *testing.T) {
 	}
 	if _, ok := b.GetRange(100, 10); ok {
 		t.FailNow()
+	}
+}
+
+type onebytereader struct{ io.Reader }
+
+func (obr onebytereader) Read(p []byte) (int, error) { return obr.Reader.Read(p[:1]) }
+
+func TestCrc32Reader(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+	gen := func(n int) ([]byte, io.Reader) {
+		buf := make([]byte, n)
+		rand.Read(buf)
+		h := crc32.NewIEEE()
+		h.Write(buf)
+		x := buf
+		buf = h.Sum(buf)
+		return x, bytes.NewReader(buf)
+	}
+
+	for i := 0; i < 1e5; i++ {
+		n := rand.Intn(10)
+		buf, r := gen(n)
+		buf2 := &bytes.Buffer{}
+
+		if rand.Intn(2) == 0 {
+			r = onebytereader{r}
+		}
+
+		_, ok, err := CopyCrc32(buf2, r, nil)
+		if !ok || err != nil || !bytes.Equal(buf, buf2.Bytes()) {
+			t.Fatal(buf, buf2.Bytes(), err)
+		}
 	}
 }
 

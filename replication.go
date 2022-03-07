@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"hash/crc32"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -92,8 +95,14 @@ func (s *Server) requestLogPuller(shard int) {
 
 	for !s.Closed {
 		wait := time.Millisecond * time.Duration(s.PingTimeout) / 2
+		rdb := s.MasterRedis
+		if rdb == nil {
+			time.Sleep(wait)
+			continue
+		}
+
 		ping := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
-		s.MasterRedis.Process(ctx, ping)
+		rdb.Process(ctx, ping)
 		parts := strings.Split(ping.Val(), " ")
 		if len(parts) != 3 {
 			if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
@@ -106,27 +115,15 @@ func (s *Server) requestLogPuller(shard int) {
 			time.Sleep(wait)
 			continue
 		}
+
 		s.Master.ServerName = parts[1]
 		s.Master.Version = parts[2]
 		s.Master.LastUpdate = time.Now().UnixNano()
-		if s.Master.ServerName == "" {
-			log.Error("master responded empty server name")
+		if s.Master.ServerName != s.MasterConfig.Name {
+			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
 			time.Sleep(wait)
 			continue
 		}
-		if s.Master.ServerName != s.MasterConfig.Name {
-			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
-			break
-		}
-		if s.StopLogPull == 1 {
-			time.Sleep(time.Second)
-			continue
-		}
-		// if s.master.Version > Version {
-		// 	log.Error("ping: master version too high: ", s.master.Version, ">", Version)
-		// 	time.Sleep(time.Second * 10)
-		// 	continue
-		// }
 
 		myLogtail, err := s.myLogTail(shard)
 		if err != nil {
@@ -139,7 +136,7 @@ func (s *Server) requestLogPuller(shard int) {
 		}
 
 		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
-		if err := s.MasterRedis.Process(ctx, cmd); err != nil {
+		if err := rdb.Process(ctx, cmd); err != nil {
 			if strings.Contains(err.Error(), "refused") {
 				if shard == 0 {
 					log.Error("master not alive")
@@ -265,6 +262,54 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 		return nil
 	})
 	return
+}
+
+func (s *Server) requestFullShard(shard int) bool {
+	log := log.WithField("shard", strconv.Itoa(shard))
+	client := &http.Client{}
+	resp, err := client.Get("http://" + s.MasterConfig.Addr + "/?dump=" + strconv.Itoa(shard))
+	if err != nil {
+		log.Error("requestShard: http error: ", err)
+		return false
+	}
+	defer resp.Body.Close()
+
+	sz := s2pkg.ParseInt(resp.Header.Get("X-Size"))
+	if sz == 0 {
+		log.Error("requestShard: invalid size")
+		return false
+	}
+
+	fn := s.MakeShardFilename(shard)
+	of, err := os.Create(filepath.Join(s.DataPath, fn))
+	if err != nil {
+		log.Error("requestShard: create shard: ", err)
+		return false
+	}
+	defer of.Close()
+
+	lastProgress := 0
+	start := time.Now()
+	_, ok, err := s2pkg.CopyCrc32(of, resp.Body, func(progress int) {
+		if cp := int(float64(progress) / float64(sz) * 20); cp > lastProgress {
+			lastProgress = cp
+			log.Info("requestShard: progress ", cp*5, "%")
+		}
+	})
+	if err != nil {
+		log.Error("requestShard: copy: ", err)
+		return false
+	}
+	if !ok {
+		log.Error("requestShard: crc32 checksum failed")
+		return false
+	}
+	log.Info("requestShard: progress 100% in ", time.Since(start))
+	if err := s.UpdateShardFilename(shard, fn); err != nil {
+		log.Error("requestShard: update shard filename failed: ", err)
+		return false
+	}
+	return true
 }
 
 type serverInfo struct {

@@ -32,6 +32,7 @@ var (
 	Version = ""
 
 	masterConnString = flag.String("master", "", "connect to master server, minimal form: <Ip>:<Port>/?Name=<MasterName>")
+	masterDumper     = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
 	listenAddr       = flag.String("l", ":6379", "listen address")
 	dataDir          = flag.String("d", "test", "data directory")
 	readOnly         = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
@@ -209,6 +210,20 @@ func main() {
 	s.MasterMode = *masterMode
 	if *readOnly || s.MasterConfig.Name != "" {
 		s.ReadOnly = 1
+	}
+	if *masterDumper != -1 {
+		if s.MasterConfig.Name == "" {
+			log.Error("no master to request")
+			os.Exit(1)
+		}
+		for i := 0; i < ShardNum; i++ {
+			if i == *masterDumper || *masterDumper == ShardNum {
+				if !s.requestFullShard(i) {
+					os.Exit(1)
+				}
+			}
+		}
+		os.Exit(0)
 	}
 	log.Error(s.Serve(*listenAddr))
 }

@@ -3,6 +3,7 @@ package bbolt
 import (
 	"flag"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"sort"
@@ -91,5 +92,14 @@ func (b *DB) DumpTo(w io.Writer, safeSizeMargin int) error {
 	if err := b.Update(func(tx *Tx) error { return b.mmap(int(sz) + safeSizeMargin) }); err != nil {
 		return err
 	}
-	return b.View(func(tx *Tx) error { _, err := tx.WriteTo(w); return err })
+	return b.View(func(tx *Tx) error {
+		h := crc32.NewIEEE()
+		if _, err := tx.WriteTo(io.MultiWriter(w, h)); err != nil {
+			return err
+		}
+		if _, err := w.Write(h.Sum(nil)); err != nil {
+			return err
+		}
+		return nil
+	})
 }

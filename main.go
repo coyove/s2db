@@ -228,9 +228,11 @@ func (s *Server) webConsoleServer() {
 		}
 
 		if dumpShard := q.Get("dump"); dumpShard != "" {
+			x := &s.db[s2pkg.MustParseInt(dumpShard)]
 			w.Header().Add("Content-Type", "application/octet-stream")
+			w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))
 			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
-			if err := s.db[s2pkg.MustParseInt(dumpShard)].DumpTo(w, m); err != nil {
+			if err := x.DumpTo(w, m); err != nil {
 				log.Errorf("http dumper #%s: %v", dumpShard, err)
 			}
 			log.Infof("http dumper #%s finished in %v", dumpShard, time.Since(start))

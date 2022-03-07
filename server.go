@@ -296,13 +296,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 	}
 
-	if cmd == "SWITCHWRITE" {
-		s.StopLogPull = 1
-		s.ReadOnly = 2
-		log.Info("SWITCHWRITE(2) log-pulling stopped")
-		return w.WriteSimpleString("OK")
-	}
-
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			// log.Error(r, string(debug.Stack()))

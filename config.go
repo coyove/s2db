@@ -42,9 +42,7 @@ type ServerConfig struct {
 	CompactTxWorkers  int
 	CompactDumpTmpDir string // use a temporal directory to store dumped shard
 	CompactNoBackup   int    // 0|1 disable backup files when compacting
-	StopLogPull       int    // 0|1
 	DisableMetrics    int    // 0|1
-	DisableWebConsole int    // 0|1
 	InspectorSource   string
 }
 
@@ -112,12 +110,22 @@ func (s *Server) saveConfig() error {
 		if err != nil {
 			return err
 		}
-		s.MasterConfig = cfg
-		if s.MasterRedis != nil {
-			s.MasterRedis.Close()
+		if cfg.Name == "" || s.ServerName == "" {
+			return fmt.Errorf("master/slave sevrer name must be set before replication")
 		}
-		s.MasterRedis = cfg.GetClient()
+		old := s.MasterRedis
+		s.MasterConfig, s.MasterRedis = cfg, cfg.GetClient()
+		if old != nil {
+			old.Close()
+		}
 		s.ReadOnly = 1
+	} else {
+		if s.MasterRedis != nil {
+			old := s.MasterRedis
+			s.MasterRedis = nil
+			old.Close()
+		}
+		s.ReadOnly = 0
 	}
 
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
@@ -260,7 +268,7 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
-		if rf.Name == "ServerName" {
+		if rf.Name == "ServerName" || rf.Name == "Master" {
 			return nil
 		}
 		if key != "" && !strings.EqualFold(rf.Name, key) {

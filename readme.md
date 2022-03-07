@@ -28,9 +28,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `CompactTmpDir (string)`: temporal location for the compacted database, see [compaction](#compaction)
 - `CompactTxWorkers (int)`: number of workers used to compact a shard
 - `CompactNoBackup (int, 0|1)`: don't backup the old database after compaction
-- `StopLogPull (int, 0|1)`: stop pulling logs from master
 - `DisableMetrics (int, 0|1)`: disable internal metrics recording
-- `DisableWebConsole (int, 0|1)`: disable web console, see [web console](#Web%20Console)
 - `InspectorSource (string)`: internal script code, see [self-managed code](#Self-managed%20Code)
 
 # Commands

@@ -83,7 +83,7 @@ func (b *DB) Dump(path string, safeSizeMargin int) (int64, error) {
 	return dumpFile.Seek(0, 2)
 }
 
-func (b *DB) DumpTo(w io.Writer, safeSizeMargin int) error {
+func (b *DB) DumpTo(w io.Writer, safeSizeMargin int, withHash bool) error {
 	sz := b.Size()
 	if sz == -1 {
 		return fmt.Errorf("failed to get db size")
@@ -97,8 +97,10 @@ func (b *DB) DumpTo(w io.Writer, safeSizeMargin int) error {
 		if _, err := tx.WriteTo(io.MultiWriter(w, h)); err != nil {
 			return err
 		}
-		if _, err := w.Write(h.Sum(nil)); err != nil {
-			return err
+		if withHash {
+			if _, err := w.Write(h.Sum(nil)); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

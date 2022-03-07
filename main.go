@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -31,18 +30,16 @@ import (
 var (
 	Version = ""
 
-	masterConnString = flag.String("master", "", "connect to master server, minimal form: <Ip>:<Port>/?Name=<MasterName>")
-	masterDumper     = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
-	listenAddr       = flag.String("l", ":6379", "listen address")
-	dataDir          = flag.String("d", "test", "data directory")
-	readOnly         = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
-	masterMode       = flag.Bool("M", false, "tag server as master even it may not have any slaves")
-
-	showLogTail = flag.String("logtail", "", "")
-	showVersion = flag.Bool("v", false, "print s2db version")
-	calcShard   = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
-	benchmark   = flag.String("bench", "", "")
-	configSet   = func() (f [6]*string) {
+	listenAddr   = flag.String("l", ":6379", "listen address")
+	dataDir      = flag.String("d", "test", "data directory")
+	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
+	masterMode   = flag.Bool("M", false, "tag server as master even it may not have any slaves")
+	masterDumper = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
+	showLogTail  = flag.String("logtail", "", "")
+	showVersion  = flag.Bool("v", false, "print s2db version")
+	calcShard    = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
+	benchmark    = flag.String("bench", "", "")
+	configSet    = func() (f [6]*string) {
 		for i := range f {
 			f[i] = flag.String("C"+strconv.Itoa(i), "", "update config before serving, form: key=value")
 		}
@@ -190,23 +187,6 @@ func main() {
 		}
 	}
 
-	if *masterConnString != "" {
-		s.MasterConfig, err = redisproto.ParseConnString(*masterConnString)
-		if err != nil {
-			log.Error("invalid master endpoint: ", err)
-			return
-		}
-		if s.MasterConfig.Name == "" {
-			log.Error("master name must be provided")
-			return
-		}
-		if s.ServerName == "" {
-			log.Error("slave name must be provided, use flag: '-C0 ServerName=<Name>'")
-			return
-		}
-		s.MasterRedis = s.MasterConfig.GetClient()
-	}
-
 	s.MasterMode = *masterMode
 	if *readOnly || s.MasterConfig.Name != "" {
 		s.ReadOnly = 1
@@ -237,17 +217,12 @@ func (s *Server) webConsoleServer() {
 		q := r.URL.Query()
 		start := time.Now()
 
-		if s.DisableWebConsole == 1 {
-			w.Write([]byte("s2db: web console disabled"))
-			return
-		}
-
 		if dumpShard := q.Get("dump"); dumpShard != "" {
 			x := &s.db[s2pkg.MustParseInt(dumpShard)]
 			w.Header().Add("Content-Type", "application/octet-stream")
 			w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))
 			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
-			if err := x.DumpTo(w, m); err != nil {
+			if err := x.DumpTo(w, m, q.Get("dump-checksum") != "0"); err != nil {
 				log.Errorf("http dumper #%s: %v", dumpShard, err)
 			}
 			log.Infof("http dumper #%s finished in %v", dumpShard, time.Since(start))

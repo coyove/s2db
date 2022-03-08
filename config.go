@@ -105,27 +105,31 @@ func (s *Server) saveConfig() error {
 		s.SelfManager = p
 	}
 
-	if s.ServerConfig.Master != "" {
-		cfg, err := redisproto.ParseConnString(s.ServerConfig.Master)
-		if err != nil {
-			return err
-		}
-		if cfg.Name == "" || s.ServerName == "" {
-			return fmt.Errorf("master/slave sevrer name must be set before replication")
-		}
-		old := s.MasterRedis
-		s.MasterConfig, s.MasterRedis = cfg, cfg.GetClient()
-		if old != nil {
-			old.Close()
-		}
-		s.ReadOnly = 1
-	} else {
-		if s.MasterRedis != nil {
+	if s.ServerConfig.Master != s.MasterConfig.Raw {
+		if s.ServerConfig.Master != "" {
+			cfg, err := redisproto.ParseConnString(s.ServerConfig.Master)
+			if err != nil {
+				return err
+			}
+			if cfg.Name == "" || s.ServerName == "" {
+				return fmt.Errorf("master/slave sevrer name must be set before replication")
+			}
 			old := s.MasterRedis
-			s.MasterRedis = nil
-			old.Close()
+			s.MasterConfig, s.MasterRedis = cfg, cfg.GetClient()
+			if old != nil {
+				old.Close()
+			}
+			log.Info("master redis created with: ", s.MasterConfig.Raw)
+			s.ReadOnly = 1
+		} else {
+			if s.MasterRedis != nil {
+				old := s.MasterRedis
+				s.MasterRedis = nil
+				old.Close()
+			}
+			log.Info("master removed")
+			s.ReadOnly = 0
 		}
-		s.ReadOnly = 0
 	}
 
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {

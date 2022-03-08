@@ -4,15 +4,21 @@ import (
 	"bytes"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 )
 
 type LogFormatter struct {
 	SlowLog bool
+	last    string
 }
 
 func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+	if strings.HasPrefix(entry.Message, "[M]") && f.last == entry.Message {
+		return nil, nil
+	}
+
 	buf := bytes.Buffer{}
 	if f.SlowLog {
 		ts := entry.Time.UTC()
@@ -40,30 +46,8 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	buf.WriteString("\t")
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
+	if strings.HasPrefix(entry.Message, "[M]") {
+		f.last = entry.Message
+	}
 	return buf.Bytes(), nil
 }
-
-// type SlowLogs struct {
-// 	Start time.Time
-// 	End   time.Time
-// }
-//
-// func AnalyzeSlowLogs(path string) (sl SlowLogs, err error) {
-// 	f, err := os.Open(path)
-// 	if err != nil {
-// 		return sl, err
-// 	}
-// 	defer f.Close()
-// 	rd := bufio.NewReader(f)
-//
-// 	for {
-// 		line, _ := rd.ReadBytes('\n')
-// 		if len(line) == 0 {
-// 			break
-// 		}
-// 		line = bytes.TrimSpace(line)
-// 		parts := bytes.Split(line, []byte("\t"))
-// 		startTS := MustParseInt64(string(parts[0]))
-// 	}
-// }
-//

@@ -176,6 +176,7 @@ func (s *Server) Info(section string) (data []string) {
 			data = append(data,
 				fmt.Sprintf("slave_name:%v", s.Slave.ServerName),
 				fmt.Sprintf("slave_address:%v", s.Slave.RemoteAddr),
+				fmt.Sprintf("slave_listen:%v", s.Slave.ListenAddr),
 				fmt.Sprintf("slave_version:%v", s.Slave.Version),
 				fmt.Sprintf("slave_ack:%v", s.IsAcked(s.Slave)),
 				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()))
@@ -231,8 +232,8 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("weak_cache_obj_count:%v/%v", s.WeakCache.Len(), s.WeakCache.Cap()),
 			"")
 	}
-	if section == "" || section == "slave" {
-		data = append(data, s.SlaveInfo()...)
+	if section == "" || section == "slave_logtails" {
+		data = append(data, s.SlaveLogtailsInfo()...)
 	}
 	return
 }

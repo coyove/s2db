@@ -397,11 +397,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 	// Log related commands
 	switch cmd {
-	case "LOGTAIL":
-		if key != "" {
-			return w.WriteIntOrError(s.myLogTail(s2pkg.MustParseInt(key)))
-		}
-		return w.WriteIntOrError(s.myLogTail(-1))
 	case "REQUESTLOG":
 		if s.MasterConfig.Name != "" && !s.IsAcked(s.Master) {
 			return w.WriteError("broken master replication link")

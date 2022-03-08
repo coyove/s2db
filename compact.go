@@ -103,9 +103,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	for first := 0; ; first++ {
 		if err = compactDB.View(func(tx *bbolt.Tx) error {
 			if bk := tx.Bucket([]byte("wal")); bk != nil {
-				if k, _ := bk.Cursor().Last(); len(k) == 8 {
-					ct = binary.BigEndian.Uint64(k)
-				}
+				ct = bk.Sequence()
 			}
 			return nil
 		}); err != nil {
@@ -113,7 +111,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
-		mt, err = s.myLogTail(shard)
+		mt, err = s.ShardLogtail(shard)
 		if err != nil {
 			log.Errorf("get shard tail: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", shard, err)
@@ -245,6 +243,8 @@ func (s *Server) schedCompactionJob() {
 				<-out
 				log.Info("update last_compact_6xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
 			}
+		} else {
+			log.Info("compactor: no job found")
 		}
 
 		time.Sleep(time.Minute)
@@ -433,11 +433,8 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 			seq := tmpb.Sequence()
 			if len(p.LogtailStartBuf) > 0 {
 				k, _ := tmpb.Cursor().Last()
-				if len(k) != 8 {
-					p.Logger.Infof("STAGE 0.2: truncate logs double check: buffer: %v, tail: %v, seq: %d, count: %d", p.LogtailStartBuf, k, seq, p.Total)
-				} else {
-					p.Logger.Infof("STAGE 0.2: truncate logs double check: tail: %d, seq: %d, count: %d", binary.BigEndian.Uint64(k), seq, p.Total)
-				}
+				p.Logger.Infof("STAGE 0.2: truncate logs check, buffer=%v, last=%d, tail=%d, count=%d",
+					p.LogtailStartBuf, s2pkg.BytesToUint64(k), seq, p.Total)
 			}
 			if isZSetScore && keyCount != seq {
 				tmpb.SetSequence(keyCount)

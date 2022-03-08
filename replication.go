@@ -22,59 +22,32 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-func (s *Server) myLogTails() (total [ShardNum]uint64, combined uint64, errors [ShardNum]error, err error) {
-	var oneError error
-	for i := range s.db {
-		if err := s.db[i].View(func(tx *bbolt.Tx) error {
-			bk := tx.Bucket([]byte("wal"))
-			if bk != nil {
-				k, _ := bk.Cursor().Last()
-				if len(k) == 8 {
-					total[i] = binary.BigEndian.Uint64(k)
-					combined += total[i]
-				}
-			}
-
-			return nil
-		}); err != nil {
-			errors[i] = err
-			oneError = fmt.Errorf("%v -> %v", oneError, err)
+func (s *Server) ShardLogtail(shard int) (tail uint64, err error) {
+	err = s.db[shard].View(func(tx *bbolt.Tx) error {
+		if bk := tx.Bucket([]byte("wal")); bk != nil {
+			tail = bk.Sequence()
 		}
-	}
-	err = oneError
+		return nil
+	})
 	return
 }
 
-func (s *Server) myLogTail(shard int) (total uint64, err error) {
-	tails, combined, errors, err := s.myLogTails()
-	if shard >= 0 {
-		return tails[shard], errors[shard]
-	}
-	return combined, err
-}
-
-func (s *Server) SlaveInfo() (data []string) {
+func (s *Server) SlaveLogtailsInfo() (data []string) {
 	if s.Slave.ServerName != "" {
-		tails, combined, _, err := s.myLogTails()
-		if err != nil {
-			return []string{"error:" + err.Error()}
-		}
-		diffs := [ShardNum]int64{}
-		lt := int64(0)
+		diffs, diffSum := [ShardNum]int64{}, int64(0)
 		si := s.Slave
-		for i, t := range si.Logtails {
-			lt += int64(t)
-			diffs[i] = int64(tails[i]) - int64(t)
+		for i := range s.db {
+			tail, err := s.ShardLogtail(i)
+			if err != nil {
+				return []string{fmt.Sprintf("shard #%d error: %v", i, err)}
+			}
+			diffs[i] = int64(tail) - int64(si.Logtails[i])
+			diffSum += diffs[i]
 		}
-		data = append(data, "# slave",
-			"name:"+si.ServerName,
-			"address:"+si.RemoteAddr,
-			"version:"+si.Version,
-			fmt.Sprintf("ack_before:%v(%v)", si.AckBefore(), s.IsAcked(si)),
-			"listen:"+si.ListenAddr,
-			"logtail:"+joinArray(si.Logtails),
+		data = append(data, "# slave_logtails",
+			fmt.Sprintf("logtail:%v", joinArray(si.Logtails)),
 			fmt.Sprintf("logtail_diff:%v", joinArray(diffs)),
-			fmt.Sprintf("logtail_diff_sum:%d", int64(combined)-lt),
+			fmt.Sprintf("logtail_diff_sum:%d", diffSum),
 			"",
 		)
 	}
@@ -106,9 +79,7 @@ func (s *Server) requestLogPuller(shard int) {
 		parts := strings.Split(ping.Val(), " ")
 		if len(parts) != 3 {
 			if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
-				if shard == 0 {
-					log.Error("ping: master not alive")
-				}
+				log.Error("[M] ping: master not alive")
 			} else {
 				log.Error("ping: invalid response: ", ping.Val(), ping.Err())
 			}
@@ -120,12 +91,12 @@ func (s *Server) requestLogPuller(shard int) {
 		s.Master.Version = parts[2]
 		s.Master.LastUpdate = time.Now().UnixNano()
 		if s.Master.ServerName != s.MasterConfig.Name {
-			log.Errorf("fatal: master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
+			log.Errorf("[M] master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
 			time.Sleep(wait)
 			continue
 		}
 
-		myLogtail, err := s.myLogTail(shard)
+		myLogtail, err := s.ShardLogtail(shard)
 		if err != nil {
 			if err == bbolt.ErrDatabaseNotOpen {
 				time.Sleep(wait)
@@ -138,9 +109,7 @@ func (s *Server) requestLogPuller(shard int) {
 		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
 		if err := rdb.Process(ctx, cmd); err != nil {
 			if strings.Contains(err.Error(), "refused") {
-				if shard == 0 {
-					log.Error("master not alive")
-				}
+				log.Error("[M] master not alive")
 			} else if err != redis.Nil {
 				log.Error("request log from master: ", err)
 			}
@@ -208,33 +177,29 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 }
 
 func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, err error) {
-	sz := 0
-	myLogtail, err := s.myLogTail(shard)
-	if err != nil {
-		return nil, err
-	}
-	if start == myLogtail+1 {
-		return nil, nil
-	}
-	if start > myLogtail {
-		return nil, fmt.Errorf("slave log (%d) surpass master log (%d)", start, myLogtail)
-	}
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
 			return nil
 		}
 
-		k, _ := bk.Cursor().First()
-		if len(k) == 8 {
-			first := binary.BigEndian.Uint64(k)
-			if first > start {
-				return fmt.Errorf("master log (head=%d) has been compacted, slave failed to request older log (%d)", first, start)
+		if k, _ := bk.Cursor().First(); len(k) == 8 {
+			if head := binary.BigEndian.Uint64(k); head > start {
+				return fmt.Errorf("master log (head=%d) has been compacted, slave can't request older log (%d)", head, start)
 			}
+		}
+
+		myLogtail := bk.Sequence()
+		if start == myLogtail+1 {
+			return nil
+		}
+		if start > myLogtail {
+			return fmt.Errorf("slave log (req=%d) surpass master log (tail=%d)", start, myLogtail)
 		}
 
 		sumCheck := crc32.NewIEEE()
 		sumBuf := make([]byte, 4)
+		resSize := 0
 		for i := start; i <= myLogtail; i++ {
 			data := bk.Get(s2pkg.Uint64ToBytes(uint64(i)))
 			if data[0] == 0x94 {
@@ -251,11 +216,11 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 			} else {
 				logs = append(logs, string(data))
 			}
-			sz += len(data)
+			resSize += len(data)
 			if full {
 				continue
 			}
-			if len(logs) >= s.ResponseLogRun || sz > s.ResponseLogSize*1024 {
+			if len(logs) >= s.ResponseLogRun || resSize > s.ResponseLogSize*1024 {
 				break
 			}
 		}

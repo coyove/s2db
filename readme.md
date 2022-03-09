@@ -15,6 +15,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 
 # Configuration Fields
 - `ServerName (string)`: server's name
+- `Password (string)`: server's password
 - `CacheSize (int)`: cache size (number of cached objects)
 - `WeakCacheSize (int)`: weak cache size
 - `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object

@@ -78,10 +78,12 @@ func (s *Server) requestLogPuller(shard int) {
 		rdb.Process(ctx, ping)
 		parts := strings.Split(ping.Val(), " ")
 		if len(parts) != 3 {
-			if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
-				log.Error("[M] ping: master not alive")
-			} else {
-				log.Error("ping: invalid response: ", ping.Val(), ping.Err())
+			if ping.Err() != redis.ErrClosed {
+				if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
+					log.Error("[M] ping: master not alive")
+				} else {
+					log.Error("ping: invalid response: ", ping.Val(), ping.Err())
+				}
 			}
 			time.Sleep(wait)
 			continue
@@ -108,10 +110,12 @@ func (s *Server) requestLogPuller(shard int) {
 
 		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
 		if err := rdb.Process(ctx, cmd); err != nil {
-			if strings.Contains(err.Error(), "refused") {
-				log.Error("[M] master not alive")
-			} else if err != redis.Nil {
-				log.Error("request log from master: ", err)
+			if err != redis.ErrClosed {
+				if strings.Contains(err.Error(), "refused") {
+					log.Error("[M] master not alive")
+				} else if err != redis.Nil {
+					log.Error("request log from master: ", err)
+				}
 			}
 			time.Sleep(wait)
 			continue
@@ -232,7 +236,8 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 func (s *Server) requestFullShard(shard int) bool {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	client := &http.Client{}
-	resp, err := client.Get("http://" + s.MasterConfig.Addr + "/?dump=" + strconv.Itoa(shard))
+	resp, err := client.Get("http://" + s.MasterConfig.Addr +
+		"/?dump=" + strconv.Itoa(shard) + "&p=" + s.MasterConfig.Password)
 	if err != nil {
 		log.Error("requestShard: http error: ", err)
 		return false

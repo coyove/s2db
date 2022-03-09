@@ -33,10 +33,9 @@ var (
 	listenAddr   = flag.String("l", ":6379", "listen address")
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
-	masterMode   = flag.Bool("M", false, "tag server as master even it may not have any slaves")
-	masterDumper = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
-	showLogTail  = flag.String("logtail", "", "")
 	showVersion  = flag.Bool("v", false, "print s2db version")
+	masterDumper = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
+	showLogtail  = flag.String("logtail", "", "print log tail of specified database")
 	calcShard    = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
 	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
@@ -142,8 +141,8 @@ func main() {
 		select {}
 	}
 
-	if *showLogTail != "" {
-		db, err := bbolt.Open(*showLogTail, 0666, bboltReadonlyOptions)
+	if *showLogtail != "" {
+		db, err := bbolt.Open(*showLogtail, 0666, bboltReadonlyOptions)
 		if err != nil {
 			fmt.Println(err.Error())
 			os.Exit(-1)
@@ -173,7 +172,7 @@ func main() {
 
 	s, err := Open(*dataDir)
 	if err != nil {
-		log.Panic(err)
+		errorExit(err.Error())
 	}
 
 	for _, cd := range configSet {
@@ -182,30 +181,33 @@ func main() {
 			old, _ := s.getConfig(key)
 			log.Infof("update %s from %q to %q", key, old, value)
 			if _, err := s.UpdateConfig(key, value, false); err != nil {
-				log.Panic(err)
+				errorExit(err.Error())
 			}
 		}
 	}
 
-	s.MasterMode = *masterMode
 	if *readOnly || s.MasterConfig.Name != "" {
 		s.ReadOnly = 1
 	}
 	if *masterDumper != -1 {
 		if s.MasterConfig.Name == "" {
-			log.Error("no master to request")
-			os.Exit(1)
+			errorExit("mdump: no master to request")
 		}
 		for i := 0; i < ShardNum; i++ {
 			if i == *masterDumper || *masterDumper == ShardNum {
 				if !s.requestFullShard(i) {
-					os.Exit(1)
+					errorExit("mdump: failed to request " + strconv.Itoa(i))
 				}
 			}
 		}
 		os.Exit(0)
 	}
 	log.Error(s.Serve(*listenAddr))
+}
+
+func errorExit(msg string) {
+	log.Error(msg)
+	os.Exit(1)
 }
 
 func (s *Server) webConsoleServer() {
@@ -218,6 +220,10 @@ func (s *Server) webConsoleServer() {
 		start := time.Now()
 
 		if dumpShard := q.Get("dump"); dumpShard != "" {
+			if s.Password != "" && s.Password != q.Get("p") {
+				w.WriteHeader(400)
+				return
+			}
 			x := &s.db[s2pkg.MustParseInt(dumpShard)]
 			w.Header().Add("Content-Type", "application/octet-stream")
 			w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))

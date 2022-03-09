@@ -155,6 +155,9 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
 	}
+	if key == "master" && !strings.HasPrefix(value, "redis://") {
+		value = "redis://" + value
+	}
 	found := false
 	old := s.ServerConfig
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {

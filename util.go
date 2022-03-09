@@ -163,7 +163,7 @@ func (s *Server) Info(section string) (data []string) {
 			"")
 	}
 	if section == "" || section == "replication" {
-		data = append(data, "# replication", fmt.Sprintf("master_mode:%v", s.MasterMode))
+		data = append(data, "# replication")
 		if s.MasterConfig.Name != "" {
 			data = append(data,
 				fmt.Sprintf("master_conn:%v", s.MasterConfig.Raw),

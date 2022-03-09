@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +52,6 @@ type Server struct {
 	ServerConfig
 	ReadOnly           int    // server is 0: writable, 1: readonly, 2: switchwrite
 	Closed             bool   // server close flag
-	MasterMode         bool   // I AM MASTER server
 	DataPath           string // location of data and config database
 	SelfManager        *bas.Program
 	Cache              *s2pkg.MasterLRU
@@ -186,7 +184,7 @@ func (s *Server) Serve(addr string) (err error) {
 	s.LocalRedis = redis.NewClient(&redis.Options{Network: "unix", Addr: s.lnLocal.Addr().String(), Password: s.Password})
 	s.Survey.StartAt = time.Now()
 
-	log.Infof("listening on: redis=%v, local=%v, master=%v", s.ln.Addr(), s.lnLocal.Addr(), s.MasterConfig.Name)
+	log.Infof("listening on: redis=%v, local=%v", s.ln.Addr(), s.lnLocal.Addr())
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
 		s.runInspectFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
@@ -335,11 +333,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
 
-		s.PingLock.Lock()
-		defer s.PingLock.Unlock()
 		if strings.EqualFold(key, "FROM") {
+			s.PingLock.Lock()
+			defer s.PingLock.Unlock()
 			ip := getRemoteIP(remoteAddr).String()
-			if s.Slave.RemoteAddr != "" && s.Slave.RemoteAddr != ip {
+			if s.Slave.RemoteAddr == "" {
+				log.Infof("slave ack: %v", ip)
+			} else if s.Slave.RemoteAddr != ip {
 				if s.IsAcked(s.Slave) {
 					return w.WriteSimpleString("PONG ?")
 				}
@@ -382,17 +382,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
 	case "TYPE":
 		return w.WriteBulk([]byte(s.TypeofKey(key)))
-	case "DUMPSHARD":
-		path := command.Get(2)
-		if path == "" {
-			path = s.db[s2pkg.MustParseInt(key)].DB.Path() + ".bak"
-		}
-		return w.WriteIntOrError(s.db[s2pkg.MustParseInt(key)].DB.Dump(path, s.DumpSafeMargin*1024*1024))
-	case "COMPACTSHARD":
-		if err := s.CompactShard(s2pkg.MustParseInt(key), true); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("STARTED")
 	}
 
 	// Log related commands
@@ -553,7 +542,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 func (s *Server) checkWritable() error {
 	if s.ReadOnly == 1 {
-		return fmt.Errorf("server is read-only, master mode is " + strconv.FormatBool(s.MasterMode))
+		return fmt.Errorf("server is read-only")
 	} else if s.ServerName == "" {
 		return fmt.Errorf("server name not set, writes are omitted")
 	}

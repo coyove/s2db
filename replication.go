@@ -11,11 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -35,17 +36,16 @@ func (s *Server) ShardLogtail(shard int) (tail uint64, err error) {
 func (s *Server) SlaveLogtailsInfo() (data []string) {
 	if s.Slave.ServerName != "" {
 		diffs, diffSum := [ShardNum]int64{}, int64(0)
-		si := s.Slave
 		for i := range s.db {
 			tail, err := s.ShardLogtail(i)
 			if err != nil {
 				return []string{fmt.Sprintf("shard #%d error: %v", i, err)}
 			}
-			diffs[i] = int64(tail) - int64(si.Logtails[i])
+			diffs[i] = int64(tail) - int64(s.Slave.Logtails[i])
 			diffSum += diffs[i]
 		}
 		data = append(data, "# slave_logtails",
-			fmt.Sprintf("logtail:%v", joinArray(si.Logtails)),
+			fmt.Sprintf("logtail:%v", joinArray(s.Slave.Logtails)),
 			fmt.Sprintf("logtail_diff:%v", joinArray(diffs)),
 			fmt.Sprintf("logtail_diff_sum:%d", diffSum),
 			"",
@@ -54,21 +54,16 @@ func (s *Server) SlaveLogtailsInfo() (data []string) {
 	return append(data, "")
 }
 
-func (s *Server) requestLogPuller(shard int) {
+func (s *Server) logPuller(shard int) {
 	ctx := context.TODO()
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error(r, " ", string(debug.Stack()))
-			time.Sleep(time.Second)
-			go s.requestLogPuller(shard)
-		}
-	}()
+	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPuller(shard) })
 
 	for !s.Closed {
 		wait := time.Millisecond * time.Duration(s.PingTimeout) / 2
-		rdb := s.MasterRedis
+		rdb := s.Master.Redis()
+		masterName := s.Master.Config().Name
 		if rdb == nil {
 			time.Sleep(wait)
 			continue
@@ -92,7 +87,7 @@ func (s *Server) requestLogPuller(shard int) {
 		s.Master.ServerName = parts[1]
 		s.Master.Version = parts[2]
 		s.Master.LastUpdate = time.Now().UnixNano()
-		if s.Master.ServerName != s.MasterConfig.Name {
+		if s.Master.ServerName != masterName {
 			log.Errorf("[M] master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
 			time.Sleep(wait)
 			continue
@@ -236,8 +231,8 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 func (s *Server) requestFullShard(shard int) bool {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	client := &http.Client{}
-	resp, err := client.Get("http://" + s.MasterConfig.Addr +
-		"/?dump=" + strconv.Itoa(shard) + "&p=" + s.MasterConfig.Password)
+	resp, err := client.Get("http://" + s.Master.Config().Addr +
+		"/?dump=" + strconv.Itoa(shard) + "&p=" + s.Master.Config().Password)
 	if err != nil {
 		log.Error("requestShard: http error: ", err)
 		return false
@@ -282,7 +277,11 @@ func (s *Server) requestFullShard(shard int) bool {
 	return true
 }
 
-type serverInfo struct {
+type endpoint struct {
+	mu     sync.RWMutex
+	client *redis.Client
+	config redisproto.RedisConfig
+
 	RemoteAddr string           `json:"remoteaddr"`
 	ServerName string           `json:"servername"`
 	ListenAddr string           `json:"listen"`
@@ -291,15 +290,63 @@ type serverInfo struct {
 	LastUpdate int64            `json:"lastupdate"`
 }
 
-func (s *Server) IsAcked(si serverInfo) bool {
-	return si.AckBefore() < time.Duration(s.PingTimeout)*time.Millisecond
+func (e *endpoint) IsAcked(s *Server) bool {
+	return e.AckBefore() < time.Duration(s.PingTimeout)*time.Millisecond
 }
 
-func (si *serverInfo) AckBefore() time.Duration {
-	return time.Since(time.Unix(0, si.LastUpdate))
+func (e *endpoint) AckBefore() time.Duration {
+	return time.Since(time.Unix(0, e.LastUpdate))
 }
 
-func (si *serverInfo) RemoteConnectAddr() string {
-	_, port, _ := net.SplitHostPort(si.ListenAddr)
-	return si.RemoteAddr + ":" + port
+func (e *endpoint) RemoteConnectAddr() string {
+	_, port, _ := net.SplitHostPort(e.ListenAddr)
+	return e.RemoteAddr + ":" + port
+}
+
+func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if connString != e.config.Raw {
+		if connString != "" {
+			cfg, err := redisproto.ParseConnString(connString)
+			if err != nil {
+				return false, err
+			}
+			if cfg.Name == "" {
+				return false, fmt.Errorf("sevrer name must be set")
+			}
+			old := e.client
+			e.config, e.client = cfg, cfg.GetClient()
+			if old != nil {
+				old.Close()
+			}
+		} else {
+			old := e.client
+			e.client = nil
+			old.Close()
+		}
+		changed = true
+	}
+	return
+}
+
+func (e *endpoint) Redis() *redis.Client {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.client
+}
+
+func (e *endpoint) Config() redisproto.RedisConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config
+}
+
+func (e *endpoint) Close() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.client != nil {
+		return e.client.Close()
+	}
+	return nil
 }

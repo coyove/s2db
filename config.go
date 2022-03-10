@@ -26,6 +26,7 @@ import (
 type ServerConfig struct {
 	ServerName        string
 	Master            string
+	Slave             string
 	Password          string
 	CacheSize         int
 	CacheObjMaxSize   int // kb
@@ -105,30 +106,25 @@ func (s *Server) saveConfig() error {
 		s.SelfManager = p
 	}
 
-	if s.ServerConfig.Master != s.MasterConfig.Raw {
+	if changed, err := s.Master.CreateRedis(s.ServerConfig.Master); err != nil {
+		return err
+	} else if changed {
 		if s.ServerConfig.Master != "" {
-			cfg, err := redisproto.ParseConnString(s.ServerConfig.Master)
-			if err != nil {
-				return err
-			}
-			if cfg.Name == "" || s.ServerName == "" {
-				return fmt.Errorf("master/slave sevrer name must be set before replication")
-			}
-			old := s.MasterRedis
-			s.MasterConfig, s.MasterRedis = cfg, cfg.GetClient()
-			if old != nil {
-				old.Close()
-			}
-			log.Info("master redis created with: ", s.MasterConfig.Raw)
+			log.Info("master redis created with: ", s.ServerConfig.Master)
 			s.ReadOnly = 1
 		} else {
-			if s.MasterRedis != nil {
-				old := s.MasterRedis
-				s.MasterRedis = nil
-				old.Close()
-			}
-			log.Info("master removed")
+			log.Info("master redis removed")
 			s.ReadOnly = 0
+		}
+	}
+
+	if changed, err := s.Slave.CreateRedis(s.ServerConfig.Slave); err != nil {
+		return err
+	} else if changed {
+		if s.ServerConfig.Slave != "" {
+			log.Info("slave redis created with: ", s.ServerConfig.Slave)
+		} else {
+			log.Info("slave redis removed")
 		}
 	}
 
@@ -155,7 +151,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
 	}
-	if key == "master" && !strings.HasPrefix(value, "redis://") {
+	if (key == "master" || key == "slave") && !strings.HasPrefix(value, "redis://") {
 		value = "redis://" + value
 	}
 	found := false
@@ -257,7 +253,9 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	case "", "local", "LOCAL":
 		return s.LocalRedis
 	case "master", "MASTER":
-		return s.MasterRedis
+		return s.Master.Redis()
+	case "slave", "SLAVE":
+		return s.Slave.Redis()
 	}
 	cfg, err := redisproto.ParseConnString(addr)
 	s2pkg.PanicErr(err)
@@ -305,7 +303,7 @@ func (s *Server) runInspectFunc(name string, args ...interface{}) (bas.Value, er
 	if s.SelfManager == nil {
 		return bas.Nil, nil
 	}
-	defer s2pkg.Recover()
+	defer s2pkg.Recover(nil)
 	f, _ := s.SelfManager.Get(name)
 	if !bas.IsCallable(f) {
 		return f, nil

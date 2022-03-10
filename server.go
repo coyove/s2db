@@ -43,11 +43,8 @@ type Server struct {
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.MasterLRU
 
-	LocalRedis   *redis.Client
-	MasterRedis  *redis.Client
-	MasterConfig redisproto.RedisConfig
-	Master       serverInfo
-	Slave        serverInfo
+	LocalRedis    *redis.Client
+	Master, Slave endpoint
 
 	ServerConfig
 	ReadOnly           int    // server is 0: writable, 1: readonly, 2: switchwrite
@@ -134,9 +131,8 @@ func (s *Server) Close() error {
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
 	errs <- s.ConfigDB.Close()
-	if s.MasterRedis != nil {
-		errs <- s.MasterRedis.Close()
-	}
+	errs <- s.Master.Close()
+	errs <- s.Slave.Close()
 	errs <- s.LocalRedis.Close()
 	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
 
@@ -191,7 +187,7 @@ func (s *Server) Serve(addr string) (err error) {
 
 	for i := range s.db {
 		go s.batchWorker(i)
-		go s.requestLogPuller(i)
+		go s.logPuller(i)
 	}
 	go s.startCronjobs()
 	go s.schedCompactionJob() // TODO: close signal
@@ -340,7 +336,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			if s.Slave.RemoteAddr == "" {
 				log.Infof("slave ack: %v", ip)
 			} else if s.Slave.RemoteAddr != ip {
-				if s.IsAcked(s.Slave) {
+				if s.Slave.IsAcked(s) {
 					return w.WriteSimpleString("PONG ?")
 				}
 				log.Infof("slave switch: %v(%v) to %v", s.Slave.RemoteAddr, s.Slave.AckBefore(), ip)
@@ -387,9 +383,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Log related commands
 	switch cmd {
 	case "REQUESTLOG":
-		if s.MasterConfig.Name != "" && !s.IsAcked(s.Master) {
-			return w.WriteError("broken master replication link")
-		}
 		start := s2pkg.ParseUint64(command.Get(2))
 		if start == 0 {
 			return w.WriteError("request at zero offset")

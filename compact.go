@@ -51,7 +51,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	defer func() {
 		s.CompactLock.Unlock()
 		s.LocalStorage().Delete("compact_lock")
-		s2pkg.Recover()
+		s2pkg.Recover(nil)
 	}()
 
 	x := &s.db[shard]
@@ -297,7 +297,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	// As being master, server can't purge logs which slave doesn't have yet.
 	// This is not foolproof because slave maybe temporarily offline, so it is still possible to over-purge.
-	hasSlave := s.Slave.ServerName != "" && s.IsAcked(s.Slave)
+	hasSlave := s.Slave.ServerName != "" && s.Slave.IsAcked(s)
 	slaveLogtail := s.Slave.Logtails[shard]
 
 	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
@@ -316,7 +316,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		go func() {
 			defer func() {
 				bucketWalkerWg.Done()
-				s2pkg.Recover()
+				s2pkg.Recover(nil)
 			}()
 			for p := range bucketIn {
 				s.compactionBucketWalker(p)

@@ -164,12 +164,12 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "replication" {
 		data = append(data, "# replication")
-		if s.MasterConfig.Name != "" {
+		if s.Master.Config().Name != "" {
 			data = append(data,
-				fmt.Sprintf("master_conn:%v", s.MasterConfig.Raw),
+				fmt.Sprintf("master_conn:%v", s.Master.Config().Raw),
 				fmt.Sprintf("master_name:%v", s.Master.ServerName),
 				fmt.Sprintf("master_version:%v", s.Master.Version),
-				fmt.Sprintf("master_ack:%v", s.IsAcked(s.Master)),
+				fmt.Sprintf("master_ack:%v", s.Master.IsAcked(s)),
 				fmt.Sprintf("master_ack_before:%v", s.Master.AckBefore()))
 		}
 		if s.Slave.ServerName != "" {
@@ -178,7 +178,7 @@ func (s *Server) Info(section string) (data []string) {
 				fmt.Sprintf("slave_address:%v", s.Slave.RemoteAddr),
 				fmt.Sprintf("slave_listen:%v", s.Slave.ListenAddr),
 				fmt.Sprintf("slave_version:%v", s.Slave.Version),
-				fmt.Sprintf("slave_ack:%v", s.IsAcked(s.Slave)),
+				fmt.Sprintf("slave_ack:%v", s.Slave.IsAcked(s)),
 				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()))
 		}
 		data = append(data, "")

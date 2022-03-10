@@ -28,7 +28,7 @@ func OSWatcher() {
 	const interval = 10
 	for range time.Tick(time.Second * interval) {
 		func() {
-			defer Recover()
+			defer Recover(nil)
 
 			buf, _ := ioutil.ReadFile("/proc/stat")
 			x = (x + 1) % 2
@@ -89,7 +89,7 @@ func OSWatcher() {
 }
 
 func parseCPU(line string) (used, total int64) {
-	defer Recover()
+	defer Recover(nil)
 	x := regexp.MustCompile(`[^\w](\d+)`).FindAllStringSubmatch(line, -1)
 	user := MustParseInt64(x[0][1])
 	nice := MustParseInt64(x[1][1])
@@ -105,7 +105,7 @@ func parseCPU(line string) (used, total int64) {
 }
 
 func parseDiskIOPS(line string) (read, write int64) {
-	defer Recover()
+	defer Recover(nil)
 	x := regexp.MustCompile(`(\d+)`).FindAllStringSubmatch(line, -1)
 	return MustParseInt64(x[0][1]), MustParseInt64(x[4][1])
 }

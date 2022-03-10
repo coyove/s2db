@@ -186,11 +186,11 @@ func main() {
 		}
 	}
 
-	if *readOnly || s.MasterConfig.Name != "" {
+	if *readOnly || s.Master.Config().Name != "" {
 		s.ReadOnly = 1
 	}
 	if *masterDumper != -1 {
-		if s.MasterConfig.Name == "" {
+		if s.Master.Config().Name == "" {
 			errorExit("mdump: no master to request")
 		}
 		for i := 0; i < ShardNum; i++ {

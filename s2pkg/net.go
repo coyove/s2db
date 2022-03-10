@@ -48,7 +48,7 @@ func (ll *LocalListener) Accept() (net.Conn, error) {
 }
 
 func (ll *LocalListener) Close() error {
-	defer Recover()
+	defer Recover(nil)
 	close(ll.c)
 	return nil
 }

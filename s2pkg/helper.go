@@ -162,9 +162,12 @@ func HashStr(s string) (h uint64) {
 	return h
 }
 
-func Recover() {
+func Recover(f func()) {
 	if r := recover(); r != nil {
 		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
+		if f != nil {
+			f()
+		}
 	}
 }
 

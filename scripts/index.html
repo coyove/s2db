@@ -124,10 +124,10 @@
             <div class=s-content>
                 <div class=s-key>golang_pprof</div><div class=s-value><a href='/debug/pprof/'>open</a></div>
             </div>
-            {{if .s.MasterConfig.Name}}
+            {{if .s.Master.Config.Name}}
             <div class=s-content>
                 <div class=s-key>master</div>
-                <div class=s-value><a href="http://{{.s.MasterConfig.Addr}}">{{.s.MasterConfig.Name}}</a></div>
+                <div class=s-value><a href="http://{{.s.Master.Config.Addr}}">{{.s.Master.Config.Name}}</a></div>
             </div>
             {{end}}
             {{if .s.Slave.ServerName}}

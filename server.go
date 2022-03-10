@@ -65,12 +65,13 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
-		SlowLogs, StandbyProxy  s2pkg.Survey
+		SlowLogs, SemiSync      s2pkg.Survey
 		Command                 sync.Map
 	}
 
 	db [ShardNum]struct {
 		*bbolt.DB
+		rBuffer           s2pkg.IndexedBuffer
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
@@ -397,6 +398,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			s.Slave.LastUpdate = time.Now().UnixNano()
 		}
 		return w.WriteBulkStrings(logs)
+	case "PUTLOGS":
+		shard := s2pkg.MustParseInt(key)
+		for i := 2; i < command.ArgCount(); i += 2 {
+			s.db[shard].rBuffer.Add(command.Int64(i), command.Bytes(i+1))
+		}
+		return w.WriteSimpleString("OK")
 	}
 
 	// Write commands

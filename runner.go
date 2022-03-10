@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"runtime/debug"
 	"strconv"
@@ -155,6 +156,17 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	if err != nil {
 		s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
 		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
+	} else {
+		if rdb := s.Slave.Redis(); rdb != nil && s.ServerConfig.SemiSyncLog == 1 {
+			args := append(make([]interface{}, 0, len(logs)*2+2), "PUTLOGS", shard)
+			for id, buf := range logs {
+				args = append(args, id, buf)
+			}
+			if err := rdb.Do(context.TODO(), args...).Err(); err != nil {
+				log.Error("semi-sync error: ", err)
+			}
+			s.Survey.SemiSync.Incr(time.Since(start).Milliseconds())
+		}
 	}
 	for i, t := range tasks {
 		if err != nil {

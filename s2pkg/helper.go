@@ -291,15 +291,18 @@ func ExtractHeadCirc(text string) (string, string) {
 	return "", text
 }
 
-const IndexedBufferCap = 10000
+const (
+	IndexedBufferCap        = 10000
+	IndexedBufferSafeMargin = 1000000
+)
 
 type IndexedBuffer struct {
 	mu    sync.Mutex
-	lower uint64
-	m     map[uint64][]byte
+	lower int64
+	m     map[int64][]byte
 }
 
-func (b *IndexedBuffer) Add(id uint64, buf []byte) bool {
+func (b *IndexedBuffer) Add(id int64, buf []byte) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if id == 0 {
@@ -309,9 +312,15 @@ func (b *IndexedBuffer) Add(id uint64, buf []byte) bool {
 		return false
 	}
 	if b.m == nil {
-		b.m = map[uint64][]byte{}
+		b.m = map[int64][]byte{}
 	}
-	if b.lower == 0 || id < b.lower {
+	if b.lower == 0 {
+		b.lower = id
+	}
+	if id < b.lower {
+		if id < b.lower-IndexedBufferSafeMargin {
+			return false
+		}
 		b.lower = id
 	}
 	b.m[id] = buf
@@ -322,17 +331,41 @@ func (b *IndexedBuffer) Add(id uint64, buf []byte) bool {
 	return true
 }
 
-func (b *IndexedBuffer) GetRange(start uint64, n int) (data [][]byte, ok bool) {
+func (b *IndexedBuffer) Len() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for i := start; i <= start+uint64(n); i++ {
+	return len(b.m)
+}
+
+func (b *IndexedBuffer) Head() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lower
+}
+
+func (b *IndexedBuffer) DeleteUntil(upper int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.lower == 0 {
+		return
+	}
+	for i := b.lower; i <= upper; i++ {
+		delete(b.m, i)
+		b.lower = i + 1
+	}
+}
+
+func (b *IndexedBuffer) GetRange(start int64, max int) (data [][]byte) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i := start; len(data) < max; i++ {
 		buf, ok := b.m[i]
 		if !ok {
-			return nil, false
+			break
 		}
 		data = append(data, buf)
 	}
-	return data, true
+	return data
 }
 
 func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err error) {

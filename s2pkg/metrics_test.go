@@ -79,22 +79,22 @@ func TestMetrics2(t *testing.T) {
 func TestBuoy(t *testing.T) {
 	b := IndexedBuffer{}
 	for _, i := range rand.Perm(IndexedBufferCap) {
-		b.Add(uint64(i+1), nil)
+		b.Add(int64(i+1), nil)
 	}
 	if b.lower != 1 {
-		t.FailNow()
+		t.Fatal(b.lower)
 	}
-	if _, ok := b.GetRange(1, 1); !ok {
-		t.FailNow()
+	if data := b.GetRange(1, 1); len(data) == 0 {
+		t.Fatal(data)
 	}
 	for _, i := range rand.Perm(100) {
-		b.Add(uint64(i+1+IndexedBufferCap), nil)
+		b.Add(int64(i+1+IndexedBufferCap), nil)
 	}
 	if b.lower != 101 {
-		t.FailNow()
+		t.Fatal(b.lower)
 	}
-	if _, ok := b.GetRange(100, 10); ok {
-		t.FailNow()
+	if data := b.GetRange(100, 10); len(data) > 0 {
+		t.Fatal(data)
 	}
 }
 

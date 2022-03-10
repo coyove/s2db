@@ -246,10 +246,11 @@ func (s *Server) ShardInfo(shard int) []string {
 		fmt.Sprintf("# shard%d", shard),
 		fmt.Sprintf("path:%v", x.Path()),
 		fmt.Sprintf("freelist_size:%v", x.FreelistSize()),
-		fmt.Sprintf("freelist_dist_debug:%v", x.FreelistDistribution()),
+		fmt.Sprintf("freelist_dist:%v", x.FreelistDistribution()),
 		fmt.Sprintf("db_size:%v", fi.Size()),
 		fmt.Sprintf("db_size_mb:%.2f", float64(fi.Size())/1024/1024),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
+		fmt.Sprintf("buffer_size:%v/%v", x.rBuffer.Len(), x.rBuffer.Head()),
 	}
 	var myTail uint64
 	x.View(func(tx *bbolt.Tx) error {

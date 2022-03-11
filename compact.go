@@ -133,13 +133,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 
-		logs, err := s.respondLog(shard, ct+1, false)
+		logs, prevCmdBuf, err := s.respondLog(shard, ct+1, false)
 		if err != nil {
 			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
-		if _, err := runLog(logs, compactDB); err != nil {
+		if _, _, err := runLog(ct+1, prevCmdBuf, logs, compactDB); err != nil {
 			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", shard, err)
 			return
@@ -157,13 +157,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	log.Info("STAGE 3: onlineDB write lock acquired")
 
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
-	logs, err := s.respondLog(shard, ct+1, true)
+	logs, prevCmdBuf, err := s.respondLog(shard, ct+1, true)
 	if err != nil {
 		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
-	if _, err := runLog(logs, compactDB); err != nil {
+	if _, _, err := runLog(ct+1, prevCmdBuf, logs, compactDB); err != nil {
 		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", shard, err)
 		return

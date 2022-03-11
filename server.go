@@ -74,7 +74,7 @@ type Server struct {
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
-		pullerCloseSignal chan bool
+		pusherCloseSignal chan bool
 		compactLocker     s2pkg.Locker
 	}
 	ConfigDB *bbolt.DB
@@ -111,7 +111,7 @@ func Open(path string) (x *Server, err error) {
 		}
 		d := &x.db[i]
 		d.DB = db
-		d.pullerCloseSignal = make(chan bool)
+		d.pusherCloseSignal = make(chan bool)
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
@@ -148,7 +148,7 @@ func (s *Server) Close() error {
 			db.syncWaiter.Close()
 			errs <- db.Close()
 			close(db.batchTx)
-			<-db.pullerCloseSignal
+			<-db.pusherCloseSignal
 			<-db.batchCloseSignal
 		}(i)
 	}
@@ -191,7 +191,7 @@ func (s *Server) Serve(addr string) (err error) {
 
 	for i := range s.db {
 		go s.batchWorker(i)
-		go s.logPuller(i)
+		go s.logPusher(i)
 	}
 	go s.startCronjobs()
 	go s.schedCompactionJob() // TODO: close signal
@@ -386,23 +386,20 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 	// Log related commands
 	switch cmd {
-	case "REQUESTLOG":
-		start := s2pkg.ParseUint64(command.Get(2))
-		if start == 0 {
-			return w.WriteError("request at zero offset")
-		}
+	case "PUSHLOGS":
 		shard := s2pkg.MustParseInt(key)
-		logs, err := s.respondLog(shard, start, false)
+		s.db[shard].compactLocker.Lock(func() { log.Info("bulkload is waiting for compactor") })
+		names, logtail, err := runLog(uint64(command.Int64(2)), command.At(3), restCommandsToKeys(4, command), s.db[shard].DB)
+		s.db[shard].compactLocker.Unlock()
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		// REQUESTLOG doesn't care who requested logs, but will only update Slave info if ip address matched
-		if s.Slave.RemoteAddr == getRemoteIP(remoteAddr).String() {
-			s.Slave.Logtails[shard] = start - 1
-			s.Slave.LastUpdate = time.Now().UnixNano()
-			s.db[shard].syncWaiter.RaiseTo(start - 1)
+		for n := range names {
+			s.removeCache(n)
 		}
-		return w.WriteBulkStrings(logs)
+		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
+		s.Survey.BatchSizeSv.Incr(int64(len(names)))
+		return w.WriteInt(int64(logtail))
 	}
 
 	// Write commands

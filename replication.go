@@ -54,96 +54,81 @@ func (s *Server) SlaveLogtailsInfo() (data []string) {
 	return append(data, "")
 }
 
-func (s *Server) logPuller(shard int) {
+func (s *Server) logPusher(shard int) {
 	ctx := context.TODO()
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPuller(shard) })
+	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPusher(shard) })
 
-	for !s.Closed {
+	for firstReq := true; !s.Closed; {
 		wait := time.Millisecond * time.Duration(s.PingTimeout) / 2
-		rdb := s.Master.Redis()
-		masterName := s.Master.Config().Name
+		rdb := s.Slave.Redis()
 		if rdb == nil {
 			time.Sleep(wait)
 			continue
 		}
 
-		ping := redis.NewStringCmd(ctx, "PING", "FROM", s.ln.Addr().String(), s.ServerName, Version)
-		rdb.Process(ctx, ping)
-		parts := strings.Split(ping.Val(), " ")
-		if len(parts) != 3 {
-			if ping.Err() != redis.ErrClosed {
-				if ping.Err() != nil && strings.Contains(ping.Err().Error(), "refused") {
-					log.Error("[M] ping: master not alive")
-				} else {
-					log.Error("ping: invalid response: ", ping.Val(), ping.Err())
-				}
-			}
-			time.Sleep(wait)
-			continue
-		}
-
-		s.Master.ServerName = parts[1]
-		s.Master.Version = parts[2]
-		s.Master.LastUpdate = time.Now().UnixNano()
-		if s.Master.ServerName != masterName {
-			log.Errorf("[M] master responded un-matched server name: %q, asking the wrong master?", s.Master.ServerName)
-			time.Sleep(wait)
-			continue
-		}
-
-		myLogtail, err := s.ShardLogtail(shard)
-		if err != nil {
-			if err == bbolt.ErrDatabaseNotOpen {
+		var cmd *redis.IntCmd
+		if firstReq {
+			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, 0)
+		} else {
+			loghead := s.Slave.Logtails[shard] + 1
+			logs, prevCmdBuf, err := s.respondLog(shard, loghead, false)
+			if err != nil {
+				log.Error("logPusher get local log: ", err)
 				time.Sleep(wait)
 				continue
 			}
-			log.Error("read local log index: ", err)
-			break
+			if len(logs) == 0 {
+				time.Sleep(time.Second)
+				continue
+			}
+			args := append(make([]interface{}, 0, len(logs)+3), "PUSHLOGS", shard, loghead, prevCmdBuf)
+			for _, l := range logs {
+				args = append(args, l)
+			}
+			cmd = redis.NewIntCmd(ctx, args...)
 		}
-
-		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
-		if err := rdb.Process(ctx, cmd); err != nil {
+		rdb.Process(ctx, cmd)
+		if err := cmd.Err(); err != nil {
 			if err != redis.ErrClosed {
 				if strings.Contains(err.Error(), "refused") {
-					log.Error("[M] master not alive")
+					log.Error("[M] slave not alive")
 				} else if err != redis.Nil {
-					log.Error("request log from master: ", err)
+					log.Error("push logs to slave: ", err)
 				}
 			}
 			time.Sleep(wait)
 			continue
 		}
-
-		cmds := cmd.Val()
-		if len(cmds) == 0 {
-			time.Sleep(time.Second)
-			continue
+		if firstReq {
+			log.Info("logPusher get slave logtail: ", cmd.Val())
 		}
-
-		start := time.Now()
-		s.db[shard].compactLocker.Lock(func() { log.Info("bulkload is waiting for compactor") })
-		names, err := runLog(cmds, s.db[shard].DB)
-		s.db[shard].compactLocker.Unlock()
-		if err != nil {
-			log.Error("bulkload: ", err)
-		} else {
-			for n := range names {
-				s.removeCache(n)
-			}
-			s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
-			s.Survey.BatchSizeSv.Incr(int64(len(names)))
-		}
+		firstReq = false
+		s.Slave.Logtails[shard] = uint64(cmd.Val())
 	}
 
 	log.Info("log replayer exited")
-	s.db[shard].pullerCloseSignal <- true
+	s.db[shard].pusherCloseSignal <- true
 }
 
-func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
+func runLog(loghead uint64, prevCmdBuf []byte, cmds []string, db *bbolt.DB) (names map[string]bool, logtail uint64, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
+		bk, err := tx.CreateBucketIfNotExists([]byte("wal"))
+		if err != nil {
+			return err
+		}
+		if loghead != bk.Sequence()+1 {
+			logtail = bk.Sequence()
+			return nil
+		}
+		if loghead > 1 {
+			if !bytes.Equal(bk.Get(s2pkg.Uint64ToBytes(bk.Sequence())), prevCmdBuf) {
+				return fmt.Errorf("logs may be corrupted or unrelated")
+			}
+		}
+
 		ltx := s2pkg.LogTx{Tx: tx}
 		for _, x := range cmds {
 			command, err := splitCommandBase64(x)
@@ -170,12 +155,14 @@ func runLog(cmds []string, db *bbolt.DB) (names map[string]bool, err error) {
 			}
 			names[name] = true
 		}
+
+		logtail = bk.Sequence()
 		return nil
 	})
 	return
 }
 
-func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, err error) {
+func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, prevCmdBuf []byte, err error) {
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
@@ -195,13 +182,25 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 		if start > myLogtail {
 			return fmt.Errorf("slave log (req=%d) surpass master log (tail=%d)", start, myLogtail)
 		}
+		if start > 1 {
+			prevCmdBuf = bk.Get(s2pkg.Uint64ToBytes(start - 1))
+		}
 
 		sumCheck := crc32.NewIEEE()
 		sumBuf := make([]byte, 4)
 		resSize := 0
 		for i := start; i <= myLogtail; i++ {
 			data := bk.Get(s2pkg.Uint64ToBytes(uint64(i)))
-			if data[0] == 0x94 {
+			if data[0] == 0x95 {
+				sum32 := data[len(data)-4:]
+				data = data[5 : len(data)-4]
+				sumCheck.Reset()
+				sumCheck.Write(data)
+				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+					return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
+				}
+				logs = append(logs, base64.URLEncoding.EncodeToString(data))
+			} else if data[0] == 0x94 {
 				sum32 := data[len(data)-4:]
 				data = data[1 : len(data)-4]
 				sumCheck.Reset()

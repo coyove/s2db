@@ -119,7 +119,10 @@ func splitCommandBase64(in string) (*redisproto.Command, error) {
 
 func joinCommand(cmd ...[]byte) []byte {
 	buf := &bytes.Buffer{}
-	buf.WriteByte(0x94)
+	buf.WriteByte(0x95)
+	for i := 0; i < 4; i++ {
+		buf.WriteByte(byte(rand.Int()))
+	}
 	h := crc32.NewIEEE()
 	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd)
 	return append(buf.Bytes(), h.Sum(nil)...)

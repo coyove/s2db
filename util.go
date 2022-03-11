@@ -192,6 +192,7 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
 			fmt.Sprintf("slow_logs_qps:%v", s.Survey.SlowLogs.QPSString()),
 			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
+			fmt.Sprintf("sync_avg_lat:%v", s.Survey.Sync.MeanString()),
 			"")
 	}
 	if section == "" || section == "command_qps" || section == "command_avg_lat" {
@@ -250,7 +251,7 @@ func (s *Server) ShardInfo(shard int) []string {
 		fmt.Sprintf("db_size:%v", fi.Size()),
 		fmt.Sprintf("db_size_mb:%.2f", float64(fi.Size())/1024/1024),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
-		fmt.Sprintf("buffer_size:%v/%v", x.rBuffer.Len(), x.rBuffer.Head()),
+		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
 	}
 	var myTail uint64
 	x.View(func(tx *bbolt.Tx) error {
@@ -304,12 +305,29 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
-func parseDeferFlag(in *redisproto.Command) bool {
-	if len(in.Argv) > 2 && bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
-		in.Argv = append(in.Argv[:2], in.Argv[3:]...)
-		return true
+const (
+	RunDefault = iota + 1
+	RunDefer
+	RunSemiSync
+	RunSync
+)
+
+func parseDeferFlag(in *redisproto.Command) int {
+	if len(in.Argv) > 2 {
+		if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+			return RunDefer
+		}
+		if bytes.EqualFold(in.Argv[2], []byte("--sync--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+			return RunSync
+		}
+		if bytes.EqualFold(in.Argv[2], []byte("--semisync--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+			return RunSemiSync
+		}
 	}
-	return false
+	return RunDefault
 }
 
 func parseWeakFlag(in *redisproto.Command) time.Duration {

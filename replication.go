@@ -102,7 +102,6 @@ func (s *Server) logPuller(shard int) {
 			log.Error("read local log index: ", err)
 			break
 		}
-		s.db[shard].rBuffer.DeleteUntil(int64(myLogtail))
 
 		cmd := redis.NewStringSliceCmd(ctx, "REQUESTLOG", shard, myLogtail+1)
 		if err := rdb.Process(ctx, cmd); err != nil {

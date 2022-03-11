@@ -65,13 +65,13 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
-		SlowLogs, SemiSync      s2pkg.Survey
+		SlowLogs, Sync          s2pkg.Survey
 		Command                 sync.Map
 	}
 
 	db [ShardNum]struct {
 		*bbolt.DB
-		rBuffer           s2pkg.IndexedBuffer
+		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pullerCloseSignal chan bool
@@ -114,6 +114,8 @@ func Open(path string) (x *Server, err error) {
 		d.pullerCloseSignal = make(chan bool)
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 101)
+		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
+			&x.Survey.Sync)
 	}
 
 	x.rdbCache = s2pkg.NewMasterLRU(4, func(kv s2pkg.LRUKeyValue) {
@@ -143,6 +145,7 @@ func (s *Server) Close() error {
 		go func(i int) {
 			defer wg.Done()
 			db := &s.db[i]
+			db.syncWaiter.Close()
 			errs <- db.Close()
 			close(db.batchTx)
 			<-db.pullerCloseSignal
@@ -388,22 +391,18 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if start == 0 {
 			return w.WriteError("request at zero offset")
 		}
-		logs, err := s.respondLog(s2pkg.MustParseInt(key), start, false)
+		shard := s2pkg.MustParseInt(key)
+		logs, err := s.respondLog(shard, start, false)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		// REQUESTLOG doesn't care who requested logs, but will only update Slave info if ip address matched
 		if s.Slave.RemoteAddr == getRemoteIP(remoteAddr).String() {
-			s.Slave.Logtails[s2pkg.MustParseInt(key)] = start - 1
+			s.Slave.Logtails[shard] = start - 1
 			s.Slave.LastUpdate = time.Now().UnixNano()
+			s.db[shard].syncWaiter.RaiseTo(start - 1)
 		}
 		return w.WriteBulkStrings(logs)
-	case "PUTLOGS":
-		shard := s2pkg.MustParseInt(key)
-		for i := 2; i < command.ArgCount(); i += 2 {
-			s.db[shard].rBuffer.Add(command.Int64(i), command.Bytes(i+1))
-		}
-		return w.WriteSimpleString("OK")
 	}
 
 	// Write commands
@@ -411,9 +410,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	switch cmd {
 	case "UNLINK":
 		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e9}
-		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), false, []s2pkg.Pair{p}))
+		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), RunDefault, []s2pkg.Pair{p}))
 	case "DEL":
-		return s.runPreparedTxAndWrite(cmd, key, false, parseDel(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command), w)
 	case "ZADD":

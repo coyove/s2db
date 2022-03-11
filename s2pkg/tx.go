@@ -8,7 +8,7 @@ import (
 )
 
 type LogTx struct {
-	Logs map[uint64][]byte
+	Logtail *uint64
 	*bbolt.Tx
 }
 

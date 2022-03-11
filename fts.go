@@ -40,7 +40,7 @@ func (s *Server) IndexAdd(id, content string, riKeys []string) int {
 	cnt := s.IndexDel(id)
 
 	// (Re)add document
-	s.ZAdd(FTSDocsStoreKey, true, []s2pkg.Pair{{
+	s.ZAdd(FTSDocsStoreKey, RunDefer, []s2pkg.Pair{{
 		Score:  float64(doc.NumTokens),
 		Member: id,
 		Data:   doc.MarshalBinary(),
@@ -50,7 +50,7 @@ func (s *Server) IndexAdd(id, content string, riKeys []string) int {
 	// (Re)add document into reverted indices
 	for _, p := range riKeys {
 		for _, t := range tokens {
-			s.ZAdd(p+t.Member, true, []s2pkg.Pair{{Member: id, Score: t.Score}})
+			s.ZAdd(p+t.Member, RunDefer, []s2pkg.Pair{{Member: id, Score: t.Score}})
 		}
 	}
 	cnt += len(riKeys) * len(tokens)
@@ -66,7 +66,7 @@ func (s *Server) IndexDel(id string) (cnt int) {
 		return
 	}
 
-	s.ZRem(FTSDocsStoreKey, true, []string{id})
+	s.ZRem(FTSDocsStoreKey, RunDefer, []string{id})
 	cnt++
 
 	// Remove document in reverted index
@@ -74,7 +74,7 @@ func (s *Server) IndexDel(id string) (cnt int) {
 	oldDoc.UnmarshalBinary(buf)
 	for _, t := range oldDoc.Tokens {
 		for _, p := range oldDoc.Prefixs {
-			s.ZRem(p+t.Token, true, []string{id})
+			s.ZRem(p+t.Token, RunDefer, []string{id})
 		}
 	}
 

@@ -77,24 +77,26 @@ func TestMetrics2(t *testing.T) {
 }
 
 func TestBuoy(t *testing.T) {
-	b := IndexedBuffer{}
-	for _, i := range rand.Perm(IndexedBufferCap) {
-		b.Add(int64(i+1), nil)
+	b := NewBuoySignal(time.Second, &Survey{})
+	m := make(map[int]chan interface{})
+	for i := 100; i < 200; i++ {
+		ch := make(chan interface{}, 1)
+		b.WaitAt(uint64(i), ch, i)
+		m[i] = ch
 	}
-	if b.lower != 1 {
-		t.Fatal(b.lower)
+
+	b.RaiseTo(150)
+	for i := 100; i <= 150; i++ {
+		if i != (<-m[i]).(int) {
+			t.Fatal(i)
+		}
 	}
-	if data := b.GetRange(1, 1); len(data) == 0 {
-		t.Fatal(data)
-	}
-	for _, i := range rand.Perm(100) {
-		b.Add(int64(i+1+IndexedBufferCap), nil)
-	}
-	if b.lower != 101 {
-		t.Fatal(b.lower)
-	}
-	if data := b.GetRange(100, 10); len(data) > 0 {
-		t.Fatal(data)
+
+	time.Sleep(time.Second * 2)
+	for i := 151; i < 200; i++ {
+		if _, ok := (<-m[i]).(error); !ok {
+			t.Fatal(i)
+		}
 	}
 }
 

@@ -27,8 +27,8 @@ func writeLog(tx s2pkg.LogTx, dd []byte) error {
 	}
 	bk.FillPercent = 0.9
 	id, _ := bk.NextSequence()
-	if tx.Logs != nil {
-		tx.Logs[id] = dd
+	if tx.Logtail != nil {
+		*tx.Logtail = id
 	}
 	return bk.Put(s2pkg.Uint64ToBytes(id), dd)
 }
@@ -98,7 +98,7 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command) preparedTx {
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
 }
 
-func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int64, error) {
+func (s *Server) ZAdd(key string, runType int, members []s2pkg.Pair) (int64, error) {
 	if err := s.checkWritable(); err != nil {
 		return 0, err
 	}
@@ -109,17 +109,17 @@ func (s *Server) ZAdd(key string, deferred bool, members []s2pkg.Pair) (int64, e
 	for _, m := range members {
 		cmd.Argv = append(cmd.Argv, s2pkg.FormatFloatBulk(m.Score), []byte(m.Member), m.Data)
 	}
-	v, err := s.runPreparedTx("ZADD", key, deferred, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
+	v, err := s.runPreparedTx("ZADD", key, runType, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
 	if err != nil {
 		return 0, err
 	}
-	if deferred {
+	if runType == RunDefer {
 		return 0, nil
 	}
 	return int64(v.(int)), nil
 }
 
-func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) {
+func (s *Server) ZRem(key string, runType int, members []string) (int, error) {
 	if err := s.checkWritable(); err != nil {
 		return 0, err
 	}
@@ -130,11 +130,11 @@ func (s *Server) ZRem(key string, deferred bool, members []string) (int, error) 
 	for _, m := range members {
 		cmd.Argv = append(cmd.Argv, []byte(m))
 	}
-	v, err := s.runPreparedTx("ZREM", key, deferred, prepareZRem(key, members, dumpCommand(cmd)))
+	v, err := s.runPreparedTx("ZREM", key, runType, prepareZRem(key, members, dumpCommand(cmd)))
 	if err != nil {
 		return 0, err
 	}
-	if deferred {
+	if runType == RunDefer {
 		return 0, nil
 	}
 	return v.(int), nil

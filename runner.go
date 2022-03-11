@@ -1,14 +1,13 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"runtime/debug"
 	"strconv"
 	"time"
 
 	"github.com/coyove/s2db/redisproto"
-	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
@@ -30,8 +29,13 @@ type preparedTx struct {
 	f func(tx s2pkg.LogTx) (interface{}, error)
 }
 
-func (s *Server) runPreparedTx(cmd, key string, deferred bool, ptx preparedTx) (interface{}, error) {
-	t := &batchTask{f: ptx.f, key: key, out: make(chan interface{}, 1)}
+func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (interface{}, error) {
+	t := &batchTask{
+		f:       ptx.f,
+		key:     key,
+		runType: runType,
+		out:     make(chan interface{}, 1),
+	}
 	if s.Closed {
 		return nil, fmt.Errorf("server closing stage")
 	}
@@ -44,22 +48,25 @@ func (s *Server) runPreparedTx(cmd, key string, deferred bool, ptx preparedTx) (
 	}(time.Now())
 
 	s.db[shardIndex(key)].batchTx <- t
-	if deferred {
+	if runType == RunDefer {
 		return nil, nil
 	}
 	out := <-t.out
 	if err, _ := out.(error); err != nil {
+		if berr, ok := err.(*s2pkg.BuoyTimeoutError); ok && runType == RunSemiSync {
+			return berr.Value, nil
+		}
 		return nil, err
 	}
 	return out, nil
 }
 
-func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, ptx preparedTx, w *redisproto.Writer) error {
-	out, err := s.runPreparedTx(cmd, key, deferred, ptx)
+func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx preparedTx, w *redisproto.Writer) error {
+	out, err := s.runPreparedTx(cmd, key, runType, ptx)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
-	if deferred {
+	if runType == RunDefer {
 		return w.WriteSimpleString("OK")
 	}
 	switch res := out.(type) {
@@ -69,15 +76,20 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, deferred bool, ptx prepa
 		return w.WriteInt(res)
 	case float64:
 		return w.WriteBulkString(s2pkg.FormatFloat(res))
+	case error:
+		return w.WriteError(res.Error())
 	default:
 		panic(-99)
 	}
 }
 
 type batchTask struct {
-	f   func(s2pkg.LogTx) (interface{}, error)
-	key string
-	out chan interface{}
+	f       func(s2pkg.LogTx) (interface{}, error)
+	key     string
+	runType int
+
+	out    chan interface{}
+	outLog uint64
 }
 
 func (s *Server) batchWorker(shard int) {
@@ -139,16 +151,17 @@ EXIT:
 func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
-	logs := make(map[uint64][]byte, len(tasks))
+	logtail := new(uint64)
 	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
 	s.db[shard].compactLocker.Lock(func() { log.Info("runner is waiting for compactor") })
 	err := s.db[shard].Update(func(tx *bbolt.Tx) (err error) {
-		ltx := s2pkg.LogTx{Logs: logs, Tx: tx}
+		ltx := s2pkg.LogTx{Logtail: logtail, Tx: tx}
 		for i, t := range tasks {
 			outs[i], err = t.f(ltx)
 			if err != nil {
 				return err
 			}
+			tasks[i].outLog = *logtail
 		}
 		return nil
 	})
@@ -156,24 +169,17 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	if err != nil {
 		s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
 		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
-	} else {
-		if rdb := s.Slave.Redis(); rdb != nil && s.ServerConfig.SemiSyncLog == 1 {
-			args := append(make([]interface{}, 0, len(logs)*2+2), "PUTLOGS", shard)
-			for id, buf := range logs {
-				args = append(args, id, buf)
-			}
-			if err := rdb.Do(context.TODO(), args...).Err(); err != nil {
-				log.Error("semi-sync error: ", err)
-			}
-			s.Survey.SemiSync.Incr(time.Since(start).Milliseconds())
-		}
 	}
 	for i, t := range tasks {
 		if err != nil {
 			t.out <- err
 		} else {
 			s.removeCache(t.key)
-			t.out <- outs[i]
+			if (t.runType == RunSemiSync || t.runType == RunSync) && s.Slave.IsAcked(s) {
+				s.db[shard].syncWaiter.WaitAt(t.outLog, t.out, outs[i])
+			} else {
+				t.out <- outs[i]
+			}
 		}
 	}
 

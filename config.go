@@ -44,7 +44,6 @@ type ServerConfig struct {
 	CompactDumpTmpDir string // use a temporal directory to store dumped shard
 	CompactNoBackup   int    // 0|1 disable backup files when compacting
 	DisableMetrics    int    // 0|1
-	SemiSyncLog       int    // 0|1
 	InspectorSource   string
 }
 

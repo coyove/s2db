@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
@@ -22,6 +21,18 @@ import (
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
+
+func (s *Server) CheckShardLogtail(shard int, logtail uint64) (b64 uint64, err error) {
+	err = s.db[shard].View(func(tx *bbolt.Tx) error {
+		defer s2pkg.Recover(func() { log.Error("CheckShardLogtail panic") })
+		if bk := tx.Bucket([]byte("wal")); bk != nil {
+			buf := bk.Get(s2pkg.Uint64ToBytes(logtail))
+			b64 = binary.BigEndian.Uint64(buf[1:])
+		}
+		return nil
+	})
+	return
+}
 
 func (s *Server) ShardLogtail(shard int) (tail uint64, err error) {
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
@@ -68,12 +79,12 @@ func (s *Server) logPusher(shard int) {
 			continue
 		}
 
-		var cmd *redis.IntCmd
+		var cmd *redis.StringCmd
 		if firstReq {
-			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, 0)
+			cmd = redis.NewStringCmd(ctx, "PUSHLOGS", shard, 0)
 		} else {
 			loghead := s.Slave.Logtails[shard] + 1
-			logs, prevCmdBuf, err := s.respondLog(shard, loghead, false)
+			logs, err := s.respondLog(shard, loghead, false)
 			if err != nil {
 				log.Error("logPusher get local log: ", err)
 				time.Sleep(wait)
@@ -83,11 +94,11 @@ func (s *Server) logPusher(shard int) {
 				time.Sleep(time.Second)
 				continue
 			}
-			args := append(make([]interface{}, 0, len(logs)+3), "PUSHLOGS", shard, loghead, prevCmdBuf)
+			args := append(make([]interface{}, 0, len(logs)+3), "PUSHLOGS", shard, loghead)
 			for _, l := range logs {
 				args = append(args, l)
 			}
-			cmd = redis.NewIntCmd(ctx, args...)
+			cmd = redis.NewStringCmd(ctx, args...)
 		}
 		rdb.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
@@ -101,53 +112,95 @@ func (s *Server) logPusher(shard int) {
 			time.Sleep(wait)
 			continue
 		}
+		var logtail, logtailBuf uint64
+		if n, _ := fmt.Sscanf(cmd.Val(), "%d %d", &logtail, &logtailBuf); n != 2 {
+			log.Info("logPusher invalid slave response: ", cmd.Val())
+			time.Sleep(wait)
+			continue
+		}
 		if firstReq {
-			log.Info("logPusher get slave logtail: ", cmd.Val())
+			if logtail > 0 {
+				ok, err := s.CheckShardLogtail(shard, logtail)
+				if err != nil {
+					log.Info("logPusher failed to check local logtail: ", err)
+					time.Sleep(wait)
+					continue
+				}
+				if ok != logtailBuf {
+					log.Errorf("logPusher slave logtail is unrelated: %d, check: %x<->%x, maybe you are pushing to a wrong slave",
+						logtail, logtailBuf, ok)
+					time.Sleep(wait)
+					continue
+				}
+				log.Infof("logPusher get initial slave logtail: %d, check: %x", logtail, logtailBuf)
+			} else {
+				log.Infof("logPusher empty slave found")
+			}
 		}
 		firstReq = false
-		s.Slave.Logtails[shard] = uint64(cmd.Val())
+		s.Slave.Logtails[shard] = logtail
 	}
 
 	log.Info("log replayer exited")
 	s.db[shard].pusherCloseSignal <- true
 }
 
-func runLog(loghead uint64, prevCmdBuf []byte, cmds []string, db *bbolt.DB) (names map[string]bool, logtail uint64, err error) {
+func runLog(loghead uint64, logs [][]byte, db *bbolt.DB) (names map[string]bool, logtail uint64, logtailBuf uint64, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("wal"))
 		if err != nil {
 			return err
 		}
+
+		sumCheck := crc32.NewIEEE()
+		sumBuf := make([]byte, 4)
+		ltx := s2pkg.LogTx{Tx: tx}
+
 		if loghead != bk.Sequence()+1 {
-			logtail = bk.Sequence()
-			return nil
-		}
-		if loghead > 1 {
-			if !bytes.Equal(bk.Get(s2pkg.Uint64ToBytes(bk.Sequence())), prevCmdBuf) {
-				return fmt.Errorf("logs may be corrupted or unrelated")
-			}
+			goto REPORT
 		}
 
-		ltx := s2pkg.LogTx{Tx: tx}
-		for _, x := range cmds {
-			command, err := splitCommandBase64(x)
+		for i, data := range logs {
+			dd := data
+			if data[0] == 0x95 {
+				sum32 := data[len(data)-4:]
+				data = data[5 : len(data)-4]
+				sumCheck.Reset()
+				sumCheck.Write(data)
+				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+					return fmt.Errorf("corrupted log checksum at %d", i)
+				}
+			} else if data[0] == 0x94 {
+				sum32 := data[len(data)-4:]
+				data = data[1 : len(data)-4]
+				sumCheck.Reset()
+				sumCheck.Write(data)
+				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+					return fmt.Errorf("corrupted log checksum at %d", i)
+				}
+			} else if data[0] == 0x93 {
+				data = data[1:]
+			} else {
+				return fmt.Errorf("invalid log entry: %v", data)
+			}
+			command, err := splitCommand(data)
 			if err != nil {
-				return fmt.Errorf("fatal: invalid payload: %q", x)
+				return fmt.Errorf("invalid payload: %q", data)
 			}
 			cmd := strings.ToUpper(command.Get(0))
 			name := command.Get(1)
 			switch cmd {
 			case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-				_, err = parseDel(cmd, name, command).f(ltx)
+				_, err = parseDel(cmd, name, command, dd).f(ltx)
 			case "ZADD":
-				_, err = parseZAdd(cmd, name, command).f(ltx)
+				_, err = parseZAdd(cmd, name, command, dd).f(ltx)
 			case "ZINCRBY":
-				_, err = parseZIncrBy(cmd, name, command).f(ltx)
+				_, err = parseZIncrBy(cmd, name, command, dd).f(ltx)
 			case "QAPPEND":
-				_, err = parseQAppend(cmd, name, command).f(ltx)
+				_, err = parseQAppend(cmd, name, command, dd).f(ltx)
 			default:
-				return fmt.Errorf("fatal: not a write command: %q", cmd)
+				return fmt.Errorf("not a write command: %q", cmd)
 			}
 			if err != nil {
 				log.Error("bulkload, error ocurred: ", cmd, " ", name)
@@ -156,13 +209,17 @@ func runLog(loghead uint64, prevCmdBuf []byte, cmds []string, db *bbolt.DB) (nam
 			names[name] = true
 		}
 
+	REPORT:
 		logtail = bk.Sequence()
+		if logtail > 0 {
+			logtailBuf = binary.BigEndian.Uint64(bk.Get(s2pkg.Uint64ToBytes(logtail))[1:])
+		}
 		return nil
 	})
 	return
 }
 
-func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, prevCmdBuf []byte, err error) {
+func (s *Server) respondLog(shard int, start uint64, full bool) (logs [][]byte, err error) {
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
@@ -182,38 +239,39 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs []string, 
 		if start > myLogtail {
 			return fmt.Errorf("slave log (req=%d) surpass master log (tail=%d)", start, myLogtail)
 		}
-		if start > 1 {
-			prevCmdBuf = bk.Get(s2pkg.Uint64ToBytes(start - 1))
-		}
 
-		sumCheck := crc32.NewIEEE()
-		sumBuf := make([]byte, 4)
+		// sumCheck := crc32.NewIEEE()
+		// sumBuf := make([]byte, 4)
 		resSize := 0
 		for i := start; i <= myLogtail; i++ {
-			data := bk.Get(s2pkg.Uint64ToBytes(uint64(i)))
-			if data[0] == 0x95 {
-				sum32 := data[len(data)-4:]
-				data = data[5 : len(data)-4]
-				sumCheck.Reset()
-				sumCheck.Write(data)
-				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
-					return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
-				}
-				logs = append(logs, base64.URLEncoding.EncodeToString(data))
-			} else if data[0] == 0x94 {
-				sum32 := data[len(data)-4:]
-				data = data[1 : len(data)-4]
-				sumCheck.Reset()
-				sumCheck.Write(data)
-				if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
-					return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
-				}
-				logs = append(logs, base64.URLEncoding.EncodeToString(data))
-			} else if data[0] == 0x93 {
-				logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))
-			} else {
-				logs = append(logs, string(data))
+			data := append([]byte{}, bk.Get(s2pkg.Uint64ToBytes(uint64(i)))...)
+			if len(data) == 0 {
+				return fmt.Errorf("fatal: empty log entry")
 			}
+			logs = append(logs, data)
+			// if data[0] == 0x95 {
+			// 	sum32 := data[len(data)-4:]
+			// 	data = data[5 : len(data)-4]
+			// 	sumCheck.Reset()
+			// 	sumCheck.Write(data)
+			// 	if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+			// 		return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
+			// 	}
+			// 	logs = append(logs, base64.URLEncoding.EncodeToString(data))
+			// } else if data[0] == 0x94 {
+			// 	sum32 := data[len(data)-4:]
+			// 	data = data[1 : len(data)-4]
+			// 	sumCheck.Reset()
+			// 	sumCheck.Write(data)
+			// 	if !bytes.Equal(sum32, sumCheck.Sum(sumBuf[:0])) {
+			// 		return fmt.Errorf("fatal error, corrupted log checksum at %d", i)
+			// 	}
+			// 	logs = append(logs, base64.URLEncoding.EncodeToString(data))
+			// } else if data[0] == 0x93 {
+			// 	logs = append(logs, base64.URLEncoding.EncodeToString(data[1:]))
+			// } else {
+			// 	logs = append(logs, string(data))
+			// }
 			resSize += len(data)
 			if full {
 				continue

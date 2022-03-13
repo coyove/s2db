@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"container/heap"
-	"encoding/base64"
 	"encoding/gob"
 	"fmt"
 	"hash/crc32"
@@ -66,8 +65,7 @@ func shardIndex(key string) int {
 	return int(s2pkg.HashStr(key) % ShardNum)
 }
 
-func restCommandsToKeys(i int, command *redisproto.Command) []string {
-	keys := []string{}
+func restCommandsToKeys(i int, command *redisproto.Command) (keys []string) {
 	for ; i < command.ArgCount(); i++ {
 		keys = append(keys, string(command.At(i)))
 	}
@@ -110,9 +108,8 @@ func dumpCommand(cmd *redisproto.Command) []byte {
 	return joinCommand(cmd.Argv...)
 }
 
-func splitCommandBase64(in string) (*redisproto.Command, error) {
+func splitCommand(buf []byte) (*redisproto.Command, error) {
 	command := &redisproto.Command{}
-	buf, _ := base64.URLEncoding.DecodeString(in)
 	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.Argv)
 	return command, err
 }

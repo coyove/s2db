@@ -33,7 +33,7 @@ func writeLog(tx s2pkg.LogTx, dd []byte) error {
 	return bk.Put(s2pkg.Uint64ToBytes(id), dd)
 }
 
-func parseZAdd(cmd, key string, command *redisproto.Command) preparedTx {
+func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	var xx, nx, ch, data bool
 	var fillPercent float64
 	var idx = 2
@@ -70,11 +70,10 @@ func parseZAdd(cmd, key string, command *redisproto.Command) preparedTx {
 			pairs = append(pairs, p)
 		}
 	}
-	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dumpCommand(command))
+	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dd)
 }
 
-func parseDel(cmd, key string, command *redisproto.Command) preparedTx {
-	dd := dumpCommand(command)
+func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	switch cmd {
 	case "DEL":
 		return prepareDel(key, dd)
@@ -94,8 +93,8 @@ func parseDel(cmd, key string, command *redisproto.Command) preparedTx {
 	}
 }
 
-func parseZIncrBy(cmd, key string, command *redisproto.Command) preparedTx {
-	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dumpCommand(command))
+func parseZIncrBy(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dd)
 }
 
 func (s *Server) ZAdd(key string, runType int, members []s2pkg.Pair) (int64, error) {
@@ -228,7 +227,7 @@ func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 	return writeLog(tx, dd)
 }
 
-func parseQAppend(cmd, key string, command *redisproto.Command) preparedTx {
+func parseQAppend(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	value := command.Bytes(2)
 	flags := command.Flags(3)
 
@@ -241,14 +240,11 @@ func parseQAppend(cmd, key string, command *redisproto.Command) preparedTx {
 			}
 		}
 	}
-	var ts int64
 	if flags.NANOTS == nil {
-		ts = time.Now().UnixNano()
-		command.Argv = append(command.Argv, []byte("_NANOTS"), []byte(strconv.FormatInt(ts, 10)))
-	} else {
-		ts = *flags.NANOTS
+		flags.NANOTS = new(int64)
+		*flags.NANOTS = time.Now().UnixNano()
 	}
-	return prepareQAppend(key, value, int64(flags.COUNT), ts, m, dumpCommand(command))
+	return prepareQAppend(key, value, int64(flags.COUNT), *flags.NANOTS, m, dd)
 }
 
 func queueLenImpl(bk *bbolt.Bucket) (int64, int64, int64) {

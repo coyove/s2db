@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -384,13 +385,14 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulk([]byte(s.TypeofKey(key)))
 	}
 
-	// Log related commands
+	// Log commands
 	switch cmd {
-	case "PUSHLOGS":
+	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <Log1> ...
 		shard := s2pkg.MustParseInt(key)
+		loghead := uint64(command.Int64(2))
 		s.db[shard].compactLocker.Lock(func() { log.Info("bulkload is waiting for compactor") })
-		names, logtail, err := runLog(uint64(command.Int64(2)), command.At(3), restCommandsToKeys(4, command), s.db[shard].DB)
-		s.db[shard].compactLocker.Unlock()
+		defer s.db[shard].compactLocker.Unlock()
+		names, logtail, logtailBuf, err := runLog(loghead, command.Argv[3:], s.db[shard].DB)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -399,7 +401,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
-		return w.WriteInt(int64(logtail))
+		return w.WriteSimpleString(fmt.Sprintf("%d %d", logtail, logtailBuf))
 	}
 
 	// Write commands
@@ -409,15 +411,16 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e9}
 		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), RunDefault, []s2pkg.Pair{p}))
 	case "DEL":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command, dumpCommand(command)), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dumpCommand(command)), w)
 	case "QAPPEND":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseQAppend(cmd, key, command), w)
+		command.Argv = append(command.Argv, []byte("_NANOTS"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseQAppend(cmd, key, command, dumpCommand(command)), w)
 	}
 
 	h := command.HashCode()

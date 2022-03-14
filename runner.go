@@ -183,6 +183,10 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 		}
 	}
 
+	select {
+	case s.db[shard].pusherTrigger <- true:
+	default:
+	}
 	s.Survey.BatchLat.Incr(time.Since(start).Milliseconds())
 	s.Survey.BatchSize.Incr(int64(len(tasks)))
 }

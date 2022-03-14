@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"crypto/rand"
 	"encoding/gob"
 	"fmt"
 	"hash/crc32"
@@ -10,7 +11,6 @@ import (
 	"io"
 	"io/ioutil"
 	"math"
-	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -51,7 +51,6 @@ func init() {
 	redisproto.MaxBulkSize = 1 << 20
 	redisproto.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-	rand.Seed(time.Now().Unix())
 }
 
 func checkScore(s float64) error {
@@ -117,9 +116,7 @@ func splitCommand(buf []byte) (*redisproto.Command, error) {
 func joinCommand(cmd ...[]byte) []byte {
 	buf := &bytes.Buffer{}
 	buf.WriteByte(0x95)
-	for i := 0; i < 4; i++ {
-		buf.WriteByte(byte(rand.Int()))
-	}
+	io.CopyN(buf, rand.Reader, 4)
 	h := crc32.NewIEEE()
 	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd)
 	return append(buf.Bytes(), h.Sum(nil)...)

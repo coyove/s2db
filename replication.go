@@ -24,10 +24,11 @@ import (
 
 func (s *Server) CheckShardLogtail(shard int, logtail uint64) (b64 uint64, err error) {
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
-		defer s2pkg.Recover(func() { log.Error("CheckShardLogtail panic") })
 		if bk := tx.Bucket([]byte("wal")); bk != nil {
 			buf := bk.Get(s2pkg.Uint64ToBytes(logtail))
-			b64 = binary.BigEndian.Uint64(buf[1:])
+			if len(buf) >= 9 {
+				b64 = binary.BigEndian.Uint64(buf[1:])
+			}
 		}
 		return nil
 	})
@@ -66,16 +67,19 @@ func (s *Server) SlaveLogtailsInfo() (data []string) {
 }
 
 func (s *Server) logPusher(shard int) {
+	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPusher(shard) })
 	ctx := context.TODO()
 	log := log.WithField("shard", strconv.Itoa(shard))
-
-	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPusher(shard) })
+	ticker := time.NewTicker(time.Second)
 
 	for firstReq := true; !s.Closed; {
-		wait := time.Millisecond * time.Duration(s.PingTimeout) / 2
+		select {
+		case <-s.db[shard].pusherTrigger:
+		case <-ticker.C:
+		}
+
 		rdb := s.Slave.Redis()
 		if rdb == nil {
-			time.Sleep(wait)
 			continue
 		}
 
@@ -87,11 +91,9 @@ func (s *Server) logPusher(shard int) {
 			logs, err := s.respondLog(shard, loghead, false)
 			if err != nil {
 				log.Error("logPusher get local log: ", err)
-				time.Sleep(wait)
 				continue
 			}
 			if len(logs) == 0 {
-				time.Sleep(time.Second)
 				continue
 			}
 			args := append(make([]interface{}, 0, len(logs)+3), "PUSHLOGS", shard, loghead)
@@ -109,39 +111,38 @@ func (s *Server) logPusher(shard int) {
 					log.Error("push logs to slave: ", err)
 				}
 			}
-			time.Sleep(wait)
 			continue
 		}
 		var logtail, logtailBuf uint64
 		if n, _ := fmt.Sscanf(cmd.Val(), "%d %d", &logtail, &logtailBuf); n != 2 {
 			log.Info("logPusher invalid slave response: ", cmd.Val())
-			time.Sleep(wait)
 			continue
 		}
 		if firstReq {
 			if logtail > 0 {
-				ok, err := s.CheckShardLogtail(shard, logtail)
+				myLogtailBuf, err := s.CheckShardLogtail(shard, logtail)
 				if err != nil {
 					log.Info("logPusher failed to check local logtail: ", err)
-					time.Sleep(wait)
 					continue
 				}
-				if ok != logtailBuf {
-					log.Errorf("logPusher slave logtail is unrelated: %d, check: %x<->%x, maybe you are pushing to a wrong slave",
-						logtail, logtailBuf, ok)
-					time.Sleep(wait)
+				if myLogtailBuf != logtailBuf {
+					log.Errorf("logPusher slave logtail at %d is unrelated, check: %x<->%x, maybe you are pushing to a wrong slave?",
+						logtail, logtailBuf, myLogtailBuf)
 					continue
 				}
-				log.Infof("logPusher get initial slave logtail: %d, check: %x", logtail, logtailBuf)
+				log.Infof("logPusher get initial slave logtail: %d %x", logtail, logtailBuf)
 			} else {
-				log.Infof("logPusher empty slave found")
+				log.Infof("logPusher slave is new")
 			}
 		}
 		firstReq = false
 		s.Slave.Logtails[shard] = logtail
+		s.Slave.LastUpdate = time.Now().UnixNano()
+		s.db[shard].syncWaiter.RaiseTo(logtail)
 	}
 
-	log.Info("log replayer exited")
+	log.Info("log pusher exited")
+	ticker.Stop()
 	s.db[shard].pusherCloseSignal <- true
 }
 

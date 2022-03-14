@@ -75,6 +75,7 @@ type Server struct {
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
+		pusherTrigger     chan bool
 		pusherCloseSignal chan bool
 		compactLocker     s2pkg.Locker
 	}
@@ -113,8 +114,9 @@ func Open(path string) (x *Server, err error) {
 		d := &x.db[i]
 		d.DB = db
 		d.pusherCloseSignal = make(chan bool)
+		d.pusherTrigger = make(chan bool, 1)
 		d.batchCloseSignal = make(chan bool)
-		d.batchTx = make(chan *batchTask, 101)
+		d.batchTx = make(chan *batchTask, 256)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
 			&x.Survey.Sync)
 	}
@@ -149,6 +151,7 @@ func (s *Server) Close() error {
 			db.syncWaiter.Close()
 			errs <- db.Close()
 			close(db.batchTx)
+			close(db.pusherTrigger)
 			<-db.pusherCloseSignal
 			<-db.batchCloseSignal
 		}(i)
@@ -401,6 +404,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
+		s.ReadOnly = 1
 		return w.WriteSimpleString(fmt.Sprintf("%d %d", logtail, logtailBuf))
 	}
 

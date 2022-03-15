@@ -25,7 +25,6 @@ import (
 
 type ServerConfig struct {
 	ServerName        string
-	Master            string
 	Slave             string
 	Password          string
 	CacheSize         int
@@ -106,18 +105,6 @@ func (s *Server) saveConfig() error {
 		s.SelfManager = p
 	}
 
-	if changed, err := s.Master.CreateRedis(s.ServerConfig.Master); err != nil {
-		return err
-	} else if changed {
-		if s.ServerConfig.Master != "" {
-			log.Info("master redis created with: ", s.ServerConfig.Master)
-			s.ReadOnly = 1
-		} else {
-			log.Info("master redis removed")
-			s.ReadOnly = 0
-		}
-	}
-
 	if changed, err := s.Slave.CreateRedis(s.ServerConfig.Slave); err != nil {
 		return err
 	} else if changed {
@@ -151,7 +138,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
 	}
-	if (key == "master" || key == "slave") && !strings.HasPrefix(value, "redis://") {
+	if (key == "master" || key == "slave") && !strings.HasPrefix(value, "redis://") && value != "" {
 		value = "redis://" + value
 	}
 	found := false
@@ -252,8 +239,6 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	switch addr {
 	case "", "local", "LOCAL":
 		return s.LocalRedis
-	case "master", "MASTER":
-		return s.Master.Redis()
 	case "slave", "SLAVE":
 		return s.Slave.Redis()
 	}
@@ -273,7 +258,7 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
-		if rf.Name == "ServerName" || rf.Name == "Master" {
+		if rf.Name == "ServerName" || rf.Name == "Master" || rf.Name == "Slave" {
 			return nil
 		}
 		if key != "" && !strings.EqualFold(rf.Name, key) {
@@ -437,7 +422,7 @@ func (s *Server) GetShardFilename(i int) (fn string, err error) {
 	return
 }
 
-func (s *Server) MakeShardFilename(shard int) string {
+func makeShardFilename(shard int) string {
 	return "shard" + strconv.Itoa(shard) + "." + fmt.Sprintf("%013d", time.Now().UnixNano()/1e6)
 }
 

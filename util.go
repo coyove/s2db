@@ -177,6 +177,9 @@ func (s *Server) Info(section string) (data []string) {
 				fmt.Sprintf("slave_logtail_diff_sum:%d", diffSum),
 			)
 		}
+		if s.MasterIP != "" {
+			data = append(data, fmt.Sprintf("master_ip:%v", s.MasterIP))
+		}
 		data = append(data, "")
 	}
 	if section == "" || section == "sys_rw_stats" {

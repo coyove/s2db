@@ -29,5 +29,6 @@ if [[ "$1" == "win32" ]]; then
 fi
 
 go build -ldflags "-X main.Version=$VERSION" -o $OUT $SRC
-mkdir -p slave_dir
+mkdir -p slave_dir slave_dir2
 cp $OUT slave_dir/
+cp $OUT slave_dir2/

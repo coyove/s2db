@@ -60,7 +60,11 @@ func (s *Server) logPusher(shard int) {
 			}
 			if len(logs) == 0 {
 				if err := rdb.Ping(ctx).Err(); err != nil {
-					log.Error("logPusher ping error: ", err)
+					if strings.Contains(err.Error(), "refused") {
+						log.Error("[M] slave not alive")
+					} else {
+						log.Error("logPusher ping error: ", err)
+					}
 				} else {
 					s.Slave.LastUpdate = time.Now().UnixNano()
 				}
@@ -216,11 +220,10 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs [][]byte, 
 	return
 }
 
-func (s *Server) requestFullShard(shard int) bool {
+func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	client := &http.Client{}
-	resp, err := client.Get("http://" + s.Master.Config().Addr +
-		"/?dump=" + strconv.Itoa(shard) + "&p=" + s.Master.Config().Password)
+	resp, err := client.Get("http://" + cfg.Addr + "/?dump=" + strconv.Itoa(shard) + "&p=" + cfg.Password)
 	if err != nil {
 		log.Error("requestShard: http error: ", err)
 		return false
@@ -233,7 +236,7 @@ func (s *Server) requestFullShard(shard int) bool {
 		return false
 	}
 
-	fn := s.MakeShardFilename(shard)
+	fn := makeShardFilename(shard)
 	of, err := os.Create(filepath.Join(s.DataPath, fn))
 	if err != nil {
 		log.Error("requestShard: create shard: ", err)
@@ -270,6 +273,7 @@ type endpoint struct {
 	client *redis.Client
 	config redisproto.RedisConfig
 
+	RemoteIP   string
 	Logtails   [ShardNum]uint64 `json:"logtails"`
 	LastUpdate int64            `json:"lastupdate"`
 }

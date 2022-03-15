@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"text/scanner"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -58,5 +59,30 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	if cfg.Options.Username != "" {
 		cfg.Options.Username, cfg.Options.Password = "", cfg.Options.Username
 	}
+	return
+}
+
+func SplitCmdLine(line string) (args []interface{}) {
+	var s scanner.Scanner
+	s.Init(strings.NewReader(line))
+	s.Mode = scanner.ScanStrings | scanner.ScanFloats | scanner.ScanInts | scanner.ScanIdents
+
+	for tok := s.Scan(); tok != scanner.EOF; tok = s.Scan() {
+		txt := s.TokenText()
+		switch tok {
+		case scanner.Int:
+			v, _ := strconv.ParseInt(txt, 10, 64)
+			args = append(args, v)
+		case scanner.Float:
+			v, _ := strconv.ParseFloat(txt, 64)
+			args = append(args, v)
+		case scanner.String, scanner.Ident:
+			if len(txt) >= 2 && txt[0] == '"' && txt[len(txt)-1] == '"' {
+				txt, _ = strconv.Unquote(txt)
+			}
+			args = append(args, txt)
+		}
+	}
+
 	return
 }

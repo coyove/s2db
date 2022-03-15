@@ -44,8 +44,9 @@ type Server struct {
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.MasterLRU
 
-	LocalRedis    *redis.Client
-	Master, Slave endpoint
+	LocalRedis *redis.Client
+	Slave      endpoint
+	MasterIP   string
 
 	ServerConfig
 	ReadOnly    int    // server is 0: writable, 1: readonly, 2: switchwrite
@@ -137,7 +138,6 @@ func (s *Server) Close() error {
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
 	errs <- s.ConfigDB.Close()
-	errs <- s.Master.Close()
 	errs <- s.Slave.Close()
 	errs <- s.LocalRedis.Close()
 	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
@@ -373,7 +373,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevHash> <Log1> ...
 		shard := s2pkg.MustParseInt(key)
 		loghead := uint64(command.Int64(2))
-		s.db[shard].compactLocker.Lock(func() { log.Info("bulkload is waiting for compactor") })
+		s.db[shard].compactLocker.Lock(func() { log.Infof("bulkload %d is waiting for compactor or previous slow bulkload", shard) })
 		defer s.db[shard].compactLocker.Unlock()
 		names, logtail, err := runLog(loghead, uint32(command.Int64(3)), command.Argv[4:], s.db[shard].DB)
 		if err != nil {
@@ -385,6 +385,17 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = 1
+		if ip := getRemoteIP(remoteAddr).String(); s.MasterIP == "" || s.MasterIP == ip {
+			s.MasterIP = ip
+		} else {
+			log.Error("received logs from unknown master: ", ip)
+		}
+		if len(names) > 0 {
+			select {
+			case s.db[shard].pusherTrigger <- true:
+			default:
+			}
+		}
 		return w.WriteInt(int64(logtail))
 	}
 

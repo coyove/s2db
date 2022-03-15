@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/coyove/nj"
+	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -34,9 +35,10 @@ var (
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
 	showVersion  = flag.Bool("v", false, "print s2db version")
-	masterDumper = flag.Int("mdump", -1, "dump requested shard from master to data directory then exit, "+strconv.Itoa(ShardNum)+" means all shards")
+	masterDumper = flag.String("mdump", "", "dump requested shard from master to data directory then exit, form: "+
+		"ip:port/shard, "+strconv.Itoa(ShardNum)+" means all shards")
 	showLogtail  = flag.String("logtail", "", "print log tail of specified database")
-	calcShard    = flag.String("calc-shard", "", "simple utility to calc the shard number of the given value")
+	sendRedisCmd = flag.String("cmd", "", "send redis command to listen address (-l)")
 	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
 		for i := range f {
@@ -57,12 +59,21 @@ func main() {
 	rand.Seed(time.Now().Unix())
 	go s2pkg.OSWatcher()
 
-	if *calcShard != "" {
-		fmt.Print(shardIndex(*calcShard))
-		return
-	}
 	if *showVersion {
 		fmt.Println("s2db", Version)
+		return
+	}
+
+	if *sendRedisCmd != "" {
+		cfg, err := redisproto.ParseConnString(*listenAddr)
+		if err != nil {
+			errorExit("cmd: invalid address: " + err.Error())
+		}
+		v, err := cfg.GetClient().Do(context.TODO(), redisproto.SplitCmdLine(*sendRedisCmd)...).Result()
+		if err != nil {
+			errorExit("cmd: " + err.Error())
+		}
+		fmt.Println(v)
 		return
 	}
 
@@ -186,17 +197,18 @@ func main() {
 		}
 	}
 
-	if *readOnly || s.Master.Config().Name != "" {
+	if *readOnly {
 		s.ReadOnly = 1
 	}
-	if *masterDumper != -1 {
-		if s.Master.Config().Name == "" {
-			errorExit("mdump: no master to request")
+	if *masterDumper != "" {
+		cfg, err := redisproto.ParseConnString(*masterDumper)
+		if err != nil {
+			errorExit("mdump: invalid conn string: " + err.Error())
 		}
 		for i := 0; i < ShardNum; i++ {
-			if i == *masterDumper || *masterDumper == ShardNum {
-				if !s.requestFullShard(i) {
-					errorExit("mdump: failed to request " + strconv.Itoa(i))
+			if i == cfg.DB || cfg.DB == ShardNum {
+				if !s.requestFullShard(i, cfg) {
+					errorExit("mdump: failed to request shard " + strconv.Itoa(i))
 				}
 			}
 		}

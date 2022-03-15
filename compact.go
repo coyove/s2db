@@ -58,7 +58,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	s.runInspectFunc("compactonstart", shard)
 
 	path := x.DB.Path()
-	compactFilename := s.MakeShardFilename(shard)
+	compactFilename := makeShardFilename(shard)
 	compactPath := filepath.Join(s.DataPath, compactFilename)
 	dumpPath := path + ".dump"
 	if s.ServerConfig.CompactDumpTmpDir != "" {

@@ -3,7 +3,7 @@ test
 *.log
 *.log.gz
 redis
-slave_dir
+slave_dir*
 zset
 zset_darwin
 zset.7z

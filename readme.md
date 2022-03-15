@@ -2,16 +2,8 @@
 s2db is a sorted set database who speaks redis protocol and stores data on disk.
 
 # Startup Sequence
-## Master
-1. Start the server by `s2db -l <Ip>:<Port> -M`, listening at `Ip:Port`.
-2. Connect to the server using any redis client: `redis-cli -p <Port>`.
-3. Set server name: `CONFIG SET servername <ServerName>`, otherwise writes will be omitted.
-
-## Slave
-1. Start the server by `s2db -l <Ip>:<Port> -master <MasterName>@<MasterIp>:<MasterPort>`, listening at `Ip:Port`.
-2. `<MasterName>` must correspond to the actual master server's name you set earlier, otherwise no replication will happen.
-3. Set slave's server name like master did.
-4. Replications are done asynchronously and passively, master won't request any info from slaves.
+1. Start slave server by `s2db -l <SlaveIp>:<SlavePort>`, listening at `SlaveIp:SlavePort`.
+2. Start master server by `s2db -l <Ip>:<Port> -C0 slave=<SlaveIp>:<SlavePort>`, listening at `Ip:Port`.
 
 # Configuration Fields
 - `ServerName (string)`: server's name
@@ -20,8 +12,8 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `WeakCacheSize (int)`: weak cache size
 - `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object
 - `SlowLimit (int, milliseconds)`: threshold of recording slow commands into ./log/slow.log
-- `ResponseLogRun (int)`: max number of logs master can return to slaves
-- `ResponseLogSize (int, bytes)`: max size of logs master can return to slaves
+- `ResponseLogRun (int)`: max number of logs master can push to slave in a single request
+- `ResponseLogSize (int, bytes)`: max size of logs master can push to slave in a single request
 - `BatchMaxRun (int)`: batch operations size, bigger value makes `--defer--` faster
 - `CompactJobType (int)`: compaction job type, see [compaction](#compaction)
 - `CompactLogHead (int)`: number of logs preserved during compaction

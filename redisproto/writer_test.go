@@ -2,6 +2,7 @@ package redisproto
 
 import (
 	"bytes"
+	"reflect"
 	"testing"
 	"time"
 
@@ -51,6 +52,10 @@ func BenchmarkFlags(b *testing.B) {
 func TestConnString(t *testing.T) {
 	a, _ := ParseConnString("a?Name=name&ReadTimeout=1e9")
 	if a.ReadTimeout != time.Second || a.Name != "name" {
+		t.Fail()
+	}
+
+	if !(reflect.DeepEqual([]interface{}{"a", "b", "c d", int64(10), 0.5}, SplitCmdLine("a b \"c d\" 10 0.5"))) {
 		t.Fail()
 	}
 }

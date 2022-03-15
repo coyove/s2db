@@ -500,12 +500,17 @@ func (bs *BuoySignal) RaiseTo(watermark uint64) {
 	}
 }
 
+func (bs *BuoySignal) Len() int {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	return len(bs.list)
+}
+
 func (bs *BuoySignal) String() string {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	if len(bs.list) == 0 {
-		return "0 0 0"
+		return "0-0"
 	}
-	return fmt.Sprintf("%d %d %d",
-		bs.list[0].watermark, len(bs.list), bs.list[len(bs.list)-1].watermark)
+	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
 }

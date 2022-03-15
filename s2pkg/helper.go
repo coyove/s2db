@@ -293,83 +293,6 @@ func ExtractHeadCirc(text string) (string, string) {
 	return "", text
 }
 
-const (
-	IndexedBufferCap        = 10000
-	IndexedBufferSafeMargin = 1000000
-)
-
-type IndexedBuffer struct {
-	mu    sync.Mutex
-	lower int64
-	m     map[int64][]byte
-}
-
-func (b *IndexedBuffer) Add(id int64, buf []byte) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if id == 0 {
-		return false
-	}
-	if _, exist := b.m[id]; exist {
-		return false
-	}
-	if b.m == nil {
-		b.m = map[int64][]byte{}
-	}
-	if b.lower == 0 {
-		b.lower = id
-	}
-	if id < b.lower {
-		if id < b.lower-IndexedBufferSafeMargin {
-			return false
-		}
-		b.lower = id
-	}
-	b.m[id] = buf
-	for len(b.m) > IndexedBufferCap {
-		delete(b.m, b.lower)
-		b.lower++
-	}
-	return true
-}
-
-func (b *IndexedBuffer) Len() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return len(b.m)
-}
-
-func (b *IndexedBuffer) Head() int64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.lower
-}
-
-func (b *IndexedBuffer) DeleteUntil(upper int64) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.lower == 0 {
-		return
-	}
-	for i := b.lower; i <= upper; i++ {
-		delete(b.m, i)
-		b.lower = i + 1
-	}
-}
-
-func (b *IndexedBuffer) GetRange(start int64, max int) (data [][]byte) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for i := start; len(data) < max; i++ {
-		buf, ok := b.m[i]
-		if !ok {
-			break
-		}
-		data = append(data, buf)
-	}
-	return data
-}
-
 func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err error) {
 	var last []byte
 	h, p := crc32.NewIEEE(), make([]byte, 32*1024)
@@ -513,4 +436,13 @@ func (bs *BuoySignal) String() string {
 		return "0-0"
 	}
 	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
+}
+
+func IntInRange(s string, v int) bool {
+	var start, end int
+	if n, _ := fmt.Sscanf(s, "%d-%d", &start, &end); n != 2 {
+		// Invalid range strings are treated as full-ranged
+		return true
+	}
+	return start <= v && v <= end
 }

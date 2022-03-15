@@ -44,6 +44,7 @@ type ServerConfig struct {
 	CompactNoBackup   int    // 0|1 disable backup files when compacting
 	DisableMetrics    int    // 0|1
 	InspectorSource   string
+	KeyHashRange      string
 }
 
 func (s *Server) loadConfig() error {
@@ -84,6 +85,9 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.PingTimeout, 5000)
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())
+	}
+	if s.KeyHashRange == "" {
+		s.KeyHashRange = "0-65535"
 	}
 	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)

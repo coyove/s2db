@@ -124,16 +124,10 @@
             <div class=s-content>
                 <div class=s-key>golang_pprof</div><div class=s-value><a href='/debug/pprof/'>open</a></div>
             </div>
-            {{if .s.Master.Config.Name}}
-            <div class=s-content>
-                <div class=s-key>master</div>
-                <div class=s-value><a href="http://{{.s.Master.Config.Addr}}">{{.s.Master.Config.Name}}</a></div>
-            </div>
-            {{end}}
-            {{if .s.Slave.ServerName}}
+            {{if .s.Slave.Redis}}
             <div class=s-content>
                 <div class=s-key>slave</div>
-                <div class=s-value><a href="http://{{.s.Slave.RemoteConnectAddr}}">{{.s.Slave.RemoteConnectAddr}}</a></div>
+                <div class=s-value><a href="http://{{.s.Slave.Config.Addr}}">{{.s.Slave.Config.Addr}}</a></div>
             </div>
             {{end}}
         </div>

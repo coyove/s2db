@@ -133,13 +133,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 
-		logs, err := s.respondLog(shard, ct+1, false)
+		logs, logprevHash, err := s.respondLog(shard, ct+1, false)
 		if err != nil {
 			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", shard, err)
 			return
 		}
-		if _, _, _, err := runLog(ct+1, logs, compactDB); err != nil {
+		if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
 			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runInspectFunc("compactonerror", shard, err)
 			return
@@ -157,13 +157,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	log.Info("STAGE 3: onlineDB write lock acquired")
 
 	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
-	logs, err := s.respondLog(shard, ct+1, true)
+	logs, logprevHash, err := s.respondLog(shard, ct+1, true)
 	if err != nil {
 		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", shard, err)
 		return
 	}
-	if _, _, _, err := runLog(ct+1, logs, compactDB); err != nil {
+	if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
 		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runInspectFunc("compactonerror", shard, err)
 		return
@@ -297,7 +297,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 	// As being master, server can't purge logs which slave doesn't have yet.
 	// This is not foolproof because slave maybe temporarily offline, so it is still possible to over-purge.
-	hasSlave := s.Slave.ServerName != "" && s.Slave.IsAcked(s)
+	hasSlave := s.Slave.Redis() != nil && s.Slave.IsAcked(s)
 	slaveLogtail := s.Slave.Logtails[shard]
 
 	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64

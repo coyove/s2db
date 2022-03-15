@@ -48,14 +48,14 @@ type Server struct {
 	Master, Slave endpoint
 
 	ServerConfig
-	ReadOnly           int    // server is 0: writable, 1: readonly, 2: switchwrite
-	Closed             bool   // server close flag
-	DataPath           string // location of data and config database
-	SelfManager        *bas.Program
-	Cache              *s2pkg.MasterLRU
-	WeakCache          *s2pkg.MasterLRU
-	CompactLock        s2pkg.LockBox
-	EvalLock, PingLock sync.Mutex
+	ReadOnly    int    // server is 0: writable, 1: readonly, 2: switchwrite
+	Closed      bool   // server close flag
+	DataPath    string // location of data and config database
+	SelfManager *bas.Program
+	Cache       *s2pkg.MasterLRU
+	WeakCache   *s2pkg.MasterLRU
+	CompactLock s2pkg.LockBox
+	EvalLock    sync.Mutex
 
 	Survey struct {
 		StartAt                 time.Time
@@ -336,26 +336,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if key == "" {
 			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
 		}
-
-		if strings.EqualFold(key, "FROM") {
-			s.PingLock.Lock()
-			defer s.PingLock.Unlock()
-			ip := getRemoteIP(remoteAddr).String()
-			if s.Slave.RemoteAddr == "" {
-				log.Infof("slave ack: %v", ip)
-			} else if s.Slave.RemoteAddr != ip {
-				if s.Slave.IsAcked(s) {
-					return w.WriteSimpleString("PONG ?")
-				}
-				log.Infof("slave switch: %v(%v) to %v", s.Slave.RemoteAddr, s.Slave.AckBefore(), ip)
-			}
-			s.Slave.RemoteAddr = ip
-			s.Slave.ListenAddr = command.Get(2)
-			s.Slave.ServerName = command.Get(3)
-			s.Slave.Version = command.Get(4)
-			s.Slave.LastUpdate = time.Now().UnixNano()
-			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
-		}
 		return w.WriteSimpleString(key)
 	case "CONFIG":
 		switch strings.ToUpper(key) {
@@ -390,12 +370,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 	// Log commands
 	switch cmd {
-	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <Log1> ...
+	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevHash> <Log1> ...
 		shard := s2pkg.MustParseInt(key)
 		loghead := uint64(command.Int64(2))
 		s.db[shard].compactLocker.Lock(func() { log.Info("bulkload is waiting for compactor") })
 		defer s.db[shard].compactLocker.Unlock()
-		names, logtail, logtailBuf, err := runLog(loghead, command.Argv[3:], s.db[shard].DB)
+		names, logtail, err := runLog(loghead, uint32(command.Int64(3)), command.Argv[4:], s.db[shard].DB)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -405,15 +385,15 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = 1
-		return w.WriteSimpleString(fmt.Sprintf("%d %d", logtail, logtailBuf))
+		return w.WriteInt(int64(logtail))
 	}
 
 	// Write commands
-	deferred := parseDeferFlag(command)
+	deferred := parseRunFlag(command)
 	switch cmd {
 	case "UNLINK":
 		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e9}
-		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), RunDefault, []s2pkg.Pair{p}))
+		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), RunNormal, []s2pkg.Pair{p}))
 	case "DEL":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":

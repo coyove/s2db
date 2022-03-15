@@ -297,9 +297,7 @@ func (s *Server) webConsoleServer() {
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": sp, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{
-				"server", "server_misc", "replication", "slave_logtails", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache",
-			},
+			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 		})
 	})
 	http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {

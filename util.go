@@ -161,22 +161,21 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "replication" {
 		data = append(data, "# replication")
-		if s.Master.Config().Name != "" {
+		if s.Slave.Redis() != nil {
+			diffs, diffSum := [ShardNum]int64{}, int64(0)
+			for i := range s.db {
+				tail, _ := s.ShardLogtail(i)
+				diffs[i] = int64(tail) - int64(s.Slave.Logtails[i])
+				diffSum += diffs[i]
+			}
 			data = append(data,
-				fmt.Sprintf("master_conn:%v", s.Master.Config().Raw),
-				fmt.Sprintf("master_name:%v", s.Master.ServerName),
-				fmt.Sprintf("master_version:%v", s.Master.Version),
-				fmt.Sprintf("master_ack:%v", s.Master.IsAcked(s)),
-				fmt.Sprintf("master_ack_before:%v", s.Master.AckBefore()))
-		}
-		if s.Slave.ServerName != "" {
-			data = append(data,
-				fmt.Sprintf("slave_name:%v", s.Slave.ServerName),
-				fmt.Sprintf("slave_address:%v", s.Slave.RemoteAddr),
-				fmt.Sprintf("slave_listen:%v", s.Slave.ListenAddr),
-				fmt.Sprintf("slave_version:%v", s.Slave.Version),
+				fmt.Sprintf("slave_conn:%v", s.Slave.Config().Raw),
 				fmt.Sprintf("slave_ack:%v", s.Slave.IsAcked(s)),
-				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()))
+				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()),
+				fmt.Sprintf("slave_logtail:%v", joinArray(s.Slave.Logtails)),
+				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
+				fmt.Sprintf("slave_logtail_diff_sum:%d", diffSum),
+			)
 		}
 		data = append(data, "")
 	}
@@ -230,9 +229,6 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("weak_cache_obj_count:%v/%v", s.WeakCache.Len(), s.WeakCache.Cap()),
 			"")
 	}
-	if section == "" || section == "slave_logtails" {
-		data = append(data, s.SlaveLogtailsInfo()...)
-	}
 	return
 }
 
@@ -263,7 +259,7 @@ func (s *Server) ShardInfo(shard int) []string {
 		myTail = bk.Sequence()
 		return nil
 	})
-	if s.Slave.ServerName != "" {
+	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]
 		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
 		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(tail)))
@@ -303,13 +299,13 @@ func ifZero(v *int, v2 int) {
 }
 
 const (
-	RunDefault = iota + 1
+	RunNormal = iota + 1
 	RunDefer
 	RunSemiSync
 	RunSync
 )
 
-func parseDeferFlag(in *redisproto.Command) int {
+func parseRunFlag(in *redisproto.Command) int {
 	if len(in.Argv) > 2 {
 		if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
 			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
@@ -323,8 +319,11 @@ func parseDeferFlag(in *redisproto.Command) int {
 			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
 			return RunSemiSync
 		}
+		if bytes.EqualFold(in.Argv[2], []byte("--normal--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+		}
 	}
-	return RunDefault
+	return RunNormal
 }
 
 func parseWeakFlag(in *redisproto.Command) time.Duration {

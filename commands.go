@@ -89,7 +89,7 @@ func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedT
 	case "ZREMRANGEBYRANK":
 		return prepareZRemRangeByRank(key, s2pkg.MustParseInt(start), s2pkg.MustParseInt(end), dd)
 	default:
-		panic(-1)
+		panic("shouldn't happen")
 	}
 }
 
@@ -257,7 +257,7 @@ func queueLenImpl(bk *bbolt.Bucket) (int64, int64, int64) {
 		if first <= last {
 			return int64(first), int64(last), int64(last - first + 1)
 		}
-		panic(-2)
+		panic("corrupted queue")
 	}
 	return 0, 0, 0
 }

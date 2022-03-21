@@ -79,7 +79,7 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx prepare
 	case error:
 		return w.WriteError(res.Error())
 	default:
-		panic(-99)
+		panic(fmt.Sprintf("invalid result type: %T", out))
 	}
 }
 

@@ -347,7 +347,7 @@ func (s *Server) Foreach(cursor string, f func(k, typ string, bk ...*bbolt.Bucke
 	defer close()
 
 	var cursorsZ, cursorsQ [ShardNum]*bbolt.Cursor
-	keys := &s2pkg.PairHeap{CompareData: true}
+	keys := &s2pkg.PairHeap{DataOrder: true}
 	for i := range s.db {
 		cursorsZ[i], cursorsQ[i] = txs[i].Cursor(), txs[i].Cursor()
 		if k, _ := cursorsQ[i].Seek([]byte("q." + cursor)); bytes.HasPrefix(k, []byte("q.")) {
@@ -537,7 +537,7 @@ func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]s2p
 				log.Error("MergeFunc: ", key, " error: ", err)
 				return false
 			} else if res.Type() != typ.Number {
-				log.Error("MergeFunc: ", key, " should return numbers")
+				log.Error("MergeFunc: expects numeric results")
 				return false
 			}
 			p.Score = res.Float64()

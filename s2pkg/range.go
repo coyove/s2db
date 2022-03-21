@@ -12,9 +12,10 @@ type Pair struct {
 }
 
 type PairHeap struct {
-	CompareMember bool
-	CompareData   bool
-	Pairs         []Pair
+	Desc        bool
+	MemberOrder bool
+	DataOrder   bool
+	Pairs       []Pair
 }
 
 func (h *PairHeap) Len() int {
@@ -22,11 +23,20 @@ func (h *PairHeap) Len() int {
 }
 
 func (h *PairHeap) Less(i, j int) bool {
-	if h.CompareData {
+	if h.DataOrder {
+		if h.Desc {
+			return bytes.Compare(h.Pairs[i].Data, h.Pairs[j].Data) == 1
+		}
 		return bytes.Compare(h.Pairs[i].Data, h.Pairs[j].Data) == -1
 	}
-	if h.CompareMember {
+	if h.MemberOrder {
+		if h.Desc {
+			return h.Pairs[i].Member > h.Pairs[j].Member
+		}
 		return h.Pairs[i].Member < h.Pairs[j].Member
+	}
+	if h.Desc {
+		return h.Pairs[i].Score > h.Pairs[j].Score
 	}
 	return h.Pairs[i].Score < h.Pairs[j].Score
 }

@@ -153,7 +153,7 @@ func main() {
 	}
 
 	if *showLogtail != "" {
-		db, err := bbolt.Open(*showLogtail, 0666, bboltReadonlyOptions)
+		db, err := bbolt.Open(*showLogtail, 0666, DBReadonlyOptions)
 		if err != nil {
 			fmt.Println(err.Error())
 			os.Exit(-1)
@@ -197,9 +197,8 @@ func main() {
 		}
 	}
 
-	if *readOnly {
-		s.ReadOnly = 1
-	}
+	s.ReadOnly = *readOnly
+
 	if *masterDumper != "" {
 		cfg, err := redisproto.ParseConnString(*masterDumper)
 		if err != nil {

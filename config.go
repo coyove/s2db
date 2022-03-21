@@ -27,6 +27,7 @@ type ServerConfig struct {
 	ServerName        string
 	Slave             string
 	Password          string
+	MarkMaster        int // 0|1
 	CacheSize         int
 	CacheObjMaxSize   int // kb
 	WeakCacheSize     int
@@ -44,7 +45,6 @@ type ServerConfig struct {
 	CompactNoBackup   int    // 0|1 disable backup files when compacting
 	DisableMetrics    int    // 0|1
 	InspectorSource   string
-	KeyHashRange      string
 }
 
 func (s *Server) loadConfig() error {
@@ -85,9 +85,6 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.PingTimeout, 5000)
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())
-	}
-	if s.KeyHashRange == "" {
-		s.KeyHashRange = "0-65535"
 	}
 	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
@@ -197,7 +194,7 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 }
 
 func (s *Server) listConfig() []string {
-	list := []string{"readonly:" + strconv.Itoa(s.ReadOnly)}
+	list := []string{"readonly:" + strconv.FormatBool(s.ReadOnly)}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		name := strings.ToLower(f.Name)
 		value := fmt.Sprint(fv.Interface())
@@ -288,7 +285,7 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 	return nil
 }
 
-func (s *Server) runInspectFunc(name string, args ...interface{}) (bas.Value, error) {
+func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, error) {
 	if s.SelfManager == nil {
 		return bas.Nil, nil
 	}
@@ -316,6 +313,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 	return &bas.Environment{
 		Globals: bas.NewObject(0).
 			SetProp("server", bas.ValueOf(s)).
+			SetProp("ctx", bas.ValueOf(context.TODO())).
 			SetProp("args", bas.NewArray(a...).ToValue()).
 			SetMethod("flags", func(env *bas.Env) {
 				cmd := redisproto.Command{}
@@ -331,19 +329,19 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				}
 				log.Info("[logIO] ", x.String())
 			}, "").
-			SetMethod("shardCalc", func(e *bas.Env) {
+			SetMethod("shardOf", func(e *bas.Env) {
 				e.A = bas.Int(shardIndex(e.Str(0)))
 			}, "").
 			SetMethod("atof", func(e *bas.Env) {
 				v := s2pkg.MustParseFloat(e.Str(0))
 				e.A = bas.Float64(v)
 			}, "").
-			SetMethod("hashCommands", func(e *bas.Env) { // ) [2]uint64 {
+			SetMethod("hashArray", func(e *bas.Env) {
 				v := make([][]byte, 0, e.Size())
 				for i := range v {
 					v = append(v, e.Get(i).Safe().Bytes())
 				}
-				e.A = bas.ValueOf((redisproto.Command{Argv: v}).HashCode())
+				e.A = bas.Str((redisproto.Command{Argv: v}).HashCode())
 			}, "").
 			SetMethod("tokenize", func(e *bas.Env) {
 				e.A = bas.ValueOf(fts.SplitSimple(e.Str(0)))

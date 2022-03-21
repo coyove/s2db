@@ -25,15 +25,16 @@ import (
 )
 
 const (
-	ShardNum = 32
+	ShardNum            = 32
+	rejectedByMasterMsg = "rejected by master"
 )
 
 var (
-	bboltOptions = &bbolt.Options{
+	DBOptions = &bbolt.Options{
 		FreelistType: bbolt.FreelistMapType,
 		Timeout:      time.Second * 10,
 	}
-	bboltReadonlyOptions = &bbolt.Options{
+	DBReadonlyOptions = &bbolt.Options{
 		FreelistType: bbolt.FreelistMapType,
 		ReadOnly:     true,
 	}
@@ -49,7 +50,7 @@ type Server struct {
 	MasterIP   string
 
 	ServerConfig
-	ReadOnly    int    // server is 0: writable, 1: readonly, 2: switchwrite
+	ReadOnly    bool
 	Closed      bool   // server close flag
 	DataPath    string // location of data and config database
 	SelfManager *bas.Program
@@ -84,9 +85,12 @@ type Server struct {
 }
 
 func Open(path string) (x *Server, err error) {
-	os.MkdirAll(path, 0777)
+	if err := os.MkdirAll(path, 0777); err != nil {
+		return nil, err
+	}
+
 	x = &Server{DataPath: path}
-	x.ConfigDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, bboltOptions)
+	x.ConfigDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, DBOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +109,7 @@ func Open(path string) (x *Server, err error) {
 		log.Info("open shard #", i, " of ", shardPath)
 		deleteUnusedDataFile(path, fullDataFiles, i, fn)
 		start := time.Now()
-		db, err := bbolt.Open(shardPath, 0666, bboltOptions)
+		db, err := bbolt.Open(shardPath, 0666, DBOptions)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +194,7 @@ func (s *Server) Serve(addr string) (err error) {
 
 	log.Infof("listening on: redis=%v, local=%v", s.ln.Addr(), s.lnLocal.Addr())
 	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
-		s.runInspectFunc("compactnotfinished", s2pkg.MustParseInt(v))
+		s.runScriptFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
 
 	for i := range s.db {
@@ -323,8 +327,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// General commands
 	switch cmd {
 	case "DIE":
+		s.waitSlave()
 		log.Info(s.Close())
-		os.Exit(100)
+		os.Exit(0)
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL":
@@ -370,7 +375,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 	// Log commands
 	switch cmd {
-	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevHash> <Log1> ...
+	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevSig> <Log1> ...
+		if s.MarkMaster == 1 {
+			return w.WriteError(rejectedByMasterMsg)
+		}
 		shard := s2pkg.MustParseInt(key)
 		loghead := uint64(command.Int64(2))
 		s.db[shard].compactLocker.Lock(func() { log.Infof("bulkload %d is waiting for compactor or previous slow bulkload", shard) })
@@ -384,11 +392,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
-		s.ReadOnly = 1
+		s.ReadOnly = true
 		if ip := getRemoteIP(remoteAddr).String(); s.MasterIP == "" || s.MasterIP == ip {
 			s.MasterIP = ip
 		} else {
-			log.Error("received logs from unknown master: ", ip)
+			log.Error("received logs from unknown master: ", ip, " current master: ", s.MasterIP)
 		}
 		if len(names) > 0 {
 			select {
@@ -535,10 +543,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 }
 
 func (s *Server) checkWritable() error {
-	if s.ReadOnly == 1 {
+	if s.ReadOnly {
 		return fmt.Errorf("server is read-only")
-	} else if s.ServerName == "" {
-		return fmt.Errorf("server name not set, writes are omitted")
 	}
 	return nil
 }

@@ -25,7 +25,7 @@ func TestCommandJoinSplit(t *testing.T) {
 			}
 			b = append(b, x)
 		}
-		x := joinCommand(b...)
+		x := joinCommand(b)
 		sum32 := x[len(x)-4:]
 		h := crc32.NewIEEE()
 		h.Write(x[5 : len(x)-4])

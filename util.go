@@ -23,7 +23,7 @@ import (
 
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
-	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -104,7 +104,7 @@ func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {
 }
 
 func dumpCommand(cmd *redisproto.Command) []byte {
-	return joinCommand(cmd.Argv...)
+	return joinCommand(cmd.Argv)
 }
 
 func splitCommand(buf []byte) (*redisproto.Command, error) {
@@ -113,13 +113,13 @@ func splitCommand(buf []byte) (*redisproto.Command, error) {
 	return command, err
 }
 
-func joinCommand(cmd ...[]byte) []byte {
-	buf := &bytes.Buffer{}
-	buf.WriteByte(0x95)
-	io.CopyN(buf, rand.Reader, 4)
+func joinCommand(cmd [][]byte) []byte {
 	h := crc32.NewIEEE()
-	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd)
-	return append(buf.Bytes(), h.Sum(nil)...)
+	buf := &bytes.Buffer{}
+	buf.WriteByte(0x95)                                // version: 0x95
+	io.CopyN(buf, rand.Reader, 4)                      // signature: 4b
+	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd) // payload
+	return append(buf.Bytes(), h.Sum(nil)...)          // crc32: 4b
 }
 
 func (s *Server) Info(section string) (data []string) {
@@ -131,6 +131,7 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
+			fmt.Sprintf("mark_master:%v", s.MarkMaster),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			"")
 	}
@@ -271,29 +272,29 @@ func (s *Server) ShardInfo(shard int) []string {
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
 }
 
-// func (s *Server) ReadonlyWait(timeout float64) (*serverInfo, error) {
-// 	s.ReadOnly = 1
-// 	_, mine, _, err := s.myLogTails()
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	for start := time.Now(); time.Since(start).Seconds() < timeout; time.Sleep(time.Millisecond * 200) {
-// 		var first *serverInfo
-// 		s.Slaves.Foreach(func(si *serverInfo) {
-// 			var total uint64
-// 			for _, v := range si.Logtails {
-// 				total += v
-// 			}
-// 			if total >= mine {
-// 				first = si
-// 			}
-// 		})
-// 		if first != nil {
-// 			return first, nil
-// 		}
-// 	}
-// 	return nil, nil
-// }
+func (s *Server) waitSlave() {
+	if !s.Slave.IsAcked(s) {
+		log.Info("waitSlave: no need to wait")
+		return
+	}
+	s.ReadOnly = true
+	for start := time.Now(); time.Since(start).Seconds() < 0.5; {
+		var total, slaveTotal uint64
+		for i := 0; i < ShardNum; i++ {
+			logtail, err := s.ShardLogtail(i)
+			if err != nil {
+				log.Errorf("waitSlave: failed to get logtail #%d: %v", i, err)
+				return
+			}
+			total += logtail
+			slaveTotal += s.Slave.Logtails[i]
+		}
+		if total == slaveTotal {
+			return
+		}
+	}
+	log.Error("waitSlave: timeout")
+}
 
 func ifZero(v *int, v2 int) {
 	if *v <= 0 {
@@ -452,7 +453,7 @@ func (s *Server) addCache(key string, h string, data interface{}) {
 	}
 	if sz > 0 {
 		if sz > s.CacheObjMaxSize*1024 {
-			logrus.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
+			log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
 			return
 		}
 		s.Survey.CacheSize.Incr(int64(sz))
@@ -485,7 +486,7 @@ func deleteUnusedDataFile(root string, files []os.FileInfo, shard int, useName s
 			}
 			if f.Name() != useName {
 				full := filepath.Join(root, f.Name())
-				logrus.Infof("delete orphan shard %s: %v", full, os.Remove(full))
+				log.Infof("delete orphan shard %s: %v", full, os.Remove(full))
 			}
 		}
 	}

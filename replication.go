@@ -82,7 +82,11 @@ func (s *Server) logPusher(shard int) {
 				if strings.Contains(err.Error(), "refused") {
 					log.Error("[M] slave not alive")
 				} else if err != redis.Nil {
-					log.Error("push logs to slave: ", err)
+					prefix := ""
+					if err.Error() != rejectedByMasterMsg {
+						prefix = "[M] "
+					}
+					log.Error(prefix, "push logs to slave: ", err)
 				}
 			}
 			continue
@@ -99,7 +103,7 @@ func (s *Server) logPusher(shard int) {
 	s.db[shard].pusherCloseSignal <- true
 }
 
-func runLog(loghead uint64, logprevHash uint32, logs [][]byte, db *bbolt.DB) (names map[string]bool, logtail uint64, err error) {
+func runLog(loghead uint64, logprevSig uint32, logs [][]byte, db *bbolt.DB) (names map[string]bool, logtail uint64, err error) {
 	names = map[string]bool{}
 	err = db.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("wal"))
@@ -116,8 +120,8 @@ func runLog(loghead uint64, logprevHash uint32, logs [][]byte, db *bbolt.DB) (na
 		}
 
 		if bk.Sequence() > 0 {
-			if h := binary.BigEndian.Uint32(bk.Get(s2pkg.Uint64ToBytes(bk.Sequence()))[1:]); h != logprevHash {
-				return fmt.Errorf("running unrelated logs at %d, got %x, expects %x", loghead, logprevHash, h)
+			if h := binary.BigEndian.Uint32(bk.Get(s2pkg.Uint64ToBytes(bk.Sequence()))[1:]); h != logprevSig {
+				return fmt.Errorf("running unrelated logs at %d, got %x, expects %x", loghead, logprevSig, h)
 			}
 		}
 
@@ -176,7 +180,7 @@ func runLog(loghead uint64, logprevHash uint32, logs [][]byte, db *bbolt.DB) (na
 	return
 }
 
-func (s *Server) respondLog(shard int, start uint64, full bool) (logs [][]byte, logprevHash uint32, err error) {
+func (s *Server) respondLog(shard int, start uint64, full bool) (logs [][]byte, logprevSig uint32, err error) {
 	err = s.db[shard].View(func(tx *bbolt.Tx) error {
 		bk := tx.Bucket([]byte("wal"))
 		if bk == nil {
@@ -197,7 +201,7 @@ func (s *Server) respondLog(shard int, start uint64, full bool) (logs [][]byte, 
 			return fmt.Errorf("slave log (req=%d) surpass master log (tail=%d)", start, myLogtail)
 		}
 		if start > 1 {
-			logprevHash = binary.BigEndian.Uint32(bk.Get(s2pkg.Uint64ToBytes(start - 1))[1:])
+			logprevSig = binary.BigEndian.Uint32(bk.Get(s2pkg.Uint64ToBytes(start - 1))[1:])
 		}
 
 		resSize := 0

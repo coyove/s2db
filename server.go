@@ -281,18 +281,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		start = time.Now()
 	)
 
-	// if s.SlaveStandby == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
-	// 	if s.Slave.ServerName == "" {
-	// 		return w.WriteError("stand-by: slave not ready")
-	// 	}
-	// 	v, err := s.getRedis(s.Slave.RemoteConnectAddr()).Do(context.Background(), command.Args()...).Result()
-	// 	s.Survey.StandbyProxy.Incr(int64(time.Since(start).Milliseconds()))
-	// 	if err != nil && err != redis.Nil {
-	// 		return w.WriteError(err.Error())
-	// 	}
-	// 	return w.WriteObject(v)
-	// }
-
 	if isWriteCommand[cmd] {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
 			return w.WriteError("invalid key name, which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")

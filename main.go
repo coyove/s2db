@@ -34,11 +34,11 @@ var (
 	listenAddr   = flag.String("l", ":6379", "listen address")
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
-	showVersion  = flag.Bool("v", false, "print s2db version")
+	showVersion  = flag.Bool("v", false, "print s2db version then exit")
 	masterDumper = flag.String("mdump", "", "dump requested shard from master to data directory then exit, form: "+
 		"ip:port/shard, "+strconv.Itoa(ShardNum)+" means all shards")
-	showLogtail  = flag.String("logtail", "", "print log tail of specified database")
-	sendRedisCmd = flag.String("cmd", "", "send redis command to listen address (-l)")
+	showLogtail  = flag.String("logtail", "", "print log tail of specified database then exit")
+	sendRedisCmd = flag.String("cmd", "", "send redis command to listen address (-l) then exit")
 	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
 		for i := range f {
@@ -263,6 +263,7 @@ func (s *Server) webConsoleServer() {
 		}
 
 		if s.Password != "" && s.Password != q.Get("p") {
+			w.WriteHeader(400)
 			w.Write([]byte("s2db: password required"))
 			return
 		}

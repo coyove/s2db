@@ -13,9 +13,8 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
-SCRIPT_COMMIT=$(cat go.mod | grep 'coyove/nj' | cut -c45-52)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}-${SCRIPT_COMMIT}
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}
 echo 'building' $VERSION
 
 if [[ "$1" == "linux" ]]; then

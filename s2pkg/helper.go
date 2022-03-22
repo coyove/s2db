@@ -155,11 +155,15 @@ func HashStr2(s string) (h [2]uint64) {
 func HashStr(s string) (h uint64) {
 	h = 5381
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\t' {
+		switch s[i] {
+		case '\n':
+			return h
+		case '\t':
 			h, _ = strconv.ParseUint(s[i+1:], 10, 64)
 			return h
+		default:
+			h = h*33 + uint64(s[i])
 		}
-		h = h*33 + uint64(s[i])
 	}
 	return h
 }
@@ -436,13 +440,4 @@ func (bs *BuoySignal) String() string {
 		return "0-0"
 	}
 	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
-}
-
-func IntInRange(s string, v int) bool {
-	var start, end int
-	if n, _ := fmt.Sscanf(s, "%d-%d", &start, &end); n != 2 {
-		// Invalid range strings are treated as full-ranged
-		return true
-	}
-	return start <= v && v <= end
 }

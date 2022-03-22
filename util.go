@@ -305,7 +305,6 @@ func ifZero(v *int, v2 int) {
 const (
 	RunNormal = iota + 1
 	RunDefer
-	RunSemiSync
 	RunSync
 )
 
@@ -318,10 +317,6 @@ func parseRunFlag(in *redisproto.Command) int {
 		if bytes.EqualFold(in.Argv[2], []byte("--sync--")) {
 			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
 			return RunSync
-		}
-		if bytes.EqualFold(in.Argv[2], []byte("--semisync--")) {
-			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
-			return RunSemiSync
 		}
 		if bytes.EqualFold(in.Argv[2], []byte("--normal--")) {
 			in.Argv = append(in.Argv[:2], in.Argv[3:]...)

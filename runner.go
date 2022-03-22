@@ -53,9 +53,6 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 	}
 	out := <-t.out
 	if err, _ := out.(error); err != nil {
-		if berr, ok := err.(*s2pkg.BuoyTimeoutError); ok && runType == RunSemiSync {
-			return berr.Value, nil
-		}
 		return nil, err
 	}
 	return out, nil
@@ -175,7 +172,7 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 			t.out <- err
 		} else {
 			s.removeCache(t.key)
-			if (t.runType == RunSemiSync || t.runType == RunSync) && s.Slave.IsAcked(s) {
+			if t.runType == RunSync && s.Slave.IsAcked(s) {
 				s.db[shard].syncWaiter.WaitAt(t.outLog, t.out, outs[i])
 			} else {
 				t.out <- outs[i]

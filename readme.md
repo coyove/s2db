@@ -8,12 +8,15 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 # Configuration Fields
 - `ServerName (string)`: server's name
 - `Password (string)`: server's password
+- `Slave (string)`: slave's conn string, minimal form: `<SlaveIp>:<SlavePort>`:
+- `MarkMaster (int, 0|1)`: mark server as master, rejecting all PUSHLOGS requests
+- `PingTimeout (int)`: ping timeout of slave, used by master
 - `CacheSize (int)`: cache size (number of cached objects)
 - `WeakCacheSize (int)`: weak cache size
 - `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object
 - `SlowLimit (int, milliseconds)`: threshold of recording slow commands into ./log/slow.log
-- `ResponseLogRun (int)`: max number of logs master can push to slave in a single request
-- `ResponseLogSize (int, bytes)`: max size of logs master can push to slave in a single request
+- `ResponseLogRun (int)`: max number of logs master can push to slave in PUSHLOGS
+- `ResponseLogSize (int, bytes)`: max size of logs master can push to slave in PUSHLOGS
 - `BatchMaxRun (int)`: batch operations size, bigger value makes `--defer--` faster
 - `CompactJobType (int)`: compaction job type, see [compaction](#compaction)
 - `CompactLogHead (int)`: number of logs preserved during compaction
@@ -31,16 +34,18 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
     Unlink the key, which will get deleted during compaction.
     Unlinking will introduce unconsistency when slave and master have different compacting time windows,
     caller must make sure that unlinked keys will never be used and useful again.
-### ZADD key [--DEFER--] [NX|XX] [CH] [FILL fillpercent] score member [score member ...]
+### ZADD key [--DEFER--|--SYNC--] [NX|XX] [CH] [FILL fillpercent] score member [score member ...]
     --DEFER--:
         The operation will be queued up and executed later, server will return 'OK' immediately, the actual result will be dropped.
-        Multiple deferred operations may be grouped together for better performance.
+        s2db will group continuous deferred operations together for better performance.
+    --SYNC--:
+        If slave exists, the operation will only succeed when slave also acknowledges successfully, thus consistency is guaranteed.
     FILL:
         Value can range from 0.0 to 1.0 (default 0.5).
         If added members and their scores are both monotonically increasing, set FILL to a higher value to achieve better disk space utilization.
         A good example is adding snowflake IDs with timestamps:
             ZADD key FILL 0.9 timestamp1 id1 timestamp2 id2 ...
-### ZADD key [--DEFER--] [NX|XX] [CH] DATA score member data [score member data ...]
+### ZADD key [--DEFER--|--SYNC--] [NX|XX] [CH] DATA score member data [score member data ...]
     Behaves similar to the above command, but you can attach data to each member.
 ### ZMDATA key member [member ...]
     Retrieve the data attached to the members.
@@ -164,3 +169,8 @@ By implementing certain functions in `InspectorSource`, s2db users (like devops)
 6. `function compactonfinish(shard)`: fired when each shard finishes compacting.
 7. `function compactonerror(shard, error)`: fired when compacting encountered error.
 8. `function compactnotfinished(shard)`: fired when compacting not finished properly.
+
+# Redirected 3rd-party Libs
+1. https://github.com/etcd-io/bbolt
+2. https://github.com/secmask/go-redisproto
+3. https://github.com/huichen/sego

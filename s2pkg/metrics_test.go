@@ -418,19 +418,3 @@ func (c *LRUCache) removeElement(e *list.Element, doCallback bool) {
 	c.curWeight -= e.Value.(*lruEntry).weight
 	delete(c.cache, kv.key)
 }
-
-func TestMap16Contains2(t *testing.T) {
-	if IntInRange("10-65535", 1) {
-		t.Fatal()
-	}
-	for i := 0; i < 65536; i++ {
-		if !IntInRange("0-65535", i) {
-			t.Fatal(i)
-		}
-	}
-	for i := 0; i < 65536; i++ {
-		if !IntInRange("a", i) {
-			t.Fatal(i)
-		}
-	}
-}

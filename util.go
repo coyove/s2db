@@ -29,7 +29,7 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"ZSCORE": true, "ZMSCORE": true, "ZMDATA": true,
+		"ZSCORE": true, "ZMSCORE": true, "ZDATA": true, "ZMDATA": true,
 		"ZCARD": true, "ZCOUNT": true, "ZCOUNTBYLEX": true,
 		"ZRANK": true, "ZREVRANK": true, "ZRANGE": true, "ZREVRANGE": true,
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true, "ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,

@@ -433,15 +433,18 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
 		return w.WriteBulks(data...)
-	case "ZMDATA":
-		if v := s.getCache(h, weak); v != nil {
-			return w.WriteBulks(v.([][]byte)...)
+	case "ZDATA", "ZMDATA":
+		x, cached := s.getCache(h, weak).([][]byte)
+		if !cached {
+			x, err = s.ZMData(key, restCommandsToKeys(2, command), command.Flags(-1))
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
 		}
-		data, err := s.ZMData(key, restCommandsToKeys(2, command), command.Flags(-1))
-		if err != nil {
-			return w.WriteError(err.Error())
+		if cmd == "ZDATA" {
+			return w.WriteBulk(x[0])
 		}
-		return w.WriteBulks(data...)
+		return w.WriteBulks(x...)
 	case "ZCARD":
 		return w.WriteInt(s.ZCard(key))
 	case "ZCOUNT", "ZCOUNTBYLEX":

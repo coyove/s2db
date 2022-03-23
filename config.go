@@ -28,6 +28,7 @@ type ServerConfig struct {
 	Slave             string
 	Password          string
 	MarkMaster        int // 0|1
+	MarkPassthrough   int // 0|1
 	CacheSize         int
 	CacheObjMaxSize   int // kb
 	WeakCacheSize     int
@@ -193,15 +194,9 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 	return
 }
 
-func (s *Server) listConfig() []string {
-	list := []string{"readonly:" + strconv.FormatBool(s.ReadOnly)}
+func (s *Server) listConfig() (list []string) {
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		name := strings.ToLower(f.Name)
-		value := fmt.Sprint(fv.Interface())
-		if c := strings.Count(value, "\n"); c > 0 {
-			value = strings.TrimSpace(value[:strings.Index(value, "\n")]) + " ...[" + strconv.Itoa(c) + " lines]..."
-		}
-		list = append(list, name+":"+value)
+		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
 		return nil
 	})
 	return list
@@ -259,7 +254,8 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
-		if rf.Name == "ServerName" || rf.Name == "Master" || rf.Name == "Slave" {
+		switch rf.Name {
+		case "ServerName", "MarkMaster", "Slave", "MarkPassthrough":
 			return nil
 		}
 		if key != "" && !strings.EqualFold(rf.Name, key) {

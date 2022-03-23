@@ -37,23 +37,24 @@ func (s *Server) logPusher(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	ticker := time.NewTicker(time.Second)
 
-	for firstReq := true; !s.Closed; {
+	for !s.Closed {
 		select {
 		case <-s.db[shard].pusherTrigger:
 		case <-ticker.C:
 		}
 
 		rdb := s.Slave.Redis()
-		if rdb == nil {
+		if rdb == nil || s.MarkPassthrough == 1 {
 			continue
 		}
 
 		var cmd *redis.IntCmd
-		if firstReq {
+		if !s.Slave.LogtailOK[shard] {
+			// First PUSHLOGS to slave will be an empty one, to get slave's current logtail
 			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, 0, 0)
 		} else {
 			loghead := s.Slave.Logtails[shard] + 1
-			logs, logprevHash, err := s.respondLog(shard, loghead, false)
+			logs, logprevSig, err := s.respondLog(shard, loghead, false)
 			if err != nil {
 				log.Error("logPusher get local log: ", err)
 				continue
@@ -70,7 +71,7 @@ func (s *Server) logPusher(shard int) {
 				}
 				continue
 			}
-			args := append(make([]interface{}, 0, len(logs)+4), "PUSHLOGS", shard, loghead, logprevHash)
+			args := append(make([]interface{}, 0, len(logs)+4), "PUSHLOGS", shard, loghead, logprevSig)
 			for _, l := range logs {
 				args = append(args, l)
 			}
@@ -82,17 +83,18 @@ func (s *Server) logPusher(shard int) {
 				if strings.Contains(err.Error(), "refused") {
 					log.Error("[M] slave not alive")
 				} else if err != redis.Nil {
-					prefix := ""
-					if err.Error() != rejectedByMasterMsg {
-						prefix = "[M] "
+					if err.Error() == rejectedByMasterMsg {
+						_, err := s.UpdateConfig("slave", "", false)
+						log.Info("[M] endpoint rejected PUSHLOGS because it is master, clear slave config: ", err)
+						continue
 					}
-					log.Error(prefix, "push logs to slave: ", err)
+					log.Error("push logs to slave: ", err)
 				}
 			}
 			continue
 		}
 		logtail := uint64(cmd.Val())
-		firstReq = false
+		s.Slave.LogtailOK[shard] = true
 		s.Slave.Logtails[shard] = logtail
 		s.Slave.LastUpdate = time.Now().UnixNano()
 		s.db[shard].syncWaiter.RaiseTo(logtail)
@@ -278,8 +280,9 @@ type endpoint struct {
 	config redisproto.RedisConfig
 
 	RemoteIP   string
-	Logtails   [ShardNum]uint64 `json:"logtails"`
-	LastUpdate int64            `json:"lastupdate"`
+	LogtailOK  [ShardNum]bool
+	Logtails   [ShardNum]uint64
+	LastUpdate int64
 }
 
 func (e *endpoint) IsAcked(s *Server) bool {
@@ -310,6 +313,10 @@ func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
 		} else {
 			e.client.Close()
 			e.client = nil
+			e.config = redisproto.RedisConfig{}
+		}
+		for i := range e.LogtailOK {
+			e.LogtailOK[i] = false
 		}
 		changed = true
 	}

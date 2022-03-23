@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -50,14 +51,15 @@ type Server struct {
 	MasterIP   string
 
 	ServerConfig
-	ReadOnly    bool
-	Closed      bool   // server close flag
-	DataPath    string // location of data and config database
-	SelfManager *bas.Program
-	Cache       *s2pkg.MasterLRU
-	WeakCache   *s2pkg.MasterLRU
-	CompactLock s2pkg.LockBox
-	EvalLock    sync.Mutex
+	ReadOnly         bool
+	Closed           bool   // server close flag
+	DataPath         string // location of data and config database
+	SelfManager      *bas.Program
+	Cache            *s2pkg.MasterLRU
+	WeakCache        *s2pkg.MasterLRU
+	CompactLock      s2pkg.LockBox
+	EvalLock         sync.Mutex
+	SwitchMasterLock sync.RWMutex
 
 	Survey struct {
 		StartAt                 time.Time
@@ -69,6 +71,7 @@ type Server struct {
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
 		SlowLogs, Sync          s2pkg.Survey
+		Passthrough             s2pkg.Survey
 		Command                 sync.Map
 	}
 
@@ -277,9 +280,20 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		cmd   = strings.TrimSuffix(strings.ToUpper(command.Get(0)), "WEAK")
 		isRev = strings.HasPrefix(cmd, "ZREV")
 		key   = command.Get(1)
-		weak  = parseWeakFlag(command)
 		start = time.Now()
 	)
+
+	if s.MarkPassthrough == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+		if s.Slave.Redis() == nil {
+			return w.WriteError("passthrough: slave not ready")
+		}
+		v, err := s.Slave.Redis().Do(context.Background(), command.Args()...).Result()
+		s.Survey.Passthrough.Incr(int64(time.Since(start).Milliseconds()))
+		if err != nil && err != redis.Nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteObject(v)
+	}
 
 	if isWriteCommand[cmd] {
 		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
@@ -334,7 +348,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		switch strings.ToUpper(key) {
 		case "GET":
 			v, _ := s.getConfig(command.Get(2))
-			return w.WriteBulkString(v)
+			return w.WriteBulkStrings([]string{command.Get(2), v})
 		case "SET":
 			found, err := s.UpdateConfig(command.Get(2), command.Get(3), false)
 			if err != nil {
@@ -364,12 +378,14 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Log commands
 	switch cmd {
 	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevSig> <Log1> ...
+		s.SwitchMasterLock.RLock()
+		defer s.SwitchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
 			return w.WriteError(rejectedByMasterMsg)
 		}
 		shard := s2pkg.MustParseInt(key)
 		loghead := uint64(command.Int64(2))
-		s.db[shard].compactLocker.Lock(func() { log.Infof("bulkload %d is waiting for compactor or previous slow bulkload", shard) })
+		s.db[shard].compactLocker.Lock(func() { log.Infof("bulkload %d is waiting for compactor/previous bulkload", shard) })
 		defer s.db[shard].compactLocker.Unlock()
 		names, logtail, err := runLog(loghead, uint32(command.Int64(3)), command.Argv[4:], s.db[shard].DB)
 		if err != nil {
@@ -381,11 +397,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
-		if ip := getRemoteIP(remoteAddr).String(); s.MasterIP == "" || s.MasterIP == ip {
-			s.MasterIP = ip
-		} else {
-			log.Error("received logs from unknown master: ", ip, " current master: ", s.MasterIP)
-		}
+		s.MasterIP = getRemoteIP(remoteAddr).String()
 		if len(names) > 0 {
 			select {
 			case s.db[shard].pusherTrigger <- true:
@@ -393,6 +405,19 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			}
 		}
 		return w.WriteInt(int64(logtail))
+	case "SWITCHMASTER":
+		s.SwitchMasterLock.Lock()
+		defer s.SwitchMasterLock.Unlock()
+		if _, err := s.UpdateConfig("markmaster", "1", false); err != nil {
+			return w.WriteError(err.Error())
+		}
+		s.ReadOnly = false
+		return w.WriteSimpleString("OK")
+	case "SWITCHREADONLY":
+		s.SwitchMasterLock.Lock()
+		defer s.SwitchMasterLock.Unlock()
+		s.ReadOnly = true
+		return w.WriteSimpleString("OK")
 	}
 
 	// Write commands
@@ -415,6 +440,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	}
 
 	h := command.HashCode()
+	weak := parseWeakFlag(command)
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":

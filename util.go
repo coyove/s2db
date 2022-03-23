@@ -130,8 +130,9 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
-			fmt.Sprintf("readonly:%v", s.ReadOnly),
+			fmt.Sprintf("readonly:%v", btoi(s.ReadOnly)),
 			fmt.Sprintf("mark_master:%v", s.MarkMaster),
+			fmt.Sprintf("passthrough:%v", s.MarkPassthrough),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			"")
 	}
@@ -485,4 +486,11 @@ func deleteUnusedDataFile(root string, files []os.FileInfo, shard int, useName s
 			}
 		}
 	}
+}
+
+func btoi(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }

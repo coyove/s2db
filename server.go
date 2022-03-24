@@ -283,11 +283,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		start = time.Now()
 	)
 
-	if s.MarkPassthrough == 1 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
-		if s.Slave.Redis() == nil {
-			return w.WriteError("passthrough: slave not ready")
-		}
-		v, err := s.Slave.Redis().Do(context.Background(), command.Args()...).Result()
+	if s.Passthrough != "" && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+		defer s2pkg.Recover(func() { w.WriteError("passthrough: failed to relay") })
+		v, err := s.getRedis(s.Passthrough).Do(context.Background(), command.Args()...).Result()
 		s.Survey.Passthrough.Incr(int64(time.Since(start).Milliseconds()))
 		if err != nil && err != redis.Nil {
 			return w.WriteError(err.Error())

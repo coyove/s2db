@@ -84,10 +84,14 @@ func SendBulks(w *bufio.Writer, vals [][]byte) error {
 	}
 	return w.Flush()
 }
+
 func sendBulks(w *bufio.Writer, vals [][]byte) error {
 	var e error
 	if vals == nil {
 		_, e = w.Write(nilArray)
+		if e != nil {
+			return e
+		}
 		e = w.Flush()
 		return e
 	}
@@ -110,6 +114,9 @@ func SendObjects(w *bufio.Writer, vals []interface{}) error {
 	var e error
 	if vals == nil {
 		_, e = w.Write(nilArray)
+		if e != nil {
+			return e
+		}
 		e = w.Flush()
 		return e
 	}
@@ -141,6 +148,7 @@ func SendObjects(w *bufio.Writer, vals []interface{}) error {
 func SendBulkString(w *bufio.Writer, str string) error {
 	return SendBulk(w, []byte(str))
 }
+
 func SendBulkStrings(w *bufio.Writer, strs []string) error {
 	if strs == nil {
 		return SendBulks(w, nil)

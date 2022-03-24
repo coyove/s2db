@@ -132,7 +132,7 @@ func (s *Server) Info(section string) (data []string) {
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", btoi(s.ReadOnly)),
 			fmt.Sprintf("mark_master:%v", s.MarkMaster),
-			fmt.Sprintf("passthrough:%v", s.MarkPassthrough),
+			fmt.Sprintf("passthrough:%v", s.Passthrough),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			"")
 	}

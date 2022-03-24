@@ -225,7 +225,7 @@ func (s *Server) webConsoleServer() {
 	if testFlag {
 		return
 	}
-	sp := s2pkg.UUID()
+	uuid := s2pkg.UUID()
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		start := time.Now()
@@ -308,13 +308,13 @@ func (s *Server) webConsoleServer() {
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
-			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": sp, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
+			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 		})
 	})
-	http.HandleFunc("/"+sp, func(w http.ResponseWriter, r *http.Request) {
-		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+sp+". DO NOT EDIT THIS LINE\n\n"+
-			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+sp+"'), false)\n"+
+	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
+		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
+			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
 			"println(ok, err)", s.getScriptEnviron())(w, r)
 	})
 	go http.Serve(s.lnWebConsole, nil)

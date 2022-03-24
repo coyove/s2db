@@ -44,7 +44,7 @@ func (s *Server) logPusher(shard int) {
 		}
 
 		rdb := s.Slave.Redis()
-		if rdb == nil || s.MarkPassthrough == 1 {
+		if rdb == nil {
 			continue
 		}
 

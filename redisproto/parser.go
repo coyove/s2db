@@ -22,9 +22,9 @@ var (
 	ExpectNewLine  = &ProtocolError{"Expect Newline"}
 	ExpectTypeChar = &ProtocolError{"Expect TypeChar"}
 
-	InvalidNumArg   = errors.New("TooManyArg")
-	InvalidBulkSize = errors.New("Invalid bulk size")
-	LineTooLong     = errors.New("LineTooLong")
+	ErrInvalidNumArg   = errors.New("too many arguments")
+	ErrInvalidBulkSize = errors.New("invalid bulk size")
+	ErrLineTooLong     = errors.New("line too long")
 
 	ReadBufferInitSize = 1 << 16
 	MaxNumArg          = 20
@@ -181,11 +181,9 @@ func (r *Parser) readNumber() (int, error) {
 	case '-':
 		neg = true
 		r.parsePosition++
-		break
 	case '+':
 		neg = false
 		r.parsePosition++
-		break
 	}
 	var num uint64 = 0
 	var startpos int = r.parsePosition
@@ -241,9 +239,9 @@ func (r *Parser) parseBinary() (*Command, error) {
 	case numArg == -1:
 		return nil, r.discardNewLine() // null array
 	case numArg < -1:
-		return nil, InvalidNumArg
+		return nil, ErrInvalidNumArg
 	case numArg > MaxNumArg:
-		return nil, InvalidNumArg
+		return nil, ErrInvalidNumArg
 	}
 	Argv := make([][]byte, 0, numArg)
 	for i := 0; i < numArg; i++ {
@@ -273,7 +271,7 @@ func (r *Parser) parseBinary() (*Command, error) {
 			Argv = append(Argv, r.buffer[r.parsePosition:(r.parsePosition+plen)])
 			r.parsePosition += plen
 		default:
-			return nil, InvalidBulkSize
+			return nil, ErrInvalidBulkSize
 		}
 		if e = r.discardNewLine(); e != nil {
 			return nil, e
@@ -294,7 +292,7 @@ func (r *Parser) parseTelnet() (*Command, error) {
 			break
 		}
 		if r.writeIndex > MaxTelnetLine {
-			return nil, LineTooLong
+			return nil, ErrLineTooLong
 		}
 	}
 	r.parsePosition = r.writeIndex // we don't support pipeline in telnet mode

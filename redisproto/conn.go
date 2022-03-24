@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"text/scanner"
+	"time"
 
 	"github.com/go-redis/redis/v8"
 )
@@ -58,6 +59,9 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	}
 	if cfg.Options.Username != "" {
 		cfg.Options.Username, cfg.Options.Password = "", cfg.Options.Username
+	}
+	if cfg.Options.DialTimeout == 0 {
+		cfg.Options.DialTimeout = time.Second
 	}
 	return
 }

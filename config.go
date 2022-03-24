@@ -28,7 +28,7 @@ type ServerConfig struct {
 	Slave             string
 	Password          string
 	MarkMaster        int // 0|1
-	MarkPassthrough   int // 0|1
+	Passthrough       string
 	CacheSize         int
 	CacheObjMaxSize   int // kb
 	WeakCacheSize     int
@@ -140,7 +140,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
 	}
-	if (key == "master" || key == "slave") && !strings.HasPrefix(value, "redis://") && value != "" {
+	if key == "slave" && !strings.HasPrefix(value, "redis://") && value != "" {
 		value = "redis://" + value
 	}
 	found := false
@@ -255,20 +255,24 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
 		switch rf.Name {
-		case "ServerName", "MarkMaster", "Slave", "MarkPassthrough":
+		case "ServerName", "MarkMaster", "Slave", "Passthrough":
 			return nil
 		}
 		if key != "" && !strings.EqualFold(rf.Name, key) {
 			return nil
 		}
-		cmd := redis.NewStringCmd(context.TODO(), "CONFIG", "GET", rf.Name)
+		cmd := redis.NewStringSliceCmd(context.TODO(), "CONFIG", "GET", rf.Name)
 		rdb.Process(context.TODO(), cmd)
 		if cmd.Err() != nil {
 			errBuf.WriteString(fmt.Sprintf("get(%q): %v ", rf.Name, cmd.Err()))
 			return nil
 		}
 		v := cmd.Val()
-		_, err := s.UpdateConfig(rf.Name, v, false)
+		if len(v) != 2 {
+			errBuf.WriteString(fmt.Sprintf("get(%q): %v ", rf.Name, v))
+			return nil
+		}
+		_, err := s.UpdateConfig(rf.Name, v[1], false)
 		if err != nil {
 			errBuf.WriteString(fmt.Sprintf("update(%q): %v ", rf.Name, err))
 			return nil

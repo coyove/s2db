@@ -2,14 +2,15 @@
 s2db is a sorted set database who speaks redis protocol and stores data on disk.
 
 # Startup Sequence
-1. Start slave server by `s2db -l <SlaveIp>:<SlavePort>`, listening at `SlaveIp:SlavePort`.
-2. Start master server by `s2db -l <Ip>:<Port> -C0 slave=<SlaveIp>:<SlavePort>`, listening at `Ip:Port`.
+1. Start slave server by `s2db -l <SlaveIp>:<SlavePort> -C0 servername=<SlaveName>`, listening at `SlaveIp:SlavePort`.
+2. Start master server by `s2db -l <Ip>:<Port> -C0 slave=<SlaveIp>:<SlavePort>/?Name=<SlaveName>`, listening at `Ip:Port`.
 
 # Configuration Fields
 - `ServerName (string)`: server's name
 - `Password (string)`: server's password
-- `Slave (string)`: slave's conn string, minimal form: `<SlaveIp>:<SlavePort>`:
+- `Slave (string)`: slave's conn string, minimal form: `<SlaveIp>:<SlavePort>/?Name=<SlaveName>`:
 - `MarkMaster (int, 0|1)`: mark server as master, rejecting all PUSHLOGS requests
+- `Passthrough (string)`: relay all read-write commands to the destinated endpoint, minimal form: `<Ip>:<Port>/?Name=<Name>`:
 - `PingTimeout (int)`: ping timeout of slave, used by master
 - `CacheSize (int)`: cache size (number of cached objects)
 - `WeakCacheSize (int)`: weak cache size
@@ -36,10 +37,11 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
     caller must make sure that unlinked keys will never be used and useful again.
 ### ZADD key [--DEFER--|--SYNC--] [NX|XX] [CH] [FILL fillpercent] score member [score member ...]
     --DEFER--:
-        The operation will be queued up and executed later, server will return 'OK' immediately, the actual result will be dropped.
-        s2db will group continuous deferred operations together for better performance.
+        The operation will be queued up and executed later, server will return 'OK' immediately instead of the actual result of this execution.
+        s2db will group continuous deferred operations together for better performance, so caller should use '--DEFER--' whenever possible.
     --SYNC--:
-        If slave exists, the operation will only succeed when slave also acknowledges successfully, thus consistency is guaranteed.
+        If slave exists, the operation will only succeed when slave also acknowledges successfully, thus strong consistency is guaranteed.
+        If slave fails to respond within 'PingTimeout', master will return a timeout error (to caller) even master itself succeeded.
     FILL:
         Value can range from 0.0 to 1.0 (default 0.5).
         If added members and their scores are both monotonically increasing, set FILL to a higher value to achieve better disk space utilization.
@@ -47,15 +49,15 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
             ZADD key FILL 0.9 timestamp1 id1 timestamp2 id2 ...
 ### ZADD key [--DEFER--|--SYNC--] [NX|XX] [CH] DATA score member data [score member data ...]
     Behaves similar to the above command, but you can attach data to each member.
-### ZMDATA key member [member ...]
+### Z[M]DATA key member [member ...]
     Retrieve the data attached to the members.
 ### ZADD key longitude,latitude member
     Equivalent of GEOADD, e.g.: ZADD cities 118.76667,32.049999 Nanjing
-### ZINCRBY key [--DEFER--] increment memebr
+### ZINCRBY key [--DEFER--|--SYNC--] increment memebr
     Behaves exactly like redis.
-### ZREM key [--DEFER--] member [member ...]
+### ZREM key [--DEFER--|--SYNC--] member [member ...]
     Behaves exactly like redis.
-### ZREMRANGEBY[LEX|SCORE|RANK] [--DEFER--] key left right
+### ZREMRANGEBY[LEX|SCORE|RANK] [--DEFER--|--SYNC--] key left right
     Behaves exactly like redis.
 ### ZCARD key
     Behaves exactly like redis.

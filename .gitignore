@@ -13,6 +13,6 @@ s2db.exe
 s2db.7z
 s2db.log
 *.rdb
-deploy.sh
+deploy.*
 s.db
 log

@@ -58,7 +58,7 @@ type Server struct {
 	Cache            *s2pkg.MasterLRU
 	WeakCache        *s2pkg.MasterLRU
 	CompactLock      s2pkg.LockBox
-	EvalLock         sync.Mutex
+	EvalLock         sync.RWMutex
 	SwitchMasterLock sync.RWMutex
 
 	Survey struct {
@@ -332,9 +332,14 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		os.Exit(0)
 	case "AUTH":
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
-	case "EVAL":
-		s.EvalLock.Lock()
-		defer s.EvalLock.Unlock()
+	case "EVAL", "EVALRO":
+		if cmd == "EVALRO" {
+			s.EvalLock.RLock()
+			defer s.EvalLock.RUnlock()
+		} else {
+			s.EvalLock.Lock()
+			defer s.EvalLock.Unlock()
+		}
 		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...)))
 		return w.WriteBulkString(v.String())
 	case "PING":

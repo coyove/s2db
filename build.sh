@@ -1,4 +1,3 @@
-# go get -u github.com/coyove/script@master
 SRC='main.go util.go server.go commands.go range.go replication.go geo.go preparer.go runner.go compact.go config.go fts.go'
 
 MONTH=$(date -u +%m)
@@ -19,6 +18,7 @@ echo 'building' $VERSION
 
 if [[ "$1" == "linux" ]]; then
     env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC 
+    chmod +x ./s2db
     exit 0
 fi
 

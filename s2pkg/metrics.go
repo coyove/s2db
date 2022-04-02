@@ -2,6 +2,7 @@ package s2pkg
 
 import (
 	"fmt"
+	"math"
 	"sync/atomic"
 	"time"
 )
@@ -93,4 +94,18 @@ type GroupedMetrics struct {
 	Name      string
 	Timestamp []int64 // seconds
 	Value     []float64
+}
+
+type LogSurvey [][2]int64
+
+func (ls *LogSurvey) Incr(v int64) {
+	idx := 0
+	if v >= 10 {
+		idx = int(math.Log10(float64(v)))
+	}
+	if idx >= len(*ls) {
+		*ls = append(*ls, make([][2]int64, idx-len(*ls)+1)...)
+	}
+	(*ls)[idx][0] += 1
+	(*ls)[idx][1] += v
 }

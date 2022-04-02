@@ -124,7 +124,7 @@ func Open(path string) (x *Server, err error) {
 		d.pusherCloseSignal = make(chan bool)
 		d.pusherTrigger = make(chan bool, 1)
 		d.batchCloseSignal = make(chan bool)
-		d.batchTx = make(chan *batchTask, 256)
+		d.batchTx = make(chan *batchTask, 1024)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
 			&x.Survey.Sync)
 	}
@@ -556,7 +556,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "IDXSEARCH":
 		flags := command.Flags(3)
 		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key,
-			strings.Split(command.Get(2), flags.SEPARATOR), flags), flags))
+			strings.Split(command.Get(2), flags.SPLIT), flags), flags))
 	}
 
 	return w.WriteError("unknown command: " + cmd)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -180,12 +181,19 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	old := x.DB
 	x.DB = compactDB
 	finalStageReached = func() {
-		bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
-		log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, removeBakErr=%v, renameOldErr=%v",
-			old.Close(), s2pkg.RemoveFile(bakPath), os.Rename(path, bakPath))
-		if s.CompactNoBackup == 1 {
-			log.Infof("STAGE 5.1: CAUTION delete previous backup file: %v", s2pkg.RemoveFile(bakPath))
+		for i := 0; i < ShardNum; i++ {
+			if i == (shard-1+ShardNum)%ShardNum { // don't delete last shard backup
+				continue
+			}
+			oldBakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(i)+".bak")
+			s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
+			if err := s2pkg.RemoveFile(oldBakPath); err != nil {
+				log.Errorf("STAGE 4.9: delete old backup file: %v, err=%v", oldBakPath, err)
+			}
 		}
+		bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
+		log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
+			old.Close(), os.Rename(path, bakPath))
 		s.runScriptFunc("compactonfinish", shard)
 	}
 	success = true
@@ -300,7 +308,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	hasSlave := s.Slave.Redis() != nil && s.Slave.IsAcked(s)
 	slaveLogtail := s.Slave.Logtails[shard]
 
-	var total, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
+	var total, totalBuckets, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
+	var keysDistribution s2pkg.LogSurvey
 
 	tmptx, err := s2pkg.CreateLimitedTx(tmpdb, s.CompactTxSize)
 	if err != nil {
@@ -381,15 +390,24 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 			QueueTTL:        queueTTL,
 			LogtailStartBuf: logtailStartBuf,
 			// Metrics
-			Total: &total, QueueDrops: &queueDrops, QueueDeletes: &queueDeletes, ZSetCardFix: &zsetCardFix, Logger: log,
+			Total: &total, QueueDrops: &queueDrops, QueueDeletes: &queueDeletes, ZSetCardFix: &zsetCardFix,
+			KeysDist: &keysDistribution,
+			Logger:   log,
 		}
+		totalBuckets++
 	}
 
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: unlinks: %d/%d, queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
-		unlinksDrops, len(unlinkp), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: buckets: %d, unlinks: %d/%d, queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
+		totalBuckets, unlinksDrops, len(unlinkp), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
+
+	for i, s := range keysDistribution {
+		if s[0] > 0 && s[1] > 0 {
+			log.Infof("STAGE 0.4: bucket %d: count=%d, keys=%d, avg=%.2f", int(math.Pow10(i)), s[0], s[1], float64(s[1])/float64(s[0]))
+		}
+	}
 	return tmptx.Finish()
 }
 
@@ -434,7 +452,7 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 			if len(p.LogtailStartBuf) > 0 {
 				k, _ := tmpb.Cursor().Last()
 				p.Logger.Infof("STAGE 0.2: truncate logs check, buffer=%v, last=%d, tail=%d, count=%d",
-					p.LogtailStartBuf, s2pkg.BytesToUint64(k), seq, p.Total)
+					p.LogtailStartBuf, s2pkg.BytesToUint64(k), seq, *p.Total)
 			}
 			if isZSetScore && keyCount != seq {
 				tmpb.SetSequence(keyCount)
@@ -447,6 +465,7 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 				}
 			}
 			// Done bucket compaction
+			p.KeysDist.Incr(int64(keyCount))
 			return nil
 		},
 	})

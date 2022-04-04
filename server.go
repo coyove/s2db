@@ -553,10 +553,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteInt(int64(s.IndexDel(key)))
 	case "IDXDOCS":
 		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
-	case "IDXSEARCH":
-		flags := command.Flags(3)
-		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key,
-			strings.Split(command.Get(2), flags.SPLIT), flags), flags))
+	case "IDXSEARCH": // IDXSEARCH key N text1 ... textN flags
+		n := command.Int64(2)
+		flags := command.Flags(2 + int(n) + 1)
+		command.Argv = command.Argv[:2+int(n)+1]
+		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key, restCommandsToKeys(3, command), flags), flags))
 	}
 
 	return w.WriteError("unknown command: " + cmd)

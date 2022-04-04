@@ -350,7 +350,6 @@ type Flags struct {
 	Command
 	MATCH     string
 	MATCHDATA string
-	SPLIT     string
 	TWOHOPS   struct {
 		ENDPOINT string
 		KEYMAP   bas.Value
@@ -381,7 +380,6 @@ func (c Command) Flags(start int) (f Flags) {
 	f.LIMIT = s2pkg.RangeHardLimit
 	f.COUNT = s2pkg.RangeHardLimit
 	f.TIMEOUT = time.Second
-	f.SPLIT = " OR "
 	if start == -1 {
 		return
 	}
@@ -404,9 +402,6 @@ func (c Command) Flags(start int) (f Flags) {
 			i++
 		} else if c.EqualFold(i, "MATCHDATA") {
 			f.MATCHDATA = c.Get(i + 1)
-			i++
-		} else if c.EqualFold(i, "SEPARATOR") {
-			f.SPLIT = c.Get(i + 1)
 			i++
 		} else if not := c.EqualFold(i, "NOTINTERSECT"); c.EqualFold(i, "INTERSECT") || not {
 			if f.INTERSECT == nil {

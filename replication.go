@@ -36,12 +36,18 @@ func (s *Server) logPusher(shard int) {
 	ctx := context.TODO()
 	log := log.WithField("shard", strconv.Itoa(shard))
 	ticker := time.NewTicker(time.Second)
+	logtailChanged := false
 
 	for !s.Closed {
-		select {
-		case <-s.db[shard].pusherTrigger:
-		case <-ticker.C:
+		if logtailChanged {
+			// Continue pushing logs until slave catches up with master
+		} else {
+			select {
+			case <-s.db[shard].pusherTrigger:
+			case <-ticker.C:
+			}
 		}
+		logtailChanged = false
 
 		rdb := s.Slave.Redis()
 		if rdb == nil {
@@ -95,6 +101,7 @@ func (s *Server) logPusher(shard int) {
 		}
 		logtail := uint64(cmd.Val())
 		s.Slave.LogtailOK[shard] = true
+		logtailChanged = s.Slave.Logtails[shard] != logtail
 		s.Slave.Logtails[shard] = logtail
 		s.Slave.LastUpdate = time.Now().UnixNano()
 		s.db[shard].syncWaiter.RaiseTo(logtail)
@@ -236,6 +243,7 @@ func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
 	}
 	defer resp.Body.Close()
 
+	log.Error("requestShard: response received, start dumping")
 	sz := s2pkg.ParseInt(resp.Header.Get("X-Size"))
 	if sz == 0 {
 		log.Error("requestShard: invalid size")

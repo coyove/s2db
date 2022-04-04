@@ -8,6 +8,8 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/coyove/nj/bas"
+	"github.com/coyove/nj/typ"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 )
 
@@ -121,7 +123,7 @@ func prepareZRem(key string, keys []string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func prepareZIncrBy(key string, member string, by float64, dd []byte) preparedTx {
+func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (newValue interface{}, err error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
 		if err != nil {
@@ -146,6 +148,16 @@ func prepareZIncrBy(key string, member string, by float64, dd []byte) preparedTx
 		} else {
 			dataBuf = []byte("")
 			added = true
+		}
+		if bas.IsCallable(dataUpdate) {
+			res, err := bas.Call2(dataUpdate.Object(), bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
+			if err != nil {
+				return 0, err
+			}
+			if res.Type() != typ.String && !bas.IsPrototype(res, bas.Proto.Bytes) {
+				return 0, fmt.Errorf("ZINCRBY datafunc: expects string or bytes")
+			}
+			dataBuf = res.Safe().Bytes()
 		}
 
 		if by == 0 {

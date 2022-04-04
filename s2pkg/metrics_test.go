@@ -224,22 +224,24 @@ func TestDoubleMapLRU(t *testing.T) {
 }
 
 func TestMatch(t *testing.T) {
-	if !Match("^[123\nabc", "abc") {
+	if !Match("-123\nabc", "abc") {
 		t.Fatal()
 	}
-	if Match("^[\"123\" \nabc", "123abc") {
+	if Match("-\"123\" \nabc", "123abc") {
 		t.Fatal()
 	}
-	if Match("^[\"123\"\n^[456\nabc", "456abc") {
+	if Match("-\"123\"\n-456\nabc", "456abc") {
 		t.Fatal()
 	}
-	if !Match("\\^\\[\"[123]\"^\"[456]\"abc", "^[\"3\"^\"6\"abc") {
+	if !Match(`"-\"[123]\"^\"[456]\"abc"`, `-"3"^"6"abc`) {
 		t.Fatal()
 	}
-	if !Match("^[\"\\\"\"\nabc", "abc") {
+	if !Match(`-"\""
+abc`, "abc") {
 		t.Fatal()
 	}
-	if !Match("^[\"\\\"\"\nabc", "abc") {
+	if Match(`-"\""
+abc`, "\"abc") {
 		t.Fatal()
 	}
 }

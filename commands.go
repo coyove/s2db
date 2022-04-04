@@ -94,7 +94,12 @@ func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedT
 }
 
 func parseZIncrBy(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
-	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dd)
+	// ZINCRBY key score member [datafunc]
+	var dataFunc bas.Value
+	if code := command.Get(4); code != "" {
+		dataFunc = nj.MustRun(nj.LoadString(code, nil))
+	}
+	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dataFunc, dd)
 }
 
 func (s *Server) ZAdd(key string, runType int, members []s2pkg.Pair) (int64, error) {

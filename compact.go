@@ -136,8 +136,12 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 
 		logs, logprevHash, err := s.respondLog(shard, ct+1, false)
 		if err != nil {
-			log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
+			log.Errorf("respondLog: %v, closeCompactErr=%v", err, compactDB.Close())
 			s.runScriptFunc("compactonerror", shard, err)
+			return
+		}
+		if len(logs) == 0 {
+			log.Errorf("fatal: respondLog returned empty logs, closeCompactErr=%v", compactDB.Close())
 			return
 		}
 		if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
@@ -164,10 +168,12 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 		s.runScriptFunc("compactonerror", shard, err)
 		return
 	}
-	if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
-		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runScriptFunc("compactonerror", shard, err)
-		return
+	if len(logs) > 0 {
+		if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
+			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
+			s.runScriptFunc("compactonerror", shard, err)
+			return
+		}
 	}
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
 

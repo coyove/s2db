@@ -277,10 +277,9 @@ func ExtractAllHeadCirc(text string) ([]string, string) {
 }
 
 func ExtractHeadCirc(text string) (string, string) {
-	if strings.HasPrefix(text, "^[") {
-		eol := strings.Index(text, "\n")
-		if eol > 2 {
-			line := strings.TrimSpace(text[2:eol])
+	if strings.HasPrefix(text, "-") {
+		if eol := strings.Index(text, "\n"); eol > 0 {
+			line := strings.TrimSpace(text[1:eol])
 			if strings.HasPrefix(line, "\"") && strings.HasSuffix(line, "\"") {
 				rp, err := strconv.Unquote(line)
 				if err != nil {
@@ -291,8 +290,12 @@ func ExtractHeadCirc(text string) (string, string) {
 			return line, text[eol+1:]
 		}
 	}
-	if strings.HasPrefix(text, "\\^") {
-		text = text[1:]
+	if strings.HasPrefix(text, "\"") && strings.HasSuffix(text, "\"") {
+		rp, err := strconv.Unquote(text)
+		if err != nil {
+			logrus.Errorf("ExtractHeadCirc: invalid quoted string: `%s` %v", text, err)
+		}
+		text = rp
 	}
 	return "", text
 }

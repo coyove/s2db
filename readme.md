@@ -53,7 +53,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
     Retrieve the data attached to the members.
 ### ZADD key longitude,latitude member
     Equivalent of GEOADD, e.g.: ZADD cities 118.76667,32.049999 Nanjing
-### ZINCRBY key [--DEFER--|--SYNC--] increment memebr
+### ZINCRBY key [--DEFER--|--SYNC--] increment memebr [datafunc]
     Behaves exactly like redis.
 ### ZREM key [--DEFER--|--SYNC--] member [member ...]
     Behaves exactly like redis.

@@ -13,6 +13,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/fts"
 	"go.etcd.io/bbolt"
 )
 
@@ -182,11 +183,11 @@ func (s *Server) ZMScore(key string, keys []string, flags redisproto.Flags) (sco
 	return
 }
 
-func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data [][]byte, err error) {
-	if len(keys) == 0 {
-		return nil, fmt.Errorf("missing keys")
+func (s *Server) ZMData(key string, members []string, flags redisproto.Flags) (data [][]byte, err error) {
+	if len(members) == 0 {
+		return nil, fmt.Errorf("missing members")
 	}
-	data = make([][]byte, len(keys))
+	data = make([][]byte, len(members))
 	err = s.pick(key).View(func(tx *bbolt.Tx) error {
 		func() {
 			bkName := tx.Bucket([]byte("zset." + key))
@@ -197,11 +198,17 @@ func (s *Server) ZMData(key string, keys []string, flags redisproto.Flags) (data
 			if bkScore == nil {
 				return
 			}
-			for i, key := range keys {
-				scoreBuf := bkName.Get([]byte(key))
+			for i, m := range members {
+				scoreBuf := bkName.Get([]byte(m))
 				if len(scoreBuf) != 0 {
-					d := bkScore.Get([]byte(string(scoreBuf) + keys[i]))
-					data[i] = append([]byte{}, d...)
+					d := bkScore.Get([]byte(string(scoreBuf) + members[i]))
+					if key == FTSDocsStoreKey {
+						var doc fts.Document
+						doc.UnmarshalBinary(d)
+						data[i] = []byte(doc.Text)
+					} else {
+						data[i] = append([]byte{}, d...)
+					}
 				}
 			}
 		}()

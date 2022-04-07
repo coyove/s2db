@@ -243,7 +243,7 @@ func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
 	}
 	defer resp.Body.Close()
 
-	log.Error("requestShard: response received, start dumping")
+	log.Info("requestShard: response received, start dumping")
 	sz := s2pkg.ParseInt(resp.Header.Get("X-Size"))
 	if sz == 0 {
 		log.Error("requestShard: invalid size")

@@ -50,6 +50,7 @@ type Document struct {
 	NumTokens int64        `protobuf:"varint,1,opt,name=num_tokens"`
 	Tokens    []*Segmented `protobuf:"bytes,2,rep,name=tokens"`
 	Prefixs   []string     `protobuf:"bytes,3,rep,name=prefixs"`
+	Text      string       `protobuf:"bytes,4,opt,name=text"`
 }
 
 type Segmented struct {
@@ -129,6 +130,7 @@ func Split(content string) (doc Document) {
 	sort.Slice(doc.Tokens, func(i, j int) bool {
 		return doc.Tokens[i].Token <= doc.Tokens[j].Token
 	})
+	doc.Text = rest
 	return
 }
 

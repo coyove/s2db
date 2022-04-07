@@ -309,7 +309,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		} else {
 			diff := time.Since(start)
 			diffMs := diff.Milliseconds()
-			if diff > time.Duration(s.SlowLimit)*time.Millisecond {
+			if diff > time.Duration(s.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
 				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), getRemoteIP(remoteAddr), command)
 				s.Survey.SlowLogs.Incr(diffMs)
 			}

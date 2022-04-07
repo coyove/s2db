@@ -6,11 +6,9 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"sort"
 	"time"
 
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
@@ -100,15 +98,6 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 		ro.Limit = math.MaxInt64
 		ro.Append = genTwoHopsFunc(s, txs, flags)
 		success = func([]s2pkg.Pair, int) {}
-	} else if flags.MERGE.ENDPOINTS != nil {
-		bks, close := s.prepareMergeBuckets(flags)
-		defer close()
-		if len(bks) == 0 {
-			return
-		}
-		ro.Limit = math.MaxInt64
-		ro.Append = genMergeFunc(bks, flags)
-		success = func([]s2pkg.Pair, int) {}
 	} else {
 		ro.Limit = flags.LIMIT
 		ro.Append = s2pkg.DefaultRangeAppend
@@ -116,16 +105,6 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
 		err = nil
-	}
-	if flags.MERGE.ENDPOINTS != nil && flags.MERGE.TOP > 0 {
-		if flags.DESC {
-			sort.Slice(p, func(i, j int) bool { return p[i].Score > p[j].Score })
-		} else {
-			sort.Slice(p, func(i, j int) bool { return p[i].Score < p[j].Score })
-		}
-		if len(p) > flags.MERGE.TOP {
-			p = p[:flags.MERGE.TOP]
-		}
 	}
 	return p, err
 }
@@ -433,25 +412,6 @@ func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt
 	return bkm, goahead, func() { closeAllReadTxs(txs) }
 }
 
-func (s *Server) prepareMergeBuckets(flags redisproto.Flags) (bkm []*bbolt.Bucket, close func()) {
-	var txs []*bbolt.Tx
-	for _, k := range flags.MERGE.ENDPOINTS {
-		tx, err := s.pick(k).Begin(false)
-		if err != nil {
-			log.Errorf("prepareMergeBuckets(%s): %v", k, err)
-			continue
-		}
-		bk := tx.Bucket([]byte("zset." + k))
-		if bk == nil {
-			tx.Rollback()
-			continue
-		}
-		txs = append(txs, tx)
-		bkm = append(bkm, bk)
-	}
-	return bkm, func() { closeAllReadTxs(txs) }
-}
-
 func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func(), err error) {
 	for i := range s.db {
 		tx, err := s.db[i].Begin(false)
@@ -517,37 +477,6 @@ func genIntersectFunc(bkm map[*bbolt.Bucket]redisproto.IntersectFlags, flags red
 			*pairs = append(*pairs, p)
 		}
 	OUT:
-		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
-	}
-}
-
-func genMergeFunc(bkm []*bbolt.Bucket, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-	ddl := time.Now().Add(flags.TIMEOUT)
-	f := flags.MERGE.FUNC
-	args := []bas.Value{bas.Nil, bas.NewArray(make([]bas.Value, 1+len(bkm))...).ToValue()}
-	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-		key := []byte(p.Member)
-		if bas.IsCallable(f) {
-			args[0], args[1].Array().Values()[0] = bas.UnsafeStr(key), bas.Float64(p.Score)
-			for i, bk := range bkm {
-				args[1].Array().Values()[i+1] = bas.Float64(s2pkg.BytesToFloatZero(bk.Get(key)))
-			}
-			res, err := bas.Call2(f.Object(), args...)
-			if err != nil {
-				log.Error("MergeFunc: ", key, " error: ", err)
-				return false
-			} else if res.Type() != typ.Number {
-				log.Error("MergeFunc: expects numeric results")
-				return false
-			}
-			p.Score = res.Float64()
-			*pairs = append(*pairs, p)
-		} else {
-			for _, bk := range bkm {
-				p.Score += s2pkg.BytesToFloatZero(bk.Get(key))
-			}
-			*pairs = append(*pairs, p)
-		}
 		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
 	}
 }

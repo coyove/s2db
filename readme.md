@@ -79,7 +79,7 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
     Behaves exactly like redis, the command is always read-only.
 ### GEORADIUSBYMEMBER[_RO] key member radius m|km [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]
     Behaves exactly like redis, the command is always read-only.
-### Z[REV]RANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES] [WITHDATA] [INTERSECT key] [NOTINTERSECT key] [MERGE key [MERGEFUNC code]] [TWOHOPS endpoint]
+### Z[REV]RANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES] [WITHDATA] [INTERSECT key] [NOTINTERSECT key] [TWOHOPS endpoint]
     LIMIT:
         First argument (offset) must be 0 if provided.
     INTERSECT:
@@ -90,10 +90,6 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
             ZRANGEBYLEX key - + NOTINTERSECT key2 NOTINTERSECT key3
         Can be used along with INTERSECT:
             ZRANGEBYLEX key - + INTERSECT key2 NOTINTERSECT key3
-    MERGE/MERGEFUNC:
-        For every member in 'key', merge its score with scores in MERGE keys, summation will be used if MERGEFUNC is empty:
-            ZRANGEBYLEX key - + MERGE key2 MERGE key3
-            ZRANGEBYLEX key - + MERGE key2 MERGEFUNC "lambda(member, scores) scores[0] + scores[1] end"
     TWOHOPS:
         Returned members each pointes to a zset with the same name, all these zsets must contain TWOHOPS endpoint.
             ZADD key2 score endpoint

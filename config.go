@@ -428,6 +428,9 @@ func makeShardFilename(shard int) string {
 }
 
 func (s *Server) UpdateShardFilename(i int, fn string) error {
+	defer func(start time.Time) {
+		log.Infof("update shard #%d to %s in %v", i, fn, time.Since(start))
+	}(time.Now())
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
 		bk, err := tx.CreateBucketIfNotExists([]byte("_shards"))
 		if err != nil {

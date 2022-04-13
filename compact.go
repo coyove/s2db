@@ -7,18 +7,20 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
+
+const QueueTTLKey = "_queuettl_"
 
 func (s *Server) DumpShard(shard int, path string) (int64, error) {
 	return s.db[shard].DB.Dump(path, s.DumpSafeMargin*1024*1024)
@@ -303,6 +305,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	}
 	unlinkp[unlinksKey] = true // "unlinks" key itself will also be unlinked
 
+	queueTTLs, _ := s.ZRange(false, QueueTTLKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
+
 	tx, err := odb.Begin(false)
 	if err != nil {
 		return err
@@ -369,13 +373,10 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		}
 
 		// Calculate queue TTL and WAL logs length if needed
-		var queueTTL int
+		var queueTTL int = -1
 		var logtailStartBuf []byte
 		if isQueue {
-			res, err := s.runScriptFunc("queuettl", bucketName[2:])
-			if err == nil && res.Type() == typ.Number {
-				queueTTL = int(res.Int())
-			}
+			queueTTL = int(getQueueTTLByName(queueTTLs, keyName))
 		} else if bucketName == "wal" {
 			logtailStart := decUint64(slaveLogtail, uint64(s.CompactLogHead))
 			if !hasSlave {
@@ -406,8 +407,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: buckets: %d, unlinks: %d/%d, queue drops: %d, queue deletes: %d, ZCARD fix: %d, limited tx: %v",
-		totalBuckets, unlinksDrops, len(unlinkp), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: buckets: %d, unlinks: %d/%d, qttls:%d, qdrops: %d, qdeletes: %d, ZCARD fix: %d, limited tx: %v",
+		totalBuckets, unlinksDrops, len(unlinkp), len(queueTTLs), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
 
 	for i, s := range keysDistribution {
 		if s[0] > 0 && s[1] > 0 {
@@ -422,6 +423,7 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 	isQueue := strings.HasPrefix(p.BucketName, "q.")
 	isZSetScore := strings.HasPrefix(p.BucketName, "zset.score.")
 	keyCount := uint64(0)
+	queueChanged := false
 	if err := p.Bucket.ForEach(func(k, v []byte) error {
 		// Truncate WAL logs
 		if len(p.LogtailStartBuf) > 0 && bytes.Compare(k, p.LogtailStartBuf) < 0 {
@@ -429,10 +431,11 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		}
 
 		// Truncate queue
-		if isQueue && len(k) == 16 && p.QueueTTL > 0 {
+		if isQueue && len(k) == 16 && p.QueueTTL >= 0 {
 			ts := int64(binary.BigEndian.Uint64(k[8:]))
 			if (now-ts)/1e9 > int64(p.QueueTTL) {
 				atomic.AddInt64(p.QueueDrops, 1)
+				queueChanged = true
 				return nil
 			}
 		}
@@ -447,6 +450,10 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		})
 	}); err != nil {
 		return err
+	}
+
+	if queueChanged {
+		s.removeCache(p.BucketName[2:])
 	}
 
 	// Check compaction
@@ -486,4 +493,15 @@ func decUint64(v uint64, d uint64) uint64 {
 
 func getPendingUnlinksKey(shard int) string {
 	return "_unlinks_\t" + strconv.Itoa(shard)
+}
+
+func getQueueTTLByName(ttls []s2pkg.Pair, name string) float64 {
+	idx := sort.Search(len(ttls), func(i int) bool { return ttls[i].Member >= name })
+	if idx < len(ttls) && name == ttls[idx].Member {
+		return ttls[idx].Score
+	}
+	if idx > 0 && idx <= len(ttls) && strings.HasPrefix(name, ttls[idx-1].Member) {
+		return ttls[idx-1].Score
+	}
+	return -1
 }

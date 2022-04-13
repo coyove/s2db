@@ -121,3 +121,28 @@ func BenchmarkRegexpMatch(b *testing.B) {
 		rx.MatchString("abccccccd")
 	}
 }
+
+func BenchmarkGetQueueTTLByName(b *testing.B) {
+	a := []s2pkg.Pair{
+		{Member: "a", Score: 1},
+		{Member: "b", Score: 2},
+		{Member: "c", Score: 3},
+	}
+	for i := 0; i < b.N; i++ {
+		if getQueueTTLByName(a, "a1") != 1 {
+			b.Fatal()
+		}
+		if getQueueTTLByName(a, "a") != 1 {
+			b.Fatal()
+		}
+		if getQueueTTLByName(a, "c1") != 3 {
+			b.Fatal()
+		}
+		if getQueueTTLByName(a, "d") != -1 {
+			b.Fatal()
+		}
+		if getQueueTTLByName(a, "`") != -1 {
+			b.Fatal()
+		}
+	}
+}

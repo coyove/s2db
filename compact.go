@@ -132,7 +132,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 		if first%1000 == 0 {
 			log.Infof("STAGE 1.5: chasing online (% 7d) ct=% 16d, mt=% 16d, diff=%d", first/1000, ct, mt, mt-ct)
 		}
-		if mt-ct <= uint64(s.ResponseLogRun) {
+		if mt-ct <= uint64(s.ResponseLogRun/2+1) {
 			break // the gap is close enough, it is time to move on to the next stage
 		}
 
@@ -189,19 +189,21 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	old := x.DB
 	x.DB = compactDB
 	finalStageReached = func() {
-		for i := 0; i < ShardNum; i++ {
-			if i == (shard-1+ShardNum)%ShardNum { // don't delete last shard backup
-				continue
+		go func() {
+			for i := 0; i < ShardNum; i++ {
+				if i == (shard-1+ShardNum)%ShardNum { // preserve last 2 shard backups
+					continue
+				}
+				oldBakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(i)+".bak")
+				s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
+				if err := s2pkg.RemoveFile(oldBakPath); err != nil {
+					log.Errorf("STAGE 6: delete old backup file: %v, err=%v", oldBakPath, err)
+				}
 			}
-			oldBakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(i)+".bak")
-			s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
-			if err := s2pkg.RemoveFile(oldBakPath); err != nil {
-				log.Errorf("STAGE 4.9: delete old backup file: %v, err=%v", oldBakPath, err)
-			}
-		}
-		bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
-		log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
-			old.Close(), os.Rename(path, bakPath))
+			bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
+			log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
+				old.Close(), os.Rename(path, bakPath))
+		}()
 		s.runScriptFunc("compactonfinish", shard)
 	}
 	success = true

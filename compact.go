@@ -26,12 +26,12 @@ func (s *Server) DumpShard(shard int, path string) (int64, error) {
 	return s.db[shard].DB.Dump(path, s.DumpSafeMargin*1024*1024)
 }
 
-func (s *Server) CompactShard(shard int, async bool) error {
+func (s *Server) CompactShard(shard int, remapDir string, async bool) error {
 	out := make(chan int, 1)
 	if async {
-		go s.compactShardImpl(shard, out)
+		go s.compactShardImpl(shard, remapDir, out)
 	} else {
-		s.compactShardImpl(shard, out)
+		s.compactShardImpl(shard, remapDir, out)
 	}
 	if p := <-out; p != shard {
 		return fmt.Errorf("wait previous compaction on shard%d", p)
@@ -39,7 +39,7 @@ func (s *Server) CompactShard(shard int, async bool) error {
 	return nil
 }
 
-func (s *Server) compactShardImpl(shard int, out chan int) {
+func (s *Server) compactShardImpl(shard int, remapShardDir string, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 	success := false
 
@@ -61,8 +61,19 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	s.runScriptFunc("compactonstart", shard)
 
 	path := x.DB.Path()
+	shardDir, _, err := s.GetShardFilename(shard)
+	if err != nil {
+		log.Error("get shard dir: ", err)
+		s.runScriptFunc("compactonerror", shard, err)
+		return
+	}
+	if remapShardDir != "" && remapShardDir != shardDir {
+		log.Infof("STAGE X: compaction remapping: from %q to %q, mkdir=%v", shardDir, remapShardDir, os.MkdirAll(remapShardDir, 0777))
+		shardDir = remapShardDir
+	}
+
 	compactFilename := makeShardFilename(shard)
-	compactPath := filepath.Join(s.DataPath, compactFilename)
+	compactPath := filepath.Join(shardDir, compactFilename)
 	dumpPath := path + ".dump"
 	if s.ServerConfig.CompactDumpTmpDir != "" {
 		dumpPath = filepath.Join(s.CompactDumpTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
@@ -180,7 +191,7 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
 
 	// STAGE 5: now compactDB and onlineDB are identical, time to make compactDB officially online
-	if err := s.UpdateShardFilename(shard, compactFilename); err != nil {
+	if err := s.UpdateShardFilename(shard, shardDir, compactFilename); err != nil {
 		log.Errorf("update shard filename: %v, closeCompactErr=%v", err, compactDB.Close())
 		s.runScriptFunc("compactonerror", shard, err)
 		return
@@ -194,13 +205,13 @@ func (s *Server) compactShardImpl(shard int, out chan int) {
 				if i == (shard-1+ShardNum)%ShardNum { // preserve last 2 shard backups
 					continue
 				}
-				oldBakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(i)+".bak")
+				oldBakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(i)+".bak")
 				s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
 				if err := s2pkg.RemoveFile(oldBakPath); err != nil {
 					log.Errorf("STAGE 6: delete old backup file: %v, err=%v", oldBakPath, err)
 				}
 			}
-			bakPath := filepath.Join(s.DataPath, "shard"+strconv.Itoa(shard)+".bak")
+			bakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(shard)+".bak")
 			log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
 				old.Close(), os.Rename(path, bakPath))
 		}()
@@ -225,7 +236,7 @@ func (s *Server) schedCompactionJob() {
 						log.Info("last_compact_1xx_ts: skip #", i, " last=", time.Unix(last*86400, 0))
 					} else {
 						log.Info("scheduleCompaction(", i, ")")
-						s.compactShardImpl(i, out)
+						s.compactShardImpl(i, "", out)
 						<-out
 						log.Info("update last_compact_1xx_ts: #", i, " err=", s.LocalStorage().Set(key, ts))
 					}
@@ -245,7 +256,7 @@ func (s *Server) schedCompactionJob() {
 						log.Info("last_compact_2xx_ts: skip #", shardIdx, " last=", time.Unix(last*1800, 0))
 					} else {
 						log.Info("scheduleCompaction(", shardIdx, ")")
-						s.compactShardImpl(shardIdx, out)
+						s.compactShardImpl(shardIdx, "", out)
 						<-out
 						log.Info("update last_compact_2xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
 					}
@@ -261,7 +272,7 @@ func (s *Server) schedCompactionJob() {
 				log.Info("last_compact_6xx_ts: skip #", shardIdx, " last=", time.Unix(last*3600+offset, 0))
 			} else {
 				log.Info("scheduleCompaction(", shardIdx, ")")
-				s.compactShardImpl(shardIdx, out)
+				s.compactShardImpl(shardIdx, "", out)
 				<-out
 				log.Info("update last_compact_6xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
 			}

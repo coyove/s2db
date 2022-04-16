@@ -21,6 +21,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
+	"golang.org/x/time/rate"
 )
 
 type ServerConfig struct {
@@ -45,6 +46,7 @@ type ServerConfig struct {
 	CompactDumpTmpDir string // use a temporal directory to store dumped shard
 	DisableMetrics    int    // 0|1
 	InspectorSource   string
+	QAppendQPSLimiter int
 }
 
 func (s *Server) loadConfig() error {
@@ -114,6 +116,12 @@ func (s *Server) saveConfig() error {
 		} else {
 			log.Info("slave redis removed")
 		}
+	}
+
+	if ql := s.ServerConfig.QAppendQPSLimiter; ql > 0 {
+		s.QAppendLimiter = rate.NewLimiter(rate.Limit(ql), ql*2)
+	} else {
+		s.QAppendLimiter = nil
 	}
 
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
@@ -408,17 +416,21 @@ func (s *LocalStorage) Delete(k string) (err error) {
 	})
 }
 
-func (s *Server) GetShardFilename(i int) (fn string, err error) {
+func (s *Server) GetShardFilename(i int) (dir, fn string, err error) {
 	err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("_shards"))
-		if bk == nil {
-			return nil
+		if bk := tx.Bucket([]byte("_shardsdir")); bk != nil {
+			dir = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
 		}
-		fn = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
+		if bk := tx.Bucket([]byte("_shards")); bk != nil {
+			fn = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
+		}
 		return nil
 	})
 	if err == nil && fn == "" {
 		fn = "shard" + strconv.Itoa(i)
+	}
+	if err == nil && dir == "" {
+		dir = s.ConfigDir
 	}
 	return
 }
@@ -427,16 +439,25 @@ func makeShardFilename(shard int) string {
 	return "shard" + strconv.Itoa(shard) + "." + fmt.Sprintf("%013d", time.Now().UnixNano()/1e6)
 }
 
-func (s *Server) UpdateShardFilename(i int, fn string) error {
+func (s *Server) UpdateShardFilename(i int, dir, fn string) error {
+	if dir == "" || fn == "" {
+		return fmt.Errorf("UpdateShardFilename: empty parameters")
+	}
 	defer func(start time.Time) {
-		log.Infof("update shard #%d to %s in %v", i, fn, time.Since(start))
+		log.Infof("update shard #%d filename to %q and %q in %v", i, (dir), (fn), time.Since(start))
 	}(time.Now())
 	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		bk, err := tx.CreateBucketIfNotExists([]byte("_shards"))
-		if err != nil {
+		if bk, err := tx.CreateBucketIfNotExists([]byte("_shardsdir")); err != nil {
+			return err
+		} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(dir)); err != nil {
 			return err
 		}
-		return bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(fn))
+		if bk, err := tx.CreateBucketIfNotExists([]byte("_shards")); err != nil {
+			return err
+		} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(fn)); err != nil {
+			return err
+		}
+		return nil
 	})
 }
 

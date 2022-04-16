@@ -47,6 +47,11 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 		x.(*s2pkg.Survey).Incr(diffMs)
 	}(time.Now())
 
+	switch cmd {
+	case "QAPPEND":
+		waitLimiter(s.QAppendLimiter)
+	}
+
 	s.db[shardIndex(key)].batchTx <- t
 	if runType == RunDefer {
 		return nil, nil

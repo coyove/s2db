@@ -15,6 +15,7 @@ require (
 	go.etcd.io/bbolt v1.3.6
 	golang.org/x/net v0.0.0-20210405180319-a5a99cb37ef4 // indirect
 	golang.org/x/sys v0.0.0-20210823070655-63515b42dcdf
+	golang.org/x/time v0.0.0-20220411224347-583f2d630306
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

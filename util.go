@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"context"
 	"crypto/rand"
 	"encoding/gob"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 	"github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -473,7 +475,8 @@ func sizeOfBucket(bk *bbolt.Bucket) int64 {
 	return int64(bk.KeyN())
 }
 
-func deleteUnusedDataFile(root string, files []os.FileInfo, shard int, useName string) {
+func deleteUnusedDataFile(root string, shard int, useName string) {
+	files, _ := ioutil.ReadDir(root)
 	prefix := fmt.Sprintf("shard%d.", shard)
 	for _, f := range files { // TODO: faster
 		if strings.HasPrefix(f.Name(), prefix) {
@@ -493,4 +496,10 @@ func btoi(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func waitLimiter(lm *rate.Limiter) {
+	if lm != nil {
+		lm.Wait(context.TODO())
+	}
 }

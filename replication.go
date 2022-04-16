@@ -250,12 +250,19 @@ func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
 		return false
 	}
 
+	dir, currentFn, err := s.GetShardFilename(shard)
+	if err != nil {
+		log.Error("requestShard: get shard dir: ", err)
+		return false
+	}
 	fn := makeShardFilename(shard)
-	of, err := os.Create(filepath.Join(s.DataPath, fn))
+
+	of, err := os.Create(filepath.Join(dir, fn))
 	if err != nil {
 		log.Error("requestShard: create shard: ", err)
 		return false
 	}
+	log.Infof("requestShard: local stored at %q, previous: %q", filepath.Join(dir, fn), currentFn)
 	defer of.Close()
 
 	lastProgress := 0
@@ -275,7 +282,7 @@ func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
 		return false
 	}
 	log.Info("requestShard: progress 100% in ", time.Since(start))
-	if err := s.UpdateShardFilename(shard, fn); err != nil {
+	if err := s.UpdateShardFilename(shard, dir, fn); err != nil {
 		log.Error("requestShard: update shard filename failed: ", err)
 		return false
 	}

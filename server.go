@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
+	"golang.org/x/time/rate"
 )
 
 const (
@@ -53,13 +53,14 @@ type Server struct {
 	ServerConfig
 	ReadOnly         bool
 	Closed           bool   // server close flag
-	DataPath         string // location of data and config database
+	ConfigDir        string // location of config database
 	SelfManager      *bas.Program
 	Cache            *s2pkg.MasterLRU
 	WeakCache        *s2pkg.MasterLRU
 	CompactLock      s2pkg.LockBox
 	EvalLock         sync.RWMutex
 	SwitchMasterLock sync.RWMutex
+	QAppendLimiter   *rate.Limiter
 
 	Survey struct {
 		StartAt                 time.Time
@@ -87,13 +88,14 @@ type Server struct {
 	ConfigDB *bbolt.DB
 }
 
-func Open(path string) (x *Server, err error) {
-	if err := os.MkdirAll(path, 0777); err != nil {
+func Open(configDir string) (x *Server, err error) {
+	if err := os.MkdirAll(configDir, 0777); err != nil {
 		return nil, err
 	}
 
-	x = &Server{DataPath: path}
-	x.ConfigDB, err = bbolt.Open(filepath.Join(path, "_config"), 0666, DBOptions)
+	x = &Server{}
+	x.ConfigDir = configDir
+	x.ConfigDB, err = bbolt.Open(filepath.Join(configDir, "_config"), 0666, DBOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -102,15 +104,14 @@ func Open(path string) (x *Server, err error) {
 	}
 
 	// Load shards
-	fullDataFiles, _ := ioutil.ReadDir(path)
 	for i := range x.db {
-		fn, err := x.GetShardFilename(i)
+		dir, fn, err := x.GetShardFilename(i)
 		if err != nil {
 			return nil, err
 		}
-		shardPath := filepath.Join(path, fn)
+		shardPath := filepath.Join(dir, fn)
 		log.Info("open shard #", i, " of ", shardPath)
-		deleteUnusedDataFile(path, fullDataFiles, i, fn)
+		deleteUnusedDataFile(dir, i, fn)
 		start := time.Now()
 		db, err := bbolt.Open(shardPath, 0666, DBOptions)
 		if err != nil {

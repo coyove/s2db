@@ -73,6 +73,7 @@ type Server struct {
 		BatchSizeSv, BatchLatSv s2pkg.Survey
 		SlowLogs, Sync          s2pkg.Survey
 		Passthrough             s2pkg.Survey
+		FirstRunSleep           s2pkg.Survey
 		Command                 sync.Map
 	}
 

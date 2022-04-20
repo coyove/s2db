@@ -38,7 +38,7 @@ var (
 	masterDumper = flag.String("mdump", "", "dump requested shard from master to data directory then exit, form: "+
 		"ip:port/shard, "+strconv.Itoa(ShardNum)+" means all shards")
 	showLogtail  = flag.String("logtail", "", "print log tail of specified database then exit")
-	sendRedisCmd = flag.String("cmd", "", "send redis command to listen address (-l) then exit")
+	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
 		for i := range f {
@@ -285,6 +285,8 @@ func (s *Server) webConsoleServer() {
 			sp = append(sp, s.CompactDumpTmpDir)
 		}
 		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
+		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
+		}
 		w.Header().Add("Content-Type", "text/html")
 		template.Must(template.New("").Funcs(template.FuncMap{
 			"kv": func(s string) template.HTML {
@@ -296,7 +298,11 @@ func (s *Server) webConsoleServer() {
 				if strings.Count(string(r.Value), " ") == 31 {
 					parts := strings.Split(string(r.Value)+"   ", " ")
 					for i, p := range parts {
-						parts[i] = "<div class=box>" + p + "</div>"
+						if p == "" {
+							parts[i] = "<div class=box>" + p + "</div>"
+						} else {
+							parts[i] = "<div class=box><span class=mark>" + strconv.Itoa(i) + "</span>" + p + "</div>"
+						}
 					}
 					r.Value = template.HTML("<div class=section-box>" + strings.Join(parts, "") + "</div>")
 				} else {

@@ -180,6 +180,12 @@ func (s *Server) Info(section string) (data []string) {
 				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
 				fmt.Sprintf("slave_logtail_diff_sum:%d", diffSum),
 			)
+		} else {
+			tails := [ShardNum]uint64{}
+			for i := range s.db {
+				tails[i], _ = s.ShardLogtail(i)
+			}
+			data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		}
 		if s.MasterIP != "" {
 			data = append(data, fmt.Sprintf("master_ip:%v", s.MasterIP))

@@ -25,28 +25,29 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName        string
-	Slave             string
-	Password          string
-	MarkMaster        int // 0|1
-	Passthrough       string
-	CacheSize         int
-	CacheObjMaxSize   int // kb
-	WeakCacheSize     int
-	SlowLimit         int // ms
-	PingTimeout       int // ms
-	ResponseLogRun    int
-	ResponseLogSize   int // kb
-	DumpSafeMargin    int // mb
-	BatchMaxRun       int
-	CompactJobType    int
-	CompactLogHead    int
-	CompactTxSize     int
-	CompactTxWorkers  int
-	CompactDumpTmpDir string // use a temporal directory to store dumped shard
-	DisableMetrics    int    // 0|1
-	InspectorSource   string
-	QAppendQPSLimiter int
+	ServerName         string
+	Slave              string
+	Password           string
+	MarkMaster         int // 0|1
+	Passthrough        string
+	CacheSize          int
+	CacheObjMaxSize    int // kb
+	WeakCacheSize      int
+	SlowLimit          int // ms
+	PingTimeout        int // ms
+	ResponseLogRun     int
+	ResponseLogSize    int // kb
+	DumpSafeMargin     int // mb
+	BatchMaxRun        int
+	BatchFirstRunSleep int // ms
+	CompactJobType     int
+	CompactLogHead     int
+	CompactTxSize      int
+	CompactTxWorkers   int
+	CompactDumpTmpDir  string // use a temporal directory to store dumped shard
+	DisableMetrics     int    // 0|1
+	InspectorSource    string
+	QAppendQPSLimiter  int
 }
 
 func (s *Server) loadConfig() error {

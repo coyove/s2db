@@ -112,7 +112,7 @@ func (s *Server) batchWorker(shard int) {
 		tasks = tasks[:0]
 		firstRunSlept := false
 
-		for firstRun := true; len(tasks) < s.ServerConfig.BatchMaxRun; firstRun = false {
+		for len(tasks) < s.ServerConfig.BatchMaxRun {
 			if blocking {
 				t, ok := <-x.batchTx
 				if !ok {
@@ -132,15 +132,15 @@ func (s *Server) batchWorker(shard int) {
 						tasks = append(tasks, t)
 					}
 				default:
-					goto RUN_TASKS
+					// If we only receive 1 deferred task and have not slept yet, the runner will sleep X ms to
+					// see if there are any more tasks to come.
+					if !firstRunSlept && s.BatchFirstRunSleep > 0 && len(tasks) == 1 && tasks[0].runType == RunDefer {
+						time.Sleep(time.Millisecond * time.Duration(s.BatchFirstRunSleep))
+						firstRunSlept = true
+					} else {
+						goto RUN_TASKS
+					}
 				}
-			}
-
-			// If this is the first run and we only receive 1 deferred task, the runner will sleep X ms to
-			// see if there are any more tasks to come.
-			if firstRun && s.BatchFirstRunSleep > 0 && len(tasks) == 1 && tasks[0].runType == RunDefer {
-				time.Sleep(time.Millisecond * time.Duration(s.BatchFirstRunSleep))
-				firstRunSlept = true
 			}
 		}
 

@@ -45,6 +45,10 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 		s.Survey.SysWrite.Incr(diffMs)
 		x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 		x.(*s2pkg.Survey).Incr(diffMs)
+		if runType != RunDefer {
+			x, _ := s.Survey.Command.LoadOrStore(cmd+"_S", new(s2pkg.Survey))
+			x.(*s2pkg.Survey).Incr(diffMs)
+		}
 	}(time.Now())
 
 	switch cmd {
@@ -135,7 +139,20 @@ func (s *Server) batchWorker(shard int) {
 					// If we only receive 1 deferred task and have not slept yet, the runner will sleep X ms to
 					// see if there are any more tasks to come.
 					if !firstRunSlept && s.BatchFirstRunSleep > 0 && len(tasks) == 1 && tasks[0].runType == RunDefer {
-						time.Sleep(time.Millisecond * time.Duration(s.BatchFirstRunSleep))
+						tmr := time.NewTimer(time.Millisecond * time.Duration(s.BatchFirstRunSleep))
+					CONTINUE_SLEEP:
+						select {
+						case t, ok := <-x.batchTx:
+							if ok {
+								tasks = append(tasks, t)
+								if t.runType == RunDefer {
+									goto CONTINUE_SLEEP
+								}
+							}
+							// During sleep, if we received a non-deferred task (or channel closed), we should exit immediately
+						case <-tmr.C:
+						}
+						tmr.Stop()
 						firstRunSlept = true
 					} else {
 						goto RUN_TASKS

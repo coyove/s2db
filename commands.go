@@ -35,7 +35,7 @@ func writeLog(tx s2pkg.LogTx, dd []byte) error {
 }
 
 func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
-	var xx, nx, ch, data bool
+	var xx, nx, ch, pd, data bool
 	var fillPercent float64
 	var idx = 2
 	for ; ; idx++ {
@@ -48,6 +48,9 @@ func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) prepared
 			continue
 		case "CH":
 			ch = true
+			continue
+		case "PD":
+			pd = true
 			continue
 		case "DATA":
 			data = true
@@ -71,7 +74,7 @@ func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) prepared
 			pairs = append(pairs, p)
 		}
 	}
-	return prepareZAdd(key, pairs, nx, xx, ch, fillPercent, dd)
+	return prepareZAdd(key, pairs, nx, xx, ch, pd, fillPercent, dd)
 }
 
 func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
@@ -114,7 +117,7 @@ func (s *Server) ZAdd(key string, runType int, members []s2pkg.Pair) (int64, err
 	for _, m := range members {
 		cmd.Argv = append(cmd.Argv, s2pkg.FormatFloatBulk(m.Score), []byte(m.Member), m.Data)
 	}
-	v, err := s.runPreparedTx("ZADD", key, runType, prepareZAdd(key, members, false, false, false, 0, dumpCommand(cmd)))
+	v, err := s.runPreparedTx("ZADD", key, runType, prepareZAdd(key, members, false, false, false, false, 0, dumpCommand(cmd)))
 	if err != nil {
 		return 0, err
 	}

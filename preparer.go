@@ -46,7 +46,7 @@ func prepareDel(key string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent float64, dd []byte) preparedTx {
+func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, fillPercent float64, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
 		if err != nil {
@@ -73,7 +73,11 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch bool, fillPercent fl
 				if nx {
 					continue
 				}
-				if err := bkScore.Delete([]byte(string(scoreBuf) + p.Member)); err != nil {
+				scoreKey := []byte(string(scoreBuf) + p.Member)
+				if pd && len(p.Data) == 0 {
+					p.Data = bkScore.Get(scoreKey)
+				}
+				if err := bkScore.Delete(scoreKey); err != nil {
 					return nil, err
 				}
 				if p.Score != s2pkg.BytesToFloat(scoreBuf) {

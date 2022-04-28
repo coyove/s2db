@@ -104,15 +104,22 @@ func (tx *LimitedTx) Finish() error {
 }
 
 type BucketWalker struct {
-	Bucket          *bbolt.Bucket
-	BucketName      string
-	Tx              *LimitedTx
-	QueueTTL        int
-	LogtailStartBuf []byte
-	Total           *int64
-	QueueDrops      *int64
-	QueueDeletes    *int64
-	ZSetCardFix     *int64
-	KeysDist        *LogSurvey
-	Logger          *logrus.Entry
+	UnixNano         int64
+	Bucket           *bbolt.Bucket
+	BucketName       string
+	KeyName          string
+	Tx               *LimitedTx
+	QueueTTL         int
+	ZSetTTL          int
+	LogtailStartBuf  []byte
+	Total            *int64
+	QueueDrops       *int64
+	QueueDeletes     *int64
+	ZSetDrops        *int64
+	ZSetScoreDrops   *int64
+	ZSetDeletes      *int64
+	ZSetScoreDeletes *int64
+	ZSetCardFix      *int64
+	KeysDist         *LogSurvey
+	Logger           *logrus.Entry
 }

@@ -20,7 +20,10 @@ import (
 	"go.etcd.io/bbolt"
 )
 
-const QueueTTLKey = "_queuettl_"
+const (
+	QueueTTLKey = "_queuettl_"
+	ZSetTTLKey  = "_zsetttl_"
+)
 
 func (s *Server) DumpShard(shard int, path string) (int64, error) {
 	return s.db[shard].DB.Dump(path, s.DumpSafeMargin*1024*1024)
@@ -309,6 +312,7 @@ func (s *Server) startCronjobs() {
 
 func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	log := log.WithField("shard", strconv.Itoa(shard))
+	nanots := time.Now().UnixNano()
 
 	unlinksKey := getPendingUnlinksKey(shard)
 	unlinks, _ := s.ZRange(true, unlinksKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
@@ -319,6 +323,7 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	unlinkp[unlinksKey] = true // "unlinks" key itself will also be unlinked
 
 	queueTTLs, _ := s.ZRange(false, QueueTTLKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
+	zsetTTLs, _ := s.ZRange(false, ZSetTTLKey, 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
 
 	tx, err := odb.Begin(false)
 	if err != nil {
@@ -331,7 +336,8 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	hasSlave := s.Slave.Redis() != nil && s.Slave.IsAcked(s)
 	slaveLogtail := s.Slave.Logtails[shard]
 
-	var total, totalBuckets, unlinksDrops, queueDrops, queueDeletes, zsetCardFix int64
+	var total, totalBuckets, unlinksDrops, queueDrops, queueDeletes int64
+	var zsetDrops, zsetDeletes, zsetScoreDrops, zsetScoreDeletes, zsetCardFix int64
 	var keysDistribution s2pkg.LogSurvey
 
 	tmptx, err := s2pkg.CreateLimitedTx(tmpdb, s.CompactTxSize)
@@ -387,9 +393,12 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 
 		// Calculate queue TTL and WAL logs length if needed
 		var queueTTL int = -1
+		var zsetTTL int = -1
 		var logtailStartBuf []byte
 		if isQueue {
-			queueTTL = int(getQueueTTLByName(queueTTLs, keyName))
+			queueTTL = getTTLByName(queueTTLs, keyName)
+		} else if isZSet || isZSetScore {
+			zsetTTL = getTTLByName(zsetTTLs, keyName)
 		} else if bucketName == "wal" {
 			logtailStart := decUint64(slaveLogtail, uint64(s.CompactLogHead))
 			if !hasSlave {
@@ -404,15 +413,21 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 		}
 
 		bucketIn <- &s2pkg.BucketWalker{
+			UnixNano:        nanots,
 			Bucket:          b,
 			BucketName:      bucketName,
+			KeyName:         keyName,
 			Tx:              tmptx,
 			QueueTTL:        queueTTL,
+			ZSetTTL:         zsetTTL,
 			LogtailStartBuf: logtailStartBuf,
 			// Metrics
-			Total: &total, QueueDrops: &queueDrops, QueueDeletes: &queueDeletes, ZSetCardFix: &zsetCardFix,
-			KeysDist: &keysDistribution,
-			Logger:   log,
+			Total: &total, QueueDrops: &queueDrops, QueueDeletes: &queueDeletes,
+			ZSetDrops: &zsetDrops, ZSetDeletes: &zsetDeletes,
+			ZSetScoreDrops: &zsetScoreDrops, ZSetScoreDeletes: &zsetScoreDeletes,
+			ZSetCardFix: &zsetCardFix,
+			KeysDist:    &keysDistribution,
+			Logger:      log,
 		}
 		totalBuckets++
 	}
@@ -420,23 +435,29 @@ func (s *Server) defragdb(shard int, odb, tmpdb *bbolt.DB) error {
 	close(bucketIn)
 	bucketWalkerWg.Wait()
 
-	log.Infof("STAGE 0.3: buckets: %d, unlinks: %d/%d, qttls:%d, qdrops: %d, qdeletes: %d, ZCARD fix: %d, limited tx: %v",
-		totalBuckets, unlinksDrops, len(unlinkp), len(queueTTLs), queueDrops, queueDeletes, zsetCardFix, tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.3: buckets: %d, unlinks: %d/%d, limited tx: %v", totalBuckets, unlinksDrops, len(unlinkp), tmptx.MapSize.MeanString())
+	log.Infof("STAGE 0.4: qttls:%d, qdrops: %d, qdeletes: %d", len(queueTTLs), queueDrops, queueDeletes)
+	log.Infof("STAGE 0.5: zttls:%d, zdrops: %d/%d, zdeletes: %d/%d, zfixs: %d",
+		len(zsetTTLs), zsetDrops, zsetScoreDrops, zsetDeletes, zsetScoreDeletes, zsetCardFix)
+
+	if zsetDrops != zsetScoreDrops || zsetDeletes != zsetScoreDeletes {
+		return fmt.Errorf("zset ttl: numbers mismatched")
+	}
 
 	for i, s := range keysDistribution {
 		if s[0] > 0 && s[1] > 0 {
-			log.Infof("STAGE 0.4: bucket %d: count=%d, keys=%d, avg=%.2f", int(math.Pow10(i)), s[0], s[1], float64(s[1])/float64(s[0]))
+			log.Infof("STAGE 0.6: bucket %d: count=%d, keys=%d, avg=%.2f", int(math.Pow10(i)), s[0], s[1], float64(s[1])/float64(s[0]))
 		}
 	}
 	return tmptx.Finish()
 }
 
 func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
-	now := time.Now().UnixNano()
 	isQueue := strings.HasPrefix(p.BucketName, "q.")
 	isZSetScore := strings.HasPrefix(p.BucketName, "zset.score.")
+	isZSet := !isZSetScore && strings.HasPrefix(p.BucketName, "zset.")
 	keyCount := uint64(0)
-	queueChanged := false
+	keyChanged := false
 	if err := p.Bucket.ForEach(func(k, v []byte) error {
 		// Truncate WAL logs
 		if len(p.LogtailStartBuf) > 0 && bytes.Compare(k, p.LogtailStartBuf) < 0 {
@@ -446,9 +467,23 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		// Truncate queue
 		if isQueue && len(k) == 16 && p.QueueTTL >= 0 {
 			ts := int64(binary.BigEndian.Uint64(k[8:]))
-			if (now-ts)/1e9 > int64(p.QueueTTL) {
+			if (p.UnixNano-ts)/1e9 > int64(p.QueueTTL) {
 				atomic.AddInt64(p.QueueDrops, 1)
-				queueChanged = true
+				keyChanged = true
+				return nil
+			}
+		}
+		if isZSet && len(v) == 8 && p.ZSetTTL >= 0 {
+			if int(p.UnixNano/1e9)-int(s2pkg.BytesToFloat(v)) > p.ZSetTTL {
+				atomic.AddInt64(p.ZSetDrops, 1)
+				keyChanged = true
+				return nil
+			}
+		}
+		if isZSetScore && len(k) >= 8 && p.ZSetTTL >= 0 {
+			if int(p.UnixNano/1e9)-int(s2pkg.BytesToFloat(k[:8])) > p.ZSetTTL {
+				atomic.AddInt64(p.ZSetScoreDrops, 1)
+				keyChanged = true
 				return nil
 			}
 		}
@@ -465,8 +500,8 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 		return err
 	}
 
-	if queueChanged {
-		s.removeCache(p.BucketName[2:])
+	if keyChanged {
+		s.removeCache(p.KeyName)
 	}
 
 	// Check compaction
@@ -484,9 +519,18 @@ func (s *Server) compactionBucketWalker(p *s2pkg.BucketWalker) error {
 				tmpb.SetSequence(keyCount)
 				atomic.AddInt64(p.ZSetCardFix, 1)
 			}
-			if isQueue {
-				if k, _ := tmpb.Cursor().Last(); len(k) == 0 {
+
+			if k, _ := tmpb.Cursor().Last(); len(k) == 0 {
+				if isQueue {
 					atomic.AddInt64(p.QueueDeletes, 1)
+					tx.DeleteBucket([]byte(p.BucketName))
+				}
+				if isZSet {
+					atomic.AddInt64(p.ZSetDeletes, 1)
+					tx.DeleteBucket([]byte(p.BucketName))
+				}
+				if isZSetScore {
+					atomic.AddInt64(p.ZSetScoreDeletes, 1)
 					tx.DeleteBucket([]byte(p.BucketName))
 				}
 			}
@@ -508,13 +552,13 @@ func getPendingUnlinksKey(shard int) string {
 	return "_unlinks_\t" + strconv.Itoa(shard)
 }
 
-func getQueueTTLByName(ttls []s2pkg.Pair, name string) float64 {
+func getTTLByName(ttls []s2pkg.Pair, name string) int {
 	idx := sort.Search(len(ttls), func(i int) bool { return ttls[i].Member >= name })
 	if idx < len(ttls) && name == ttls[idx].Member {
-		return ttls[idx].Score
+		return int(ttls[idx].Score)
 	}
 	if idx > 0 && idx <= len(ttls) && strings.HasPrefix(name, ttls[idx-1].Member) {
-		return ttls[idx-1].Score
+		return int(ttls[idx-1].Score)
 	}
 	return -1
 }

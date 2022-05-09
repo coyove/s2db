@@ -11,7 +11,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/golang/protobuf/proto"
 )
+
+func TestLogsMarshal(t *testing.T) {
+	l := &Logs{PrevSig: 2, Logs: []*Log{{9, []byte("zzz")}}}
+	t.Log(proto.Marshal(l))
+}
 
 func TestMetrics(t *testing.T) {
 	rand.Seed(time.Now().Unix())

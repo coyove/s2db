@@ -1,15 +1,27 @@
 package s2pkg
 
 import (
+	"io"
 	"sync"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
+type Storage interface {
+	Get([]byte) ([]byte, io.Closer, error)
+	Set(key, value []byte, opts *pebble.WriteOptions) error
+	Delete(key []byte, _ *pebble.WriteOptions) error
+	DeleteRange(start, end []byte, _ *pebble.WriteOptions) error
+	NewIter(*pebble.IterOptions) *pebble.Iterator
+}
+
 type LogTx struct {
-	Logtail *uint64
-	*bbolt.Tx
+	OutLogtail *uint64
+	InLogtail  *uint64
+	LogPrefix  []byte
+	Storage
 }
 
 type LimitedTx struct {

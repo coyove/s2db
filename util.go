@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"container/heap"
 	"context"
 	"crypto/rand"
 	"encoding/gob"
@@ -124,6 +123,14 @@ func joinCommand(cmd [][]byte) []byte {
 	return append(buf.Bytes(), h.Sum(nil)...)          // crc32: 4b
 }
 
+func joinCommandEmpty() []byte {
+	buf := &bytes.Buffer{}
+	buf.WriteByte(0x95) // version: 0x95
+	buf.WriteString("\x00\x00\x00\x00")
+	buf.Write(crc32.NewIEEE().Sum(nil))
+	return buf.Bytes()
+}
+
 func (s *Server) Info(section string) (data []string) {
 	if section == "" || section == "server" {
 		data = append(data, "# server",
@@ -140,14 +147,7 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "server_misc" {
 		sz, dataSize := 0, 0
-		fls := []string{}
-		for i := range s.db {
-			fi, err := os.Stat(s.db[i].Path())
-			s2pkg.PanicErr(err)
-			sz += int(fi.Size())
-			fls = append(fls, strconv.Itoa(s.db[i].FreelistSize()/1024))
-		}
-		dataFiles, _ := ioutil.ReadDir(filepath.Dir(s.ConfigDB.Path()))
+		dataFiles, _ := ioutil.ReadDir(s.DBPath)
 		for _, fi := range dataFiles {
 			dataSize += int(fi.Size())
 		}
@@ -155,11 +155,8 @@ func (s *Server) Info(section string) (data []string) {
 		data = append(data, "# server_misc",
 			fmt.Sprintf("cwd:%v", cwd),
 			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
-			fmt.Sprintf("db_freelist_size:%v", strings.Join(fls, " ")),
 			fmt.Sprintf("db_size:%v", sz),
 			fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
-			fmt.Sprintf("configdb_size_mb:%.2f", float64(s.ConfigDB.Size())/1024/1024),
-			fmt.Sprintf("configdb_freelist_size:%v", s.ConfigDB.FreelistSize()/1024),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			"")
 	}
@@ -167,9 +164,8 @@ func (s *Server) Info(section string) (data []string) {
 		data = append(data, "# replication")
 		if s.Slave.Redis() != nil {
 			diffs, diffSum := [ShardNum]int64{}, int64(0)
-			for i := range s.db {
-				tail, _ := s.ShardLogtail(i)
-				diffs[i] = int64(tail) - int64(s.Slave.Logtails[i])
+			for i := range s.shards {
+				diffs[i] = int64(s.ShardLogtail(i)) - int64(s.Slave.Logtails[i])
 				diffSum += diffs[i]
 			}
 			data = append(data,
@@ -182,8 +178,8 @@ func (s *Server) Info(section string) (data []string) {
 			)
 		} else {
 			tails := [ShardNum]uint64{}
-			for i := range s.db {
-				tails[i], _ = s.ShardLogtail(i)
+			for i := range s.shards {
+				tails[i] = s.ShardLogtail(i)
 			}
 			data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		}
@@ -246,32 +242,13 @@ func (s *Server) Info(section string) (data []string) {
 }
 
 func (s *Server) ShardInfo(shard int) []string {
-	x := &s.db[shard]
-	fi, err := os.Stat(x.Path())
-	s2pkg.PanicErr(err)
+	x := &s.shards[shard]
 	tmp := []string{
 		fmt.Sprintf("# shard%d", shard),
-		fmt.Sprintf("path:%v", x.Path()),
-		fmt.Sprintf("freelist_size:%v", x.FreelistSize()),
-		fmt.Sprintf("freelist_dist:%v", x.FreelistDistribution()),
-		fmt.Sprintf("db_size:%v", fi.Size()),
-		fmt.Sprintf("db_size_mb:%.2f", float64(fi.Size())/1024/1024),
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
 		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
 	}
-	var myTail uint64
-	x.View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("wal"))
-		if bk == nil {
-			return nil
-		}
-		firstKey, _ := bk.Cursor().First()
-		first := s2pkg.BytesToUint64(firstKey)
-		tmp = append(tmp, fmt.Sprintf("log_count:%d", bk.Sequence()-first+1))
-		tmp = append(tmp, fmt.Sprintf("logtail:%d", bk.Sequence()))
-		myTail = bk.Sequence()
-		return nil
-	})
+	myTail := s.ShardLogtail(shard)
 	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]
 		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
@@ -290,12 +267,7 @@ func (s *Server) waitSlave() {
 	for start := time.Now(); time.Since(start).Seconds() < 0.5; {
 		var total, slaveTotal uint64
 		for i := 0; i < ShardNum; i++ {
-			logtail, err := s.ShardLogtail(i)
-			if err != nil {
-				log.Errorf("waitSlave: failed to get logtail #%d: %v", i, err)
-				return
-			}
-			total += logtail
+			total += s.ShardLogtail(i)
 			slaveTotal += s.Slave.Logtails[i]
 		}
 		if total == slaveTotal {
@@ -353,55 +325,42 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-func (s *Server) TypeofKey(key string) (t string) {
-	t = "none"
-	s.pick(key).View(func(tx *bbolt.Tx) error {
-		if bk := tx.Bucket([]byte("zset.score." + key)); bk != nil {
-			t = "zset"
-		}
-		if bk := tx.Bucket([]byte("q." + key)); bk != nil {
-			t = "queue"
-		}
-		return nil
-	})
-	return
-}
-
 func (s *Server) BigKeys(n, shard int) []s2pkg.Pair {
-	if n <= 0 {
-		n = 10
-	}
-	h := &s2pkg.PairHeap{}
-	heap.Init(h)
-	for i := range s.db {
-		if shard != -1 && i != shard {
-			continue
-		}
-		s.db[i].View(func(tx *bbolt.Tx) error {
-			return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
-				if bytes.HasPrefix(name, []byte("zset.score.")) {
-					return nil
-				}
-				if bytes.HasPrefix(name, []byte("zset.")) {
-					heap.Push(h, s2pkg.Pair{Member: string(name[5:]), Score: float64(sizeOfBucket(bk))})
-				}
-				if bytes.HasPrefix(name, []byte("q.")) {
-					_, _, l := queueLenImpl(bk)
-					heap.Push(h, s2pkg.Pair{Member: string(name[2:]), Score: float64(l)})
-				}
-				if h.Len() > n {
-					heap.Pop(h)
-				}
-				return nil
-			})
-		})
-	}
-	var x []s2pkg.Pair
-	for h.Len() > 0 {
-		p := heap.Pop(h).(s2pkg.Pair)
-		x = append(x, p)
-	}
-	return x
+	return nil
+	// if n <= 0 {
+	// 	n = 10
+	// }
+	// h := &s2pkg.PairHeap{}
+	// heap.Init(h)
+	// for i := range s.shards {
+	// 	if shard != -1 && i != shard {
+	// 		continue
+	// 	}
+	// 	s.shards[i].View(func(tx *bbolt.Tx) error {
+	// 		return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
+	// 			if bytes.HasPrefix(name, []byte("zset.score.")) {
+	// 				return nil
+	// 			}
+	// 			if bytes.HasPrefix(name, []byte("zset.")) {
+	// 				heap.Push(h, s2pkg.Pair{Member: string(name[5:]), Score: float64(sizeOfBucket(bk))})
+	// 			}
+	// 			if bytes.HasPrefix(name, []byte("q.")) {
+	// 				_, _, l := queueLenImpl(bk)
+	// 				heap.Push(h, s2pkg.Pair{Member: string(name[2:]), Score: float64(l)})
+	// 			}
+	// 			if h.Len() > n {
+	// 				heap.Pop(h)
+	// 			}
+	// 			return nil
+	// 		})
+	// 	})
+	// }
+	// var x []s2pkg.Pair
+	// for h.Len() > 0 {
+	// 	p := heap.Pop(h).(s2pkg.Pair)
+	// 	x = append(x, p)
+	// }
+	// return x
 }
 
 func getRemoteIP(addr net.Addr) net.IP {
@@ -508,4 +467,19 @@ func waitLimiter(lm *rate.Limiter) {
 	if lm != nil {
 		lm.Wait(context.TODO())
 	}
+}
+
+func incrBytes(b []byte) []byte {
+	b = dupBytes(b)
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i]++
+		if b[i] != 0 {
+			break
+		}
+	}
+	return b
+}
+
+func dupBytes(b []byte) []byte {
+	return append([]byte{}, b...)
 }

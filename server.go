@@ -8,37 +8,24 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
+	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
-	"go.etcd.io/bbolt"
-	"golang.org/x/time/rate"
 )
 
 const (
-	ShardNum            = 32
+	ShardNum            = 256
 	rejectedByMasterMsg = "rejected by master"
-)
-
-var (
-	DBOptions = &bbolt.Options{
-		FreelistType: bbolt.FreelistMapType,
-		Timeout:      time.Second * 10,
-	}
-	DBReadonlyOptions = &bbolt.Options{
-		FreelistType: bbolt.FreelistMapType,
-		ReadOnly:     true,
-	}
 )
 
 type Server struct {
@@ -49,6 +36,7 @@ type Server struct {
 	LocalRedis *redis.Client
 	Slave      endpoint
 	MasterIP   string
+	DBPath     string
 
 	ServerConfig
 	ReadOnly         bool
@@ -60,7 +48,6 @@ type Server struct {
 	CompactLock      s2pkg.LockBox
 	EvalLock         sync.RWMutex
 	SwitchMasterLock sync.RWMutex
-	QAppendLimiter   *rate.Limiter
 
 	Survey struct {
 		StartAt                 time.Time
@@ -77,8 +64,9 @@ type Server struct {
 		Command                 sync.Map
 	}
 
-	db [ShardNum]struct {
-		*bbolt.DB
+	db *pebble.DB
+
+	shards [ShardNum]struct {
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
@@ -86,17 +74,15 @@ type Server struct {
 		pusherCloseSignal chan bool
 		compactLocker     s2pkg.Locker
 	}
-	ConfigDB *bbolt.DB
 }
 
-func Open(configDir string) (x *Server, err error) {
-	if err := os.MkdirAll(configDir, 0777); err != nil {
+func Open(dbPath string) (x *Server, err error) {
+	if err := os.MkdirAll(dbPath, 0777); err != nil {
 		return nil, err
 	}
 
-	x = &Server{}
-	x.ConfigDir = configDir
-	x.ConfigDB, err = bbolt.Open(filepath.Join(configDir, "_config"), 0666, DBOptions)
+	x = &Server{DBPath: dbPath}
+	x.db, err = pebble.Open(dbPath, &pebble.Options{})
 	if err != nil {
 		return nil, err
 	}
@@ -104,41 +90,27 @@ func Open(configDir string) (x *Server, err error) {
 		return nil, err
 	}
 
+	b := x.db.NewBatch()
+	defer b.Close()
+
 	// Load shards
-	for i := range x.db {
-		dir, fn, err := x.GetShardFilename(i)
-		if err != nil {
-			return nil, err
-		}
-		shardPath := filepath.Join(dir, fn)
-		log.Info("open shard #", i, " of ", shardPath)
-		deleteUnusedDataFile(dir, i, fn)
-		start := time.Now()
-		db, err := bbolt.Open(shardPath, 0666, DBOptions)
-		if err != nil {
-			return nil, err
-		}
-		if time.Since(start).Seconds() > 1 {
-			log.Info("open slow shard #", i)
-		}
-		d := &x.db[i]
-		d.DB = db
+	for i := range x.shards {
+		d := &x.shards[i]
 		d.pusherCloseSignal = make(chan bool)
 		d.pusherTrigger = make(chan bool, 1)
 		d.batchCloseSignal = make(chan bool)
 		d.batchTx = make(chan *batchTask, 1024)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
 			&x.Survey.Sync)
+		if err := b.Set(append(getShardLogKey(int16(i)), s2pkg.Uint64ToBytes(0)...), joinCommandEmpty(), pebble.Sync); err != nil {
+			return nil, err
+		}
 	}
-
 	x.rdbCache = s2pkg.NewMasterLRU(4, func(kv s2pkg.LRUKeyValue) {
 		log.Info("rdbCache(", kv.SlaveKey, ") close: ", kv.Value.(*redis.Client).Close())
 	})
-	fts.InitDict(x.loadDict())
-	return x, nil
+	return x, b.Commit(pebble.Sync)
 }
-
-func (s *Server) GetDB(shard int) *bbolt.DB { return s.db[shard].DB }
 
 func (s *Server) Close() error {
 	s.Closed = true
@@ -146,19 +118,18 @@ func (s *Server) Close() error {
 	errs <- s.ln.Close()
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
-	errs <- s.ConfigDB.Close()
+	errs <- s.db.Close()
 	errs <- s.Slave.Close()
 	errs <- s.LocalRedis.Close()
 	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
 
 	wg := sync.WaitGroup{}
-	for i := range s.db {
+	for i := range s.shards {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			db := &s.db[i]
+			db := &s.shards[i]
 			db.syncWaiter.Close()
-			errs <- db.Close()
 			close(db.batchTx)
 			close(db.pusherTrigger)
 			<-db.pusherCloseSignal
@@ -202,7 +173,7 @@ func (s *Server) Serve(addr string) (err error) {
 		s.runScriptFunc("compactnotfinished", s2pkg.MustParseInt(v))
 	}
 
-	for i := range s.db {
+	for i := range s.shards {
 		go s.batchWorker(i)
 		go s.logPusher(i)
 	}
@@ -376,23 +347,22 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
 	case "INFO":
 		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
-	case "TYPE":
-		return w.WriteBulk([]byte(s.TypeofKey(key)))
 	}
 
 	// Log commands
 	switch cmd {
-	case "PUSHLOGS": // PUSHLOGS <Shard> <LogHead> <LogPrevSig> <Log1> ...
+	case "PUSHLOGS": // PUSHLOGS <Shard> <LogsBytes>
 		s.SwitchMasterLock.RLock()
 		defer s.SwitchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
 			return w.WriteError(rejectedByMasterMsg)
 		}
 		shard := s2pkg.MustParseInt(key)
-		loghead := uint64(command.Int64(2))
-		s.db[shard].compactLocker.Lock(func() { log.Infof("bulkload %d is waiting for compactor/previous bulkload", shard) })
-		defer s.db[shard].compactLocker.Unlock()
-		names, logtail, err := runLog(loghead, uint32(command.Int64(3)), command.Argv[4:], s.db[shard].DB)
+		logs := &s2pkg.Logs{}
+		if err := proto.Unmarshal(command.At(2), logs); err != nil {
+			return w.WriteError(err.Error())
+		}
+		names, logtail, err := runLog(s.db, shard, logs)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -405,7 +375,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.MasterIP = getRemoteIP(remoteAddr).String()
 		if len(names) > 0 {
 			select {
-			case s.db[shard].pusherTrigger <- true:
+			case s.shards[shard].pusherTrigger <- true:
 			default:
 			}
 		}
@@ -439,12 +409,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command, dumpCommand(command)), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dumpCommand(command)), w)
-	case "QAPPEND":
-		command.Argv = append(command.Argv, []byte("_NANOTS"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
-		if getRemoteIP(remoteAddr).Equal(net.IPv4(172, 31, 128, 202)) {
-			waitLimiter(s.QAppendLimiter)
-		}
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseQAppend(cmd, key, command, dumpCommand(command)), w)
 	}
 
 	h := command.HashCode()
@@ -522,13 +486,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulkStrings(redisPairs(p, flags))
-	case "GEORADIUS", "GEORADIUS_RO", "GEORADIUSBYMEMBER", "GEORADIUSBYMEMBER_RO":
-		byMember := cmd == "GEORADIUSBYMEMBER" || cmd == "GEORADIUSBYMEMBER_RO"
-		return s.runGeoRadius(w, byMember, key, h, weak, command)
-	case "GEODIST":
-		return s.runGeoDist(w, key, command)
-	case "GEOPOS":
-		return s.runGeoPos(w, key, command)
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next, err := s.Scan(key, flags)
@@ -536,33 +493,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteError(err.Error())
 		}
 		return w.WriteObjects(next, redisPairs(p, flags))
-	case "QLEN":
-		return w.WriteIntOrError(s.QLength(key))
-	case "QSCAN":
-		flags := command.Flags(4)
-		data, cached := s.getCache(h, weak).([]s2pkg.Pair)
-		if !cached {
-			data, err = s.QScan(key, command.Get(2), command.Int64(3), flags)
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-		}
-		return w.WriteBulkStrings(redisPairs(data, flags))
-	}
-
-	// Index commands
-	switch cmd {
-	case "IDXADD": // IDXADD id content key1 ... keyN
-		return w.WriteInt(int64(s.IndexAdd(key, command.Get(2), restCommandsToKeys(3, command))))
-	case "IDXDEL":
-		return w.WriteInt(int64(s.IndexDel(key)))
-	case "IDXDOCS":
-		return w.WriteObjectsSlice(s.runIndexDocsInfo(restCommandsToKeys(1, command)))
-	case "IDXSEARCH": // IDXSEARCH key N text1 ... textN flags
-		n := command.Int64(2)
-		flags := command.Flags(2 + int(n) + 1)
-		command.Argv = command.Argv[:2+int(n)+1]
-		return w.WriteBulkStrings(redisPairs(s.IndexSearch(key, restCommandsToKeys(3, command), flags), flags))
 	}
 
 	return w.WriteError("unknown command: " + cmd)

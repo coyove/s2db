@@ -1,13 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"math"
-	"time"
-	"unsafe"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
 	s2pkg "github.com/coyove/s2db/s2pkg"
@@ -15,91 +12,82 @@ import (
 
 var ErrBigDelete = fmt.Errorf("can't delete big keys directly, use 'UNLINK key' command")
 
+func getZSetRangeKey(key string) ([]byte, []byte, []byte) {
+	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), []byte("zsetctr_" + key)
+}
+
+func getShardLogKey(shard int16) []byte {
+	return []byte(fmt.Sprintf("log%04x_", shard))
+}
+
 func prepareDel(key string, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		bkName := tx.Bucket([]byte("zset." + key))
-		bkScore := tx.Bucket([]byte("zset.score." + key))
-		if bkName == nil || bkScore == nil {
-			bkQ := tx.Bucket([]byte("q." + key))
-			if bkQ == nil {
-				return 0, writeLog(tx, dd)
-			}
-			if _, _, l := queueLenImpl(bkQ); l > 65536 {
-				return 0, ErrBigDelete
-			}
-			if err := tx.DeleteBucket([]byte("q." + key)); err != nil {
-				return 0, err
-			}
-			return 1, writeLog(tx, dd)
+		bkName, bkScore, bkCounter := getZSetRangeKey(key)
+		if err := tx.DeleteRange(bkName, incrBytes(bkName), pebble.Sync); err != nil {
+			return nil, err
 		}
-		if bkScore.Sequence() > 65536 {
-			return 0, ErrBigDelete
+		if err := tx.DeleteRange(bkScore, incrBytes(bkScore), pebble.Sync); err != nil {
+			return nil, err
 		}
-		if err := tx.DeleteBucket([]byte("zset." + key)); err != nil {
-			return 0, err
-		}
-		if err := tx.DeleteBucket([]byte("zset.score." + key)); err != nil {
-			return 0, err
+		if err := tx.Delete(bkCounter, pebble.Sync); err != nil {
+			return nil, err
 		}
 		return 1, writeLog(tx, dd)
 	}
 	return preparedTx{f: f}
 }
 
-func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, fillPercent float64, dd []byte) preparedTx {
+func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
-		if err != nil {
-			return nil, err
-		}
-		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + key))
-		if err != nil {
-			return nil, err
-		}
-
-		if fillPercent > 0 && fillPercent < 1 {
-			bkName.FillPercent = fillPercent
-			bkScore.FillPercent = fillPercent
-		}
-
+		bkName, bkScore, bkCounter := getZSetRangeKey(key)
 		added, updated := 0, 0
 		for _, p := range pairs {
 			if err := checkScore(p.Score); err != nil {
 				return nil, err
 			}
-			scoreBuf := bkName.Get([]byte(p.Member))
-			if len(scoreBuf) != 0 {
-				// old key exists
-				if nx {
-					continue
-				}
-				scoreKey := []byte(string(scoreBuf) + p.Member)
-				if pd && len(p.Data) == 0 {
-					p.Data = bkScore.Get(scoreKey)
-				}
-				if err := bkScore.Delete(scoreKey); err != nil {
-					return nil, err
-				}
-				if p.Score != s2pkg.BytesToFloat(scoreBuf) {
-					updated++
-				}
-			} else {
+			scoreBuf, scoreBufCloser, err := tx.Get(append(bkName, p.Member...))
+			if err == pebble.ErrNotFound {
 				// we are adding a new key
 				if xx {
 					continue
 				}
 				added++
+			} else if err != nil {
+				return nil, err
+			} else {
+				// old key exists
+				scoreKey := append(append(bkScore, scoreBuf...), p.Member...)
+				scoreBufCloser.Close()
+				if nx {
+					continue
+				}
+				if pd && len(p.Data) == 0 {
+					p.Data, err = GetKeyCopy(tx, scoreKey)
+					if err != nil {
+						return nil, err
+					}
+				}
+				if err := tx.Delete(scoreKey, pebble.Sync); err != nil {
+					return nil, err
+				}
+				if p.Score != s2pkg.BytesToFloat(scoreBuf) {
+					updated++
+				}
 			}
 			scoreBuf = s2pkg.FloatToBytes(p.Score)
-			if err := bkName.Put([]byte(p.Member), scoreBuf); err != nil {
+			if err := tx.Set(append(bkName, p.Member...), scoreBuf, pebble.Sync); err != nil {
 				return nil, err
 			}
-			if err := bkScore.Put([]byte(string(scoreBuf)+p.Member), p.Data); err != nil {
+			if err := tx.Set(append(append(bkScore, scoreBuf...), p.Member...), p.Data, pebble.Sync); err != nil {
 				return nil, err
 			}
 		}
 
-		bkScore.SetSequence(bkScore.Sequence() + uint64(added))
+		if added != 0 {
+			if err := IncrKey(tx, bkCounter, int64(added)); err != nil {
+				return nil, err
+			}
+		}
 		if ch {
 			return added + updated, writeLog(tx, dd)
 		}
@@ -108,19 +96,19 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, fillPercen
 	return preparedTx{f: f}
 }
 
-func prepareZRem(key string, keys []string, dd []byte) preparedTx {
+func prepareZRem(key string, members []string, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (count interface{}, err error) {
-		bkName := tx.Bucket([]byte("zset." + key))
-		if bkName == nil {
-			return 0, writeLog(tx, dd)
-		}
+		bkName, _, _ := getZSetRangeKey(key)
 		var pairs []s2pkg.Pair
-		for _, key := range keys {
-			scoreBuf := bkName.Get([]byte(key))
+		for _, member := range members {
+			scoreBuf, err := GetKeyCopy(tx, append(bkName, member...))
+			if err != nil {
+				return nil, err
+			}
 			if len(scoreBuf) == 0 {
 				continue
 			}
-			pairs = append(pairs, s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(scoreBuf)})
+			pairs = append(pairs, s2pkg.Pair{Member: member, Score: s2pkg.BytesToFloat(scoreBuf)})
 		}
 		return len(pairs), deletePair(tx, key, pairs, dd)
 	}
@@ -129,26 +117,25 @@ func prepareZRem(key string, keys []string, dd []byte) preparedTx {
 
 func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (newValue interface{}, err error) {
-		bkName, err := tx.CreateBucketIfNotExists([]byte("zset." + key))
-		if err != nil {
-			return 0, err
-		}
-		bkScore, err := tx.CreateBucketIfNotExists([]byte("zset.score." + key))
-		if err != nil {
-			return 0, err
-		}
-		scoreBuf := bkName.Get([]byte(member))
+		bkName, bkScore, bkCounter := getZSetRangeKey(key)
 		score := 0.0
 		added := false
 
+		score, _, foundScore, err := GetKeyNumber(tx, append(bkName, member...))
+		if err != nil {
+			return nil, err
+		}
+
 		var dataBuf []byte
-		if len(scoreBuf) != 0 {
-			oldKey := []byte(string(scoreBuf) + member)
-			dataBuf = append([]byte{}, bkScore.Get(oldKey)...)
-			if err := bkScore.Delete(oldKey); err != nil {
+		if foundScore {
+			oldKey := append(append(bkScore, s2pkg.FloatToBytes(score)...), member...)
+			dataBuf, err = GetKeyCopy(tx, oldKey)
+			if err != nil {
+				return nil, err
+			}
+			if err := tx.Delete(oldKey, pebble.Sync); err != nil {
 				return 0, err
 			}
-			score = s2pkg.BytesToFloat(scoreBuf)
 		} else {
 			dataBuf = []byte("")
 			added = true
@@ -170,15 +157,18 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 		if err := checkScore(score + by); err != nil {
 			return 0, err
 		}
-		scoreBuf = s2pkg.FloatToBytes(score + by)
-		if err := bkName.Put([]byte(member), scoreBuf); err != nil {
+
+		scoreBuf := s2pkg.FloatToBytes(score + by)
+		if err := tx.Set(append(bkName, member...), scoreBuf, pebble.Sync); err != nil {
 			return 0, err
 		}
-		if err := bkScore.Put([]byte(string(scoreBuf)+member), dataBuf); err != nil {
+		if err := tx.Set(append(append(bkScore, scoreBuf...), member...), dataBuf, pebble.Sync); err != nil {
 			return 0, err
 		}
 		if added {
-			bkScore.SetSequence(bkScore.Sequence() + 1)
+			if err := IncrKey(tx, bkCounter, 1); err != nil {
+				return nil, err
+			}
 		}
 		return score + by, writeLog(tx, dd)
 	}
@@ -225,62 +215,6 @@ func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedT
 			Append:      s2pkg.DefaultRangeAppend,
 		})(tx)
 		return c, err
-	}
-	return preparedTx{f: f}
-}
-
-func prepareQAppend(key string, value []byte, max, ts int64, appender func(string) bool, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		bk, err := tx.CreateBucketIfNotExists([]byte("q." + key))
-		if err != nil {
-			return nil, err
-		}
-
-		var xid uint64
-		if bytes.EqualFold(value, []byte("--TRIM--")) {
-			// QAPPEND <Name> --TRIM-- COUNT <Max> is a trick to trim the head of a queue
-			xid = bk.Sequence()
-		} else {
-			if appender != nil {
-				if _, v := bk.Cursor().Last(); len(v) > 0 && !appender(*(*string)(unsafe.Pointer(&v))) {
-					return int64(0), nil
-				}
-			}
-
-			id, err := bk.NextSequence()
-			if err != nil {
-				return nil, err
-			}
-
-			xid = id
-			bk.FillPercent = 0.9
-
-			key := make([]byte, 16)
-			binary.BigEndian.PutUint64(key, id)
-
-			if ts == 0 {
-				ts = time.Now().UnixNano()
-			}
-			binary.BigEndian.PutUint64(key[8:], uint64(ts))
-
-			if err := bk.Put(key, value); err != nil {
-				return nil, err
-			}
-		}
-
-		if max > 0 {
-			c := bk.Cursor()
-			for _, _, n := queueLenImpl(bk); n > max; n-- {
-				k, _ := c.First()
-				if len(k) != 16 {
-					break
-				}
-				if err := bk.Delete(k); err != nil {
-					return nil, err
-				}
-			}
-		}
-		return int64(xid), writeLog(tx, dd)
 	}
 	return preparedTx{f: f}
 }

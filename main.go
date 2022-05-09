@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	_ "embed"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +22,6 @@ import (
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
-	"go.etcd.io/bbolt"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -153,26 +150,26 @@ func main() {
 	}
 
 	if *showLogtail != "" {
-		db, err := bbolt.Open(*showLogtail, 0666, DBReadonlyOptions)
-		if err != nil {
-			fmt.Println(err.Error())
-			os.Exit(-1)
-		}
-		defer db.Close()
-		var tail, seq uint64
-		db.View(func(tx *bbolt.Tx) error {
-			bk := tx.Bucket([]byte("wal"))
-			if bk != nil {
-				k, _ := bk.Cursor().Last()
-				if len(k) == 8 {
-					tail = binary.BigEndian.Uint64(k)
-				}
-				seq = bk.Sequence()
-			}
-			return nil
-		})
-		fmt.Println(tail, seq)
-		return
+		// db, err := bbolt.Open(*showLogtail, 0666, DBReadonlyOptions)
+		// if err != nil {
+		// 	fmt.Println(err.Error())
+		// 	os.Exit(-1)
+		// }
+		// defer db.Close()
+		// var tail, seq uint64
+		// db.View(func(tx *bbolt.Tx) error {
+		// 	bk := tx.Bucket([]byte("wal"))
+		// 	if bk != nil {
+		// 		k, _ := bk.Cursor().Last()
+		// 		if len(k) == 8 {
+		// 			tail = binary.BigEndian.Uint64(k)
+		// 		}
+		// 		seq = bk.Sequence()
+		// 	}
+		// 	return nil
+		// })
+		// fmt.Println(tail, seq)
+		// return
 	}
 
 	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), "NOAUTH") {
@@ -235,13 +232,14 @@ func (s *Server) webConsoleServer() {
 				w.WriteHeader(400)
 				return
 			}
-			x := &s.db[s2pkg.MustParseInt(dumpShard)]
+			// x := &s.runners[s2pkg.MustParseInt(dumpShard)]
 			w.Header().Add("Content-Type", "application/octet-stream")
-			w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))
+			// w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))
 			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
-			if err := x.DumpTo(w, m, q.Get("dump-checksum") != "0"); err != nil {
-				log.Errorf("http dumper #%s: %v", dumpShard, err)
-			}
+			_ = m
+			// if err := x.DumpTo(w, m, q.Get("dump-checksum") != "0"); err != nil {
+			// 	log.Errorf("http dumper #%s: %v", dumpShard, err)
+			// }
 			log.Infof("http dumper #%s finished in %v", dumpShard, time.Since(start))
 			return
 		}
@@ -278,9 +276,7 @@ func (s *Server) webConsoleServer() {
 		}
 
 		sp := []string{}
-		for i := range s.db {
-			sp = append(sp, filepath.Dir(s.db[i].Path()))
-		}
+		// sp = append(sp, filepath.Dir(s.db.
 		if s.ServerConfig.CompactDumpTmpDir != "" {
 			sp = append(sp, s.CompactDumpTmpDir)
 		}

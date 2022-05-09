@@ -2,16 +2,13 @@ package main
 
 import (
 	"bytes"
-	"container/heap"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"time"
 
-	"github.com/coyove/nj/bas"
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 )
 
@@ -80,28 +77,9 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
 	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
-	if flags.INTERSECT != nil {
-		bkm, goahead, close := s.prepareIntersectBuckets(flags)
-		defer close()
-		if len(bkm) == 0 && !goahead { // 'goahead' example: ZRANGEBYSCORE key start end NOTINTERSECT not_existed_key
-			return
-		}
-		ro.Limit = math.MaxInt64
-		ro.Append = genIntersectFunc(bkm, flags)
-		success = func([]s2pkg.Pair, int) {}
-	} else if flags.TWOHOPS.ENDPOINT != "" {
-		txs, close, err := s.openAllTx()
-		if err != nil {
-			return nil, err
-		}
-		defer close()
-		ro.Limit = math.MaxInt64
-		ro.Append = genTwoHopsFunc(s, txs, flags)
-		success = func([]s2pkg.Pair, int) {}
-	} else {
-		ro.Limit = flags.LIMIT
-		ro.Append = s2pkg.DefaultRangeAppend
-	}
+
+	ro.Limit = flags.LIMIT
+	ro.Append = s2pkg.DefaultRangeAppend
 	p, _, err = s.runPreparedRangeTx(key, f(), success)
 	if err == errSafeExit {
 		err = nil
@@ -111,12 +89,13 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 
 func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
 	return func(tx s2pkg.LogTx) (pairs []s2pkg.Pair, count int, err error) {
-		bk := tx.Bucket([]byte("zset." + key))
-		if bk == nil {
-			return
-		}
+		bkName, _, _ := getZSetRangeKey(key)
+		c := tx.NewIter(&pebble.IterOptions{
+			LowerBound: bkName,
+			UpperBound: incrBytes(bkName),
+		})
+		defer c.Close()
 
-		c := bk.Cursor()
 		do := func(k, sc []byte) error {
 			if opt.LexMatch != "" {
 				if !s2pkg.MatchBinary(opt.LexMatch, k) {
@@ -132,31 +111,27 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 			return nil
 		}
 
-		startBuf, endBuf := []byte(start.Value), []byte(end.Value)
+		startBuf, endBuf := append(dupBytes(bkName), start.Value...), append(dupBytes(bkName), end.Value...)
 		if opt.Rev {
 			endFlag := 0
 			if !end.Inclusive {
 				endFlag = 1
 			}
 			if start.Inclusive && !start.LexEnd {
-				for i := len(startBuf) - 1; i >= 0; i-- {
-					if startBuf[i]++; startBuf[i] <= 255 {
-						break
-					}
-				}
+				startBuf = incrBytes(startBuf)
 			}
-			var k, sc = c.Seek(startBuf)
-			if len(k) == 0 {
-				k, sc = c.Last()
+			if !c.SeekGE(startBuf) {
+				c.Last()
 			} else {
-				k, sc = c.Prev()
+				c.Prev()
 			}
-			for i := 0; len(pairs) < opt.Limit; i++ {
+			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
+				k, sc := c.Key(), c.Value()
 				if len(sc) > 0 && bytes.Compare(k, startBuf) <= 0 && bytes.Compare(k, endBuf) >= endFlag {
-					if err := do(k, sc); err != nil {
+					if err := do(k[len(bkName):], sc); err != nil {
 						return pairs, 0, err
 					}
-					k, sc = c.Prev()
+					c.Prev()
 				} else {
 					break
 				}
@@ -169,13 +144,14 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 			if !end.Inclusive {
 				endFlag = -1
 			}
-			k, sc := c.Seek(startBuf)
-			for i := 0; len(pairs) < opt.Limit; i++ {
+			c.SeekGE(startBuf)
+			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
+				k, sc := c.Key(), c.Value()
 				if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
-					if err := do(k, sc); err != nil {
+					if err := do(k[len(bkName):], sc); err != nil {
 						return pairs, 0, err
 					}
-					k, sc = c.Next()
+					c.Next()
 				} else {
 					break
 				}
@@ -191,14 +167,26 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 
 func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {
 	return func(tx s2pkg.LogTx) (pairs []s2pkg.Pair, count int, err error) {
-		bk := tx.Bucket([]byte("zset.score." + key))
-		if bk == nil {
-			return
-		}
-		opt.TranslateOffset(key, func() int { return int(sizeOfBucket(bk)) })
+		_, bkScore, bkCounter := getZSetRangeKey(key)
+		c := tx.NewIter(&pebble.IterOptions{
+			LowerBound: bkScore,
+			UpperBound: incrBytes(bkScore),
+		})
+		defer c.Close()
 
-		c := bk.Cursor()
+		_, n, _, err := GetKeyNumber(tx, bkCounter)
+		if err != nil {
+			return nil, 0, err
+		}
+		if opt.OffsetStart < 0 {
+			opt.OffsetStart += int(n)
+		}
+		if opt.OffsetEnd < 0 {
+			opt.OffsetEnd += int(n)
+		}
+
 		do := func(k, dataBuf []byte) error {
+			k = k[len(bkScore):]
 			key := string(k[8:])
 			if opt.LexMatch != "" {
 				if !s2pkg.Match(opt.LexMatch, key) {
@@ -210,9 +198,9 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 					return nil
 				}
 			}
-			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:8])}
+			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:])}
 			if opt.WithData {
-				p.Data = append([]byte{}, dataBuf...)
+				p.Data = dupBytes(dataBuf)
 			}
 			count++
 			if opt.Append != nil && !opt.Append(&pairs, p) {
@@ -221,54 +209,54 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 			return nil
 		}
 
-		startInt, endInt := s2pkg.FloatToOrderedUint64(start.Float), s2pkg.FloatToOrderedUint64(end.Float)
+		startInt := append(dupBytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
+		endInt := append(dupBytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
 		if opt.Rev {
 			if start.Inclusive {
-				startInt++
+				startInt = incrBytes(startInt)
 			}
 			if !end.Inclusive {
-				endInt++
+				endInt = incrBytes(endInt)
 			}
-			var k, dataBuf = c.Seek(s2pkg.Uint64ToBytes(startInt))
-			if len(k) == 0 {
-				k, dataBuf = c.Last()
+			if !c.SeekGE(startInt) {
+				c.Last()
 			} else {
-				k, dataBuf = c.Prev()
+				c.Prev()
 			}
-			for i := 0; len(k) >= 8 && len(pairs) < opt.Limit; i++ {
-				x := binary.BigEndian.Uint64(k)
-				if x <= startInt && x >= endInt {
+			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
+				x := c.Key()
+				if bytes.Compare(x, startInt) <= 0 && bytes.Compare(x, endInt) >= 0 {
 					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
-						if err := do(k, dataBuf); err != nil {
+						if err := do(c.Key(), c.Value()); err != nil {
 							return pairs, 0, err
 						}
 					} else if i > opt.OffsetEnd {
 						break
 					}
-					k, dataBuf = c.Prev()
+					c.Prev()
 				} else {
 					break
 				}
 			}
 		} else {
 			if !start.Inclusive {
-				startInt++
+				startInt = incrBytes(startInt)
 			}
 			if end.Inclusive {
-				endInt++
+				endInt = incrBytes(endInt)
 			}
-			k, dataBuf := c.Seek(s2pkg.Uint64ToBytes(startInt))
-			for i := 0; len(k) >= 8 && len(pairs) < opt.Limit; i++ {
-				x := binary.BigEndian.Uint64(k)
-				if x >= startInt && x < endInt {
+			c.SeekGE(startInt)
+			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
+				x := c.Key()
+				if bytes.Compare(x, startInt) >= 0 && bytes.Compare(x, endInt) < 0 {
 					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
-						if err := do(k, dataBuf); err != nil {
+						if err := do(c.Key(), c.Value()); err != nil {
 							return pairs, 0, err
 						}
 					} else if i > opt.OffsetEnd {
 						break
 					}
-					k, dataBuf = c.Next()
+					c.Next()
 				} else {
 					break
 				}
@@ -283,80 +271,80 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 }
 
 func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (rank int, err error) {
-	rank = -1
 	keybuf := []byte(member)
-	err = s.pick(key).View(func(tx *bbolt.Tx) error {
-		func() {
-			bk := tx.Bucket([]byte("zset.score." + key))
-			if bk == nil {
-				return
-			}
-			c := bk.Cursor()
-			if rev {
-				for k, _ := c.Last(); len(k) > 8; k, _ = c.Prev() {
-					rank++
-					if bytes.Equal(k[8:], keybuf) || rank == flags.COUNT+1 {
-						return
-					}
+	func() {
+		_, bkScore, _ := getZSetRangeKey(key)
+		c := s.db.NewIter(&pebble.IterOptions{
+			LowerBound: bkScore,
+			UpperBound: incrBytes(bkScore),
+		})
+		defer c.Close()
+		if rev {
+			for c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Prev() {
+				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == flags.COUNT+1 {
+					return
 				}
-			} else {
-				for k, _ := c.First(); len(k) > 8; k, _ = c.Next() {
-					rank++
-					if bytes.Equal(k[8:], keybuf) || rank == flags.COUNT+1 {
-						return
-					}
-				}
+				rank++
 			}
-			rank = -1
-		}()
-		if rank == flags.COUNT+1 {
-			rank = -1
+		} else {
+			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
+				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == flags.COUNT+1 {
+					return
+				}
+				rank++
+			}
 		}
+		rank = -1
+	}()
+	if rank == flags.COUNT+1 {
+		rank = -1
+	}
+	if flags.ArgCount() > 0 {
 		s.addCache(key, flags.HashCode(), rank)
-		return nil
-	})
+	}
 	return
 }
 
 func (s *Server) Foreach(cursor string, f func(k, typ string, bk ...*bbolt.Bucket) bool) (err error) {
-	txs, close, err := s.openAllTx()
-	if err != nil {
-		return err
-	}
-	defer close()
+	return
+	// txs, close, err := s.openAllTx()
+	// if err != nil {
+	// 	return err
+	// }
+	// defer close()
 
-	var cursorsZ, cursorsQ [ShardNum]*bbolt.Cursor
-	keys := &s2pkg.PairHeap{DataOrder: true}
-	for i := range s.db {
-		cursorsZ[i], cursorsQ[i] = txs[i].Cursor(), txs[i].Cursor()
-		if k, _ := cursorsQ[i].Seek([]byte("q." + cursor)); bytes.HasPrefix(k, []byte("q.")) {
-			heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[2:], Member: "queue"})
-		}
-		if k, _ := cursorsZ[i].Seek([]byte("zset.score." + cursor)); bytes.HasPrefix(k, []byte("zset.score.")) {
-			heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[11:], Member: "zset"})
-		}
-	}
+	// var cursorsZ, cursorsQ [ShardNum]*bbolt.Cursor
+	// keys := &s2pkg.PairHeap{DataOrder: true}
+	// for i := range s.runners {
+	// 	cursorsZ[i], cursorsQ[i] = txs[i].Cursor(), txs[i].Cursor()
+	// 	if k, _ := cursorsQ[i].Seek([]byte("q." + cursor)); bytes.HasPrefix(k, []byte("q.")) {
+	// 		heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[2:], Member: "queue"})
+	// 	}
+	// 	if k, _ := cursorsZ[i].Seek([]byte("zset.score." + cursor)); bytes.HasPrefix(k, []byte("zset.score.")) {
+	// 		heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[11:], Member: "zset"})
+	// 	}
+	// }
 
-	for cont := true; keys.Len() > 0 && cont; {
-		p := heap.Pop(keys).(s2pkg.Pair)
-		name := string(p.Data)
-		if p.Member == "queue" {
-			cont = f(name, "queue", txs[int(p.Score)].Bucket([]byte("q."+name)))
-			if k, _ := cursorsQ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("q.")) {
-				p.Data = k[2:]
-				heap.Push(keys, p)
-			}
-		}
-		if p.Member == "zset" {
-			tx := txs[int(p.Score)]
-			cont = f(name, "zset", tx.Bucket([]byte("zset."+name)), tx.Bucket([]byte("zset.score."+name)))
-			if k, _ := cursorsZ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("zset.score.")) {
-				p.Data = k[11:]
-				heap.Push(keys, p)
-			}
-		}
-	}
-	return nil
+	// for cont := true; keys.Len() > 0 && cont; {
+	// 	p := heap.Pop(keys).(s2pkg.Pair)
+	// 	name := string(p.Data)
+	// 	if p.Member == "queue" {
+	// 		cont = f(name, "queue", txs[int(p.Score)].Bucket([]byte("q."+name)))
+	// 		if k, _ := cursorsQ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("q.")) {
+	// 			p.Data = k[2:]
+	// 			heap.Push(keys, p)
+	// 		}
+	// 	}
+	// 	if p.Member == "zset" {
+	// 		tx := txs[int(p.Score)]
+	// 		cont = f(name, "zset", tx.Bucket([]byte("zset."+name)), tx.Bucket([]byte("zset.score."+name)))
+	// 		if k, _ := cursorsZ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("zset.score.")) {
+	// 			p.Data = k[11:]
+	// 			heap.Push(keys, p)
+	// 		}
+	// 	}
+	// }
+	// return nil
 }
 
 func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair, nextCursor string, err error) {
@@ -381,102 +369,4 @@ func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
 	}
 	return
-}
-
-func (s *Server) prepareIntersectBuckets(flags redisproto.Flags) (bkm map[*bbolt.Bucket]redisproto.IntersectFlags, goahead bool, close func()) {
-	bkm = map[*bbolt.Bucket]redisproto.IntersectFlags{}
-	var txs []*bbolt.Tx
-	for k, f := range flags.INTERSECT {
-		tx, err := s.pick(k).Begin(false)
-		if err != nil {
-			log.Errorf("prepareIntersect(%s): %v", k, err)
-			continue
-		}
-		bk := tx.Bucket([]byte("zset." + k))
-		txs = append(txs, tx)
-		if bk == nil {
-			if f.Not {
-				// Must not intersect, since key doesn't exist, there is no need to check it
-				tx.Rollback()
-				txs = txs[:len(txs)-1]
-				goahead = true
-				continue
-			} else {
-				// Must intersect, but key doesn't exist, so must fail
-				closeAllReadTxs(txs)
-				return nil, false, func() {}
-			}
-		}
-		bkm[bk] = f
-	}
-	return bkm, goahead, func() { closeAllReadTxs(txs) }
-}
-
-func (s *Server) openAllTx() (txs [ShardNum]*bbolt.Tx, close func(), err error) {
-	for i := range s.db {
-		tx, err := s.db[i].Begin(false)
-		if err != nil {
-			closeAllReadTxs(txs[:])
-			return txs, nil, err
-		}
-		txs[i] = tx
-	}
-	return txs, func() { closeAllReadTxs(txs[:]) }, nil
-}
-
-func genTwoHopsFunc(s *Server, txs [ShardNum]*bbolt.Tx, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-	ddl := time.Now().Add(flags.TIMEOUT)
-	endpoint := []byte(flags.TWOHOPS.ENDPOINT)
-	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-		key := p.Member
-		if bas.IsCallable(flags.TWOHOPS.KEYMAP) {
-			res, err := bas.Call2(flags.TWOHOPS.KEYMAP.Object(), bas.Str(key))
-			if err != nil {
-				log.Error("TwoHopsFunc: ", key, " error: ", err)
-				return false
-			}
-			key = res.String()
-		}
-		if bk := txs[shardIndex(key)].Bucket([]byte("zset." + key)); bk != nil {
-			if len(bk.Get(endpoint)) > 0 {
-				*pairs = append(*pairs, p)
-			}
-		}
-		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
-	}
-}
-
-func genIntersectFunc(bkm map[*bbolt.Bucket]redisproto.IntersectFlags, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-	ddl := time.Now().Add(flags.TIMEOUT)
-	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
-		key := p.Member
-		count, hits := 0, 0
-		for bk, f := range bkm {
-			if bas.IsCallable(f.F) {
-				res, err := bas.Call2(f.F.Object(), bas.Str(key))
-				if err != nil {
-					log.Error("IntersectFunc: ", key, " error: ", err)
-					return false
-				}
-				key = res.String()
-			}
-
-			exist := len(bk.Get([]byte(key))) > 0
-			if f.Not {
-				if exist {
-					goto OUT
-				}
-			} else {
-				if exist {
-					hits++
-				}
-				count++
-			}
-		}
-		if hits == count {
-			*pairs = append(*pairs, p)
-		}
-	OUT:
-		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
-	}
 }

@@ -3,7 +3,29 @@ package s2pkg
 import (
 	"bytes"
 	"strings"
+
+	"github.com/golang/protobuf/proto"
 )
+
+type Logs struct {
+	Logs    []*Log `protobuf:"bytes,1,rep,name=logs"`
+	PrevSig uint32 `protobuf:"varint,2,opt,name=prevsig"`
+}
+
+type Log struct {
+	Id   uint64 `protobuf:"fixed64,1,opt,name=id"`
+	Data []byte `protobuf:"bytes,2,opt,name=data"`
+}
+
+func (doc *Logs) Reset() { *doc = Logs{} }
+
+func (doc *Logs) String() string { return proto.CompactTextString(doc) }
+
+func (doc *Logs) Marshal() []byte { buf, _ := proto.Marshal(doc); return buf }
+
+func (*Logs) ProtoMessage() {}
+
+func (*Logs) Descriptor() ([]byte, []int) { return nil, []int{0} }
 
 type Pair struct {
 	Member string  `protobuf:"bytes,1,opt,name=member"`

@@ -3,16 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
-	"math"
 	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
@@ -20,8 +18,6 @@ import (
 	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
-	"go.etcd.io/bbolt"
-	"golang.org/x/time/rate"
 )
 
 type ServerConfig struct {
@@ -50,26 +46,60 @@ type ServerConfig struct {
 	QAppendQPSLimiter  int
 }
 
+func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rd.Close()
+	return dupBytes(buf), nil
+}
+
+func GetKeyNumber(db s2pkg.Storage, key []byte) (float64, uint64, bool, error) {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, err
+	}
+	defer rd.Close()
+	if len(buf) != 8 {
+		return 0, 0, false, fmt.Errorf("invalid number bytes (8)")
+	}
+	return s2pkg.BytesToFloat(buf), s2pkg.BytesToUint64(buf), true, nil
+}
+
+func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
+		}
+		return err
+	}
+	old := int64(s2pkg.BytesToUint64(buf))
+	rd.Close()
+	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old+v)), pebble.Sync)
+}
+
 func (s *Server) loadConfig() error {
-	if err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
+	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+		buf, err := GetKeyCopy(s.db, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
-		s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-			buf := bk.Get([]byte(strings.ToLower(f.Name)))
-			switch f.Type {
-			case reflect.TypeOf(0):
-				fv.SetInt(int64(s2pkg.BytesToFloatZero(buf)))
-			case reflect.TypeOf(""):
-				fv.SetString(string(buf))
-			}
-			return nil
-		})
+		switch f.Type {
+		case reflect.TypeOf(0):
+			fv.SetInt(int64(s2pkg.BytesToFloatZero(buf)))
+		case reflect.TypeOf(""):
+			fv.SetString(string(buf))
+		}
 		return nil
-	}); err != nil {
-		return err
-	}
+	})
 	return s.saveConfig()
 }
 
@@ -119,27 +149,15 @@ func (s *Server) saveConfig() error {
 		}
 	}
 
-	if ql := s.ServerConfig.QAppendQPSLimiter; ql > 0 {
-		s.QAppendLimiter = rate.NewLimiter(rate.Limit(ql), ql*2)
-	} else {
-		s.QAppendLimiter = nil
-	}
-
-	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		bk, err := tx.CreateBucketIfNotExists([]byte("_config"))
-		if err != nil {
-			return err
+	return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+		var buf []byte
+		switch f.Type {
+		case reflect.TypeOf(0):
+			buf = s2pkg.FloatToBytes(float64(fv.Int()))
+		case reflect.TypeOf(""):
+			buf = []byte(fv.String())
 		}
-		return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-			var buf []byte
-			switch f.Type {
-			case reflect.TypeOf(0):
-				buf = s2pkg.FloatToBytes(float64(fv.Int()))
-			case reflect.TypeOf(""):
-				buf = []byte(fv.String())
-			}
-			return bk.Put([]byte(strings.ToLower(f.Name)), buf)
-		})
+		return s.db.Set([]byte("config__"+strings.ToLower(f.Name)), buf, pebble.Sync)
 	})
 }
 
@@ -169,14 +187,14 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 			fv.SetString(value)
 		}
 		found = true
-		s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-			bk, err := tx.CreateBucketIfNotExists([]byte("_configlog"))
-			if err != nil {
-				return err
-			}
-			buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
-			return bk.Put(s2pkg.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
-		})
+		/// s.ConfigDB.Update(func(tx *bbolt.Tx) error {
+		/// 	bk, err := tx.CreateBucketIfNotExists([]byte("_configlog"))
+		/// 	if err != nil {
+		/// 		return err
+		/// 	}
+		/// 	buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
+		/// 	return bk.Put(s2pkg.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
+		/// })
 		return errSafeExit
 	})
 	if found {
@@ -211,20 +229,20 @@ func (s *Server) listConfig() (list []string) {
 }
 
 func (s *Server) listConfigLogs(n int) (logs []string) {
-	s.ConfigDB.View(func(tx *bbolt.Tx) error {
-		bk := tx.Bucket([]byte("_configlog"))
-		if bk == nil {
-			return nil
-		}
-		c := bk.Cursor()
-		for k, v := c.Last(); len(k) > 0; k, v = c.Prev() {
-			logs = append(logs, string(v))
-			if len(logs) >= n {
-				break
-			}
-		}
-		return nil
-	})
+	// s.ConfigDB.View(func(tx *bbolt.Tx) error {
+	// 	bk := tx.Bucket([]byte("_configlog"))
+	// 	if bk == nil {
+	// 		return nil
+	// 	}
+	// 	c := bk.Cursor()
+	// 	for k, v := c.Last(); len(k) > 0; k, v = c.Prev() {
+	// 		logs = append(logs, string(v))
+	// 		if len(logs) >= n {
+	// 			break
+	// 		}
+	// 	}
+	// 	return nil
+	// })
 	return
 }
 
@@ -372,20 +390,15 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 	}
 }
 
-type LocalStorage struct{ db *bbolt.DB }
+type LocalStorage struct{ db *pebble.DB }
 
 func (s *Server) LocalStorage() *LocalStorage {
-	return &LocalStorage{db: s.ConfigDB}
+	return &LocalStorage{db: s.db}
 }
 
-func (s *LocalStorage) Get(k string) (v string, err error) {
-	err = s.db.View(func(tx *bbolt.Tx) error {
-		if bk := tx.Bucket([]byte("_local")); bk != nil {
-			v = string(bk.Get([]byte(k)))
-		}
-		return nil
-	})
-	return
+func (s *LocalStorage) Get(k string) (string, error) {
+	v, err := GetKeyCopy(s.db, []byte("local___"+k))
+	return string(v), err
 }
 
 func (s *LocalStorage) GetInt64(k string) (v int64, err error) {
@@ -397,42 +410,29 @@ func (s *LocalStorage) GetInt64(k string) (v int64, err error) {
 }
 
 func (s *LocalStorage) Set(k string, v interface{}) (err error) {
-	err = s.db.Update(func(tx *bbolt.Tx) error {
-		if bk, err := tx.CreateBucketIfNotExists([]byte("_local")); err != nil {
-			return err
-		} else {
-			return bk.Put([]byte(k), []byte(fmt.Sprint(v)))
-		}
-	})
-	return
+	return s.db.Set([]byte("local___"+k), []byte(fmt.Sprint(v)), pebble.Sync)
 }
 
 func (s *LocalStorage) Delete(k string) (err error) {
-	return s.db.Update(func(tx *bbolt.Tx) error {
-		if bk := tx.Bucket([]byte("_local")); bk == nil {
-			return nil
-		} else {
-			return bk.Delete([]byte(k))
-		}
-	})
+	return s.db.Delete([]byte("local___"+k), pebble.Sync)
 }
 
 func (s *Server) GetShardFilename(i int) (dir, fn string, err error) {
-	err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
-		if bk := tx.Bucket([]byte("_shardsdir")); bk != nil {
-			dir = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
-		}
-		if bk := tx.Bucket([]byte("_shards")); bk != nil {
-			fn = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
-		}
-		return nil
-	})
-	if err == nil && fn == "" {
-		fn = "shard" + strconv.Itoa(i)
-	}
-	if err == nil && dir == "" {
-		dir = s.ConfigDir
-	}
+	// err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
+	// 	if bk := tx.Bucket([]byte("_shardsdir")); bk != nil {
+	// 		dir = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
+	// 	}
+	// 	if bk := tx.Bucket([]byte("_shards")); bk != nil {
+	// 		fn = string(bk.Get(s2pkg.Uint64ToBytes(uint64(i))))
+	// 	}
+	// 	return nil
+	// })
+	// if err == nil && fn == "" {
+	// 	fn = "shard" + strconv.Itoa(i)
+	// }
+	// if err == nil && dir == "" {
+	// 	dir = s.ConfigDir
+	// }
 	return
 }
 
@@ -441,139 +441,142 @@ func makeShardFilename(shard int) string {
 }
 
 func (s *Server) UpdateShardFilename(i int, dir, fn string) error {
-	if dir == "" || fn == "" {
-		return fmt.Errorf("UpdateShardFilename: empty parameters")
-	}
-	defer func(start time.Time) {
-		log.Infof("update shard #%d filename to %q and %q in %v", i, (dir), (fn), time.Since(start))
-	}(time.Now())
-	return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		if bk, err := tx.CreateBucketIfNotExists([]byte("_shardsdir")); err != nil {
-			return err
-		} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(dir)); err != nil {
-			return err
-		}
-		if bk, err := tx.CreateBucketIfNotExists([]byte("_shards")); err != nil {
-			return err
-		} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(fn)); err != nil {
-			return err
-		}
-		return nil
-	})
+	return nil
+	// if dir == "" || fn == "" {
+	// 	return fmt.Errorf("UpdateShardFilename: empty parameters")
+	// }
+	// defer func(start time.Time) {
+	// 	log.Infof("update shard #%d filename to %q and %q in %v", i, (dir), (fn), time.Since(start))
+	// }(time.Now())
+	// return s.ConfigDB.Update(func(tx *bbolt.Tx) error {
+	// 	if bk, err := tx.CreateBucketIfNotExists([]byte("_shardsdir")); err != nil {
+	// 		return err
+	// 	} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(dir)); err != nil {
+	// 		return err
+	// 	}
+	// 	if bk, err := tx.CreateBucketIfNotExists([]byte("_shards")); err != nil {
+	// 		return err
+	// 	} else if err := bk.Put(s2pkg.Uint64ToBytes(uint64(i)), []byte(fn)); err != nil {
+	// 		return err
+	// 	}
+	// 	return nil
+	// })
 }
 
 func (s *Server) appendMetricsPairs(ttl time.Duration) error {
-	var pairs []s2pkg.Pair
-	start := time.Now()
-	now := start.UnixNano() - int64(60*time.Second)
-	pairs = append(pairs, s2pkg.Pair{Member: "Connections", Score: float64(s.Survey.Connections)})
-	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
-	for i := 0; i < rv.NumField(); i++ {
-		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
-			m, n := sv.Metrics(), rt.Field(i).Name
-			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
-		}
-	}
-	s.Survey.Command.Range(func(k, v interface{}) bool {
-		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
-		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
-		return true
-	})
-	err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		for _, mp := range pairs {
-			subbk, err := tx.CreateBucketIfNotExists([]byte("_metrics_" + mp.Member))
-			if err != nil {
-				return err
-			}
-			subbk.FillPercent = 0.9
-			if err := subbk.Put(s2pkg.Uint64ToBytes(uint64(now)), s2pkg.FloatToBytes(mp.Score)); err != nil {
-				return err
-			}
-			c := subbk.Cursor()
-			for k, _ := c.First(); len(k) == 8; k, _ = c.Next() {
-				if ts := int64(binary.BigEndian.Uint64(k)); time.Duration(now-ts) <= ttl {
-					break
-				}
-				if err := subbk.Delete(k); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	})
-	if diff := time.Since(start); diff.Milliseconds() > int64(s.SlowLimit) {
-		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, diff.Seconds(), "127.0.0.1", "metrics")
-	}
-	return err
+	// var pairs []s2pkg.Pair
+	// start := time.Now()
+	// now := start.UnixNano() - int64(60*time.Second)
+	// pairs = append(pairs, s2pkg.Pair{Member: "Connections", Score: float64(s.Survey.Connections)})
+	// rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
+	// for i := 0; i < rv.NumField(); i++ {
+	// 	if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
+	// 		m, n := sv.Metrics(), rt.Field(i).Name
+	// 		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+	// 	}
+	// }
+	// s.Survey.Command.Range(func(k, v interface{}) bool {
+	// 	m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
+	// 	pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+	// 	return true
+	// })
+	// err := s.ConfigDB.Update(func(tx *bbolt.Tx) error {
+	// 	for _, mp := range pairs {
+	// 		subbk, err := tx.CreateBucketIfNotExists([]byte("_metrics_" + mp.Member))
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		subbk.FillPercent = 0.9
+	// 		if err := subbk.Put(s2pkg.Uint64ToBytes(uint64(now)), s2pkg.FloatToBytes(mp.Score)); err != nil {
+	// 			return err
+	// 		}
+	// 		c := subbk.Cursor()
+	// 		for k, _ := c.First(); len(k) == 8; k, _ = c.Next() {
+	// 			if ts := int64(binary.BigEndian.Uint64(k)); time.Duration(now-ts) <= ttl {
+	// 				break
+	// 			}
+	// 			if err := subbk.Delete(k); err != nil {
+	// 				return err
+	// 			}
+	// 		}
+	// 	}
+	// 	return nil
+	// })
+	// if diff := time.Since(start); diff.Milliseconds() > int64(s.SlowLimit) {
+	// 	slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, diff.Seconds(), "127.0.0.1", "metrics")
+	// }
+	// return err
+	return nil
 }
 
 func (s *Server) ListMetricsNames() (names []string) {
-	s.ConfigDB.View(func(tx *bbolt.Tx) error {
-		c := tx.Cursor()
-		for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
-			subbk := tx.Bucket(bkNameBuf)
-			if subbk == nil {
-				continue
-			}
-			names = append(names, string(bkNameBuf[9:]))
-		}
-		return nil
-	})
+	// s.ConfigDB.View(func(tx *bbolt.Tx) error {
+	// 	c := tx.Cursor()
+	// 	for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
+	// 		subbk := tx.Bucket(bkNameBuf)
+	// 		if subbk == nil {
+	// 			continue
+	// 		}
+	// 		names = append(names, string(bkNameBuf[9:]))
+	// 	}
+	// 	return nil
+	// })
 	return
 }
 
 func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
-	if endNano == 0 && startNano == 0 {
-		startNano, endNano = time.Now().UnixNano()-int64(time.Hour), time.Now().UnixNano()
-	}
-	res := map[string]s2pkg.GroupedMetrics{}
-	err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
-		c := tx.Cursor()
-		getter := func(bkNameBuf []byte) string {
-			subbk := tx.Bucket(bkNameBuf)
-			if subbk == nil {
-				return ""
-			}
-			bkName := string(bkNameBuf[9:])
-			subc := subbk.Cursor() // TODO: fast lookup
-			for k, v := subc.First(); len(k) == 8; k, v = subc.Next() {
-				ts := int64(binary.BigEndian.Uint64(k))
-				if ts >= startNano && ts <= endNano {
-					a := res[bkName]
-					a.Name = bkName
-					vf := s2pkg.BytesToFloat(v)
-					if math.IsNaN(vf) {
-						vf = 0
-					}
-					tsMin := ts / 1e9 / 60 * 60
-					if len(a.Timestamp) > 0 && a.Timestamp[len(a.Timestamp)-1] == tsMin {
-						a.Value[len(a.Value)-1] = vf
-					} else {
-						a.Value = append(a.Value, vf)
-						a.Timestamp = append(a.Timestamp, tsMin)
-					}
-					res[bkName] = a
-				}
-				if ts > endNano {
-					break
-				}
-			}
-			return bkName
-		}
-		if len(names) > 0 {
-			for _, n := range names {
-				getter([]byte("_metrics_" + n))
-			}
-		} else {
-			for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
-				if bkName := getter(bkNameBuf); bkName != "" {
-					names = append(names, bkName)
-				}
-			}
-		}
-		return nil
-	})
-	return fillMetricsHoles(res, names, startNano, endNano), err
+	return
+	// if endNano == 0 && startNano == 0 {
+	// 	startNano, endNano = time.Now().UnixNano()-int64(time.Hour), time.Now().UnixNano()
+	// }
+	// res := map[string]s2pkg.GroupedMetrics{}
+	// err = s.ConfigDB.View(func(tx *bbolt.Tx) error {
+	// 	c := tx.Cursor()
+	// 	getter := func(bkNameBuf []byte) string {
+	// 		subbk := tx.Bucket(bkNameBuf)
+	// 		if subbk == nil {
+	// 			return ""
+	// 		}
+	// 		bkName := string(bkNameBuf[9:])
+	// 		subc := subbk.Cursor() // TODO: fast lookup
+	// 		for k, v := subc.First(); len(k) == 8; k, v = subc.Next() {
+	// 			ts := int64(binary.BigEndian.Uint64(k))
+	// 			if ts >= startNano && ts <= endNano {
+	// 				a := res[bkName]
+	// 				a.Name = bkName
+	// 				vf := s2pkg.BytesToFloat(v)
+	// 				if math.IsNaN(vf) {
+	// 					vf = 0
+	// 				}
+	// 				tsMin := ts / 1e9 / 60 * 60
+	// 				if len(a.Timestamp) > 0 && a.Timestamp[len(a.Timestamp)-1] == tsMin {
+	// 					a.Value[len(a.Value)-1] = vf
+	// 				} else {
+	// 					a.Value = append(a.Value, vf)
+	// 					a.Timestamp = append(a.Timestamp, tsMin)
+	// 				}
+	// 				res[bkName] = a
+	// 			}
+	// 			if ts > endNano {
+	// 				break
+	// 			}
+	// 		}
+	// 		return bkName
+	// 	}
+	// 	if len(names) > 0 {
+	// 		for _, n := range names {
+	// 			getter([]byte("_metrics_" + n))
+	// 		}
+	// 	} else {
+	// 		for bkNameBuf, _ := c.Seek([]byte("_metrics_")); bytes.HasPrefix(bkNameBuf, []byte("_metrics_")); bkNameBuf, _ = c.Next() {
+	// 			if bkName := getter(bkNameBuf); bkName != "" {
+	// 				names = append(names, bkName)
+	// 			}
+	// 		}
+	// 	}
+	// 	return nil
+	// })
+	// return fillMetricsHoles(res, names, startNano, endNano), err
 }
 
 func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, startNano, endNano int64) (m []s2pkg.GroupedMetrics) {
@@ -596,5 +599,5 @@ func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, start
 }
 
 func (s *Server) DeleteMetrics(name string) error {
-	return s.ConfigDB.Update(func(tx *bbolt.Tx) error { return tx.DeleteBucket([]byte("_metrics_" + name)) })
+	return s.db.Delete([]byte("metrics_"+name), pebble.Sync)
 }

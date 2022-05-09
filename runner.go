@@ -6,22 +6,19 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
-	"go.etcd.io/bbolt"
 )
 
 type rangeFunc func(s2pkg.LogTx) ([]s2pkg.Pair, int, error)
 
 func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
-	err = s.pick(key).View(func(tx *bbolt.Tx) error {
-		pairs, count, err = f(s2pkg.LogTx{Tx: tx})
-		if err == nil {
-			success(pairs, count)
-		}
-		return err
-	})
+	pairs, count, err = f(s2pkg.LogTx{Storage: s.db})
+	if err == nil {
+		success(pairs, count)
+	}
 	return
 }
 
@@ -51,7 +48,7 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 		}
 	}(time.Now())
 
-	s.db[shardIndex(key)].batchTx <- t
+	s.shards[shardIndex(key)].batchTx <- t
 	if runType == RunDefer {
 		return nil, nil
 	}
@@ -103,7 +100,7 @@ func (s *Server) batchWorker(shard int) {
 		}
 	}()
 
-	x := &s.db[shard]
+	x := &s.shards[shard]
 	tasks := []*batchTask{}
 
 	blocking := false
@@ -178,31 +175,26 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
 	logtail := new(uint64)
-	// During the compaction replacing process (starting at stage 3), the shard becomes temporarily unavailable for writing
-	s.db[shard].compactLocker.Lock(func() { log.Info("runner is waiting for compactor") })
-	err := s.db[shard].Update(func(tx *bbolt.Tx) (err error) {
-		ltx := s2pkg.LogTx{Logtail: logtail, Tx: tx}
-		for i, t := range tasks {
-			outs[i], err = t.f(ltx)
-			if err != nil {
-				return err
-			}
-			tasks[i].outLog = *logtail
+	b := s.db.NewIndexedBatch()
+	defer b.Close()
+	ltx := s2pkg.LogTx{OutLogtail: logtail, LogPrefix: getShardLogKey(int16(shard)), Storage: b}
+	var err error
+	for i, t := range tasks {
+		outs[i], err = t.f(ltx)
+		if err != nil {
+			s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
+			log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
 		}
-		return nil
-	})
-	s.db[shard].compactLocker.Unlock()
-	if err != nil {
-		s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
-		log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
+		tasks[i].outLog = *logtail
 	}
+	err = b.Commit(pebble.Sync)
 	for i, t := range tasks {
 		if err != nil {
 			t.out <- err
 		} else {
 			s.removeCache(t.key)
 			if t.runType == RunSync && s.Slave.IsAcked(s) {
-				s.db[shard].syncWaiter.WaitAt(t.outLog, t.out, outs[i])
+				s.shards[shard].syncWaiter.WaitAt(t.outLog, t.out, outs[i])
 			} else {
 				t.out <- outs[i]
 			}
@@ -210,7 +202,7 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	}
 
 	select {
-	case s.db[shard].pusherTrigger <- true:
+	case s.shards[shard].pusherTrigger <- true:
 	default:
 	}
 	s.Survey.BatchLat.Incr(time.Since(start).Milliseconds())

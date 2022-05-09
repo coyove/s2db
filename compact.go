@@ -5,8 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,7 +24,8 @@ const (
 )
 
 func (s *Server) DumpShard(shard int, path string) (int64, error) {
-	return s.db[shard].DB.Dump(path, s.DumpSafeMargin*1024*1024)
+	// return s.shards[shard].DB.Dump(path, s.DumpSafeMargin*1024*1024)
+	return 0, nil
 }
 
 func (s *Server) CompactShard(shard int, remapDir string, async bool) error {
@@ -44,7 +43,7 @@ func (s *Server) CompactShard(shard int, remapDir string, async bool) error {
 
 func (s *Server) compactShardImpl(shard int, remapShardDir string, out chan int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
-	success := false
+	// success := false
 
 	if v, ok := s.CompactLock.Lock(shard); !ok {
 		out <- v.(int)
@@ -60,167 +59,167 @@ func (s *Server) compactShardImpl(shard int, remapShardDir string, out chan int)
 		s2pkg.Recover(nil)
 	}()
 
-	x := &s.db[shard]
-	s.runScriptFunc("compactonstart", shard)
+	// x := &s.shards[shard]
+	// s.runScriptFunc("compactonstart", shard)
 
-	path := x.DB.Path()
-	shardDir, _, err := s.GetShardFilename(shard)
-	if err != nil {
-		log.Error("get shard dir: ", err)
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	if remapShardDir != "" && remapShardDir != shardDir {
-		log.Infof("STAGE X: compaction remapping: from %q to %q, mkdir=%v", shardDir, remapShardDir, os.MkdirAll(remapShardDir, 0777))
-		shardDir = remapShardDir
-	}
+	// path := x.DB.Path()
+	// shardDir, _, err := s.GetShardFilename(shard)
+	// if err != nil {
+	// 	log.Error("get shard dir: ", err)
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// if remapShardDir != "" && remapShardDir != shardDir {
+	// 	log.Infof("STAGE X: compaction remapping: from %q to %q, mkdir=%v", shardDir, remapShardDir, os.MkdirAll(remapShardDir, 0777))
+	// 	shardDir = remapShardDir
+	// }
 
-	compactFilename := makeShardFilename(shard)
-	compactPath := filepath.Join(shardDir, compactFilename)
-	dumpPath := path + ".dump"
-	if s.ServerConfig.CompactDumpTmpDir != "" {
-		dumpPath = filepath.Join(s.CompactDumpTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
-	}
-	defer func() {
-		if !success {
-			log.Infof("compaction failed, removeCompactErr=%v", s2pkg.RemoveFile(compactPath))
-		}
-	}()
+	// compactFilename := makeShardFilename(shard)
+	// compactPath := filepath.Join(shardDir, compactFilename)
+	// dumpPath := path + ".dump"
+	// if s.ServerConfig.CompactDumpTmpDir != "" {
+	// 	dumpPath = filepath.Join(s.CompactDumpTmpDir, "shard"+strconv.Itoa(shard)+".redir.dump")
+	// }
+	// defer func() {
+	// 	if !success {
+	// 		log.Infof("compaction failed, removeCompactErr=%v", s2pkg.RemoveFile(compactPath))
+	// 	}
+	// }()
 
-	// STAGE 1: dump the shard, open a temp database for compaction
-	log.Infof("STAGE 0: begin compaction, compactDB=%s, dumpDB=%s, removeOldDumpErr=%v",
-		compactPath, dumpPath, s2pkg.RemoveFile(dumpPath))
+	// // STAGE 1: dump the shard, open a temp database for compaction
+	// log.Infof("STAGE 0: begin compaction, compactDB=%s, dumpDB=%s, removeOldDumpErr=%v",
+	// 	compactPath, dumpPath, s2pkg.RemoveFile(dumpPath))
 
-	dumpSize, err := x.DB.Dump(dumpPath, s.DumpSafeMargin*1024*1024)
-	if err != nil {
-		log.Error("dump DB: ", err)
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	log.Info("STAGE 0: dump finished: ", dumpSize)
+	// dumpSize, err := x.DB.Dump(dumpPath, s.DumpSafeMargin*1024*1024)
+	// if err != nil {
+	// 	log.Error("dump DB: ", err)
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// log.Info("STAGE 0: dump finished: ", dumpSize)
 
-	compactDB, err := bbolt.Open(compactPath, 0666, DBOptions)
-	if err != nil {
-		log.Error("open compactDB: ", err)
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	dumpDB, err := bbolt.Open(dumpPath, 0666, DBReadonlyOptions)
-	if err != nil {
-		log.Errorf("open dumpDB: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
-		log.Errorf("defragdb error: %v, closeDumpErr=%v, closeCompactErr=%v", err, dumpDB.Close(), compactDB.Close())
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	log.Infof("STAGE 1: point-in-time compaction finished, size=%d, closeDumpErr=%v, removeDumpErr=%v",
-		compactDB.Size(), dumpDB.Close(), s2pkg.RemoveFile(dumpPath))
+	// compactDB, err := bbolt.Open(compactPath, 0666, DBOptions)
+	// if err != nil {
+	// 	log.Error("open compactDB: ", err)
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// dumpDB, err := bbolt.Open(dumpPath, 0666, DBReadonlyOptions)
+	// if err != nil {
+	// 	log.Errorf("open dumpDB: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// if err := s.defragdb(shard, dumpDB, compactDB); err != nil {
+	// 	log.Errorf("defragdb error: %v, closeDumpErr=%v, closeCompactErr=%v", err, dumpDB.Close(), compactDB.Close())
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// log.Infof("STAGE 1: point-in-time compaction finished, size=%d, closeDumpErr=%v, removeDumpErr=%v",
+	// 	compactDB.Size(), dumpDB.Close(), s2pkg.RemoveFile(dumpPath))
 
-	// STAGE 2: for any changes happened during the compaction, write them into compactDB
-	var ct, mt uint64
-	for first := 0; ; first++ {
-		if err = compactDB.View(func(tx *bbolt.Tx) error {
-			if bk := tx.Bucket([]byte("wal")); bk != nil {
-				ct = bk.Sequence()
-			}
-			return nil
-		}); err != nil {
-			log.Errorf("get compactDB tail: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-		mt, err = s.ShardLogtail(shard)
-		if err != nil {
-			log.Errorf("get shard tail: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-		if ct > mt {
-			log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d, closeCompactErr=%v", ct, mt, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-		if first%1000 == 0 {
-			log.Infof("STAGE 1.5: chasing online (% 7d) ct=% 16d, mt=% 16d, diff=%d", first/1000, ct, mt, mt-ct)
-		}
-		if mt-ct <= uint64(s.ResponseLogRun/2+1) {
-			break // the gap is close enough, it is time to move on to the next stage
-		}
+	// // STAGE 2: for any changes happened during the compaction, write them into compactDB
+	// var ct, mt uint64
+	// for first := 0; ; first++ {
+	// 	if err = compactDB.View(func(tx *bbolt.Tx) error {
+	// 		if bk := tx.Bucket([]byte("wal")); bk != nil {
+	// 			ct = bk.Sequence()
+	// 		}
+	// 		return nil
+	// 	}); err != nil {
+	// 		log.Errorf("get compactDB tail: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// 	mt, err = s.ShardLogtail(shard)
+	// 	if err != nil {
+	// 		log.Errorf("get shard tail: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// 	if ct > mt {
+	// 		log.Errorf("fatal error: compactDB tail exceeds shard tail: %d>%d, closeCompactErr=%v", ct, mt, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// 	if first%1000 == 0 {
+	// 		log.Infof("STAGE 1.5: chasing online (% 7d) ct=% 16d, mt=% 16d, diff=%d", first/1000, ct, mt, mt-ct)
+	// 	}
+	// 	if mt-ct <= uint64(s.ResponseLogRun/2+1) {
+	// 		break // the gap is close enough, it is time to move on to the next stage
+	// 	}
 
-		logs, logprevHash, err := s.respondLog(shard, ct+1, false)
-		if err != nil {
-			log.Errorf("respondLog: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-		if len(logs) == 0 {
-			log.Errorf("fatal: respondLog returned empty logs, closeCompactErr=%v", compactDB.Close())
-			return
-		}
-		if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
-			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-	}
-	log.Infof("STAGE 2: incremental logs replayed, ct=% 16d, mt=% 16d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
+	// 	logs, logprevHash, err := s.respondLog(shard, ct+1, false)
+	// 	if err != nil {
+	// 		log.Errorf("respondLog: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// 	if len(logs) == 0 {
+	// 		log.Errorf("fatal: respondLog returned empty logs, closeCompactErr=%v", compactDB.Close())
+	// 		return
+	// 	}
+	// 	if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
+	// 		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// }
+	// log.Infof("STAGE 2: incremental logs replayed, ct=% 16d, mt=% 16d, diff=%d, compactSize=%d", ct, mt, mt-ct, compactDB.Size())
 
-	finalStageReached := func() {}
-	// STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
-	x.compactLocker.Lock(func() { log.Info("compactor is waiting for runner/bulkload") })
-	defer func() {
-		x.compactLocker.Unlock()
-		finalStageReached()
-	}()
-	log.Info("STAGE 3: onlineDB write lock acquired")
+	// finalStageReached := func() {}
+	// // STAGE 3: now compactDB almost (or already) catch up with onlineDB, we make onlineDB readonly so no more new changes can be made
+	// x.compactLocker.Lock(func() { log.Info("compactor is waiting for runner/bulkload") })
+	// defer func() {
+	// 	x.compactLocker.Unlock()
+	// 	finalStageReached()
+	// }()
+	// log.Info("STAGE 3: onlineDB write lock acquired")
 
-	// STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
-	logs, logprevHash, err := s.respondLog(shard, ct+1, true)
-	if err != nil {
-		log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
-	if len(logs) > 0 {
-		if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
-			log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
-			s.runScriptFunc("compactonerror", shard, err)
-			return
-		}
-	}
-	log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
+	// // STAGE 4: for any changes happened during STAGE 2+3 before readonly, write them to compactDB (should be few)
+	// logs, logprevHash, err := s.respondLog(shard, ct+1, true)
+	// if err != nil {
+	// 	log.Errorf("responseLog: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
+	// if len(logs) > 0 {
+	// 	if _, _, err := runLog(ct+1, logprevHash, logs, compactDB); err != nil {
+	// 		log.Errorf("runLog: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 		s.runScriptFunc("compactonerror", shard, err)
+	// 		return
+	// 	}
+	// }
+	// log.Infof("STAGE 4: final logs replayed, count=%d, size: %d>%d", len(logs), x.DB.Size(), compactDB.Size())
 
-	// STAGE 5: now compactDB and onlineDB are identical, time to make compactDB officially online
-	if err := s.UpdateShardFilename(shard, shardDir, compactFilename); err != nil {
-		log.Errorf("update shard filename: %v, closeCompactErr=%v", err, compactDB.Close())
-		s.runScriptFunc("compactonerror", shard, err)
-		return
-	}
+	// // STAGE 5: now compactDB and onlineDB are identical, time to make compactDB officially online
+	// if err := s.UpdateShardFilename(shard, shardDir, compactFilename); err != nil {
+	// 	log.Errorf("update shard filename: %v, closeCompactErr=%v", err, compactDB.Close())
+	// 	s.runScriptFunc("compactonerror", shard, err)
+	// 	return
+	// }
 
-	old := x.DB
-	x.DB = compactDB
-	finalStageReached = func() {
-		go func() {
-			for i := 0; i < ShardNum; i++ {
-				if i == (shard-1+ShardNum)%ShardNum { // preserve last 2 shard backups
-					continue
-				}
-				oldBakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(i)+".bak")
-				s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
-				if err := s2pkg.RemoveFile(oldBakPath); err != nil {
-					log.Errorf("STAGE 6: delete old backup file: %v, err=%v", oldBakPath, err)
-				}
-			}
-			bakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(shard)+".bak")
-			log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
-				old.Close(), os.Rename(path, bakPath))
-		}()
-		s.runScriptFunc("compactonfinish", shard)
-	}
-	success = true
+	// old := x.DB
+	// x.DB = compactDB
+	// finalStageReached = func() {
+	// 	go func() {
+	// 		for i := 0; i < ShardNum; i++ {
+	// 			if i == (shard-1+ShardNum)%ShardNum { // preserve last 2 shard backups
+	// 				continue
+	// 			}
+	// 			oldBakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(i)+".bak")
+	// 			s.runScriptFunc("compactondeletebackup", shard, oldBakPath)
+	// 			if err := s2pkg.RemoveFile(oldBakPath); err != nil {
+	// 				log.Errorf("STAGE 6: delete old backup file: %v, err=%v", oldBakPath, err)
+	// 			}
+	// 		}
+	// 		bakPath := filepath.Join(shardDir, "shard"+strconv.Itoa(shard)+".bak")
+	// 		log.Infof("STAGE 5: swap compacted database to online, closeOldErr=%v, renameOldErr=%v",
+	// 			old.Close(), os.Rename(path, bakPath))
+	// 	}()
+	// 	s.runScriptFunc("compactonfinish", shard)
+	// }
+	// success = true
 }
 
 func (s *Server) schedCompactionJob() {

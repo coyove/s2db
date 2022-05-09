@@ -158,10 +158,10 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 			if err != nil {
 				return 0, err
 			}
-			if res.Type() != typ.String && !bas.IsPrototype(res, bas.Proto.Bytes) {
+			if res.Type() != typ.String && !bas.IsBytes(res) {
 				return 0, fmt.Errorf("ZINCRBY datafunc: expects string or bytes")
 			}
-			dataBuf = res.Safe().Bytes()
+			dataBuf = bas.ToReadonlyBytes(res)
 		}
 
 		if by == 0 {

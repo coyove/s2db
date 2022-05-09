@@ -441,6 +441,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dumpCommand(command)), w)
 	case "QAPPEND":
 		command.Argv = append(command.Argv, []byte("_NANOTS"), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)))
+		if getRemoteIP(remoteAddr).Equal(net.IPv4(172, 31, 128, 202)) {
+			waitLimiter(s.QAppendLimiter)
+		}
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseQAppend(cmd, key, command, dumpCommand(command)), w)
 	}
 

@@ -51,11 +51,6 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 		}
 	}(time.Now())
 
-	switch cmd {
-	case "QAPPEND":
-		waitLimiter(s.QAppendLimiter)
-	}
-
 	s.db[shardIndex(key)].batchTx <- t
 	if runType == RunDefer {
 		return nil, nil
@@ -146,7 +141,9 @@ func (s *Server) batchWorker(shard int) {
 							if ok {
 								tasks = append(tasks, t)
 								if t.runType == RunDefer {
-									goto CONTINUE_SLEEP
+									if len(tasks) < s.BatchMaxRun {
+										goto CONTINUE_SLEEP
+									}
 								}
 							}
 							// During sleep, if we received a non-deferred task (or channel closed), we should exit immediately

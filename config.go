@@ -322,38 +322,38 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 		Globals: bas.NewObject(0).
 			SetProp("server", bas.ValueOf(s)).
 			SetProp("ctx", bas.ValueOf(context.TODO())).
-			SetProp("args", bas.NewArray(a...).ToValue()).
+			SetProp("args", bas.Array(a...)).
 			SetMethod("flags", func(env *bas.Env) {
 				cmd := redisproto.Command{}
 				for _, v := range env.Stack() {
-					cmd.Argv = append(cmd.Argv, v.Safe().Bytes())
+					cmd.Argv = append(cmd.Argv, bas.ToReadonlyBytes(v))
 				}
 				env.A = bas.ValueOf(cmd.Flags(0))
-			}, "").
+			}).
 			SetMethod("log", func(env *bas.Env) {
 				x := bytes.Buffer{}
 				for _, a := range env.Stack() {
 					x.WriteString(a.String() + " ")
 				}
 				log.Info("[logIO] ", x.String())
-			}, "").
+			}).
 			SetMethod("shardOf", func(e *bas.Env) {
 				e.A = bas.Int(shardIndex(e.Str(0)))
-			}, "").
+			}).
 			SetMethod("atof", func(e *bas.Env) {
 				v := s2pkg.MustParseFloat(e.Str(0))
 				e.A = bas.Float64(v)
-			}, "").
+			}).
 			SetMethod("hashArray", func(e *bas.Env) {
 				v := make([][]byte, 0, e.Size())
 				for i := range v {
-					v = append(v, e.Get(i).Safe().Bytes())
+					v = append(v, bas.ToReadonlyBytes(e.Get(i)))
 				}
 				e.A = bas.Str((redisproto.Command{Argv: v}).HashCode())
-			}, "").
+			}).
 			SetMethod("tokenize", func(e *bas.Env) {
 				e.A = bas.ValueOf(fts.SplitSimple(e.Str(0)))
-			}, "").
+			}).
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {
@@ -368,7 +368,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 					panic(err)
 				}
 				e.A = bas.ValueOf(v)
-			}, ""),
+			}),
 	}
 }
 

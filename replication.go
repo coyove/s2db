@@ -6,9 +6,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
-	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +28,24 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 		return s2pkg.BytesToUint64(iter.Key()[len(key):])
 	}
 	return 0
+}
+
+func (s *Server) ShardLogsRoughCount(shard int) int64 {
+	key := getShardLogKey(int16(shard))
+	iter := s.db.NewIter(&pebble.IterOptions{
+		LowerBound: key,
+		UpperBound: incrBytes(key),
+	})
+	if iter.Last() && bytes.HasPrefix(iter.Key(), key) {
+		last := s2pkg.BytesToUint64(iter.Key()[len(key):])
+		if iter.First() && bytes.HasPrefix(iter.Key(), key) {
+			if iter.Next() && bytes.HasPrefix(iter.Key(), key) {
+				first := s2pkg.BytesToUint64(iter.Key()[len(key):])
+				return int64(last) - int64(first) + 1
+			}
+		}
+	}
+	return -1
 }
 
 func (s *Server) logPusher(shard int) {
@@ -59,7 +74,7 @@ func (s *Server) logPusher(shard int) {
 		var cmd *redis.IntCmd
 		if !s.Slave.LogtailOK[shard] {
 			// First PUSHLOGS to slave will be an empty one, to get slave's current logtail
-			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, 0, 0)
+			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, (&s2pkg.Logs{}).Marshal())
 		} else {
 			loghead := s.Slave.Logtails[shard]
 			logs, err := s.respondLog(shard, loghead)
@@ -115,8 +130,11 @@ func runLog(db *pebble.DB, shard int, logs *s2pkg.Logs) (names map[string]bool, 
 	defer tx.Close()
 
 	logPrefix := getShardLogKey(int16(shard))
-	ltx := s2pkg.LogTx{Storage: tx, InLogtail: new(uint64)}
-
+	ltx := s2pkg.LogTx{
+		Storage:   tx,
+		LogPrefix: logPrefix,
+		InLogtail: new(uint64),
+	}
 	c := tx.NewIter(&pebble.IterOptions{
 		LowerBound: logPrefix,
 		UpperBound: incrBytes(logPrefix),
@@ -127,11 +145,11 @@ func runLog(db *pebble.DB, shard int, logs *s2pkg.Logs) (names map[string]bool, 
 	if !c.Valid() || !bytes.HasPrefix(c.Key(), logPrefix) {
 		return nil, 0, fmt.Errorf("fatal: no log found")
 	}
-	if currentSig := binary.BigEndian.Uint32(c.Value()[1:]); logs.PrevSig != currentSig {
-		return nil, 0, fmt.Errorf("running unrelated logs at %v, got %x, expects %x", c.Key(), currentSig, logs.PrevSig)
-	}
 	if len(logs.Logs) == 0 {
 		return nil, s2pkg.BytesToUint64(c.Key()[len(logPrefix):]), nil
+	}
+	if currentSig := binary.BigEndian.Uint32(c.Value()[1:]); logs.PrevSig != currentSig {
+		return nil, 0, fmt.Errorf("running unrelated logs at %v, got %x, expects %x", c.Key(), currentSig, logs.PrevSig)
 	}
 
 	names = map[string]bool{}
@@ -171,8 +189,7 @@ func runLog(db *pebble.DB, shard int, logs *s2pkg.Logs) (names map[string]bool, 
 			return nil, 0, fmt.Errorf("not a write command: %q", cmd)
 		}
 		if err != nil {
-			log.Error("bulkload, error ocurred: ", cmd, " ", name)
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("failed to run %s %s: %v", cmd, name, err)
 		}
 		names[name] = true
 	}
@@ -221,62 +238,6 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 		}
 	}
 	return
-}
-
-func (s *Server) requestFullShard(shard int, cfg redisproto.RedisConfig) bool {
-	log := log.WithField("shard", strconv.Itoa(shard))
-	client := &http.Client{}
-	resp, err := client.Get("http://" + cfg.Addr + "/?dump=" + strconv.Itoa(shard) + "&p=" + cfg.Password)
-	if err != nil {
-		log.Error("requestShard: http error: ", err)
-		return false
-	}
-	defer resp.Body.Close()
-
-	log.Info("requestShard: response received, start dumping")
-	sz := s2pkg.ParseInt(resp.Header.Get("X-Size"))
-	if sz == 0 {
-		log.Error("requestShard: invalid size")
-		return false
-	}
-
-	dir, currentFn, err := s.GetShardFilename(shard)
-	if err != nil {
-		log.Error("requestShard: get shard dir: ", err)
-		return false
-	}
-	fn := makeShardFilename(shard)
-
-	of, err := os.Create(filepath.Join(dir, fn))
-	if err != nil {
-		log.Error("requestShard: create shard: ", err)
-		return false
-	}
-	log.Infof("requestShard: local stored at %q, previous: %q", filepath.Join(dir, fn), currentFn)
-	defer of.Close()
-
-	lastProgress := 0
-	start := time.Now()
-	_, ok, err := s2pkg.CopyCrc32(of, resp.Body, func(progress int) {
-		if cp := int(float64(progress) / float64(sz) * 20); cp > lastProgress {
-			lastProgress = cp
-			log.Info("requestShard: progress ", cp*5, "%")
-		}
-	})
-	if err != nil {
-		log.Error("requestShard: copy: ", err)
-		return false
-	}
-	if !ok {
-		log.Error("requestShard: crc32 checksum failed")
-		return false
-	}
-	log.Info("requestShard: progress 100% in ", time.Since(start))
-	if err := s.UpdateShardFilename(shard, dir, fn); err != nil {
-		log.Error("requestShard: update shard filename failed: ", err)
-		return false
-	}
-	return true
 }
 
 type endpoint struct {

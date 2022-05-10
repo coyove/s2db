@@ -58,6 +58,7 @@ type Server struct {
 		CacheHit, WeakCacheHit  s2pkg.Survey
 		BatchSize, BatchLat     s2pkg.Survey
 		BatchSizeSv, BatchLatSv s2pkg.Survey
+		DBBatchSize             s2pkg.Survey
 		SlowLogs, Sync          s2pkg.Survey
 		Passthrough             s2pkg.Survey
 		FirstRunSleep           s2pkg.Survey
@@ -82,7 +83,9 @@ func Open(dbPath string) (x *Server, err error) {
 	}
 
 	x = &Server{DBPath: dbPath}
-	x.db, err = pebble.Open(dbPath, &pebble.Options{})
+	x.db, err = pebble.Open(dbPath, &pebble.Options{
+		Logger: dbLogger,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -267,8 +270,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	}
 
 	if isWriteCommand[cmd] {
-		if key == "" || strings.HasPrefix(key, "score.") || strings.HasPrefix(key, "--") || strings.Contains(key, "\r\n") {
-			return w.WriteError("invalid key name, which is either empty, containing '\\r\\n' or starting with 'score.' or '--'")
+		if key == "" || strings.Contains(key, "\x00") {
+			return w.WriteError("invalid key name, which is either empty or containing null bytes (0x00)")
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
@@ -398,9 +401,6 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Write commands
 	deferred := parseRunFlag(command)
 	switch cmd {
-	case "UNLINK":
-		p := s2pkg.Pair{Member: key, Score: float64(start.UnixNano()) / 1e9}
-		return w.WriteIntOrError(s.ZAdd(getPendingUnlinksKey(shardIndex(key)), RunNormal, []s2pkg.Pair{p}))
 	case "DEL":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":

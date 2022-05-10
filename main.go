@@ -46,6 +46,7 @@ var (
 
 	testFlag   = false
 	slowLogger *log.Logger
+	dbLogger   *log.Logger
 )
 
 //go:embed scripts/index.html
@@ -83,7 +84,13 @@ func main() {
 	slowLogger = log.New()
 	slowLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
 	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "log/slow.log", MaxSize: 100, MaxBackups: 16, MaxAge: 7, Compress: true,
+		Filename: "log/slow.log", MaxSize: 100, MaxBackups: 8, MaxAge: 7, Compress: true,
+	}))
+
+	dbLogger = log.New()
+	slowLogger.SetFormatter(&s2pkg.LogFormatter{})
+	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
+		Filename: "log/db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 28, Compress: true,
 	}))
 
 	rdb := redis.NewClient(&redis.Options{
@@ -203,9 +210,9 @@ func main() {
 		}
 		for i := 0; i < ShardNum; i++ {
 			if i == cfg.DB || cfg.DB == ShardNum {
-				if !s.requestFullShard(i, cfg) {
-					errorExit("mdump: failed to request shard " + strconv.Itoa(i))
-				}
+				// if !s.requestFullShard(i, cfg) {
+				// 	errorExit("mdump: failed to request shard " + strconv.Itoa(i))
+				// }
 			}
 		}
 		os.Exit(0)

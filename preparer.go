@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/sirupsen/logrus"
 )
 
 var ErrBigDelete = fmt.Errorf("can't delete big keys directly, use 'UNLINK key' command")
@@ -37,8 +39,17 @@ func prepareDel(key string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dd []byte) preparedTx {
+func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float64, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
+		if !math.IsNaN(dslt) {
+			// Filter out all DSLT in advance
+			for i := len(pairs) - 1; i >= 0; i-- {
+				if pairs[i].Score < dslt {
+					pairs = append(pairs[:i], pairs[i+1:]...)
+				}
+			}
+		}
+
 		bkName, bkScore, bkCounter := getZSetRangeKey(key)
 		added, updated := 0, 0
 		for _, p := range pairs {
@@ -47,7 +58,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dd []byte)
 			}
 			scoreBuf, scoreBufCloser, err := tx.Get(append(bkName, p.Member...))
 			if err == pebble.ErrNotFound {
-				// we are adding a new key
+				// Add new key
 				if xx {
 					continue
 				}
@@ -55,7 +66,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dd []byte)
 			} else if err != nil {
 				return nil, err
 			} else {
-				// old key exists
+				// Old key exists
 				scoreKey := append(append(bkScore, scoreBuf...), p.Member...)
 				scoreBufCloser.Close()
 				if nx {
@@ -80,6 +91,33 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dd []byte)
 			}
 			if err := tx.Set(append(append(bkScore, scoreBuf...), p.Member...), p.Data, pebble.Sync); err != nil {
 				return nil, err
+			}
+		}
+
+		if !math.IsNaN(dslt) {
+			c := tx.NewIter(&pebble.IterOptions{
+				LowerBound: bkScore,
+				UpperBound: incrBytes(bkScore),
+			})
+			defer c.Close()
+
+			x := 0
+			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
+				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
+				if score >= dslt {
+					break
+				}
+				if err := tx.Delete(c.Key(), pebble.Sync); err != nil {
+					return nil, err
+				}
+				if err := tx.Delete(append(dupBytes(bkName), c.Key()[len(bkScore)+8:]...), pebble.Sync); err != nil {
+					return nil, err
+				}
+				added--
+				if x++; x > s2pkg.RangeHardLimit/2 {
+					logrus.Infof("[DSLT] reach hard limit on key: %s, current score: %f, dslt: %f", key, score, dslt)
+					break
+				}
 			}
 		}
 

@@ -174,20 +174,32 @@ EXIT:
 func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
-	logtail := new(uint64)
+
 	b := s.db.NewIndexedBatch()
 	defer b.Close()
-	ltx := s2pkg.LogTx{OutLogtail: logtail, LogPrefix: getShardLogKey(int16(shard)), Storage: b}
+
+	ltx := s2pkg.LogTx{
+		OutLogtail: new(uint64),
+		LogPrefix:  getShardLogKey(int16(shard)),
+		Storage:    b,
+	}
+
 	var err error
 	for i, t := range tasks {
 		outs[i], err = t.f(ltx)
 		if err != nil {
 			s.Survey.SysWriteDiscards.Incr(int64(len(tasks)))
 			log.Error("error occurred: ", err, " ", len(tasks), " tasks discarded")
+			break
 		}
-		tasks[i].outLog = *logtail
+		tasks[i].outLog = *ltx.OutLogtail
 	}
-	err = b.Commit(pebble.Sync)
+
+	if err == nil {
+		s.Survey.DBBatchSize.Incr(int64(b.Count()))
+		err = b.Commit(pebble.Sync)
+	}
+
 	for i, t := range tasks {
 		if err != nil {
 			t.out <- err

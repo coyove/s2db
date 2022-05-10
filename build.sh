@@ -19,6 +19,7 @@ echo 'building' $VERSION
 if [[ "$1" == "linux" ]]; then
     env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o s2db $SRC 
     chmod +x ./s2db
+    cp ./s2db slave_dir/
     exit 0
 fi
 

@@ -14,6 +14,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -24,28 +25,40 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 		LowerBound: key,
 		UpperBound: incrBytes(key),
 	})
+	defer iter.Close()
 	if iter.Last() && bytes.HasPrefix(iter.Key(), key) {
 		return s2pkg.BytesToUint64(iter.Key()[len(key):])
 	}
 	return 0
 }
 
-func (s *Server) ShardLogsRoughCount(shard int) int64 {
+func (s *Server) ShardLogsRoughInfo(shard int) (uint64, int64, bool, error) {
 	key := getShardLogKey(int16(shard))
 	iter := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: incrBytes(key),
 	})
-	if iter.Last() && bytes.HasPrefix(iter.Key(), key) {
+	defer iter.Close()
+	if iter.Last() {
 		last := s2pkg.BytesToUint64(iter.Key()[len(key):])
-		if iter.First() && bytes.HasPrefix(iter.Key(), key) {
-			if iter.Next() && bytes.HasPrefix(iter.Key(), key) {
+		if last == 0 {
+			return 0, 0, false, nil
+		}
+		if iter.First() {
+			if iter.Next() {
 				first := s2pkg.BytesToUint64(iter.Key()[len(key):])
-				return int64(last) - int64(first) + 1
+				if first == 1 {
+					if iter.Next() {
+						first = s2pkg.BytesToUint64(iter.Key()[len(key):])
+						return last, clock.IdNano(last) - clock.IdNano(first), true, nil
+					}
+					return 0, 0, false, fmt.Errorf("fatal: no log after compaction checkpoint")
+				}
+				return last, clock.IdNano(last) - clock.IdNano(first), false, nil
 			}
 		}
 	}
-	return -1
+	return 0, 0, false, fmt.Errorf("fatal: invalid shard logs")
 }
 
 func (s *Server) logPusher(shard int) {
@@ -215,11 +228,14 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 
 	startBuf := append(logPrefix, s2pkg.Uint64ToBytes(startLogId)...)
 	c.SeekGE(startBuf)
-	if !c.Valid() || !bytes.Equal(startBuf, c.Key()) {
-		currentKey := dupBytes(c.Key())
-		c.Last()
-		return nil, fmt.Errorf("log #%d request not found, got %v, log tail: %v(%d)",
-			startLogId, currentKey, c.Key(), bytes.Compare(startBuf, c.Key()))
+	if !c.Valid() {
+		return nil, fmt.Errorf("log %d not found", startLogId)
+	}
+	if !bytes.Equal(startBuf, c.Key()) {
+		if bytes.HasPrefix(c.Key(), logPrefix) {
+			return nil, fmt.Errorf("log %d not found, got %d at its closest", startLogId, s2pkg.BytesToUint64(c.Key()[len(logPrefix):]))
+		}
+		return nil, fmt.Errorf("log %d not found, got %v", startLogId, c.Key())
 	}
 
 	logs = &s2pkg.Logs{}
@@ -228,12 +244,17 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 	for c.Next(); c.Valid() && bytes.HasPrefix(c.Key(), logPrefix); c.Next() {
 		data := dupBytes(c.Value())
 		if len(data) == 0 || len(c.Key()) != 8+len(logPrefix) {
-			return nil, fmt.Errorf("fatal: invalid log entry: %v=>%v", c.Key(), data)
+			return nil, fmt.Errorf("fatal: invalid log entry: (%v, %v)", c.Key(), data)
 		}
+
 		id := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
+		if id == 1 {
+			return nil, fmt.Errorf("logs are compacted")
+		}
+
 		logs.Logs = append(logs.Logs, &s2pkg.Log{Id: id, Data: data})
 		resSize += len(data)
-		if len(logs.Logs) >= s.ResponseLogRun || resSize > s.ResponseLogSize*1024 {
+		if resSize > s.ResponseLogSize*1024 {
 			break
 		}
 	}

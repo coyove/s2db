@@ -234,23 +234,6 @@ func (s *Server) webConsoleServer() {
 		q := r.URL.Query()
 		start := time.Now()
 
-		if dumpShard := q.Get("dump"); dumpShard != "" {
-			if s.Password != "" && s.Password != q.Get("p") {
-				w.WriteHeader(400)
-				return
-			}
-			// x := &s.runners[s2pkg.MustParseInt(dumpShard)]
-			w.Header().Add("Content-Type", "application/octet-stream")
-			// w.Header().Add("X-Size", strconv.Itoa(int(x.Size())))
-			m := s.DumpSafeMargin * 1024 * 1024 * (1 + s2pkg.ParseInt(q.Get("dump-margin-x")))
-			_ = m
-			// if err := x.DumpTo(w, m, q.Get("dump-checksum") != "0"); err != nil {
-			// 	log.Errorf("http dumper #%s: %v", dumpShard, err)
-			// }
-			log.Infof("http dumper #%s finished in %v", dumpShard, time.Since(start))
-			return
-		}
-
 		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
 			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
 			w.Header().Add("Content-Type", "text/json")
@@ -282,11 +265,8 @@ func (s *Server) webConsoleServer() {
 			wg.Wait()
 		}
 
-		sp := []string{}
+		sp := []string{s.DBPath}
 		// sp = append(sp, filepath.Dir(s.db.
-		if s.ServerConfig.CompactDumpTmpDir != "" {
-			sp = append(sp, s.CompactDumpTmpDir)
-		}
 		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
 		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
 		}

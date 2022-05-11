@@ -4,25 +4,19 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 )
-
-var counter func() uint64 = func() func() uint64 {
-	start := time.Now().UnixNano()
-	return func() uint64 { return uint64(atomic.AddInt64(&start, 1)) }
-}()
 
 func writeLog(tx s2pkg.LogTx, dd []byte) error {
 	var id uint64
 	if tx.InLogtail == nil {
-		id = counter()
+		id = clock.Id()
 	} else {
 		id = *tx.InLogtail
 	}

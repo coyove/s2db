@@ -2,12 +2,12 @@ package main
 
 import (
 	"bytes"
-	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/cockroachdb/pebble"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -46,23 +46,23 @@ func (s *Server) compactShardImpl(shard int) {
 		return
 	}
 
-	id := int64(s2pkg.BytesToUint64(c.Key()[len(logPrefix):]))
+	id := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
 	if id == 0 {
 		log.Info("no log to compact")
 		return
 	}
-	if id <= int64(s.ServerConfig.CompactLogHead)*2 {
-		log.Info("small logs, no need to compact")
+	if id == 1 {
+		log.Error("invalid log tail: no log after compaction checkpoint")
 		return
 	}
 
-	logx := uint64(id - int64(s.ServerConfig.CompactLogHead))
+	logx := clock.IdBeforeSeconds(id, s.ServerConfig.CompactLogsTTL)
 	if s.Slave.IsAcked(s) {
 		if s.Slave.Logtails[shard] == 0 || !s.Slave.LogtailOK[shard] {
 			log.Info("slave is not replication-ready, can't compact logs")
 			return
 		}
-		if logx < s.Slave.Logtails[shard] {
+		if logx > s.Slave.Logtails[shard] {
 			log.Infof("log compaction: adjust for slave: %d->%d", logx, s.Slave.Logtails[shard])
 			logx = s.Slave.Logtails[shard]
 		}
@@ -83,66 +83,16 @@ func (s *Server) compactShardImpl(shard int) {
 		log.Errorf("log compaction: final commit: %v", err)
 		return
 	}
-	a := time.Now().Unix()
-	log.Infof("log comssy: %d, %d %d", logx, id, a*a+a+1)
+	log.Infof("log compaction: %d, %d", logx, id)
 }
 
 func (s *Server) schedCompactionJob() {
+	shard := 0
 	for !s.Closed {
-		now := time.Now().UTC()
-		if cjt := s.CompactJobType; cjt == 0 { // disabled
-		} else if (100 <= cjt && cjt <= 123) || (10000 <= cjt && cjt <= 12359) { // start at exact time per day
-			pass := cjt <= 123 && now.Hour() == cjt-100
-			pass2 := cjt >= 10000 && now.Hour() == (cjt-10000)/100 && now.Minute() == (cjt-10000)%100
-			if pass || pass2 {
-				for i := 0; i < ShardNum; i++ {
-					ts := now.Unix() / 86400
-					key := fmt.Sprintf("last_compact_1xx_%d_ts", i)
-					if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
-						log.Info("last_compact_1xx_ts: skip #", i, " last=", time.Unix(last*86400, 0))
-					} else {
-						log.Info("scheduleCompaction(", i, ")")
-						s.compactShardImpl(i)
-						log.Info("update last_compact_1xx_ts: #", i, " err=", s.LocalStorage().Set(key, ts))
-					}
-				}
-			}
-		} else if 200 <= cjt && cjt <= 223 { // even shards start at __:00, odd shards start at __:30
-			hr := cjt - 200
-			for idx := 0; idx < 16; idx++ {
-				if now.Hour() == (hr+idx)%24 {
-					shardIdx := idx * 2
-					if now.Minute() >= 30 {
-						shardIdx++
-					}
-					key := "last_compact_2xx_ts"
-					ts := now.Unix() / 1800
-					if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
-						log.Info("last_compact_2xx_ts: skip #", shardIdx, " last=", time.Unix(last*1800, 0))
-					} else {
-						log.Info("scheduleCompaction(", shardIdx, ")")
-						s.compactShardImpl(shardIdx)
-						log.Info("update last_compact_2xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
-					}
-					break
-				}
-			}
-		} else if cjt >= 600 && cjt <= 659 {
-			offset := int64(cjt-600) * 60
-			ts := (now.Unix() - offset) / 3600
-			shardIdx := int(ts % ShardNum)
-			key := "last_compact_6xx_ts"
-			if last, _ := s.LocalStorage().GetInt64(key); ts-last < 1 {
-				log.Info("last_compact_6xx_ts: skip #", shardIdx, " last=", time.Unix(last*3600+offset, 0))
-			} else {
-				log.Info("scheduleCompaction(", shardIdx, ")")
-				s.compactShardImpl(shardIdx)
-				log.Info("update last_compact_6xx_ts: #", shardIdx, " err=", s.LocalStorage().Set(key, ts))
-			}
-		} else {
-			log.Info("compactor: no job found")
+		for i := 0; i < ShardNum/16; i++ {
+			shard = (shard + 1) % ShardNum
+			s.CompactShard(shard)
 		}
-
 		time.Sleep(time.Minute)
 	}
 }

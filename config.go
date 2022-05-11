@@ -33,19 +33,12 @@ type ServerConfig struct {
 	WeakCacheSize      int
 	SlowLimit          int // ms
 	PingTimeout        int // ms
-	ResponseLogRun     int
 	ResponseLogSize    int // kb
-	DumpSafeMargin     int // mb
 	BatchMaxRun        int
 	BatchFirstRunSleep int // ms
-	CompactJobType     int
-	CompactLogHead     int
-	CompactTxSize      int
-	CompactTxWorkers   int
-	CompactDumpTmpDir  string // use a temporal directory to store dumped shard
-	DisableMetrics     int    // 0|1
+	CompactLogsTTL     int // sec
+	DisableMetrics     int // 0|1
 	InspectorSource    string
-	QAppendQPSLimiter  int
 }
 
 func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
@@ -110,13 +103,9 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CacheObjMaxSize, 1024)
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
-	ifZero(&s.ResponseLogRun, 200)
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
-	ifZero(&s.CompactLogHead, 1500)
-	ifZero(&s.CompactTxSize, 20000)
-	ifZero(&s.CompactTxWorkers, 1)
-	ifZero(&s.DumpSafeMargin, 16)
+	ifZero(&s.CompactLogsTTL, 86400)
 	ifZero(&s.PingTimeout, 5000)
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())

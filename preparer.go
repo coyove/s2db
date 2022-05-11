@@ -12,8 +12,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var ErrBigDelete = fmt.Errorf("can't delete big keys directly, use 'UNLINK key' command")
-
 func getZSetRangeKey(key string) ([]byte, []byte, []byte) {
 	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), []byte("zsetctr_" + key)
 }

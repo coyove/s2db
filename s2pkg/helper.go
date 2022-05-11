@@ -18,6 +18,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cockroachdb/pebble/vfs"
 	"github.com/mmcloughlin/geohash"
 	"github.com/sirupsen/logrus"
 )
@@ -443,4 +444,12 @@ func (bs *BuoySignal) String() string {
 		return "0-0"
 	}
 	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
+}
+
+type NoLinkFS struct {
+	vfs.FS
+}
+
+func (fs NoLinkFS) Link(string, string) error {
+	return fmt.Errorf("NoLinkFS")
 }

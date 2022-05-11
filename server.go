@@ -82,10 +82,14 @@ func Open(dbPath string) (x *Server, err error) {
 		return nil, err
 	}
 
-	x = &Server{DBPath: dbPath}
-	x.db, err = pebble.Open(dbPath, &pebble.Options{
+	opts := &pebble.Options{
 		Logger: dbLogger,
-	})
+	}
+	opts = opts.EnsureDefaults()
+	opts.FS = s2pkg.NoLinkFS{FS: opts.FS}
+
+	x = &Server{DBPath: dbPath}
+	x.db, err = pebble.Open(dbPath, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -117,11 +121,11 @@ func Open(dbPath string) (x *Server, err error) {
 
 func (s *Server) Close() error {
 	s.Closed = true
+	s.ReadOnly = true
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
 	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
-	errs <- s.db.Close()
 	errs <- s.Slave.Close()
 	errs <- s.LocalRedis.Close()
 	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
@@ -140,6 +144,8 @@ func (s *Server) Close() error {
 		}(i)
 	}
 	wg.Wait()
+
+	errs <- s.db.Close()
 
 	p := bytes.Buffer{}
 	close(errs)
@@ -350,6 +356,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
 	case "INFO":
 		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
+	case "DUMP":
+		go func() {
+			start := time.Now()
+			log.Infof("dump %s in %v: %v", key, time.Since(start),
+				s.db.Checkpoint(key, pebble.WithFlushedWAL()))
+		}()
+		return w.WriteSimpleString("STARTED")
 	}
 
 	// Log commands

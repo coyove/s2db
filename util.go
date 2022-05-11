@@ -248,11 +248,21 @@ func (s *Server) ShardInfo(shard int) []string {
 		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
 		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
 	}
-	myTail := s.ShardLogtail(shard)
+
+	logtail, logsSpan, compacted, err := s.ShardLogsRoughInfo(shard)
+	if err != nil {
+		tmp = append(tmp, "fatal_db_error:"+err.Error())
+	} else {
+		tmp = append(tmp,
+			fmt.Sprintf("logtail:%d", logtail),
+			fmt.Sprintf("logs_timespan:%d", logsSpan),
+			fmt.Sprintf("logs_compacted:%v", compacted))
+	}
+
 	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]
 		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%d", int64(myTail)-int64(tail)))
+		tmp = append(tmp, fmt.Sprintf("logtail_diff:%d", int64(logtail)-int64(tail)))
 	}
 	tmp = append(tmp, "")
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"

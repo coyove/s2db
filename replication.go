@@ -19,6 +19,19 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+func writeLog(tx s2pkg.LogTx, dd []byte) error {
+	var id uint64
+	if tx.InLogtail == nil {
+		id = clock.Id()
+	} else {
+		id = *tx.InLogtail
+	}
+	if tx.OutLogtail != nil {
+		*tx.OutLogtail = id
+	}
+	return tx.Set(append(tx.LogPrefix, s2pkg.Uint64ToBytes(id)...), dd, pebble.Sync)
+}
+
 func (s *Server) ShardLogtail(shard int) uint64 {
 	key := getShardLogKey(int16(shard))
 	iter := s.db.NewIter(&pebble.IterOptions{
@@ -61,6 +74,30 @@ func (s *Server) ShardLogsRoughInfo(shard int) (uint64, int64, bool, error) {
 	return 0, 0, false, fmt.Errorf("fatal: invalid shard logs")
 }
 
+func (s *Server) compactLogs(shard int) {
+	logtail := s.ShardLogtail(shard)
+	if logtail == 0 {
+		return
+	}
+
+	logPrefix := getShardLogKey(int16(shard))
+	logx := clock.IdBeforeSeconds(logtail, s.ServerConfig.CompactLogsTTL)
+
+	if err := func() error {
+		b := s.db.NewBatch()
+		defer b.Close()
+		if err := b.DeleteRange(bAppendUint64(logPrefix, 2), bAppendUint64(logPrefix, logx), pebble.Sync); err != nil {
+			return err
+		}
+		if err := b.Set(bAppendUint64(logPrefix, 1), joinCommandEmpty(), pebble.Sync); err != nil {
+			return err
+		}
+		return b.Commit(pebble.Sync)
+	}(); err != nil {
+		log.Errorf("compact log shard #%d, logx=%d: %v", shard, logx, err)
+	}
+}
+
 func (s *Server) logPusher(shard int) {
 	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPusher(shard) })
 	ctx := context.TODO()
@@ -81,6 +118,7 @@ func (s *Server) logPusher(shard int) {
 
 		rdb := s.Slave.Redis()
 		if rdb == nil {
+			s.compactLogs(shard)
 			continue
 		}
 
@@ -131,6 +169,7 @@ func (s *Server) logPusher(shard int) {
 		s.Slave.Logtails[shard] = logtail
 		s.Slave.LastUpdate = time.Now().UnixNano()
 		s.shards[shard].syncWaiter.RaiseTo(logtail)
+		s.compactLogs(shard)
 	}
 
 	log.Info("log pusher exited")
@@ -138,8 +177,8 @@ func (s *Server) logPusher(shard int) {
 	s.shards[shard].pusherCloseSignal <- true
 }
 
-func runLog(db *pebble.DB, shard int, logs *s2pkg.Logs) (names map[string]bool, logtail uint64, err error) {
-	tx := db.NewIndexedBatch()
+func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, logtail uint64, err error) {
+	tx := s.db.NewIndexedBatch()
 	defer tx.Close()
 
 	logPrefix := getShardLogKey(int16(shard))
@@ -267,8 +306,8 @@ type endpoint struct {
 	config redisproto.RedisConfig
 
 	RemoteIP   string
-	LogtailOK  [ShardNum]bool
-	Logtails   [ShardNum]uint64
+	LogtailOK  [LogShardNum]bool
+	Logtails   [LogShardNum]uint64
 	LastUpdate int64
 }
 

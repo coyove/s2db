@@ -30,6 +30,9 @@ type MasterLRU struct {
 	lruCap    int64
 	lenMax    int64
 	hot, cold map[string]lruValue
+	mwm       [65536]int64
+
+	AddWatermarkConflict Survey
 }
 
 func NewMasterLRU(cap int64, onEvict func(LRUKeyValue)) *MasterLRU {
@@ -57,16 +60,25 @@ func (m *MasterLRU) SetNewCap(cap int64) {
 	m.mu.Unlock()
 }
 
-func (m *MasterLRU) Add(masterKey, slaveKey string, value interface{}) {
+func (m *MasterLRU) GetMasterWatermark(key string) int64 {
+	return m.mwm[HashStr(key)%uint64(len(m.mwm))]
+}
+
+func (m *MasterLRU) Add(masterKey, slaveKey string, value interface{}, masterWatermark int64) {
 	if slaveKey == "" {
 		panic("slave key can't be empty")
 	}
 	if masterKey == slaveKey {
 		panic("master and slave key can't be identical")
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if masterWatermark != 0 && masterWatermark < m.GetMasterWatermark(masterKey) {
+		m.AddWatermarkConflict.Incr(1)
+		return
+	}
 	if masterKey == "" {
 		m.hot[slaveKey] = lruValue{slaveStore: value}
 		delete(m.cold, slaveKey)
@@ -144,6 +156,7 @@ func (m *MasterLRU) Clear() {
 func (m *MasterLRU) Delete(key string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.mwm[HashStr(key)%uint64(len(m.mwm))]++
 	return m.delete(key, lruValue{}, false, false)
 }
 

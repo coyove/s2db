@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"runtime/debug"
 	"strconv"
 	"time"
 
@@ -14,11 +13,8 @@ import (
 
 type rangeFunc func(s2pkg.LogTx) ([]s2pkg.Pair, int, error)
 
-func (s *Server) runPreparedRangeTx(key string, f rangeFunc, success func([]s2pkg.Pair, int)) (pairs []s2pkg.Pair, count int, err error) {
+func (s *Server) runPreparedRangeTx(key string, f rangeFunc) (pairs []s2pkg.Pair, count int, err error) {
 	pairs, count, err = f(s2pkg.LogTx{Storage: s.db})
-	if err == nil {
-		success(pairs, count)
-	}
 	return
 }
 
@@ -92,13 +88,11 @@ type batchTask struct {
 
 func (s *Server) batchWorker(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error(r, " ", string(debug.Stack()))
-			time.Sleep(time.Second)
-			go s.batchWorker(shard)
-		}
-	}()
+
+	defer s2pkg.Recover(func() {
+		time.Sleep(time.Second)
+		go s.batchWorker(shard)
+	})
 
 	x := &s.shards[shard]
 	tasks := []*batchTask{}

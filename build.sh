@@ -12,8 +12,9 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
+LOGSHARD=$(grep 'const LogShardNum = ' server.go | cut -c21-100)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}-${LOGSHARD}
 echo 'building' $VERSION
 
 if [[ "$1" == "linux" ]]; then
@@ -28,7 +29,7 @@ if [[ "$1" == "win32" ]]; then
     OUT=s2db.exe
 fi
 
-go build -ldflags "-X main.Version=$VERSION" -o $OUT $SRC
+CGO_ENABLED=0 go build -ldflags "-X main.Version=$VERSION" -o $OUT $SRC
 mkdir -p slave_dir slave_dir2
 cp $OUT slave_dir/
 cp $OUT slave_dir2/

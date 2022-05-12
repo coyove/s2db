@@ -20,7 +20,6 @@ var (
 )
 
 func (s *Server) ZCount(lex bool, key string, start, end string, flags redisproto.Flags) (int, error) {
-	onSuccess := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), count) }
 	ro := s2pkg.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
@@ -28,10 +27,10 @@ func (s *Server) ZCount(lex bool, key string, start, end string, flags redisprot
 		Limit:       s2pkg.RangeHardLimit,
 	}
 	if lex {
-		_, c, err := s.runPreparedRangeTx(key, rangeLex(key, s2pkg.NewLexRL(start), s2pkg.NewLexRL(end), ro), onSuccess)
+		_, c, err := s.runPreparedRangeTx(key, rangeLex(key, s2pkg.NewLexRL(start), s2pkg.NewLexRL(end), ro))
 		return c, err
 	}
-	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro), onSuccess)
+	_, c, err := s.runPreparedRangeTx(key, rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro))
 	return c, err
 }
 
@@ -47,7 +46,7 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.F
 		Limit:       flags.LIMIT,
 		WithData:    flags.WITHDATA,
 		Append:      s2pkg.DefaultRangeAppend,
-	}), func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) })
+	}))
 	return p, err
 }
 
@@ -76,11 +75,9 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 }
 
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
-	success := func(p []s2pkg.Pair, count int) { s.addCache(key, flags.Command.HashCode(), p) }
-
 	ro.Limit = flags.LIMIT
 	ro.Append = s2pkg.DefaultRangeAppend
-	p, _, err = s.runPreparedRangeTx(key, f(), success)
+	p, _, err = s.runPreparedRangeTx(key, f())
 	if err == errSafeExit {
 		err = nil
 	}
@@ -270,7 +267,7 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 	}
 }
 
-func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (rank int, err error) {
+func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, err error) {
 	keybuf := []byte(member)
 	func() {
 		_, bkScore, _ := getZSetRangeKey(key)
@@ -281,14 +278,14 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 		defer c.Close()
 		if rev {
 			for c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Prev() {
-				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == flags.COUNT+1 {
+				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == maxMembers+1 {
 					return
 				}
 				rank++
 			}
 		} else {
 			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
-				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == flags.COUNT+1 {
+				if bytes.Equal(c.Key()[len(bkScore)+8:], keybuf) || rank == maxMembers+1 {
 					return
 				}
 				rank++
@@ -296,11 +293,8 @@ func (s *Server) ZRank(rev bool, key, member string, flags redisproto.Flags) (ra
 		}
 		rank = -1
 	}()
-	if rank == flags.COUNT+1 {
+	if rank == maxMembers+1 {
 		rank = -1
-	}
-	if flags.ArgCount() > 0 {
-		s.addCache(key, flags.HashCode(), rank)
 	}
 	return
 }

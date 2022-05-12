@@ -45,6 +45,8 @@ func TestZSet(t *testing.T) {
 	s2pkg.PanicErr(rdb.Ping(ctx).Err())
 
 	fmt.Println(rdb.ConfigSet(ctx, "SERVERNAME", "TEST").Err())
+	fmt.Println(rdb.ConfigSet(ctx, "SLAVE", "").Err())
+	s.ReadOnly = false
 
 	rdb.Del(ctx, "ztmp")
 	rdb.ZAdd(ctx, "ztmp", z(10, "x"))

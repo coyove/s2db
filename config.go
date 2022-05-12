@@ -41,6 +41,18 @@ type ServerConfig struct {
 	InspectorSource    string
 }
 
+func KeyExists(db s2pkg.Storage, key []byte) (bool, error) {
+	_, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+	rd.Close()
+	return true, nil
+}
+
 func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {
@@ -78,7 +90,11 @@ func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
 	}
 	old := int64(s2pkg.BytesToUint64(buf))
 	rd.Close()
-	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old+v)), pebble.Sync)
+	old += v
+	if old == 0 {
+		return db.Delete(key, pebble.Sync)
+	}
+	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
 }
 
 func (s *Server) loadConfig() error {
@@ -262,7 +278,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	}
 	cli = redis.NewClient(cfg.Options)
 	s.rdbCache.Delete(cfg.Addr)
-	s.rdbCache.Add(cfg.Addr, cfg.Raw, cli)
+	s.rdbCache.Add(cfg.Addr, cfg.Raw, cli, 0)
 	return
 }
 
@@ -425,6 +441,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
 		return true
 	})
+	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})
 
 	dbm := reflect.ValueOf(s.db.Metrics()).Elem()
 	rt = dbm.Type()

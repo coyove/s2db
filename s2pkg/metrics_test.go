@@ -174,7 +174,7 @@ func TestDoubleMapLRU(t *testing.T) {
 	start := time.Now()
 	for _, op := range ops {
 		if op.add {
-			m.Add("", strconv.Itoa(op.v), op.v)
+			m.Add("", strconv.Itoa(op.v), op.v, 0)
 		} else {
 			m.Get(strconv.Itoa(op.v))
 		}
@@ -207,7 +207,7 @@ func TestDoubleMapLRU(t *testing.T) {
 		const cap = 100
 		m = NewMasterLRU(cap, nil)
 		for i := 0; i < 1000; i++ {
-			m.Add("master", strconv.Itoa(i), i)
+			m.Add("master", strconv.Itoa(i), i, 0)
 		}
 		cnt := m.Delete("master")
 		if i == M-1 {
@@ -222,7 +222,7 @@ func TestDoubleMapLRU(t *testing.T) {
 		fmt.Println(kv.SlaveKey)
 	})
 	for i := 0; i < 7; i++ {
-		m.Add("", strconv.Itoa(i), i)
+		m.Add("", strconv.Itoa(i), i, 0)
 	}
 	m.Range(func(kv LRUKeyValue) bool {
 		fmt.Println(kv.SlaveKey, "=", kv.Value)

@@ -87,12 +87,12 @@ func (s *Server) compactShardImpl(shard int) {
 }
 
 func (s *Server) schedCompactionJob() {
-	shard := 0
+	// shard := 0
 	for !s.Closed {
-		for i := 0; i < ShardNum/16; i++ {
-			shard = (shard + 1) % ShardNum
-			s.CompactShard(shard)
-		}
+		// for i := 0; i < LogShardNum/16; i++ {
+		// 	shard = (shard + 1) % LogShardNum
+		// 	s.CompactShard(shard)
+		// }
 		time.Sleep(time.Minute)
 	}
 }

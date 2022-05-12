@@ -32,8 +32,6 @@ var (
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
 	showVersion  = flag.Bool("v", false, "print s2db version then exit")
-	masterDumper = flag.String("mdump", "", "dump requested shard from master to data directory then exit, form: "+
-		"ip:port/shard, "+strconv.Itoa(ShardNum)+" means all shards")
 	showLogtail  = flag.String("logtail", "", "print log tail of specified database then exit")
 	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	benchmark    = flag.String("bench", "", "")
@@ -202,22 +200,8 @@ func main() {
 	}
 
 	s.ReadOnly = *readOnly
-
-	if *masterDumper != "" {
-		cfg, err := redisproto.ParseConnString(*masterDumper)
-		if err != nil {
-			errorExit("mdump: invalid conn string: " + err.Error())
-		}
-		for i := 0; i < ShardNum; i++ {
-			if i == cfg.DB || cfg.DB == ShardNum {
-				// if !s.requestFullShard(i, cfg) {
-				// 	errorExit("mdump: failed to request shard " + strconv.Itoa(i))
-				// }
-			}
-		}
-		os.Exit(0)
-	}
 	log.Error(s.Serve(*listenAddr))
+	time.Sleep(time.Second)
 }
 
 func errorExit(msg string) {
@@ -256,9 +240,9 @@ func (s *Server) webConsoleServer() {
 			return
 		}
 
-		shardInfos, wg := [ShardNum][]string{}, sync.WaitGroup{}
+		shardInfos, wg := [LogShardNum][]string{}, sync.WaitGroup{}
 		if q.Get("noshard") != "1" {
-			for i := 0; i < ShardNum; i++ {
+			for i := 0; i < LogShardNum; i++ {
 				wg.Add(1)
 				go func(i int) { shardInfos[i] = s.ShardInfo(i); wg.Done() }(i)
 			}
@@ -278,7 +262,7 @@ func (s *Server) webConsoleServer() {
 				if idx := strings.Index(s, ":"); idx > 0 {
 					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
 				}
-				if strings.Count(string(r.Value), " ") == 31 {
+				if strings.Count(string(r.Value), " ") == LogShardNum-1 {
 					parts := strings.Split(string(r.Value)+"   ", " ")
 					for i, p := range parts {
 						if p == "" {

@@ -1,7 +1,9 @@
 package clock
 
 import (
+	"fmt"
 	_ "runtime"
+	"strconv"
 	"sync"
 	"time"
 	_ "unsafe"
@@ -41,6 +43,8 @@ func Now() time.Time {
 	return time.Unix(0, UnixNano())
 }
 
+const counterMask = 0x0fffffff
+
 // 35 bits seconds timestamp, 28 bits counter
 func Id() (id uint64) {
 	idMutex.Lock()
@@ -55,10 +59,10 @@ func Id() (id uint64) {
 	}
 	idLastSec = sec
 	idCounter++
-	if idCounter >= 0x0fffffff {
+	if idCounter >= counterMask {
 		panic("too many calls in one second")
 	}
-	id = uint64(sec)<<28 | uint64(idCounter&0x0fffffff)
+	id = uint64(sec)<<28 | uint64(idCounter&counterMask)
 	return
 }
 
@@ -72,4 +76,17 @@ func IdBeforeSeconds(id uint64, seconds int) uint64 {
 		return 1<<28 + 1
 	}
 	return uint64(idsec-int64(seconds))<<28 + 1
+}
+
+func IdDiff(a, b uint64) string {
+	if a == b {
+		return "0"
+	}
+	if IdNano(a) == IdNano(b) {
+		return fmt.Sprintf("0.%d", int(a&counterMask)-int(b&counterMask))
+	}
+	if a != 0 && b == 0 {
+		return "?"
+	}
+	return strconv.FormatInt(IdNano(a)-IdNano(b), 10)
 }

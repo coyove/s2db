@@ -23,10 +23,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const (
-	ShardNum            = 256
-	rejectedByMasterMsg = "rejected by master"
-)
+const LogShardNum = 32
+const rejectedByMasterMsg = "rejected by master"
 
 type Server struct {
 	ln, lnLocal  net.Listener
@@ -37,6 +35,7 @@ type Server struct {
 	Slave      endpoint
 	MasterIP   string
 	DBPath     string
+	DBOptions  *pebble.Options
 
 	ServerConfig
 	ReadOnly         bool
@@ -67,7 +66,7 @@ type Server struct {
 
 	db *pebble.DB
 
-	shards [ShardNum]struct {
+	shards [LogShardNum]struct {
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
@@ -82,14 +81,16 @@ func Open(dbPath string) (x *Server, err error) {
 		return nil, err
 	}
 
-	opts := &pebble.Options{
-		Logger: dbLogger,
+	x = &Server{
+		DBPath: dbPath,
+		DBOptions: (&pebble.Options{
+			Logger:       dbLogger,
+			Cache:        pebble.NewCache(int64(getEnvOptInt("S2DB_PDB_CACHE", 1024<<20))),
+			MemTableSize: getEnvOptInt("S2DB_PDB_MEMTABLESIZE", 32<<20),
+		}).EnsureDefaults(),
 	}
-	opts = opts.EnsureDefaults()
-	opts.FS = s2pkg.NoLinkFS{FS: opts.FS}
-
-	x = &Server{DBPath: dbPath}
-	x.db, err = pebble.Open(dbPath, opts)
+	x.DBOptions.FS = s2pkg.NoLinkFS{FS: x.DBOptions.FS}
+	x.db, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +123,7 @@ func Open(dbPath string) (x *Server, err error) {
 func (s *Server) Close() error {
 	s.Closed = true
 	s.ReadOnly = true
+	s.DBOptions.Cache.Unref()
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
 	errs <- s.lnLocal.Close()
@@ -187,7 +189,7 @@ func (s *Server) Serve(addr string) (err error) {
 		go s.logPusher(i)
 	}
 	go s.startCronjobs()
-	go s.schedCompactionJob() // TODO: close signal
+	// go s.schedCompactionJob() // TODO: close signal
 	go s.webConsoleServer()
 	go s.acceptor(s.lnLocal)
 	s.acceptor(s.ln)
@@ -378,7 +380,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err := proto.Unmarshal(command.At(2), logs); err != nil {
 			return w.WriteError(err.Error())
 		}
-		names, logtail, err := runLog(s.db, shard, logs)
+		names, logtail, err := s.runLog(shard, logs)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -426,15 +428,17 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 	h := command.HashCode()
 	weak := parseWeakFlag(command)
+	mwm := s.Cache.GetMasterWatermark(key)
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
 		x, cached := s.getCache(h, weak).([]float64)
 		if !cached {
-			x, err = s.ZMScore(key, restCommandsToKeys(2, command), command.Flags(-1))
+			x, err = s.ZMScore(key, restCommandsToKeys(2, command))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
+			s.addCache(key, command.HashCode(), x, mwm)
 		}
 		if cmd == "ZSCORE" {
 			return w.WriteBulk(s2pkg.FormatFloatBulk(x[0]))
@@ -447,10 +451,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZDATA", "ZMDATA":
 		x, cached := s.getCache(h, weak).([][]byte)
 		if !cached {
-			x, err = s.ZMData(key, restCommandsToKeys(2, command), command.Flags(-1))
+			x, err = s.ZMData(key, restCommandsToKeys(2, command))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
+			s.addCache(key, command.HashCode(), x, mwm)
 		}
 		if cmd == "ZDATA" {
 			return w.WriteBulk(x[0])
@@ -463,15 +468,20 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
-		return w.WriteIntOrError(s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4)))
+		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
+		if err == nil {
+			s.addCache(key, command.HashCode(), count, mwm)
+		}
+		return w.WriteIntOrError(count, err)
 	case "ZRANK", "ZREVRANK":
 		c, cached := s.getCache(h, weak).(int)
 		if !cached {
 			// COMMAND name key COUNT X
-			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3))
+			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3).COUNT)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
+			s.addCache(key, command.HashCode(), c, mwm)
 		}
 		if c == -1 {
 			return w.WriteBulk(nil)
@@ -498,6 +508,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		s.addCache(key, command.HashCode(), p, mwm)
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "SCAN":
 		flags := command.Flags(2)

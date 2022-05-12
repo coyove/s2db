@@ -10,21 +10,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/clock"
 )
-
-func writeLog(tx s2pkg.LogTx, dd []byte) error {
-	var id uint64
-	if tx.InLogtail == nil {
-		id = clock.Id()
-	} else {
-		id = *tx.InLogtail
-	}
-	if tx.OutLogtail != nil {
-		*tx.OutLogtail = id
-	}
-	return tx.Set(append(tx.LogPrefix, s2pkg.Uint64ToBytes(id)...), dd, pebble.Sync)
-}
 
 func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	var xx, nx, ch, pd, data bool
@@ -147,7 +133,7 @@ func (s *Server) ZCard(key string) (count int64) {
 	return int64(i)
 }
 
-func (s *Server) ZMScore(key string, memebrs []string, flags redisproto.Flags) (scores []float64, err error) {
+func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err error) {
 	if len(memebrs) == 0 {
 		return nil, fmt.Errorf("missing members")
 	}
@@ -161,13 +147,10 @@ func (s *Server) ZMScore(key string, memebrs []string, flags redisproto.Flags) (
 			scores[i] = score
 		}
 	}
-	if flags.Command.ArgCount() > 0 {
-		s.addCache(key, flags.HashCode(), scores)
-	}
 	return
 }
 
-func (s *Server) ZMData(key string, members []string, flags redisproto.Flags) (data [][]byte, err error) {
+func (s *Server) ZMData(key string, members []string) (data [][]byte, err error) {
 	if len(members) == 0 {
 		return nil, fmt.Errorf("missing members")
 	}
@@ -182,10 +165,6 @@ func (s *Server) ZMData(key string, members []string, flags redisproto.Flags) (d
 			}
 			data[i] = d
 		}
-	}
-	// fillPairsData will call ZMData as well (with an empty Flags), but no cache should be stored
-	if flags.Command.ArgCount() > 0 {
-		s.addCache(key, flags.HashCode(), data)
 	}
 	return
 }

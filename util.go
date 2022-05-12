@@ -23,6 +23,7 @@ import (
 
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 	log "github.com/sirupsen/logrus"
 	"go.etcd.io/bbolt"
 	"golang.org/x/time/rate"
@@ -62,7 +63,7 @@ func checkScore(s float64) error {
 }
 
 func shardIndex(key string) int {
-	return int(s2pkg.HashStr(key) % ShardNum)
+	return int(s2pkg.HashStr(key) % LogShardNum)
 }
 
 func restCommandsToKeys(i int, command *redisproto.Command) (keys []string) {
@@ -94,7 +95,7 @@ func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {
 	for i, el := range in {
 		keys[i] = el.Member
 	}
-	data, err := s.ZMData(key, keys, redisproto.Flags{})
+	data, err := s.ZMData(key, keys)
 	if err != nil {
 		return err
 	}
@@ -146,7 +147,7 @@ func (s *Server) Info(section string) (data []string) {
 			"")
 	}
 	if section == "" || section == "server_misc" {
-		sz, dataSize := 0, 0
+		dataSize := 0
 		dataFiles, _ := ioutil.ReadDir(s.DBPath)
 		for _, fi := range dataFiles {
 			dataSize += int(fi.Size())
@@ -155,18 +156,21 @@ func (s *Server) Info(section string) (data []string) {
 		data = append(data, "# server_misc",
 			fmt.Sprintf("cwd:%v", cwd),
 			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
-			fmt.Sprintf("db_size:%v", sz),
-			fmt.Sprintf("db_size_mb:%.2f", float64(sz)/1024/1024),
+			fmt.Sprintf("data_size:%d", dataSize),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			"")
 	}
 	if section == "" || section == "replication" {
 		data = append(data, "# replication")
+		tails := [LogShardNum]uint64{}
+		for i := range s.shards {
+			tails[i] = s.ShardLogtail(i)
+		}
+		data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		if s.Slave.Redis() != nil {
-			diffs, diffSum := [ShardNum]int64{}, int64(0)
+			diffs := [LogShardNum]string{}
 			for i := range s.shards {
-				diffs[i] = int64(s.ShardLogtail(i)) - int64(s.Slave.Logtails[i])
-				diffSum += diffs[i]
+				diffs[i] = clock.IdDiff(s.ShardLogtail(i), s.Slave.Logtails[i])
 			}
 			data = append(data,
 				fmt.Sprintf("slave_conn:%v", s.Slave.Config().Raw),
@@ -174,14 +178,7 @@ func (s *Server) Info(section string) (data []string) {
 				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()),
 				fmt.Sprintf("slave_logtail:%v", joinArray(s.Slave.Logtails)),
 				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
-				fmt.Sprintf("slave_logtail_diff_sum:%d", diffSum),
 			)
-		} else {
-			tails := [ShardNum]uint64{}
-			for i := range s.shards {
-				tails[i] = s.ShardLogtail(i)
-			}
-			data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		}
 		if s.MasterIP != "" {
 			data = append(data, fmt.Sprintf("master_ip:%v", s.MasterIP))
@@ -262,7 +259,7 @@ func (s *Server) ShardInfo(shard int) []string {
 	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]
 		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
-		tmp = append(tmp, fmt.Sprintf("logtail_diff:%d", int64(logtail)-int64(tail)))
+		tmp = append(tmp, fmt.Sprintf("logtail_diff:%v", clock.IdDiff(logtail, tail)))
 	}
 	tmp = append(tmp, "")
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
@@ -276,7 +273,7 @@ func (s *Server) waitSlave() {
 	s.ReadOnly = true
 	for start := time.Now(); time.Since(start).Seconds() < 0.5; {
 		var total, slaveTotal uint64
-		for i := 0; i < ShardNum; i++ {
+		for i := 0; i < LogShardNum; i++ {
 			total += s.ShardLogtail(i)
 			slaveTotal += s.Slave.Logtails[i]
 		}
@@ -416,7 +413,7 @@ func (s *Server) getCache(h string, ttl time.Duration) interface{} {
 	return nil
 }
 
-func (s *Server) addCache(key string, h string, data interface{}) {
+func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
 	var sz int
 	switch data := data.(type) {
 	case []s2pkg.Pair:
@@ -431,8 +428,8 @@ func (s *Server) addCache(key string, h string, data interface{}) {
 		}
 		s.Survey.CacheSize.Incr(int64(sz))
 	}
-	s.Cache.Add(key, h, data)
-	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()})
+	s.Cache.Add(key, h, data, wm)
+	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, 0)
 }
 
 func makeHTMLStat(s string) template.HTML {
@@ -492,4 +489,16 @@ func incrBytes(b []byte) []byte {
 
 func dupBytes(b []byte) []byte {
 	return append([]byte{}, b...)
+}
+
+func bAppendUint64(b []byte, v uint64) []byte {
+	return append(dupBytes(b), s2pkg.Uint64ToBytes(v)...)
+}
+
+func getEnvOptInt(name string, defaultValue int) int {
+	cacheSize := s2pkg.ParseInt(os.Getenv(name))
+	if cacheSize <= 0 {
+		cacheSize = defaultValue
+	}
+	return cacheSize
 }

@@ -74,6 +74,18 @@ func (s *Server) ShardLogInfo(shard int) (logtail uint64, logSpan int64, compact
 	panic("fatal: invalid shard logs")
 }
 
+func (s *Server) checkLogtail(shard int) error {
+	logtail := s.ShardLogtail(shard)
+	if logtail == 0 {
+		return nil
+	}
+	now := clock.UnixNano()
+	if now < clock.IdNano(logtail) {
+		return fmt.Errorf("monotonic clock skew: %d<%d", now, clock.IdNano(logtail))
+	}
+	return nil
+}
+
 func (s *Server) compactLogs(shard int) {
 	logtail := s.ShardLogtail(shard)
 	if logtail == 0 {
@@ -130,18 +142,18 @@ func (s *Server) logPusher(shard int) {
 			loghead := s.Slave.Logtails[shard]
 			logs, err := s.respondLog(shard, loghead)
 			if err != nil {
-				log.Error("logPusher get local log: ", err)
+				log.Error("local pusher: ", err)
 				continue
 			}
 			if len(logs.Logs) == 0 {
 				if err := rdb.Ping(ctx).Err(); err != nil {
-					if strings.Contains(err.Error(), "refused") {
-						log.Error("[M] slave not alive")
+					if remoteOfflineError(err) {
+						log.Error("[M] slave offline")
 					} else {
-						log.Error("logPusher ping error: ", err)
+						log.Error("failed to ping slave: ", err)
 					}
 				} else {
-					s.Slave.LastUpdate = time.Now().UnixNano()
+					s.Slave.LastUpdate = clock.UnixNano()
 				}
 				continue
 			}
@@ -150,12 +162,12 @@ func (s *Server) logPusher(shard int) {
 		rdb.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			if err != redis.ErrClosed {
-				if strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "i/o timeout") {
-					log.Error("[M] slave not alive")
+				if remoteOfflineError(err) {
+					log.Error("[M] slave offline")
 				} else if err != redis.Nil {
 					if err.Error() == rejectedByMasterMsg {
 						_, err := s.UpdateConfig("slave", "", false)
-						log.Info("[M] endpoint rejected PUSHLOGS because it is master, clear slave config: ", err)
+						log.Info("[M] endpoint is master and rejected PUSHLOGS, clearing slave config: ", err)
 						continue
 					}
 					log.Error("push logs to slave: ", err)
@@ -167,7 +179,7 @@ func (s *Server) logPusher(shard int) {
 		s.Slave.LogtailOK[shard] = true
 		logtailChanged = s.Slave.Logtails[shard] != logtail
 		s.Slave.Logtails[shard] = logtail
-		s.Slave.LastUpdate = time.Now().UnixNano()
+		s.Slave.LastUpdate = clock.UnixNano()
 		s.shards[shard].syncWaiter.RaiseTo(logtail)
 		s.compactLogs(shard)
 	}

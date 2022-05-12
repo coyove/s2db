@@ -540,3 +540,10 @@ func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
 	}
 	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
 }
+
+func remoteOfflineError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "i/o timeout")
+}

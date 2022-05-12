@@ -17,6 +17,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -70,7 +71,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.CompactLogsTTL, 86400)
 	ifZero(&s.PingTimeout, 5000)
 	if s.ServerName == "" {
-		s.ServerName = fmt.Sprintf("UNNAMED_%x", time.Now().UnixNano())
+		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
 	if s.Cache == nil {
 		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
@@ -140,14 +141,6 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 			fv.SetString(value)
 		}
 		found = true
-		/// s.ConfigDB.Update(func(tx *bbolt.Tx) error {
-		/// 	bk, err := tx.CreateBucketIfNotExists([]byte("_configlog"))
-		/// 	if err != nil {
-		/// 		return err
-		/// 	}
-		/// 	buf, _ := json.Marshal(map[string]string{"key": f.Name, "old": old, "new": value, "ts": fmt.Sprint(time.Now().Unix())})
-		/// 	return bk.Put(s2pkg.Uint64ToBytes(uint64(time.Now().UnixNano())), buf)
-		/// })
 		return errSafeExit
 	})
 	if found {
@@ -423,7 +416,7 @@ func (s *Server) ListMetricsNames() (names []string) {
 
 func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
 	if endNano == 0 && startNano == 0 {
-		startNano, endNano = time.Now().UnixNano()-int64(time.Hour), time.Now().UnixNano()
+		startNano, endNano = clock.UnixNano()-int64(time.Hour), clock.UnixNano()
 	}
 	res := map[string]s2pkg.GroupedMetrics{}
 	getter := func(f string) {

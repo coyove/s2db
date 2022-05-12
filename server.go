@@ -101,6 +101,9 @@ func Open(dbPath string) (x *Server, err error) {
 
 	// Load shards
 	for i := range x.shards {
+		if err := x.checkLogtail(i); err != nil {
+			return nil, err
+		}
 		d := &x.shards[i]
 		d.pusherCloseSignal = make(chan bool)
 		d.pusherTrigger = make(chan bool, 1)

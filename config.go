@@ -38,6 +38,7 @@ type ServerConfig struct {
 	BatchMaxRun        int
 	BatchFirstRunSleep int // ms
 	CompactLogsTTL     int // sec
+	CompactLogsDice    int
 	DisableMetrics     int // 0|1
 	InspectorSource    string
 }
@@ -69,6 +70,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
 	ifZero(&s.CompactLogsTTL, 86400)
+	ifZero(&s.CompactLogsDice, 10000)
 	ifZero(&s.PingTimeout, 5000)
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
@@ -382,10 +384,10 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	b := s.db.NewBatch()
 	for _, mp := range pairs {
 		key := []byte("metrics_" + mp.Member + "\x00")
-		if err := b.Set(append(key, s2pkg.Uint64ToBytes(uint64(now))...), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
+		if err := b.Set(bAppendUint64(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 			return err
 		}
-		if err := b.DeleteRange(key, append(key, s2pkg.Uint64ToBytes(uint64(now)-uint64(ttl))...), pebble.Sync); err != nil {
+		if err := b.DeleteRange(key, bAppendUint64(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
 			return err
 		}
 	}

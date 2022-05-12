@@ -2,6 +2,7 @@ package clock
 
 import (
 	"fmt"
+	"math/rand"
 	_ "runtime"
 	"strconv"
 	"sync"
@@ -89,4 +90,13 @@ func IdDiff(a, b uint64) string {
 		return "?"
 	}
 	return strconv.FormatInt(IdNano(a)-IdNano(b), 10)
+}
+
+var randMu sync.Mutex
+
+func Rand() float64 {
+	randMu.Lock()
+	v := rand.Float64()
+	randMu.Unlock()
+	return v
 }

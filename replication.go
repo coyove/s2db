@@ -86,11 +86,19 @@ func (s *Server) checkLogtail(shard int) error {
 	return nil
 }
 
-func (s *Server) compactLogs(shard int) {
+func (s *Server) compactLogs(shard int, first bool) {
 	logtail := s.ShardLogtail(shard)
 	if logtail == 0 {
 		return
 	}
+
+	if !first {
+		if clock.Rand() >= 1/float64(s.ServerConfig.CompactLogsDice) {
+			return
+		}
+	}
+
+	s.Survey.LogCompaction.Incr(1)
 
 	logPrefix := getShardLogKey(int16(shard))
 	logx := clock.IdBeforeSeconds(logtail, s.ServerConfig.CompactLogsTTL)
@@ -117,6 +125,8 @@ func (s *Server) logPusher(shard int) {
 	ticker := time.NewTicker(time.Second)
 	logtailChanged := false
 
+	s.compactLogs(shard, true)
+
 	for !s.Closed {
 		if logtailChanged {
 			// Continue pushing logs until slave catches up with master
@@ -130,7 +140,7 @@ func (s *Server) logPusher(shard int) {
 
 		rdb := s.Slave.Redis()
 		if rdb == nil {
-			s.compactLogs(shard)
+			s.compactLogs(shard, false)
 			continue
 		}
 
@@ -181,7 +191,7 @@ func (s *Server) logPusher(shard int) {
 		s.Slave.Logtails[shard] = logtail
 		s.Slave.LastUpdate = clock.UnixNano()
 		s.shards[shard].syncWaiter.RaiseTo(logtail)
-		s.compactLogs(shard)
+		s.compactLogs(shard, false)
 	}
 
 	ticker.Stop()

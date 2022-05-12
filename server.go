@@ -60,6 +60,7 @@ type Server struct {
 		SlowLogs, Sync          s2pkg.Survey
 		Passthrough             s2pkg.Survey
 		FirstRunSleep           s2pkg.Survey
+		LogCompaction           s2pkg.Survey
 		Command                 sync.Map
 	}
 

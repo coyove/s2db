@@ -9,7 +9,6 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"go.etcd.io/bbolt"
 )
 
 var (
@@ -299,51 +298,28 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 	return
 }
 
-func (s *Server) Foreach(cursor string, f func(k, typ string, bk ...*bbolt.Bucket) bool) (err error) {
-	return
-	// txs, close, err := s.openAllTx()
-	// if err != nil {
-	// 	return err
-	// }
-	// defer close()
-
-	// var cursorsZ, cursorsQ [ShardNum]*bbolt.Cursor
-	// keys := &s2pkg.PairHeap{DataOrder: true}
-	// for i := range s.runners {
-	// 	cursorsZ[i], cursorsQ[i] = txs[i].Cursor(), txs[i].Cursor()
-	// 	if k, _ := cursorsQ[i].Seek([]byte("q." + cursor)); bytes.HasPrefix(k, []byte("q.")) {
-	// 		heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[2:], Member: "queue"})
-	// 	}
-	// 	if k, _ := cursorsZ[i].Seek([]byte("zset.score." + cursor)); bytes.HasPrefix(k, []byte("zset.score.")) {
-	// 		heap.Push(keys, s2pkg.Pair{Score: float64(i), Data: k[11:], Member: "zset"})
-	// 	}
-	// }
-
-	// for cont := true; keys.Len() > 0 && cont; {
-	// 	p := heap.Pop(keys).(s2pkg.Pair)
-	// 	name := string(p.Data)
-	// 	if p.Member == "queue" {
-	// 		cont = f(name, "queue", txs[int(p.Score)].Bucket([]byte("q."+name)))
-	// 		if k, _ := cursorsQ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("q.")) {
-	// 			p.Data = k[2:]
-	// 			heap.Push(keys, p)
-	// 		}
-	// 	}
-	// 	if p.Member == "zset" {
-	// 		tx := txs[int(p.Score)]
-	// 		cont = f(name, "zset", tx.Bucket([]byte("zset."+name)), tx.Bucket([]byte("zset.score."+name)))
-	// 		if k, _ := cursorsZ[int(p.Score)].Next(); bytes.HasPrefix(k, []byte("zset.score.")) {
-	// 			p.Data = k[11:]
-	// 			heap.Push(keys, p)
-	// 		}
-	// 	}
-	// }
-	// return nil
+func (s *Server) Foreach(cursor string, f func(string) bool) {
+	opts := &pebble.IterOptions{}
+	opts.LowerBound = []byte("zsetks__" + cursor)
+	opts.UpperBound = []byte("zsetks_\xff")
+	c := s.db.NewIter(opts)
+	defer c.Close()
+	if !c.First() {
+		return
+	}
+	for c.Valid() {
+		k := c.Key()[8:]
+		key := string(k[:bytes.IndexByte(k, 0)])
+		if !f(key) {
+			return
+		}
+		c.SeekGE([]byte("zsetks__" + key + "\x01"))
+	}
 }
 
-func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair, nextCursor string, err error) {
+func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair, nextCursor string) {
 	count, timedout, start := flags.COUNT+1, "", time.Now()
-	if err := s.Foreach(cursor, func(k, typ string, bk ...*bbolt.Bucket) bool {
+	s.Foreach(cursor, func(k string) bool {
 		if flags.MATCH != "" && !s2pkg.Match(flags.MATCH, k) {
 			return true
 		}
@@ -351,13 +327,13 @@ func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair
 			timedout = k
 			return false
 		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(sizeOfBucket(bk[0]))})
+		_, _, bkCounter := getZSetRangeKey(k)
+		_, v, _, _ := GetKeyNumber(s.db, bkCounter)
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
 		return len(pairs) < count
-	}); err != nil {
-		return nil, "", err
-	}
+	})
 	if timedout != "" {
-		return nil, timedout, nil
+		return nil, timedout
 	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member

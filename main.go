@@ -86,8 +86,8 @@ func main() {
 	}))
 
 	dbLogger = log.New()
-	slowLogger.SetFormatter(&s2pkg.LogFormatter{})
-	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
+	dbLogger.SetFormatter(&s2pkg.LogFormatter{})
+	dbLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename: "log/db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 28, Compress: true,
 	}))
 
@@ -191,7 +191,7 @@ func main() {
 	for _, cd := range configSet {
 		if idx := strings.Index(*cd, "="); idx != -1 {
 			key, value := (*cd)[:idx], (*cd)[idx+1:]
-			old, _ := s.getConfig(key)
+			old, _ := s.GetConfig(key)
 			log.Infof("update %s from %q to %q", key, old, value)
 			if _, err := s.UpdateConfig(key, value, false); err != nil {
 				errorExit(err.Error())
@@ -240,11 +240,11 @@ func (s *Server) webConsoleServer() {
 			return
 		}
 
-		shardInfos, wg := [LogShardNum][]string{}, sync.WaitGroup{}
+		shardInfos, wg := [ShardLogNum][]string{}, sync.WaitGroup{}
 		if q.Get("noshard") != "1" {
-			for i := 0; i < LogShardNum; i++ {
+			for i := 0; i < ShardLogNum; i++ {
 				wg.Add(1)
-				go func(i int) { shardInfos[i] = s.ShardInfo(i); wg.Done() }(i)
+				go func(i int) { shardInfos[i] = s.ShardLogInfoCommand(i); wg.Done() }(i)
 			}
 			wg.Wait()
 		}
@@ -262,7 +262,7 @@ func (s *Server) webConsoleServer() {
 				if idx := strings.Index(s, ":"); idx > 0 {
 					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
 				}
-				if strings.Count(string(r.Value), " ") == LogShardNum-1 {
+				if strings.Count(string(r.Value), " ") == ShardLogNum-1 {
 					parts := strings.Split(string(r.Value)+"   ", " ")
 					for i, p := range parts {
 						if p == "" {

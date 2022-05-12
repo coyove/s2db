@@ -18,6 +18,13 @@ import (
 func TestLogsMarshal(t *testing.T) {
 	l := &Logs{PrevSig: 2, Logs: []*Log{{9, []byte("zzz")}}}
 	t.Log(proto.Marshal(l))
+
+	x := [32]int{}
+	for i := 0; i < 256; i++ {
+		k := fmt.Sprintf("%02x", i)
+		x[HashStr(k)%32]++
+	}
+	fmt.Println(x)
 }
 
 func TestMetrics(t *testing.T) {

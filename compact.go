@@ -23,13 +23,7 @@ func (s *Server) CompactShard(shard int) {
 func (s *Server) compactShardImpl(shard int) {
 	log := log.WithField("shard", strconv.Itoa(shard))
 
-	if v, ok := s.CompactLock.Lock(shard); !ok {
-		log.Info("previous compaction in the way #", v)
-		return
-	}
-
 	defer func() {
-		s.CompactLock.Unlock()
 		s2pkg.Recover(nil)
 	}()
 

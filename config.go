@@ -41,76 +41,22 @@ type ServerConfig struct {
 	InspectorSource    string
 }
 
-func KeyExists(db s2pkg.Storage, key []byte) (bool, error) {
-	_, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return false, nil
-		}
-		return false, err
-	}
-	rd.Close()
-	return true, nil
-}
-
-func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer rd.Close()
-	return dupBytes(buf), nil
-}
-
-func GetKeyNumber(db s2pkg.Storage, key []byte) (float64, uint64, bool, error) {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return 0, 0, false, nil
-		}
-		return 0, 0, false, err
-	}
-	defer rd.Close()
-	if len(buf) != 8 {
-		return 0, 0, false, fmt.Errorf("invalid number bytes (8)")
-	}
-	return s2pkg.BytesToFloat(buf), s2pkg.BytesToUint64(buf), true, nil
-}
-
-func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
-		}
-		return err
-	}
-	old := int64(s2pkg.BytesToUint64(buf))
-	rd.Close()
-	old += v
-	if old == 0 {
-		return db.Delete(key, pebble.Sync)
-	}
-	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
-}
-
 func (s *Server) loadConfig() error {
-	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		buf, err := GetKeyCopy(s.db, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
-		switch f.Type {
-		case reflect.TypeOf(0):
+		switch f.Type.Kind() {
+		case reflect.Int:
 			fv.SetInt(int64(s2pkg.BytesToFloatZero(buf)))
-		case reflect.TypeOf(""):
+		case reflect.String:
 			fv.SetString(string(buf))
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 	return s.saveConfig()
 }
 
@@ -213,7 +159,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	return found, nil
 }
 
-func (s *Server) getConfig(key string) (v string, ok bool) {
+func (s *Server) GetConfig(key string) (v string, ok bool) {
 	fast := reflect.ValueOf(&s.ServerConfig).Elem().FieldByName(key)
 	if fast.IsValid() {
 		return fmt.Sprint(fast.Interface()), true
@@ -227,30 +173,12 @@ func (s *Server) getConfig(key string) (v string, ok bool) {
 	return
 }
 
-func (s *Server) listConfig() (list []string) {
+func (s *Server) listConfigCommand() (list []string) {
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
 		return nil
 	})
 	return list
-}
-
-func (s *Server) listConfigLogs(n int) (logs []string) {
-	// s.ConfigDB.View(func(tx *bbolt.Tx) error {
-	// 	bk := tx.Bucket([]byte("_configlog"))
-	// 	if bk == nil {
-	// 		return nil
-	// 	}
-	// 	c := bk.Cursor()
-	// 	for k, v := c.Last(); len(k) > 0; k, v = c.Prev() {
-	// 		logs = append(logs, string(v))
-	// 		if len(logs) >= n {
-	// 			break
-	// 		}
-	// 	}
-	// 	return nil
-	// })
-	return
 }
 
 func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {
@@ -555,7 +483,7 @@ func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, start
 }
 
 func (s *Server) DeleteMetrics(name string) error {
-	return s.db.DeleteRange([]byte("metrics_"+name), []byte("metrics_"+name+"~"), pebble.Sync)
+	return s.db.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
 }
 
 func rvToFloat64(v reflect.Value) float64 {

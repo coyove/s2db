@@ -161,7 +161,6 @@ func (s *Server) batchWorker(shard int) {
 	}
 
 EXIT:
-	log.Info("batch worker exited")
 	x.batchCloseSignal <- true
 }
 

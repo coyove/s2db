@@ -29,7 +29,7 @@ func writeLog(tx s2pkg.LogTx, dd []byte) error {
 	if tx.OutLogtail != nil {
 		*tx.OutLogtail = id
 	}
-	return tx.Set(append(tx.LogPrefix, s2pkg.Uint64ToBytes(id)...), dd, pebble.Sync)
+	return tx.Set(bAppendUint64(tx.LogPrefix, id), dd, pebble.Sync)
 }
 
 func (s *Server) ShardLogtail(shard int) uint64 {
@@ -45,7 +45,7 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 	return 0
 }
 
-func (s *Server) ShardLogsRoughInfo(shard int) (uint64, int64, bool, error) {
+func (s *Server) ShardLogInfo(shard int) (logtail uint64, logSpan int64, compacted bool) {
 	key := getShardLogKey(int16(shard))
 	iter := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: key,
@@ -55,7 +55,7 @@ func (s *Server) ShardLogsRoughInfo(shard int) (uint64, int64, bool, error) {
 	if iter.Last() {
 		last := s2pkg.BytesToUint64(iter.Key()[len(key):])
 		if last == 0 {
-			return 0, 0, false, nil
+			return 0, 0, false
 		}
 		if iter.First() {
 			if iter.Next() {
@@ -63,15 +63,15 @@ func (s *Server) ShardLogsRoughInfo(shard int) (uint64, int64, bool, error) {
 				if first == 1 {
 					if iter.Next() {
 						first = s2pkg.BytesToUint64(iter.Key()[len(key):])
-						return last, clock.IdNano(last) - clock.IdNano(first), true, nil
+						return last, clock.IdNano(last) - clock.IdNano(first), true
 					}
-					return 0, 0, false, fmt.Errorf("fatal: no log after compaction checkpoint")
+					panic("fatal: no log after compaction checkpoint")
 				}
-				return last, clock.IdNano(last) - clock.IdNano(first), false, nil
+				return last, clock.IdNano(last) - clock.IdNano(first), false
 			}
 		}
 	}
-	return 0, 0, false, fmt.Errorf("fatal: invalid shard logs")
+	panic("fatal: invalid shard logs")
 }
 
 func (s *Server) compactLogs(shard int) {
@@ -150,7 +150,7 @@ func (s *Server) logPusher(shard int) {
 		rdb.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			if err != redis.ErrClosed {
-				if strings.Contains(err.Error(), "refused") {
+				if strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "i/o timeout") {
 					log.Error("[M] slave not alive")
 				} else if err != redis.Nil {
 					if err.Error() == rejectedByMasterMsg {
@@ -172,7 +172,6 @@ func (s *Server) logPusher(shard int) {
 		s.compactLogs(shard)
 	}
 
-	log.Info("log pusher exited")
 	ticker.Stop()
 	s.shards[shard].pusherCloseSignal <- true
 }
@@ -306,8 +305,8 @@ type endpoint struct {
 	config redisproto.RedisConfig
 
 	RemoteIP   string
-	LogtailOK  [LogShardNum]bool
-	Logtails   [LogShardNum]uint64
+	LogtailOK  [ShardLogNum]bool
+	Logtails   [ShardLogNum]uint64
 	LastUpdate int64
 }
 

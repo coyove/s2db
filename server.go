@@ -23,11 +23,12 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const LogShardNum = 32
+const ShardLogNum = 32
 const rejectedByMasterMsg = "rejected by master"
 
 type Server struct {
-	ln, lnLocal  net.Listener
+	ln           net.Listener
+	lnLocal      net.Listener
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.MasterLRU
 
@@ -39,12 +40,10 @@ type Server struct {
 
 	ServerConfig
 	ReadOnly         bool
-	Closed           bool   // server close flag
-	ConfigDir        string // location of config database
+	Closed           bool // server close flag
 	SelfManager      *bas.Program
 	Cache            *s2pkg.MasterLRU
 	WeakCache        *s2pkg.MasterLRU
-	CompactLock      s2pkg.LockBox
 	EvalLock         sync.RWMutex
 	SwitchMasterLock sync.RWMutex
 
@@ -66,13 +65,12 @@ type Server struct {
 
 	db *pebble.DB
 
-	shards [LogShardNum]struct {
+	shards [ShardLogNum]struct {
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool
 		pusherTrigger     chan bool
 		pusherCloseSignal chan bool
-		compactLocker     s2pkg.Locker
 	}
 }
 
@@ -334,7 +332,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "CONFIG":
 		switch strings.ToUpper(key) {
 		case "GET":
-			v, _ := s.getConfig(command.Get(2))
+			v, _ := s.GetConfig(command.Get(2))
 			return w.WriteBulkStrings([]string{command.Get(2), v})
 		case "SET":
 			found, err := s.UpdateConfig(command.Get(2), command.Get(3), false)
@@ -349,15 +347,15 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 				return w.WriteError(err.Error())
 			}
 			return w.WriteSimpleString("OK")
-		case "LOGS":
-			return w.WriteBulkStrings(s.listConfigLogs(10))
 		default:
-			return w.WriteBulkStrings(s.listConfig())
+			return w.WriteBulkStrings(s.listConfigCommand())
 		}
-	case "INFOSHARD":
-		return w.WriteBulkString(strings.Join(s.ShardInfo(s2pkg.MustParseInt(key)), "\r\n"))
 	case "INFO":
-		return w.WriteBulkString(strings.Join(s.Info(strings.ToLower(key)), "\r\n"))
+		key = strings.ToLower(key)
+		if strings.HasPrefix(key, "log") {
+			return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(s2pkg.MustParseInt(key[3:])), "\r\n"))
+		}
+		return w.WriteBulkString(strings.Join(s.InfoCommand(key), "\r\n"))
 	case "DUMP":
 		go func() {
 			start := time.Now()
@@ -512,10 +510,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "SCAN":
 		flags := command.Flags(2)
-		p, next, err := s.Scan(key, flags)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
+		p, next := s.Scan(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 

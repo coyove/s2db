@@ -12,7 +12,7 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
-LOGSHARD=$(grep 'const LogShardNum = ' server.go | cut -c21-100)
+LOGSHARD=$(grep 'const ShardLogNum = ' server.go | cut -c21-100)
 VERSION=$(($(date -u +%y)-20))
 VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}-${LOGSHARD}
 echo 'building' $VERSION

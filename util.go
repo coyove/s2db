@@ -17,10 +17,10 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/s2pkg/clock"
@@ -63,7 +63,7 @@ func checkScore(s float64) error {
 }
 
 func shardIndex(key string) int {
-	return int(s2pkg.HashStr(key) % LogShardNum)
+	return int(s2pkg.HashStr(key) % ShardLogNum)
 }
 
 func restCommandsToKeys(i int, command *redisproto.Command) (keys []string) {
@@ -132,7 +132,7 @@ func joinCommandEmpty() []byte {
 	return buf.Bytes()
 }
 
-func (s *Server) Info(section string) (data []string) {
+func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || section == "server" {
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
@@ -162,13 +162,13 @@ func (s *Server) Info(section string) (data []string) {
 	}
 	if section == "" || section == "replication" {
 		data = append(data, "# replication")
-		tails := [LogShardNum]uint64{}
+		tails := [ShardLogNum]uint64{}
 		for i := range s.shards {
 			tails[i] = s.ShardLogtail(i)
 		}
 		data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		if s.Slave.Redis() != nil {
-			diffs := [LogShardNum]string{}
+			diffs := [ShardLogNum]string{}
 			for i := range s.shards {
 				diffs[i] = clock.IdDiff(s.ShardLogtail(i), s.Slave.Logtails[i])
 			}
@@ -238,28 +238,21 @@ func (s *Server) Info(section string) (data []string) {
 	return
 }
 
-func (s *Server) ShardInfo(shard int) []string {
+func (s *Server) ShardLogInfoCommand(shard int) []string {
 	x := &s.shards[shard]
+	logtail, logSpan, compacted := s.ShardLogInfo(shard)
 	tmp := []string{
-		fmt.Sprintf("# shard%d", shard),
-		fmt.Sprintf("batch_queue:%v", strconv.Itoa(len(x.batchTx))),
+		fmt.Sprintf("# log%d", shard),
+		fmt.Sprintf("logtail:%d", logtail),
+		fmt.Sprintf("batch_queue:%v", len(x.batchTx)),
 		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
+		fmt.Sprintf("timespan:%d", logSpan),
+		fmt.Sprintf("compacted:%v", compacted),
 	}
-
-	logtail, logsSpan, compacted, err := s.ShardLogsRoughInfo(shard)
-	if err != nil {
-		tmp = append(tmp, "fatal_db_error:"+err.Error())
-	} else {
-		tmp = append(tmp,
-			fmt.Sprintf("logtail:%d", logtail),
-			fmt.Sprintf("logs_timespan:%d", logsSpan),
-			fmt.Sprintf("logs_compacted:%v", compacted))
-	}
-
 	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]
 		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
-		tmp = append(tmp, fmt.Sprintf("logtail_diff:%v", clock.IdDiff(logtail, tail)))
+		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%v", clock.IdDiff(logtail, tail)))
 	}
 	tmp = append(tmp, "")
 	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
@@ -272,12 +265,13 @@ func (s *Server) waitSlave() {
 	}
 	s.ReadOnly = true
 	for start := time.Now(); time.Since(start).Seconds() < 0.5; {
-		var total, slaveTotal uint64
-		for i := 0; i < LogShardNum; i++ {
-			total += s.ShardLogtail(i)
-			slaveTotal += s.Slave.Logtails[i]
+		var ok int
+		for i := 0; i < ShardLogNum; i++ {
+			if s.ShardLogtail(i) == s.Slave.Logtails[i] {
+				ok++
+			}
 		}
-		if total == slaveTotal {
+		if ok == ShardLogNum {
 			return
 		}
 	}
@@ -501,4 +495,48 @@ func getEnvOptInt(name string, defaultValue int) int {
 		cacheSize = defaultValue
 	}
 	return cacheSize
+}
+
+func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rd.Close()
+	return dupBytes(buf), nil
+}
+
+func GetKeyNumber(db s2pkg.Storage, key []byte) (float64, uint64, bool, error) {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return 0, 0, false, nil
+		}
+		return 0, 0, false, err
+	}
+	defer rd.Close()
+	if len(buf) != 8 {
+		return 0, 0, false, fmt.Errorf("invalid number bytes (8)")
+	}
+	return s2pkg.BytesToFloat(buf), s2pkg.BytesToUint64(buf), true, nil
+}
+
+func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
+		}
+		return err
+	}
+	old := int64(s2pkg.BytesToUint64(buf))
+	rd.Close()
+	old += v
+	if old == 0 {
+		return db.Delete(key, pebble.Sync)
+	}
+	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
 }

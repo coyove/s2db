@@ -167,7 +167,7 @@
         {{range $title, $section := .Sections}}
         <div class=section id=s_{{$section}} fold=0>
             <div class=s-title>{{$section}}</div>
-            {{range $i, $v := $.s.Info $section}}{{if and $i $v}}<div class=s-content>{{kv $v}}</div>{{end}}{{end}}
+            {{range $i, $v := $.s.InfoCommand $section}}{{if and $i $v}}<div class=s-content>{{kv $v}}</div>{{end}}{{end}}
         </div>  
         {{end}}
 

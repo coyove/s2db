@@ -13,6 +13,7 @@ import (
 	"time"
 
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg/clock"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -394,6 +395,53 @@ func TestZSetCache(t *testing.T) {
 	}
 	wg.Wait()
 	fmt.Println(time.Since(start).Seconds() / 1e6)
+
+	s.Close()
+	time.Sleep(time.Second)
+}
+
+func TestZSetConcurrency(t *testing.T) {
+	rand.Seed(time.Now().Unix())
+	ctx := context.TODO()
+
+	s, _ := Open("test")
+	go s.Serve(":6666")
+	time.Sleep(time.Second)
+
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+
+	s2pkg.PanicErr(rdb.Ping(ctx).Err())
+
+	const NAME = "con"
+	const C = 10
+	const N = 1000
+	rdb.Del(ctx, NAME)
+
+	start := time.Now()
+	wg := sync.WaitGroup{}
+	var m sync.Map
+	for c := 0; c < C; c++ {
+		wg.Add(1)
+		go func(c int) {
+			fmt.Println("client", c)
+			for i := 0; i < N; i++ {
+				k := clock.Id()
+				v := rand.Float64()
+				rdb.ZAdd(ctx, NAME, &redis.Z{Score: v, Member: k})
+				m.Store(k, v)
+			}
+			wg.Done()
+		}(c)
+	}
+	wg.Wait()
+
+	assertEqual(rdb.ZCard(ctx, NAME).Val(), C*N)
+	m.Range(func(k, v interface{}) bool {
+		assertEqual(rdb.ZScore(ctx, NAME, fmt.Sprint(k)).Val(), v)
+		return true
+	})
+
+	fmt.Println(time.Since(start).Seconds())
 
 	s.Close()
 	time.Sleep(time.Second)

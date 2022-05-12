@@ -154,7 +154,7 @@ func HashStr2(s string) (h [2]uint64) {
 }
 
 func HashStr(s string) (h uint64) {
-	h = 5381
+	h = 14695981039346656037 // fnv64
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
 		case '\n':
@@ -163,7 +163,8 @@ func HashStr(s string) (h uint64) {
 			h, _ = strconv.ParseUint(s[i+1:], 10, 64)
 			return h
 		default:
-			h = h*33 + uint64(s[i])
+			h = h * 1099511628211
+			h = h ^ uint64(s[i])
 		}
 	}
 	return h

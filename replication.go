@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/clock"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )

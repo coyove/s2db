@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/clock"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/clock"
 	log "github.com/sirupsen/logrus"
 )
 

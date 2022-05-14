@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/clock"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 )
@@ -31,17 +31,12 @@ var (
 		"ZCARD": true, "ZCOUNT": true, "ZCOUNTBYLEX": true,
 		"ZRANK": true, "ZREVRANK": true, "ZRANGE": true, "ZREVRANGE": true,
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true, "ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
-		"GEORADIUS": true, "GEORADIUS_RO": true,
-		"GEORADIUSBYMEMBER": true, "GEORADIUSBYMEMBER_RO": true,
-		"GEODIST": true, "GEOPOS": true,
 		"SCAN": true,
-		"QLEN": true, "QHEAD": true, "QINDEX": true, "QSCAN": true,
 	}
 	isWriteCommand = map[string]bool{
 		"DEL":  true,
 		"ZREM": true, "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
 		"ZADD": true, "ZINCRBY": true,
-		"IDXADD": true, "IDXDEL": true,
 	}
 )
 
@@ -123,11 +118,7 @@ func joinCommand(cmd [][]byte) []byte {
 }
 
 func joinCommandEmpty() []byte {
-	buf := &bytes.Buffer{}
-	buf.WriteByte(0x95) // version: 0x95
-	buf.WriteString("\x00\x00\x00\x00")
-	buf.Write(crc32.NewIEEE().Sum(nil))
-	return buf.Bytes()
+	return crc32.NewIEEE().Sum([]byte{0x95, 0, 0, 0, 0})
 }
 
 func (s *Server) InfoCommand(section string) (data []string) {
@@ -456,14 +447,6 @@ func bAppendUint64(b []byte, v uint64) []byte {
 	return append(dupBytes(b), s2pkg.Uint64ToBytes(v)...)
 }
 
-func getEnvOptInt(name string, defaultValue int) int {
-	cacheSize := s2pkg.ParseInt(os.Getenv(name))
-	if cacheSize <= 0 {
-		cacheSize = defaultValue
-	}
-	return cacheSize
-}
-
 func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {
@@ -506,4 +489,78 @@ func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
 		return db.Delete(key, pebble.Sync)
 	}
 	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
+}
+
+func (s *Server) createDBListener() pebble.EventListener {
+	return pebble.EventListener{
+		BackgroundError: func(a error) {
+			dbLogger.Error(a)
+			s.runScriptFunc("PebbleBackgroundError", a)
+		},
+		CompactionBegin: func(a pebble.CompactionInfo) {
+			dbLogger.Info("[CompactionBegin] ", a)
+			s.runScriptFunc("PebbleCompactionBegin", a)
+		},
+		CompactionEnd: func(a pebble.CompactionInfo) {
+			dbLogger.Info("[CompactionEnd] ", a)
+			s.runScriptFunc("PebbleCompactionEnd", a)
+		},
+		DiskSlow: func(a pebble.DiskSlowInfo) {
+			dbLogger.Info("[DiskSlow] ", a)
+			s.runScriptFunc("PebbleDiskSlow", a)
+		},
+		FlushBegin: func(a pebble.FlushInfo) {
+			dbLogger.Info("[FlushBegin] ", a)
+			s.runScriptFunc("PebbleFlushBegin", a)
+		},
+		FlushEnd: func(a pebble.FlushInfo) {
+			dbLogger.Info("[FlushEnd] ", a)
+			s.runScriptFunc("PebbleFlushEnd", a)
+		},
+		FormatUpgrade: func(a pebble.FormatMajorVersion) {
+			dbLogger.Info("[FormatUpgrade] ", a)
+			s.runScriptFunc("PebbleFormatUpgrade", a)
+		},
+		ManifestCreated: func(a pebble.ManifestCreateInfo) {
+			dbLogger.Info("[ManifestCreated] ", a)
+			s.runScriptFunc("PebbleManifestCreated", a)
+		},
+		ManifestDeleted: func(a pebble.ManifestDeleteInfo) {
+			dbLogger.Info("[ManifestDeleted] ", a)
+			s.runScriptFunc("PebbleManifestDeleted", a)
+		},
+		TableCreated: func(a pebble.TableCreateInfo) {
+			// dbLogger.Info("[TableCreated] ", a)
+			s.runScriptFunc("PebbleTableCreated", a)
+		},
+		TableDeleted: func(a pebble.TableDeleteInfo) {
+			// dbLogger.Info("[TableDeleted] ", a)
+			s.runScriptFunc("PebbleTableDeleted", a)
+		},
+		TableIngested: func(a pebble.TableIngestInfo) {
+			dbLogger.Info("[TableIngested] ", a)
+			s.runScriptFunc("PebbleTableIngested", a)
+		},
+		TableStatsLoaded: func(a pebble.TableStatsInfo) {
+			dbLogger.Info("[TableStatsLoaded] ", a)
+			s.runScriptFunc("PebbleTableStatsLoaded", a)
+		},
+		TableValidated: func(a pebble.TableValidatedInfo) {
+			dbLogger.Info("[TableValidated] ", a)
+			s.runScriptFunc("PebbleTableValidated", a)
+		},
+		WALCreated: func(a pebble.WALCreateInfo) {
+			dbLogger.Info("[WALCreated] ", a)
+			s.runScriptFunc("PebbleWALCreated", a)
+		},
+		WALDeleted: func(a pebble.WALDeleteInfo) {
+			dbLogger.Info("[WALDeleted] ", a)
+			s.runScriptFunc("PebbleWALDeleted", a)
+		},
+		WriteStallBegin: func(a pebble.WriteStallBeginInfo) {
+			dbLogger.Info("[WriteStallBegin] ", a)
+			s.runScriptFunc("PebbleWriteStallBegin", a)
+		},
+		WriteStallEnd: func() { dbLogger.Info("WriteStallEnd") },
+	}
 }

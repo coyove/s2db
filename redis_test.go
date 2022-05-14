@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coyove/s2db/clock"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/s2pkg/clock"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
 
 func init() {
 	slowLogger = log.New()
+	dbLogger = log.New()
 	testFlag = true
 }
 

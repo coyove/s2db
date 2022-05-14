@@ -76,7 +76,7 @@ func (w *Writer) WriteSimpleString(s string) error {
 }
 
 func (w *Writer) WriteError(s string) error {
-	if !strings.Contains(s, "NOAUTH") {
+	if !strings.Contains(s, "NOAUTH") && s != ErrUnknownCommand.Error() {
 		logrus.Error("redisproto: ", s)
 	}
 	s = strings.Replace(s, "\n", " ", -1)

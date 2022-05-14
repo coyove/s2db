@@ -89,11 +89,12 @@ func Open(dbPath string) (x *Server, err error) {
 		DBPath: dbPath,
 		DBOptions: (&pebble.Options{
 			Logger:       dbLogger,
-			Cache:        pebble.NewCache(int64(getEnvOptInt("S2DB_PDB_CACHE", 1024<<20))),
-			MemTableSize: getEnvOptInt("S2DB_PDB_MEMTABLESIZE", 32<<20),
+			Cache:        pebble.NewCache(int64(*pebbleCacheSize) << 20),
+			MemTableSize: *pebbleMemtableSize << 20,
 		}).EnsureDefaults(),
 	}
 	x.DBOptions.FS = s2pkg.NoLinkFS{FS: x.DBOptions.FS}
+	x.DBOptions.EventListener = x.createDBListener()
 	x.db, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
 		return nil, err
@@ -147,9 +148,9 @@ func (s *Server) Close() error {
 			db := &s.shards[i]
 			db.syncWaiter.Close()
 			close(db.batchTx)
+			<-db.batchCloseSignal
 			close(db.pusherTrigger)
 			<-db.pusherCloseSignal
-			<-db.batchCloseSignal
 		}(i)
 	}
 	wg.Wait()
@@ -365,10 +366,10 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(s2pkg.MustParseInt(key[3:])), "\r\n"))
 		}
 		return w.WriteBulkString(strings.Join(s.InfoCommand(key), "\r\n"))
-	case "DUMP":
+	case "DUMPDB":
 		go func() {
 			start := time.Now()
-			log.Infof("dump %s in %v: %v", key, time.Since(start),
+			log.Infof("dump to %s in %v: %v", key, time.Since(start),
 				s.db.Checkpoint(key, pebble.WithFlushedWAL()))
 		}()
 		return w.WriteSimpleString("STARTED")
@@ -523,7 +524,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 
-	return w.WriteError("unknown command: " + cmd)
+	return w.WriteError(redisproto.ErrUnknownCommand.Error())
 }
 
 func (s *Server) checkWritable() error {

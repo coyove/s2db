@@ -39,9 +39,13 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		}
 		buf.WriteString("\t")
 		buf.WriteString(entry.Time.UTC().Format("2006-01-02T15:04:05.000\t"))
-		buf.WriteString(filepath.Base(entry.Caller.File))
-		buf.WriteString(":")
-		buf.WriteString(strconv.Itoa(entry.Caller.Line))
+		if entry.Caller == nil {
+			buf.WriteString("internal")
+		} else {
+			buf.WriteString(filepath.Base(entry.Caller.File))
+			buf.WriteString(":")
+			buf.WriteString(strconv.Itoa(entry.Caller.Line))
+		}
 	}
 	buf.WriteString("\t")
 	buf.WriteString(entry.Message)

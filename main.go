@@ -32,7 +32,6 @@ var (
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
 	showVersion  = flag.Bool("v", false, "print s2db version then exit")
-	showLogtail  = flag.String("logtail", "", "print log tail of specified database then exit")
 	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
@@ -41,6 +40,8 @@ var (
 		}
 		return f
 	}()
+	pebbleMemtableSize = flag.Int("pebble.memtablesize", 128, "[pebble] memtable size in megabytes")
+	pebbleCacheSize    = flag.Int("pebble.cachesize", 1024, "[pebble] cache size in megabytes")
 
 	testFlag   = false
 	slowLogger *log.Logger
@@ -86,7 +87,7 @@ func main() {
 	}))
 
 	dbLogger = log.New()
-	dbLogger.SetFormatter(&s2pkg.LogFormatter{})
+	dbLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
 	dbLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
 		Filename: "log/db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 28, Compress: true,
 	}))
@@ -154,34 +155,16 @@ func main() {
 		select {}
 	}
 
-	if *showLogtail != "" {
-		// db, err := bbolt.Open(*showLogtail, 0666, DBReadonlyOptions)
-		// if err != nil {
-		// 	fmt.Println(err.Error())
-		// 	os.Exit(-1)
-		// }
-		// defer db.Close()
-		// var tail, seq uint64
-		// db.View(func(tx *bbolt.Tx) error {
-		// 	bk := tx.Bucket([]byte("wal"))
-		// 	if bk != nil {
-		// 		k, _ := bk.Cursor().Last()
-		// 		if len(k) == 8 {
-		// 			tail = binary.BigEndian.Uint64(k)
-		// 		}
-		// 		seq = bk.Sequence()
-		// 	}
-		// 	return nil
-		// })
-		// fmt.Println(tail, seq)
-		// return
-	}
-
 	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), "NOAUTH") {
 		return
 	}
 
 	log.Info("version: ", Version)
+	flag.VisitAll(func(f *flag.Flag) {
+		if v := f.Value.String(); v != "" && f.Name != "v" {
+			log.Info("[flag] ", f.Name, "=", v)
+		}
+	})
 
 	s, err := Open(*dataDir)
 	if err != nil {

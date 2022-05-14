@@ -22,7 +22,7 @@ func (doc *Logs) Reset() { *doc = Logs{} }
 
 func (doc *Logs) String() string { return proto.CompactTextString(doc) }
 
-func (doc *Logs) MarshalBytes() []byte { buf, _ := proto.Marshal(doc); return buf }
+func (doc *Logs) MarshalBytes() []byte { buf, err := proto.Marshal(doc); PanicErr(err); return buf }
 
 func (doc *Logs) UnmarshalBytes(buf []byte) error { return proto.Unmarshal(buf, doc) }
 
@@ -39,7 +39,8 @@ func (doc *BytesArray) String() string { return proto.CompactTextString(doc) }
 func (doc *BytesArray) MarshalAppend(buf []byte) []byte {
 	mi := proto.MessageV2(doc)
 	opt := protoV2.MarshalOptions{Deterministic: true, AllowPartial: true}
-	buf, _ = opt.MarshalAppend(buf, mi)
+	buf, err := opt.MarshalAppend(buf, mi)
+	PanicErr(err)
 	return buf
 }
 
@@ -109,14 +110,14 @@ type RangeLimit struct {
 }
 
 type RangeOptions struct {
-	OffsetStart    int    // used by Z[REV]RANGE
-	OffsetEnd      int    // used by Z[REV]RANGE
-	Limit          int    // upper bound in: LIMIT 0 limit
+	OffsetStart    int    // Z[REV]RANGE *start* ...
+	OffsetEnd      int    // Z[REV]RANGE ... *end*
+	Limit          int    // ... LIMIT 0 *limit*
 	WithData       bool   // return attached data
 	Rev            bool   // reversed range
-	LexMatch       string // match member
-	ScoreMatchData string // only available in ZRANGEBYSCORE
-	DeleteLog      []byte // used by ZREM...
+	LexMatch       string // match member name
+	ScoreMatchData string // match data, only available in Z[REV]RANGEBYSCORE
+	DeleteLog      []byte // if provided, returned pairs will be deleted first
 	Append         func(pairs *[]Pair, p Pair) bool
 }
 

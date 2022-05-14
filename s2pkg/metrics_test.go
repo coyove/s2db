@@ -16,8 +16,12 @@ import (
 )
 
 func TestLogsMarshal(t *testing.T) {
-	l := &Logs{PrevSig: 2, Logs: []*Log{{9, []byte("zzz")}}}
+	data := []byte("zzz")
+	l := &Logs{PrevSig: 2, Logs: []*Log{{9, data}}}
 	t.Log(proto.Marshal(l))
+
+	ba := &BytesArray{Data: [][]byte{data}}
+	t.Log(proto.Marshal(ba))
 
 	x := [32]int{}
 	for i := 0; i < 256; i++ {

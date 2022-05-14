@@ -12,6 +12,16 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var zsetKeyScoreFullRange = &pebble.IterOptions{
+	LowerBound: []byte("zsetks__"),
+	UpperBound: []byte("zsetks_\xff"),
+}
+
+var zsetScoreKeyValueFullRange = &pebble.IterOptions{
+	LowerBound: []byte("zsetskv_"),
+	UpperBound: []byte("zsetskv\xff"),
+}
+
 func getZSetRangeKey(key string) ([]byte, []byte, []byte) {
 	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), []byte("zsetctr_" + key)
 }
@@ -20,9 +30,23 @@ func getShardLogKey(shard int16) []byte {
 	return []byte(fmt.Sprintf("log%04x_", shard))
 }
 
-func prepareDel(key string, dd []byte) preparedTx {
+func prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		bkName, bkScore, bkCounter := getZSetRangeKey(key)
+		if endKey != "" {
+			bkStartName, bkStartScore, bkStartCounter := getZSetRangeKey(startKey)
+			bkEndName, bkEndScore, bkEndCounter := getZSetRangeKey(endKey)
+			if err := tx.DeleteRange(bkStartName, incrBytes(bkEndName), pebble.Sync); err != nil {
+				return nil, err
+			}
+			if err := tx.DeleteRange(bkStartScore, incrBytes(bkEndScore), pebble.Sync); err != nil {
+				return nil, err
+			}
+			if err := tx.DeleteRange(bkStartCounter, incrBytes(bkEndCounter), pebble.Sync); err != nil {
+				return nil, err
+			}
+			return 1, writeLog(tx, dd)
+		}
+		bkName, bkScore, bkCounter := getZSetRangeKey(startKey)
 		if err := tx.DeleteRange(bkName, incrBytes(bkName), pebble.Sync); err != nil {
 			return nil, err
 		}

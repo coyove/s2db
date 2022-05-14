@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 	"strings"
 
@@ -58,7 +57,9 @@ func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) prepared
 func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	switch cmd {
 	case "DEL":
-		return prepareDel(key, dd)
+		// DEL key
+		// DEL start end
+		return prepareDel(key, command.Get(2), dd)
 	case "ZREM":
 		return prepareZRem(key, restCommandsToKeys(2, command), dd)
 	}
@@ -135,7 +136,7 @@ func (s *Server) ZCard(key string) (count int64) {
 
 func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err error) {
 	if len(memebrs) == 0 {
-		return nil, fmt.Errorf("missing members")
+		return nil, nil
 	}
 	for range memebrs {
 		scores = append(scores, math.NaN())
@@ -152,7 +153,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 
 func (s *Server) ZMData(key string, members []string) (data [][]byte, err error) {
 	if len(members) == 0 {
-		return nil, fmt.Errorf("missing members")
+		return nil, nil
 	}
 	data = make([][]byte, len(members))
 	bkName, bkScore, _ := getZSetRangeKey(key)

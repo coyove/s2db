@@ -147,7 +147,7 @@ func (s *Server) logPusher(shard int) {
 		var cmd *redis.IntCmd
 		if !s.Slave.LogtailOK[shard] {
 			// First PUSHLOGS to slave will be an empty one, to get slave's current logtail
-			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, (&s2pkg.Logs{}).Marshal())
+			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, (&s2pkg.Logs{}).MarshalBytes())
 		} else {
 			loghead := s.Slave.Logtails[shard]
 			logs, err := s.respondLog(shard, loghead)
@@ -157,7 +157,7 @@ func (s *Server) logPusher(shard int) {
 			}
 			if len(logs.Logs) == 0 {
 				if err := rdb.Ping(ctx).Err(); err != nil {
-					if remoteOfflineError(err) {
+					if s2pkg.IsRemoteOfflineError(err) {
 						log.Error("[M] slave offline")
 					} else {
 						log.Error("failed to ping slave: ", err)
@@ -167,12 +167,12 @@ func (s *Server) logPusher(shard int) {
 				}
 				continue
 			}
-			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, logs.Marshal())
+			cmd = redis.NewIntCmd(ctx, "PUSHLOGS", shard, logs.MarshalBytes())
 		}
 		rdb.Process(ctx, cmd)
 		if err := cmd.Err(); err != nil {
 			if err != redis.ErrClosed {
-				if remoteOfflineError(err) {
+				if s2pkg.IsRemoteOfflineError(err) {
 					log.Error("[M] slave offline")
 				} else if err != redis.Nil {
 					if err.Error() == rejectedByMasterMsg {

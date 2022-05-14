@@ -4,16 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/gob"
 	"fmt"
 	"hash/crc32"
 	"html/template"
-	"io"
 	"io/ioutil"
 	"math"
 	"net"
 	"os"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
@@ -25,7 +22,6 @@ import (
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/s2pkg/clock"
 	log "github.com/sirupsen/logrus"
-	"go.etcd.io/bbolt"
 	"golang.org/x/time/rate"
 )
 
@@ -42,9 +38,9 @@ var (
 		"QLEN": true, "QHEAD": true, "QINDEX": true, "QSCAN": true,
 	}
 	isWriteCommand = map[string]bool{
-		"UNLINK": true, "DEL": true,
+		"DEL":  true,
 		"ZREM": true, "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
-		"ZADD": true, "ZINCRBY": true, "QAPPEND": true,
+		"ZADD": true, "ZINCRBY": true,
 		"IDXADD": true, "IDXDEL": true,
 	}
 )
@@ -110,18 +106,20 @@ func dumpCommand(cmd *redisproto.Command) []byte {
 }
 
 func splitCommand(buf []byte) (*redisproto.Command, error) {
-	command := &redisproto.Command{}
-	err := gob.NewDecoder(bytes.NewBuffer(buf)).Decode(&command.Argv)
-	return command, err
+	tmp := &s2pkg.BytesArray{}
+	if err := tmp.UnmarshalBytes(buf); err != nil {
+		return nil, err
+	}
+	return &redisproto.Command{Argv: tmp.Data}, nil
 }
 
 func joinCommand(cmd [][]byte) []byte {
+	buf := []byte{0x95, 0, 0, 0, 0} // version: 0x95 + signature: 4b
+	rand.Reader.Read(buf[1:])
+	buf = (&s2pkg.BytesArray{Data: cmd}).MarshalAppend(buf)
 	h := crc32.NewIEEE()
-	buf := &bytes.Buffer{}
-	buf.WriteByte(0x95)                                // version: 0x95
-	io.CopyN(buf, rand.Reader, 4)                      // signature: 4b
-	gob.NewEncoder(io.MultiWriter(buf, h)).Encode(cmd) // payload
-	return append(buf.Bytes(), h.Sum(nil)...)          // crc32: 4b
+	h.Write(buf[5:])
+	return h.Sum(buf) // crc32: 4b
 }
 
 func joinCommandEmpty() []byte {
@@ -374,14 +372,6 @@ func getRemoteIP(addr net.Addr) net.IP {
 	return net.IPv4bcast
 }
 
-func closeAllReadTxs(txs []*bbolt.Tx) {
-	for _, tx := range txs {
-		if tx != nil {
-			tx.Rollback()
-		}
-	}
-}
-
 func (s *Server) removeCache(key string) {
 	s.Cache.Delete(key)
 }
@@ -432,29 +422,6 @@ func makeHTMLStat(s string) template.HTML {
 		return template.HTML(s)
 	}
 	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s", s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
-}
-
-func sizeOfBucket(bk *bbolt.Bucket) int64 {
-	if seq := bk.Sequence(); seq > 0 {
-		return int64(seq)
-	}
-	return int64(bk.KeyN())
-}
-
-func deleteUnusedDataFile(root string, shard int, useName string) {
-	files, _ := ioutil.ReadDir(root)
-	prefix := fmt.Sprintf("shard%d.", shard)
-	for _, f := range files { // TODO: faster
-		if strings.HasPrefix(f.Name(), prefix) {
-			if f.Name() == prefix+"bak" {
-				continue
-			}
-			if f.Name() != useName {
-				full := filepath.Join(root, f.Name())
-				log.Infof("delete orphan shard %s: %v", full, os.Remove(full))
-			}
-		}
-	}
 }
 
 func btoi(v bool) int {
@@ -539,11 +506,4 @@ func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
 		return db.Delete(key, pebble.Sync)
 	}
 	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
-}
-
-func remoteOfflineError(err error) bool {
-	if err == nil {
-		return false
-	}
-	return strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "i/o timeout")
 }

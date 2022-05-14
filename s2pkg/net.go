@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strings"
 	"sync/atomic"
 )
 
@@ -55,4 +56,11 @@ func (ll *LocalListener) Close() error {
 
 func (ll *LocalListener) Addr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)}
+}
+
+func IsRemoteOfflineError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "refused") || strings.Contains(err.Error(), "i/o timeout")
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/s2pkg/clock"
-	"github.com/coyove/s2db/s2pkg/fts"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -299,9 +298,6 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				}
 				e.A = bas.Str((redisproto.Command{Argv: v}).HashCode())
 			}).
-			SetMethod("tokenize", func(e *bas.Env) {
-				e.A = bas.ValueOf(fts.SplitSimple(e.Str(0)))
-			}).
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {
@@ -355,8 +351,13 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
 	for i := 0; i < rv.NumField(); i++ {
 		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
-			m, n := sv.Metrics(), rt.Field(i).Name
-			pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+			m, n := sv.Metrics(), rt.Field(i)
+			if t := n.Tag.Get("metrics"); t == "mean" || t == "" {
+				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_Mean", Score: m.Mean[0]})
+			}
+			if t := n.Tag.Get("metrics"); t == "qps" || t == "" {
+				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_QPS", Score: m.QPS[0]})
+			}
 		}
 	}
 	s.Survey.Command.Range(func(k, v interface{}) bool {
@@ -366,7 +367,8 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	})
 	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})
 
-	dbm := reflect.ValueOf(s.db.Metrics()).Elem()
+	lsmMetrics := s.db.Metrics()
+	dbm := reflect.ValueOf(lsmMetrics).Elem()
 	rt = dbm.Type()
 	for i := 0; i < dbm.NumField(); i++ {
 		switch f := dbm.Field(i); f.Kind() {
@@ -380,6 +382,13 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			pairs = append(pairs, s2pkg.Pair{Member: "DB_" + rt.Field(i).Name, Score: rvToFloat64(f)})
 		}
 	}
+	for lv, lvm := range lsmMetrics.Levels {
+		rv := reflect.ValueOf(lvm)
+		for i := 0; i < rv.NumField(); i++ {
+			pairs = append(pairs, s2pkg.Pair{Member: "DB_Level" + strconv.Itoa(lv) + "_" + rv.Type().Field(i).Name,
+				Score: rvToFloat64(rv.Field(i))})
+		}
+	}
 
 	b := s.db.NewBatch()
 	for _, mp := range pairs {
@@ -387,8 +396,10 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		if err := b.Set(bAppendUint64(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 			return err
 		}
-		if err := b.DeleteRange(key, bAppendUint64(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
-			return err
+		if clock.Rand() <= 0.01 {
+			if err := b.DeleteRange(key, bAppendUint64(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
+				return err
+			}
 		}
 	}
 	if err := b.Commit(pebble.Sync); err != nil {

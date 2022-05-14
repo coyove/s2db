@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/redisproto"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -74,8 +76,20 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 }
 
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
-	ro.Limit = flags.LIMIT
-	ro.Append = s2pkg.DefaultRangeAppend
+	if flags.INTERSECT != nil {
+		iter := s.db.NewIter(zsetKeyScoreFullRange)
+		defer iter.Close()
+		ro.Limit = math.MaxInt64
+		ro.Append = s.genIntersectFunc(iter, flags)
+	} else if flags.TWOHOPS.ENDPOINT != "" {
+		iter := s.db.NewIter(zsetKeyScoreFullRange)
+		defer iter.Close()
+		ro.Limit = math.MaxInt64
+		ro.Append = s.genTwoHopsFunc(iter, flags)
+	} else {
+		ro.Limit = flags.LIMIT
+		ro.Append = s2pkg.DefaultRangeAppend
+	}
 	p, _, err = s.runPreparedRangeTx(key, f())
 	if err == errSafeExit {
 		err = nil
@@ -339,4 +353,63 @@ func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
 	}
 	return
+}
+
+func (s *Server) genTwoHopsFunc(iter *pebble.Iterator, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+	ddl := time.Now().Add(flags.TIMEOUT)
+	endpoint := flags.TWOHOPS.ENDPOINT
+	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+		member := p.Member
+		if bas.IsCallable(flags.TWOHOPS.KEYMAP) {
+			res, err := bas.Call2(flags.TWOHOPS.KEYMAP.Object(), bas.Str(member))
+			if err != nil {
+				log.Error("TwoHopsFunc: ", member, " error: ", err)
+				return false
+			}
+			member = res.String()
+		}
+		bkName, _, _ := getZSetRangeKey(member)
+		x := append(bkName, endpoint...)
+		iter.SeekGE(x)
+		if iter.Valid() && bytes.Equal(iter.Key(), x) {
+			*pairs = append(*pairs, p)
+		}
+		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
+	}
+}
+
+func (s *Server) genIntersectFunc(iter *pebble.Iterator, flags redisproto.Flags) func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+	ddl := time.Now().Add(flags.TIMEOUT)
+	return func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+		count, hits := 0, 0
+		for key, f := range flags.INTERSECT {
+			if bas.IsCallable(f.F) {
+				res, err := bas.Call2(f.F.Object(), bas.Str(key))
+				if err != nil {
+					log.Error("IntersectFunc: ", key, " error: ", err)
+					return false
+				}
+				key = res.String()
+			}
+			bkName, _, _ := getZSetRangeKey(key)
+			x := append(bkName, p.Member...)
+			iter.SeekGE(x)
+			exist := iter.Valid() && bytes.Equal(iter.Key(), x)
+			if f.Not {
+				if exist {
+					goto OUT
+				}
+			} else {
+				if exist {
+					hits++
+				}
+				count++
+			}
+		}
+		if hits == count {
+			*pairs = append(*pairs, p)
+		}
+	OUT:
+		return len(*pairs) < flags.LIMIT && time.Now().Before(ddl)
+	}
 }

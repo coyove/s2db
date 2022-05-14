@@ -19,7 +19,6 @@ import (
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
-	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -48,20 +47,26 @@ type Server struct {
 	SwitchMasterLock sync.RWMutex
 
 	Survey struct {
-		StartAt                 time.Time
-		Connections             int64
-		SysRead, SysWrite       s2pkg.Survey
-		SysWriteDiscards        s2pkg.Survey
-		CacheReq, CacheSize     s2pkg.Survey
-		CacheHit, WeakCacheHit  s2pkg.Survey
-		BatchSize, BatchLat     s2pkg.Survey
-		BatchSizeSv, BatchLatSv s2pkg.Survey
-		DBBatchSize             s2pkg.Survey
-		SlowLogs, Sync          s2pkg.Survey
-		Passthrough             s2pkg.Survey
-		FirstRunSleep           s2pkg.Survey
-		LogCompaction           s2pkg.Survey
-		Command                 sync.Map
+		StartAt          time.Time
+		Connections      int64
+		SysRead          s2pkg.Survey ``
+		SysWrite         s2pkg.Survey ``
+		SysWriteDiscards s2pkg.Survey ``
+		CacheReq         s2pkg.Survey `metrics:"qps"`
+		CacheSize        s2pkg.Survey ``
+		CacheHit         s2pkg.Survey `metrics:"qps"`
+		WeakCacheHit     s2pkg.Survey `metrics:"qps"`
+		BatchSize        s2pkg.Survey ``
+		BatchLat         s2pkg.Survey ``
+		BatchSizeSv      s2pkg.Survey ``
+		BatchLatSv       s2pkg.Survey ``
+		DBBatchSize      s2pkg.Survey ``
+		SlowLogs         s2pkg.Survey ``
+		Sync             s2pkg.Survey ``
+		Passthrough      s2pkg.Survey ``
+		FirstRunSleep    s2pkg.Survey ``
+		LogCompaction    s2pkg.Survey `metrics:"qps"`
+		Command          sync.Map
 	}
 
 	db *pebble.DB
@@ -379,7 +384,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		shard := s2pkg.MustParseInt(key)
 		logs := &s2pkg.Logs{}
-		if err := proto.Unmarshal(command.At(2), logs); err != nil {
+		if err := logs.UnmarshalBytes(command.At(2)); err != nil {
 			return w.WriteError(err.Error())
 		}
 		names, logtail, err := s.runLog(shard, logs)

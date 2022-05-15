@@ -44,9 +44,8 @@ func (p *ProtocolError) Error() string {
 }
 
 type Command struct {
-	Argv     [][]byte
-	last     bool
-	hashcode string
+	Argv [][]byte
+	last bool
 }
 
 func (c *Command) At(index int) []byte {
@@ -423,24 +422,4 @@ func splitCode(c Command, key string) (string, bas.Value) {
 		return key2, res
 	}
 	return key, bas.Nil
-}
-
-func (in Command) HashCode() string {
-	if in.hashcode != "" {
-		return in.hashcode
-	}
-	h := [2]uint64{0, 5381}
-	for _, buf := range in.Argv {
-		for _, b := range buf {
-			old := h[1]
-			h[1] = h[1]*33 + uint64(b)
-			if h[1] < old {
-				h[0]++
-			}
-		}
-		h[1]++
-	}
-	x := *(*[16]byte)(unsafe.Pointer(&h))
-	in.hashcode = string(x[:])
-	return in.hashcode
 }

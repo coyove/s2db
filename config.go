@@ -44,7 +44,7 @@ type ServerConfig struct {
 
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := s2pkg.GetKeyCopy(s.db, []byte("config__"+strings.ToLower(f.Name)))
+		buf, err := s2pkg.GetKey(s.DB, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (s *Server) saveConfig() error {
 		case reflect.TypeOf(""):
 			buf = []byte(fv.String())
 		}
-		return s.db.Set([]byte("config__"+strings.ToLower(f.Name)), buf, pebble.Sync)
+		return s.DB.Set([]byte("config__"+strings.ToLower(f.Name)), buf, pebble.Sync)
 	})
 }
 
@@ -291,12 +291,12 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 				v := s2pkg.MustParseFloat(e.Str(0))
 				e.A = bas.Float64(v)
 			}).
-			SetMethod("hashArray", func(e *bas.Env) {
+			SetMethod("hashmb", func(e *bas.Env) {
 				v := make([][]byte, 0, e.Size())
 				for i := range v {
 					v = append(v, bas.ToReadonlyBytes(e.Get(i)))
 				}
-				e.A = bas.Str((redisproto.Command{Argv: v}).HashCode())
+				e.A = bas.Str(s2pkg.HashMultiBytes(v))
 			}).
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
@@ -319,11 +319,11 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 type LocalStorage struct{ db *pebble.DB }
 
 func (s *Server) LocalStorage() *LocalStorage {
-	return &LocalStorage{db: s.db}
+	return &LocalStorage{db: s.DB}
 }
 
 func (s *LocalStorage) Get(k string) (string, error) {
-	v, err := s2pkg.GetKeyCopy(s.db, []byte("local___"+k))
+	v, err := s2pkg.GetKey(s.db, []byte("local___"+k))
 	return string(v), err
 }
 
@@ -367,7 +367,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	})
 	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})
 
-	lsmMetrics := s.db.Metrics()
+	lsmMetrics := s.DB.Metrics()
 	dbm := reflect.ValueOf(lsmMetrics).Elem()
 	rt = dbm.Type()
 	for i := 0; i < dbm.NumField(); i++ {
@@ -390,7 +390,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 
-	b := s.db.NewBatch()
+	b := s.DB.NewBatch()
 	for _, mp := range pairs {
 		key := []byte("metrics_" + mp.Member + "\x00")
 		if err := b.Set(bAppendUint64(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
@@ -413,7 +413,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 
 func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
-	c := s.db.NewIter(&pebble.IterOptions{
+	c := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: s2pkg.IncBytes(key),
 	})
@@ -434,7 +434,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	res := map[string]s2pkg.GroupedMetrics{}
 	getter := func(f string) {
 		key := []byte("metrics_" + f + "\x00")
-		c := s.db.NewIter(&pebble.IterOptions{
+		c := s.DB.NewIter(&pebble.IterOptions{
 			LowerBound: key,
 			UpperBound: s2pkg.IncBytes(key),
 		})
@@ -489,7 +489,7 @@ func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, start
 }
 
 func (s *Server) DeleteMetrics(name string) error {
-	return s.db.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
+	return s.DB.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
 }
 
 func rvToFloat64(v reflect.Value) float64 {

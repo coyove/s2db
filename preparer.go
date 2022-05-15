@@ -15,6 +15,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const DSLTMaxKeys = 1024
+
 var zsetKeyScoreFullRange = &pebble.IterOptions{
 	LowerBound: []byte("zsetks__"),
 	UpperBound: []byte("zsetks_\xff"),
@@ -26,7 +28,11 @@ var zsetScoreKeyValueFullRange = &pebble.IterOptions{
 }
 
 func getZSetRangeKey(key string) ([]byte, []byte, []byte) {
-	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), []byte("zsetctr_" + key)
+	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), getZSetCounterKey(key)
+}
+
+func getZSetCounterKey(key string) []byte {
+	return []byte("zsetctr_" + key)
 }
 
 func getShardLogKey(shard int16) []byte {
@@ -83,7 +89,7 @@ func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedT
 		// DEL start end
 		return prepareDel(key, command.Get(2), dd)
 	case "ZREM":
-		return prepareZRem(key, restCommandsToKeys(2, command), dd)
+		return prepareZRem(key, toStrings(2, command), dd)
 	}
 	start, end := command.Get(2), command.Get(3)
 	switch cmd {
@@ -188,7 +194,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float
 					continue
 				}
 				if pd && len(p.Data) == 0 {
-					p.Data, err = s2pkg.GetKeyCopy(tx, scoreKey)
+					p.Data, err = s2pkg.GetKey(tx, scoreKey)
 					if err != nil {
 						return nil, err
 					}
@@ -217,6 +223,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float
 			defer c.Close()
 
 			x := 0
+			dsltThreshold := int(math.Max(float64(len(pairs))*2, DSLTMaxKeys))
 			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
 				if score >= dslt {
@@ -229,8 +236,9 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float
 					return nil, err
 				}
 				added--
-				if x++; x > s2pkg.RangeHardLimit/2 {
-					logrus.Infof("[DSLT] reach hard limit on key: %s, current score: %f, dslt: %f", key, score, dslt)
+				if x++; x > dsltThreshold {
+					logrus.Infof("[DSLT] reach hard limit on key: %s, current score: %f, dslt: %f, batch limit: %d",
+						key, score, dslt, dsltThreshold)
 					break
 				}
 			}
@@ -254,7 +262,7 @@ func prepareZRem(key string, members []string, dd []byte) preparedTx {
 		bkName, _, _ := getZSetRangeKey(key)
 		var pairs []s2pkg.Pair
 		for _, member := range members {
-			scoreBuf, err := s2pkg.GetKeyCopy(tx, append(bkName, member...))
+			scoreBuf, err := s2pkg.GetKey(tx, append(bkName, member...))
 			if err != nil {
 				return nil, err
 			}
@@ -282,7 +290,7 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 		var dataBuf []byte
 		if foundScore {
 			oldKey := append(append(bkScore, s2pkg.FloatToBytes(score)...), member...)
-			dataBuf, err = s2pkg.GetKeyCopy(tx, oldKey)
+			dataBuf, err = s2pkg.GetKey(tx, oldKey)
 			if err != nil {
 				return nil, err
 			}

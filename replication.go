@@ -34,7 +34,7 @@ func writeLog(tx s2pkg.LogTx, dd []byte) error {
 
 func (s *Server) ShardLogtail(shard int) uint64 {
 	key := getShardLogKey(int16(shard))
-	iter := s.db.NewIter(&pebble.IterOptions{
+	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: s2pkg.IncBytes(key),
 	})
@@ -47,7 +47,7 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 
 func (s *Server) ShardLogInfo(shard int) (logtail uint64, logSpan int64, compacted bool) {
 	key := getShardLogKey(int16(shard))
-	iter := s.db.NewIter(&pebble.IterOptions{
+	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: s2pkg.IncBytes(key),
 	})
@@ -104,12 +104,12 @@ func (s *Server) compactLogs(shard int, first bool) {
 	logx := clock.IdBeforeSeconds(logtail, s.ServerConfig.CompactLogsTTL)
 
 	if err := func() error {
-		b := s.db.NewBatch()
+		b := s.DB.NewBatch()
 		defer b.Close()
 		if err := b.DeleteRange(bAppendUint64(logPrefix, 2), bAppendUint64(logPrefix, logx), pebble.Sync); err != nil {
 			return err
 		}
-		if err := b.Set(bAppendUint64(logPrefix, 1), joinCommandEmpty(), pebble.Sync); err != nil {
+		if err := b.Set(bAppendUint64(logPrefix, 1), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
 			return err
 		}
 		return b.Commit(pebble.Sync)
@@ -199,7 +199,7 @@ func (s *Server) logPusher(shard int) {
 }
 
 func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, logtail uint64, err error) {
-	tx := s.db.NewIndexedBatch()
+	tx := s.DB.NewIndexedBatch()
 	defer tx.Close()
 
 	logPrefix := getShardLogKey(int16(shard))
@@ -242,7 +242,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 		} else {
 			return nil, 0, fmt.Errorf("invalid log version: %x and data: %v", data[0], data)
 		}
-		command, err := splitCommand(data)
+		command, err := splitRawMultiBytesNoHeader(data)
 		if err != nil {
 			return nil, 0, fmt.Errorf("invalid payload: %v", data)
 		}
@@ -280,7 +280,7 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 	}
 
 	logPrefix := getShardLogKey(int16(shard))
-	c := s.db.NewIter(&pebble.IterOptions{
+	c := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: logPrefix,
 		UpperBound: s2pkg.IncBytes(logPrefix),
 	})

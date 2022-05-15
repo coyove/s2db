@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"strconv"
 	"time"
@@ -11,10 +12,33 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const (
+	RunNormal = iota + 1
+	RunDefer
+	RunSync
+)
+
+func parseRunFlag(in *redisproto.Command) int {
+	if len(in.Argv) > 2 {
+		if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+			return RunDefer
+		}
+		if bytes.EqualFold(in.Argv[2], []byte("--sync--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+			return RunSync
+		}
+		if bytes.EqualFold(in.Argv[2], []byte("--normal--")) {
+			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
+		}
+	}
+	return RunNormal
+}
+
 type rangeFunc func(s2pkg.LogTx) ([]s2pkg.Pair, int, error)
 
 func (s *Server) runPreparedRangeTx(key string, f rangeFunc) (pairs []s2pkg.Pair, count int, err error) {
-	pairs, count, err = f(s2pkg.LogTx{Storage: s.db})
+	pairs, count, err = f(s2pkg.LogTx{Storage: s.DB})
 	return
 }
 
@@ -168,7 +192,7 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	start := time.Now()
 	outs := make([]interface{}, len(tasks))
 
-	b := s.db.NewIndexedBatch()
+	b := s.DB.NewIndexedBatch()
 	defer b.Close()
 
 	ltx := s2pkg.LogTx{

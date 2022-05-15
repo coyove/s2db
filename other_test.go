@@ -25,14 +25,14 @@ func TestCommandJoinSplit(t *testing.T) {
 			}
 			b = append(b, x)
 		}
-		x := joinCommand(b)
+		x := joinMultiBytes(b)
 		sum32 := x[len(x)-4:]
 		h := crc32.NewIEEE()
 		h.Write(x[5 : len(x)-4])
 		if !bytes.Equal(h.Sum(nil), sum32) {
 			t.Fatal(sum32)
 		}
-		cmd2, _ := splitCommand(x[5 : len(x)-4])
+		cmd2, _ := splitRawMultiBytesNoHeader(x[5 : len(x)-4])
 		for i := 0; i < cmd2.ArgCount(); i++ {
 			if !bytes.Equal(cmd2.At(i), b[i]) {
 				t.FailNow()

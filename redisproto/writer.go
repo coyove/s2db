@@ -179,8 +179,16 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			if err := w.WriteInt(int64(v)); err != nil {
 				return err
 			}
+		case uint64:
+			if err := w.WriteInt(int64(v)); err != nil {
+				return err
+			}
 		case []interface{}:
 			if err := w.WriteObjectsSlice(v); err != nil {
+				return err
+			}
+		case error:
+			if err := w.WriteError(fmt.Sprint(v)); err != nil {
 				return err
 			}
 		default:

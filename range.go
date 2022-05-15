@@ -77,12 +77,12 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags re
 
 func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisproto.Flags, f func() rangeFunc) (p []s2pkg.Pair, err error) {
 	if flags.INTERSECT != nil {
-		iter := s.db.NewIter(zsetKeyScoreFullRange)
+		iter := s.DB.NewIter(zsetKeyScoreFullRange)
 		defer iter.Close()
 		ro.Limit = math.MaxInt64
 		ro.Append = s.genIntersectFunc(iter, flags)
 	} else if flags.TWOHOPS.ENDPOINT != "" {
-		iter := s.db.NewIter(zsetKeyScoreFullRange)
+		iter := s.DB.NewIter(zsetKeyScoreFullRange)
 		defer iter.Close()
 		ro.Limit = math.MaxInt64
 		ro.Append = s.genTwoHopsFunc(iter, flags)
@@ -284,7 +284,7 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 	keybuf := []byte(member)
 	func() {
 		_, bkScore, _ := getZSetRangeKey(key)
-		c := s.db.NewIter(&pebble.IterOptions{
+		c := s.DB.NewIter(&pebble.IterOptions{
 			LowerBound: bkScore,
 			UpperBound: s2pkg.IncBytes(bkScore),
 		})
@@ -316,7 +316,7 @@ func (s *Server) Foreach(cursor string, f func(string) bool) {
 	opts := &pebble.IterOptions{}
 	opts.LowerBound = []byte("zsetks__" + cursor)
 	opts.UpperBound = []byte("zsetks_\xff")
-	c := s.db.NewIter(opts)
+	c := s.DB.NewIter(opts)
 	defer c.Close()
 	if !c.First() {
 		return
@@ -342,7 +342,7 @@ func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair
 			return false
 		}
 		_, _, bkCounter := getZSetRangeKey(k)
-		_, v, _, _ := s2pkg.GetKeyNumber(s.db, bkCounter)
+		_, v, _, _ := s2pkg.GetKeyNumber(s.DB, bkCounter)
 		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
 		return len(pairs) < count
 	})

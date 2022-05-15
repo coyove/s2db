@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"hash/crc32"
 	"io"
 	"math"
@@ -15,10 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 	"unsafe"
 
-	"github.com/cockroachdb/pebble/vfs"
 	"github.com/sirupsen/logrus"
 )
 
@@ -131,18 +128,6 @@ func UUID() string {
 	return hex.EncodeToString(buf)
 }
 
-func HashStr2(s string) (h [2]uint64) {
-	h = [2]uint64{0, 5381}
-	for i := 0; i < len(s); i++ {
-		old := h[1]
-		h[1] = h[1]*33 + uint64(s[i])
-		if h[1] < old {
-			h[0]++
-		}
-	}
-	return h
-}
-
 func HashStr(s string) (h uint64) {
 	h = 14695981039346656037 // fnv64
 	for i := 0; i < len(s); i++ {
@@ -160,6 +145,22 @@ func HashStr(s string) (h uint64) {
 	return h
 }
 
+func HashMultiBytes(in [][]byte) string {
+	h := [2]uint64{0, 5381}
+	for _, buf := range in {
+		for _, b := range buf {
+			old := h[1]
+			h[1] = h[1]*33 + uint64(b)
+			if h[1] < old {
+				h[0]++
+			}
+		}
+		h[1]++
+	}
+	x := *(*[16]byte)(unsafe.Pointer(&h))
+	return string(x[:])
+}
+
 func Recover(f func()) {
 	if r := recover(); r != nil {
 		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
@@ -169,7 +170,7 @@ func Recover(f func()) {
 	}
 }
 
-func SizeBytes(in [][]byte) int {
+func SizeOfBytes(in [][]byte) int {
 	sz := 1
 	for _, p := range in {
 		sz += len(p)
@@ -177,7 +178,7 @@ func SizeBytes(in [][]byte) int {
 	return sz
 }
 
-func SizePairs(in []Pair) int {
+func SizeOfPairs(in []Pair) int {
 	sz := 1
 	for _, p := range in {
 		sz += len(p.Member) + 8 + len(p.Data)
@@ -348,114 +349,4 @@ func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err e
 			return total, ok, err
 		}
 	}
-}
-
-type BuoyTimeoutError struct {
-	Value interface{}
-}
-
-func (bte *BuoyTimeoutError) Error() string { return "buoy wait timeout" }
-
-type buoyCell struct {
-	watermark uint64
-	ts        int64
-	ch        chan interface{}
-	v         interface{}
-}
-
-type BuoySignal struct {
-	mu      sync.Mutex
-	list    []buoyCell
-	closed  bool
-	metrics *Survey
-}
-
-func NewBuoySignal(timeout time.Duration, metrics *Survey) *BuoySignal {
-	bs := &BuoySignal{metrics: metrics}
-	var watcher func()
-	watcher = func() {
-		if bs.closed {
-			return
-		}
-
-		bs.mu.Lock()
-		defer func() {
-			bs.mu.Unlock()
-			time.AfterFunc(timeout/2, watcher)
-		}()
-
-		now := time.Now().UnixNano()
-		for len(bs.list) > 0 {
-			cell := bs.list[0]
-			if time.Duration(now-cell.ts) > timeout {
-				cell.ch <- &BuoyTimeoutError{Value: cell.v}
-				bs.list = bs.list[1:]
-			} else {
-				break
-			}
-		}
-	}
-	time.AfterFunc(timeout/2, watcher)
-	return bs
-}
-
-func (bs *BuoySignal) Close() {
-	bs.closed = true
-}
-
-func (bs *BuoySignal) WaitAt(watermark uint64, ch chan interface{}, v interface{}) int {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	c := buoyCell{
-		watermark: watermark,
-		ch:        ch,
-		v:         v,
-		ts:        time.Now().UnixNano(),
-	}
-	if len(bs.list) > 0 {
-		last := bs.list[len(bs.list)-1]
-		if watermark <= last.watermark {
-			panic("buoy watermark error")
-		}
-	}
-	bs.list = append(bs.list, c)
-	return len(bs.list)
-}
-
-func (bs *BuoySignal) RaiseTo(watermark uint64) {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	now := time.Now().UnixNano()
-	for len(bs.list) > 0 {
-		if cell := bs.list[0]; cell.watermark <= watermark {
-			cell.ch <- cell.v
-			bs.list = bs.list[1:]
-			bs.metrics.Incr((now - cell.ts) / 1e6)
-		} else {
-			break
-		}
-	}
-}
-
-func (bs *BuoySignal) Len() int {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	return len(bs.list)
-}
-
-func (bs *BuoySignal) String() string {
-	bs.mu.Lock()
-	defer bs.mu.Unlock()
-	if len(bs.list) == 0 {
-		return "0-0"
-	}
-	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
-}
-
-type NoLinkFS struct {
-	vfs.FS
-}
-
-func (fs NoLinkFS) Link(string, string) error {
-	return fmt.Errorf("NoLinkFS")
 }

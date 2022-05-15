@@ -70,7 +70,7 @@ type Server struct {
 		Command          sync.Map
 	}
 
-	db *pebble.DB
+	DB *pebble.DB
 
 	shards [ShardLogNum]struct {
 		syncWaiter        *s2pkg.BuoySignal
@@ -96,7 +96,7 @@ func Open(dbPath string) (x *Server, err error) {
 	}
 	x.DBOptions.FS = s2pkg.NoLinkFS{FS: x.DBOptions.FS}
 	x.DBOptions.EventListener = x.createDBListener()
-	x.db, err = pebble.Open(dbPath, x.DBOptions)
+	x.DB, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func Open(dbPath string) (x *Server, err error) {
 		return nil, err
 	}
 
-	b := x.db.NewBatch()
+	b := x.DB.NewBatch()
 	defer b.Close()
 
 	// Load shards
@@ -119,7 +119,7 @@ func Open(dbPath string) (x *Server, err error) {
 		d.batchTx = make(chan *batchTask, 1024)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
 			&x.Survey.Sync)
-		if err := b.Set(append(getShardLogKey(int16(i)), s2pkg.Uint64ToBytes(0)...), joinCommandEmpty(), pebble.Sync); err != nil {
+		if err := b.Set(append(getShardLogKey(int16(i)), s2pkg.Uint64ToBytes(0)...), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
 			return nil, err
 		}
 	}
@@ -156,7 +156,7 @@ func (s *Server) Close() error {
 	}
 	wg.Wait()
 
-	errs <- s.db.Close()
+	errs <- s.DB.Close()
 
 	p := bytes.Buffer{}
 	close(errs)
@@ -270,7 +270,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 
 func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *redisproto.Command) error {
 	var (
-		cmd   = strings.TrimSuffix(strings.ToUpper(command.Get(0)), "WEAK")
+		cmd   = strings.ToUpper(command.Get(0))
 		isRev = strings.HasPrefix(cmd, "ZREV")
 		key   = command.Get(1)
 		start = time.Now()
@@ -375,9 +375,21 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		go func() {
 			start := time.Now()
 			log.Infof("dump to %s in %v: %v", key, time.Since(start),
-				s.db.Checkpoint(key, pebble.WithFlushedWAL()))
+				s.DB.Checkpoint(key, pebble.WithFlushedWAL()))
 		}()
 		return w.WriteSimpleString("STARTED")
+	case "SSDISKSIZE":
+		startKey, startKey2, _ := getZSetRangeKey(key)
+		var endKey, endKey2 []byte
+		if command.ArgCount() == 3 {
+			endKey, endKey2, _ = getZSetRangeKey(command.Get(2))
+		} else {
+			endKey, endKey2, _ = getZSetRangeKey(key + "\xff")
+		}
+		return w.WriteObjects(
+			itfs(s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))),
+			itfs(s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))),
+		)
 	}
 
 	// Log commands
@@ -430,28 +442,28 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	deferred := parseRunFlag(command)
 	switch cmd {
 	case "DEL":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dd(command)), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dumpCommand(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dd(command)), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command, dumpCommand(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command, dd(command)), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dumpCommand(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dd(command)), w)
 	}
 
-	h := command.HashCode()
+	cmdHash := s2pkg.HashMultiBytes(command.Argv)
 	weak := parseWeakFlag(command)
 	mwm := s.Cache.GetMasterWatermark(key)
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
-		x, cached := s.getCache(h, weak).([]float64)
+		x, cached := s.getCache(cmdHash, weak).([]float64)
 		if !cached {
-			x, err = s.ZMScore(key, restCommandsToKeys(2, command))
+			x, err = s.ZMScore(key, toStrings(2, command))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addCache(key, command.HashCode(), x, mwm)
+			s.addCache(key, cmdHash, x, mwm)
 		}
 		if cmd == "ZSCORE" {
 			return w.WriteBulk(s2pkg.FormatFloatBulk(x[0]))
@@ -462,13 +474,13 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteBulks(data...)
 	case "ZDATA", "ZMDATA":
-		x, cached := s.getCache(h, weak).([][]byte)
+		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
-			x, err = s.ZMData(key, restCommandsToKeys(2, command))
+			x, err = s.ZMData(key, toStrings(2, command))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addCache(key, command.HashCode(), x, mwm)
+			s.addCache(key, cmdHash, x, mwm)
 		}
 		if cmd == "ZDATA" {
 			return w.WriteBulk(x[0])
@@ -477,24 +489,24 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZCARD":
 		return w.WriteInt(s.ZCard(key))
 	case "ZCOUNT", "ZCOUNTBYLEX":
-		if v := s.getCache(h, weak); v != nil {
+		if v := s.getCache(cmdHash, weak); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
 		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
 		if err == nil {
-			s.addCache(key, command.HashCode(), count, mwm)
+			s.addCache(key, cmdHash, count, mwm)
 		}
 		return w.WriteIntOrError(count, err)
 	case "ZRANK", "ZREVRANK":
-		c, cached := s.getCache(h, weak).(int)
+		c, cached := s.getCache(cmdHash, weak).(int)
 		if !cached {
 			// COMMAND name key COUNT X
 			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3).COUNT)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addCache(key, command.HashCode(), c, mwm)
+			s.addCache(key, cmdHash, c, mwm)
 		}
 		if c == -1 {
 			return w.WriteBulk(nil)
@@ -503,7 +515,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
-		if v := s.getCache(h, weak); v != nil {
+		if v := s.getCache(cmdHash, weak); v != nil {
 			return w.WriteBulkStrings(redisPairs(v.([]s2pkg.Pair), flags))
 		}
 		start, end := command.Get(2), command.Get(3)
@@ -521,7 +533,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(key, command.HashCode(), p, mwm)
+		s.addCache(key, cmdHash, p, mwm)
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "SCAN":
 		flags := command.Flags(2)

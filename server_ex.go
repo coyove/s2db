@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/rand"
 	"fmt"
 	"hash/crc32"
@@ -58,7 +57,7 @@ func shardIndex(key string) int {
 	return int(s2pkg.HashStr(key) % ShardLogNum)
 }
 
-func restCommandsToKeys(i int, command *redisproto.Command) (keys []string) {
+func toStrings(i int, command *redisproto.Command) (keys []string) {
 	for ; i < command.ArgCount(); i++ {
 		keys = append(keys, string(command.At(i)))
 	}
@@ -97,11 +96,13 @@ func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {
 	return nil
 }
 
-func dumpCommand(cmd *redisproto.Command) []byte {
-	return joinCommand(cmd.Argv)
+func itfs(args ...interface{}) []interface{} { return args }
+
+func dd(cmd *redisproto.Command) []byte {
+	return joinMultiBytes(cmd.Argv)
 }
 
-func splitCommand(buf []byte) (*redisproto.Command, error) {
+func splitRawMultiBytesNoHeader(buf []byte) (*redisproto.Command, error) {
 	tmp := &s2pkg.BytesArray{}
 	if err := tmp.UnmarshalBytes(buf); err != nil {
 		return nil, err
@@ -109,17 +110,17 @@ func splitCommand(buf []byte) (*redisproto.Command, error) {
 	return &redisproto.Command{Argv: tmp.Data}, nil
 }
 
-func joinCommand(cmd [][]byte) []byte {
+func joinMultiBytesEmptyNoSig() []byte {
+	return crc32.NewIEEE().Sum([]byte{0x95, 0, 0, 0, 0})
+}
+
+func joinMultiBytes(cmd [][]byte) []byte {
 	buf := []byte{0x95, 0, 0, 0, 0} // version: 0x95 + signature: 4b
 	rand.Reader.Read(buf[1:])
 	buf = (&s2pkg.BytesArray{Data: cmd}).MarshalAppend(buf)
 	h := crc32.NewIEEE()
 	h.Write(buf[5:])
 	return h.Sum(buf) // crc32: 4b
-}
-
-func joinCommandEmpty() []byte {
-	return crc32.NewIEEE().Sum([]byte{0x95, 0, 0, 0, 0})
 }
 
 func (s *Server) InfoCommand(section string) (data []string) {
@@ -274,29 +275,6 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
-const (
-	RunNormal = iota + 1
-	RunDefer
-	RunSync
-)
-
-func parseRunFlag(in *redisproto.Command) int {
-	if len(in.Argv) > 2 {
-		if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
-			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
-			return RunDefer
-		}
-		if bytes.EqualFold(in.Argv[2], []byte("--sync--")) {
-			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
-			return RunSync
-		}
-		if bytes.EqualFold(in.Argv[2], []byte("--normal--")) {
-			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
-		}
-	}
-	return RunNormal
-}
-
 func parseWeakFlag(in *redisproto.Command) time.Duration {
 	i := in.ArgCount() - 2
 	if i >= 2 && in.EqualFold(i, "WEAK") {
@@ -383,9 +361,9 @@ func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
 	var sz int
 	switch data := data.(type) {
 	case []s2pkg.Pair:
-		sz = s2pkg.SizePairs(data)
+		sz = s2pkg.SizeOfPairs(data)
 	case [][]byte:
-		sz = s2pkg.SizeBytes(data)
+		sz = s2pkg.SizeOfBytes(data)
 	}
 	if sz > 0 {
 		if sz > s.CacheObjMaxSize*1024 {
@@ -485,8 +463,8 @@ func (s *Server) createDBListener() pebble.EventListener {
 }
 
 func (s *Server) ZCard(key string) (count int64) {
-	_, _, bkCounter := getZSetRangeKey(key)
-	_, i, _, _ := s2pkg.GetKeyNumber(s.db, bkCounter)
+	_, i, _, err := s2pkg.GetKeyNumber(s.DB, getZSetCounterKey(key))
+	s2pkg.PanicErr(err)
 	return int64(i)
 }
 
@@ -499,7 +477,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 	}
 	bkName, _, _ := getZSetRangeKey(key)
 	for i, m := range memebrs {
-		score, _, found, _ := s2pkg.GetKeyNumber(s.db, append(bkName, m...))
+		score, _, found, _ := s2pkg.GetKeyNumber(s.DB, append(bkName, m...))
 		if found {
 			scores[i] = score
 		}
@@ -514,9 +492,9 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 	data = make([][]byte, len(members))
 	bkName, bkScore, _ := getZSetRangeKey(key)
 	for i, m := range members {
-		scoreBuf, _ := s2pkg.GetKeyCopy(s.db, append(bkName, m...))
+		scoreBuf, _ := s2pkg.GetKey(s.DB, append(bkName, m...))
 		if len(scoreBuf) != 0 {
-			d, err := s2pkg.GetKeyCopy(s.db, append(bkScore, append(scoreBuf, m...)...))
+			d, err := s2pkg.GetKey(s.DB, append(bkScore, append(scoreBuf, m...)...))
 			if err != nil {
 				return nil, err
 			}

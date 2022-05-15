@@ -94,16 +94,6 @@ func TestMetrics2(t *testing.T) {
 	fmt.Println(s.Ts)
 }
 
-func TestMetrics3(t *testing.T) {
-	var s LogSurvey
-	for i := 0; i <= 1e4; i++ {
-		s.Incr(int64(i))
-	}
-	if len(s) != 5 {
-		t.Fatal(len(s))
-	}
-}
-
 func TestBuoy(t *testing.T) {
 	b := NewBuoySignal(time.Second, &Survey{})
 	m := make(map[int]chan interface{})

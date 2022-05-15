@@ -102,7 +102,7 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 		bkName, _, _ := getZSetRangeKey(key)
 		c := tx.NewIter(&pebble.IterOptions{
 			LowerBound: bkName,
-			UpperBound: incrBytes(bkName),
+			UpperBound: s2pkg.IncBytes(bkName),
 		})
 		defer c.Close()
 
@@ -121,14 +121,14 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 			return nil
 		}
 
-		startBuf, endBuf := append(dupBytes(bkName), start.Value...), append(dupBytes(bkName), end.Value...)
+		startBuf, endBuf := append(s2pkg.Bytes(bkName), start.Value...), append(s2pkg.Bytes(bkName), end.Value...)
 		if opt.Rev {
 			endFlag := 0
 			if !end.Inclusive {
 				endFlag = 1
 			}
 			if start.Inclusive && !start.LexEnd {
-				startBuf = incrBytes(startBuf)
+				startBuf = s2pkg.IncBytes(startBuf)
 			}
 			if !c.SeekGE(startBuf) {
 				c.Last()
@@ -180,11 +180,11 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 		_, bkScore, bkCounter := getZSetRangeKey(key)
 		c := tx.NewIter(&pebble.IterOptions{
 			LowerBound: bkScore,
-			UpperBound: incrBytes(bkScore),
+			UpperBound: s2pkg.IncBytes(bkScore),
 		})
 		defer c.Close()
 
-		_, n, _, err := GetKeyNumber(tx, bkCounter)
+		_, n, _, err := s2pkg.GetKeyNumber(tx, bkCounter)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -210,7 +210,7 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 			}
 			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:])}
 			if opt.WithData {
-				p.Data = dupBytes(dataBuf)
+				p.Data = s2pkg.Bytes(dataBuf)
 			}
 			count++
 			if opt.Append != nil && !opt.Append(&pairs, p) {
@@ -219,14 +219,14 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 			return nil
 		}
 
-		startInt := append(dupBytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
-		endInt := append(dupBytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
+		startInt := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
+		endInt := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
 		if opt.Rev {
 			if start.Inclusive {
-				startInt = incrBytes(startInt)
+				startInt = s2pkg.IncBytes(startInt)
 			}
 			if !end.Inclusive {
-				endInt = incrBytes(endInt)
+				endInt = s2pkg.IncBytes(endInt)
 			}
 			if !c.SeekGE(startInt) {
 				c.Last()
@@ -250,10 +250,10 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 			}
 		} else {
 			if !start.Inclusive {
-				startInt = incrBytes(startInt)
+				startInt = s2pkg.IncBytes(startInt)
 			}
 			if end.Inclusive {
-				endInt = incrBytes(endInt)
+				endInt = s2pkg.IncBytes(endInt)
 			}
 			c.SeekGE(startInt)
 			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
@@ -286,7 +286,7 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 		_, bkScore, _ := getZSetRangeKey(key)
 		c := s.db.NewIter(&pebble.IterOptions{
 			LowerBound: bkScore,
-			UpperBound: incrBytes(bkScore),
+			UpperBound: s2pkg.IncBytes(bkScore),
 		})
 		defer c.Close()
 		if rev {
@@ -342,7 +342,7 @@ func (s *Server) Scan(cursor string, flags redisproto.Flags) (pairs []s2pkg.Pair
 			return false
 		}
 		_, _, bkCounter := getZSetRangeKey(k)
-		_, v, _, _ := GetKeyNumber(s.db, bkCounter)
+		_, v, _, _ := s2pkg.GetKeyNumber(s.db, bkCounter)
 		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
 		return len(pairs) < count
 	})

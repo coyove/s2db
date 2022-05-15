@@ -2,14 +2,12 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"fmt"
 	"hash/crc32"
 	"html/template"
 	"io/ioutil"
 	"math"
-	"net"
 	"os"
 	"reflect"
 	"runtime"
@@ -22,15 +20,18 @@ import (
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/time/rate"
 )
 
 var (
 	isReadCommand = map[string]bool{
-		"ZSCORE": true, "ZMSCORE": true, "ZDATA": true, "ZMDATA": true,
-		"ZCARD": true, "ZCOUNT": true, "ZCOUNTBYLEX": true,
-		"ZRANK": true, "ZREVRANK": true, "ZRANGE": true, "ZREVRANGE": true,
-		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true, "ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
+		"ZCARD":  true,
+		"ZSCORE": true, "ZMSCORE": true,
+		"ZDATA": true, "ZMDATA": true,
+		"ZCOUNT": true, "ZCOUNTBYLEX": true,
+		"ZRANK": true, "ZREVRANK": true,
+		"ZRANGE": true, "ZREVRANGE": true,
+		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
+		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
 		"SCAN": true,
 	}
 	isWriteCommand = map[string]bool{
@@ -129,7 +130,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
-			fmt.Sprintf("readonly:%v", btoi(s.ReadOnly)),
+			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("mark_master:%v", s.MarkMaster),
 			fmt.Sprintf("passthrough:%v", s.Passthrough),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
@@ -353,16 +354,6 @@ func (s *Server) BigKeys(n, shard int) []s2pkg.Pair {
 	// return x
 }
 
-func getRemoteIP(addr net.Addr) net.IP {
-	switch addr := addr.(type) {
-	case *net.TCPAddr:
-		return addr.IP
-	case *net.UnixAddr:
-		return net.IPv4(127, 0, 0, 1)
-	}
-	return net.IPv4bcast
-}
-
 func (s *Server) removeCache(key string) {
 	s.Cache.Delete(key)
 }
@@ -415,80 +406,8 @@ func makeHTMLStat(s string) template.HTML {
 	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s", s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
 }
 
-func btoi(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-func waitLimiter(lm *rate.Limiter) {
-	if lm != nil {
-		lm.Wait(context.TODO())
-	}
-}
-
-func incrBytes(b []byte) []byte {
-	b = dupBytes(b)
-	for i := len(b) - 1; i >= 0; i-- {
-		b[i]++
-		if b[i] != 0 {
-			break
-		}
-	}
-	return b
-}
-
-func dupBytes(b []byte) []byte {
-	return append([]byte{}, b...)
-}
-
 func bAppendUint64(b []byte, v uint64) []byte {
-	return append(dupBytes(b), s2pkg.Uint64ToBytes(v)...)
-}
-
-func GetKeyCopy(db s2pkg.Storage, key []byte) ([]byte, error) {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer rd.Close()
-	return dupBytes(buf), nil
-}
-
-func GetKeyNumber(db s2pkg.Storage, key []byte) (float64, uint64, bool, error) {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return 0, 0, false, nil
-		}
-		return 0, 0, false, err
-	}
-	defer rd.Close()
-	if len(buf) != 8 {
-		return 0, 0, false, fmt.Errorf("invalid number bytes (8)")
-	}
-	return s2pkg.BytesToFloat(buf), s2pkg.BytesToUint64(buf), true, nil
-}
-
-func IncrKey(db s2pkg.Storage, key []byte, v int64) error {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
-		}
-		return err
-	}
-	old := int64(s2pkg.BytesToUint64(buf))
-	rd.Close()
-	old += v
-	if old == 0 {
-		return db.Delete(key, pebble.Sync)
-	}
-	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
+	return append(s2pkg.Bytes(b), s2pkg.Uint64ToBytes(v)...)
 }
 
 func (s *Server) createDBListener() pebble.EventListener {
@@ -563,4 +482,46 @@ func (s *Server) createDBListener() pebble.EventListener {
 		},
 		WriteStallEnd: func() { dbLogger.Info("WriteStallEnd") },
 	}
+}
+
+func (s *Server) ZCard(key string) (count int64) {
+	_, _, bkCounter := getZSetRangeKey(key)
+	_, i, _, _ := s2pkg.GetKeyNumber(s.db, bkCounter)
+	return int64(i)
+}
+
+func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err error) {
+	if len(memebrs) == 0 {
+		return nil, nil
+	}
+	for range memebrs {
+		scores = append(scores, math.NaN())
+	}
+	bkName, _, _ := getZSetRangeKey(key)
+	for i, m := range memebrs {
+		score, _, found, _ := s2pkg.GetKeyNumber(s.db, append(bkName, m...))
+		if found {
+			scores[i] = score
+		}
+	}
+	return
+}
+
+func (s *Server) ZMData(key string, members []string) (data [][]byte, err error) {
+	if len(members) == 0 {
+		return nil, nil
+	}
+	data = make([][]byte, len(members))
+	bkName, bkScore, _ := getZSetRangeKey(key)
+	for i, m := range members {
+		scoreBuf, _ := s2pkg.GetKeyCopy(s.db, append(bkName, m...))
+		if len(scoreBuf) != 0 {
+			d, err := s2pkg.GetKeyCopy(s.db, append(bkScore, append(scoreBuf, m...)...))
+			if err != nil {
+				return nil, err
+			}
+			data[i] = d
+		}
+	}
+	return
 }

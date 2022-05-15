@@ -36,7 +36,7 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 	key := getShardLogKey(int16(shard))
 	iter := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: key,
-		UpperBound: incrBytes(key),
+		UpperBound: s2pkg.IncBytes(key),
 	})
 	defer iter.Close()
 	if iter.Last() && bytes.HasPrefix(iter.Key(), key) {
@@ -49,7 +49,7 @@ func (s *Server) ShardLogInfo(shard int) (logtail uint64, logSpan int64, compact
 	key := getShardLogKey(int16(shard))
 	iter := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: key,
-		UpperBound: incrBytes(key),
+		UpperBound: s2pkg.IncBytes(key),
 	})
 	defer iter.Close()
 	if iter.Last() {
@@ -210,7 +210,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 	}
 	c := tx.NewIter(&pebble.IterOptions{
 		LowerBound: logPrefix,
-		UpperBound: incrBytes(logPrefix),
+		UpperBound: s2pkg.IncBytes(logPrefix),
 	})
 	defer c.Close()
 
@@ -282,7 +282,7 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 	logPrefix := getShardLogKey(int16(shard))
 	c := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: logPrefix,
-		UpperBound: incrBytes(logPrefix),
+		UpperBound: s2pkg.IncBytes(logPrefix),
 	})
 	defer c.Close()
 
@@ -302,7 +302,7 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 	logs.PrevSig = binary.BigEndian.Uint32(c.Value()[1:])
 	resSize := 0
 	for c.Next(); c.Valid() && bytes.HasPrefix(c.Key(), logPrefix); c.Next() {
-		data := dupBytes(c.Value())
+		data := s2pkg.Bytes(c.Value())
 		if len(data) == 0 || len(c.Key()) != 8+len(logPrefix) {
 			return nil, fmt.Errorf("fatal: invalid log entry: (%v, %v)", c.Key(), data)
 		}

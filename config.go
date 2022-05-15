@@ -44,7 +44,7 @@ type ServerConfig struct {
 
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := GetKeyCopy(s.db, []byte("config__"+strings.ToLower(f.Name)))
+		buf, err := s2pkg.GetKeyCopy(s.db, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
@@ -323,7 +323,7 @@ func (s *Server) LocalStorage() *LocalStorage {
 }
 
 func (s *LocalStorage) Get(k string) (string, error) {
-	v, err := GetKeyCopy(s.db, []byte("local___"+k))
+	v, err := s2pkg.GetKeyCopy(s.db, []byte("local___"+k))
 	return string(v), err
 }
 
@@ -415,7 +415,7 @@ func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
 	c := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: key,
-		UpperBound: incrBytes(key),
+		UpperBound: s2pkg.IncBytes(key),
 	})
 	defer c.Close()
 	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
@@ -436,7 +436,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 		key := []byte("metrics_" + f + "\x00")
 		c := s.db.NewIter(&pebble.IterOptions{
 			LowerBound: key,
-			UpperBound: incrBytes(key),
+			UpperBound: s2pkg.IncBytes(key),
 		})
 		defer c.Close()
 

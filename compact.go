@@ -1,13 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"strconv"
 	"time"
 
-	"github.com/cockroachdb/pebble"
-	"github.com/coyove/s2db/clock"
-	s2pkg "github.com/coyove/s2db/s2pkg"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -21,63 +17,63 @@ func (s *Server) CompactShard(shard int) {
 }
 
 func (s *Server) compactShardImpl(shard int) {
-	log := log.WithField("shard", strconv.Itoa(shard))
+	// log := log.WithField("shard", strconv.Itoa(shard))
 
-	defer func() {
-		s2pkg.Recover(nil)
-	}()
+	// defer func() {
+	// 	s2pkg.Recover(nil)
+	// }()
 
-	logPrefix := getShardLogKey(int16(shard))
-	c := s.db.NewIter(&pebble.IterOptions{
-		LowerBound: logPrefix,
-		UpperBound: incrBytes(logPrefix),
-	})
-	defer c.Close()
+	// logPrefix := getShardLogKey(int16(shard))
+	// c := s.db.NewIter(&pebble.IterOptions{
+	// 	LowerBound: logPrefix,
+	// 	UpperBound: incrBytes(logPrefix),
+	// })
+	// defer c.Close()
 
-	c.Last()
-	if !c.Valid() || !bytes.HasPrefix(c.Key(), logPrefix) {
-		log.Errorf("invalid log head: %v", c.Key())
-		return
-	}
+	// c.Last()
+	// if !c.Valid() || !bytes.HasPrefix(c.Key(), logPrefix) {
+	// 	log.Errorf("invalid log head: %v", c.Key())
+	// 	return
+	// }
 
-	id := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
-	if id == 0 {
-		log.Info("no log to compact")
-		return
-	}
-	if id == 1 {
-		log.Error("invalid log tail: no log after compaction checkpoint")
-		return
-	}
+	// id := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
+	// if id == 0 {
+	// 	log.Info("no log to compact")
+	// 	return
+	// }
+	// if id == 1 {
+	// 	log.Error("invalid log tail: no log after compaction checkpoint")
+	// 	return
+	// }
 
-	logx := clock.IdBeforeSeconds(id, s.ServerConfig.CompactLogsTTL)
-	if s.Slave.IsAcked(s) {
-		if s.Slave.Logtails[shard] == 0 || !s.Slave.LogtailOK[shard] {
-			log.Info("slave is not replication-ready, can't compact logs")
-			return
-		}
-		if logx > s.Slave.Logtails[shard] {
-			log.Infof("log compaction: adjust for slave: %d->%d", logx, s.Slave.Logtails[shard])
-			logx = s.Slave.Logtails[shard]
-		}
-	}
+	// logx := clock.IdBeforeSeconds(id, s.ServerConfig.CompactLogsTTL)
+	// if s.Slave.IsAcked(s) {
+	// 	if s.Slave.Logtails[shard] == 0 || !s.Slave.LogtailOK[shard] {
+	// 		log.Info("slave is not replication-ready, can't compact logs")
+	// 		return
+	// 	}
+	// 	if logx > s.Slave.Logtails[shard] {
+	// 		log.Infof("log compaction: adjust for slave: %d->%d", logx, s.Slave.Logtails[shard])
+	// 		logx = s.Slave.Logtails[shard]
+	// 	}
+	// }
 
-	b := s.db.NewBatch()
-	if err := b.DeleteRange(append(dupBytes(logPrefix), s2pkg.Uint64ToBytes(2)...),
-		append(dupBytes(logPrefix), s2pkg.Uint64ToBytes(logx)...),
-		pebble.Sync); err != nil {
-		log.Errorf("log compaction: delete range: %v", err)
-		return
-	}
-	if err := b.Set(append(dupBytes(logPrefix), s2pkg.Uint64ToBytes(1)...), joinCommandEmpty(), pebble.Sync); err != nil {
-		log.Errorf("log compaction: set log #1: %v", err)
-		return
-	}
-	if err := b.Commit(pebble.Sync); err != nil {
-		log.Errorf("log compaction: final commit: %v", err)
-		return
-	}
-	log.Infof("log compaction: %d, %d", logx, id)
+	// b := s.db.NewBatch()
+	// if err := b.DeleteRange(append(Bytes(logPrefix), s2pkg.Uint64ToBytes(2)...),
+	// 	append(Bytes(logPrefix), s2pkg.Uint64ToBytes(logx)...),
+	// 	pebble.Sync); err != nil {
+	// 	log.Errorf("log compaction: delete range: %v", err)
+	// 	return
+	// }
+	// if err := b.Set(append(Bytes(logPrefix), s2pkg.Uint64ToBytes(1)...), joinCommandEmpty(), pebble.Sync); err != nil {
+	// 	log.Errorf("log compaction: set log #1: %v", err)
+	// 	return
+	// }
+	// if err := b.Commit(pebble.Sync); err != nil {
+	// 	log.Errorf("log compaction: final commit: %v", err)
+	// 	return
+	// }
+	// log.Infof("log compaction: %d, %d", logx, id)
 }
 
 func (s *Server) schedCompactionJob() {

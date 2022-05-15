@@ -138,6 +138,7 @@ func max(a, b int) int {
 	}
 	return b
 }
+
 func NewParser(reader io.Reader) *Parser {
 	return &Parser{reader: reader, buffer: make([]byte, ReadBufferInitSize)}
 }
@@ -151,6 +152,7 @@ func (r *Parser) requestSpace(req int) {
 		r.buffer = newbuff
 	}
 }
+
 func (r *Parser) readSome(min int) error {
 	r.requestSpace(min)
 	nr, err := io.ReadAtLeast(r.reader, r.buffer[r.writeIndex:], min)
@@ -172,6 +174,7 @@ func (r *Parser) requireNBytes(num int) error {
 	}
 	return nil
 }
+
 func (r *Parser) readNumber() (int, error) {
 	var neg bool = false
 	err := r.requireNBytes(1)
@@ -358,16 +361,8 @@ type Flags struct {
 	INTERSECT  map[string]IntersectFlags
 	LIMIT      int
 	COUNT      int
-	NANOTS     *int64
-	ANY        bool
-	ASC        bool
-	DESC       bool
-	BM25       bool
 	WITHDATA   bool
 	WITHSCORES bool
-	WITHCOORD  bool
-	WITHDIST   bool
-	WITHHASH   bool
 	TIMEOUT    time.Duration
 }
 
@@ -380,11 +375,7 @@ func (c Command) Flags(start int) (f Flags) {
 		return
 	}
 	for i := start; i < c.ArgCount(); i++ {
-		if c.EqualFold(i, "_NANOTS") {
-			f.NANOTS = new(int64)
-			*f.NANOTS = s2pkg.MustParseInt64(c.Get(i + 1))
-			i++
-		} else if c.EqualFold(i, "COUNT") {
+		if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
@@ -413,15 +404,8 @@ func (c Command) Flags(start int) (f Flags) {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))
 			i++
 		} else {
-			f.ANY = f.ANY || c.EqualFold(i, "ANY")
-			f.ASC = f.ASC || c.EqualFold(i, "ASC")
-			f.DESC = f.DESC || c.EqualFold(i, "DESC")
-			f.BM25 = f.BM25 || c.EqualFold(i, "BM25")
 			f.WITHDATA = f.WITHDATA || c.EqualFold(i, "WITHDATA")
 			f.WITHSCORES = f.WITHSCORES || c.EqualFold(i, "WITHSCORES")
-			f.WITHCOORD = f.WITHCOORD || c.EqualFold(i, "WITHCOORD")
-			f.WITHDIST = f.WITHDIST || c.EqualFold(i, "WITHDIST")
-			f.WITHHASH = f.WITHHASH || c.EqualFold(i, "WITHHASH")
 		}
 	}
 	return

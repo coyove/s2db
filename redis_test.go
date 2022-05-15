@@ -481,3 +481,35 @@ func TestIntersect(t *testing.T) {
 
 	s.Close()
 }
+
+func TestPipeline(t *testing.T) {
+	s, _ := Open("test")
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "ztmp")
+
+	res := []*redis.IntCmd{}
+	p := rdb.Pipeline()
+	res = append(res, p.ZCard(ctx, "ztmp"))
+	res = append(res, p.ZAdd(ctx, "ztmp", z(1, "1")))
+	res = append(res, p.ZCard(ctx, "ztmp"))
+	res = append(res, p.ZAdd(ctx, "ztmp", z(1, "1"), z(2, "2")))
+	res = append(res, p.ZAdd(ctx, "ztmp", z(3, "3")))
+	res = append(res, p.ZCard(ctx, "ztmp"))
+	p.Exec(ctx)
+
+	assertEqual(res[0].Val(), 0)
+	assertEqual(res[0].Err(), nil)
+	assertEqual(res[1].Val(), 1)
+	assertEqual(res[2].Val(), 1)
+	assertEqual(res[3].Val(), 1)
+	assertEqual(res[4].Val(), 1)
+	assertEqual(res[5].Val(), 3)
+
+	for _, r := range res {
+		t.Log(r.Result())
+	}
+	s.Close()
+}

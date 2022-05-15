@@ -19,20 +19,10 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/pebble/vfs"
-	"github.com/mmcloughlin/geohash"
 	"github.com/sirupsen/logrus"
 )
 
 func MustParseFloat(a string) float64 {
-	if idx := strings.Index(a, ","); idx > 0 {
-		a, b := a[:idx], a[idx+1:]
-		long, err := strconv.ParseFloat(a, 64)
-		PanicErr(err)
-		lat, err := strconv.ParseFloat(b, 64)
-		PanicErr(err)
-		h := geohash.EncodeIntWithPrecision(lat, long, 52)
-		return float64(h)
-	}
 	v, err := strconv.ParseFloat(a, 64)
 	PanicErr(err)
 	return v
@@ -300,6 +290,21 @@ func ExtractHeadCirc(text string) (string, string) {
 		text = rp
 	}
 	return "", text
+}
+
+func Bytes(b []byte) []byte {
+	return append([]byte{}, b...)
+}
+
+func IncBytes(b []byte) []byte {
+	b = Bytes(b)
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i]++
+		if b[i] != 0 {
+			break
+		}
+	}
+	return b
 }
 
 func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err error) {

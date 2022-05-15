@@ -24,6 +24,7 @@ import (
 
 const ShardLogNum = 32
 const rejectedByMasterMsg = "rejected by master"
+const noAuthMsg = "NOAUTH"
 
 type Server struct {
 	ln           net.Listener
@@ -188,9 +189,6 @@ func (s *Server) Serve(addr string) (err error) {
 	s.Survey.StartAt = time.Now()
 
 	log.Infof("listening on: redis=%v, local=%v", s.ln.Addr(), s.lnLocal.Addr())
-	if v, _ := s.LocalStorage().Get("compact_lock"); v != "" {
-		s.runScriptFunc("compactnotfinished", s2pkg.MustParseInt(v))
-	}
 
 	for i := range s.shards {
 		go s.batchWorker(i)
@@ -245,12 +243,15 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 				break
 			}
 		} else {
+			if !command.IsLast() {
+				writer.EnablePipelineMode()
+			}
 			if s.Password != "" && !auth {
 				if command.EqualFold(0, "AUTH") && command.Get(1) == s.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
-					writer.WriteError("NOAUTH")
+					writer.WriteError(noAuthMsg)
 				}
 				writer.Flush()
 				continue
@@ -286,8 +287,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	}
 
 	if isWriteCommand[cmd] {
-		if key == "" || strings.Contains(key, "\x00") {
-			return w.WriteError("invalid key name, which is either empty or containing null bytes (0x00)")
+		if key == "" {
+			return w.WriteError("invalid empty key name")
+		}
+		if strings.Contains(key, "\x00") {
+			return w.WriteError("invalid key name, null bytes (0x00) found")
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
@@ -302,7 +306,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			diff := time.Since(start)
 			diffMs := diff.Milliseconds()
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
-				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), getRemoteIP(remoteAddr), command)
+				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(),
+					s2pkg.GetRemoteIP(remoteAddr), command)
 				s.Survey.SlowLogs.Incr(diffMs)
 			}
 			if isReadCommand[cmd] {
@@ -398,7 +403,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
-		s.MasterIP = getRemoteIP(remoteAddr).String()
+		s.MasterIP = s2pkg.GetRemoteIP(remoteAddr).String()
 		if len(names) > 0 {
 			select {
 			case s.shards[shard].pusherTrigger <- true:

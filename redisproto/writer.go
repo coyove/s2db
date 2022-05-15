@@ -2,6 +2,7 @@ package redisproto
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"reflect"
@@ -24,6 +25,8 @@ var (
 type Writer struct {
 	Conn   io.Writer
 	Logger *logrus.Logger
+	pMode  bool
+	tmp    *bytes.Buffer
 }
 
 func NewWriter(sink io.Writer, logger *logrus.Logger) *Writer {
@@ -33,11 +36,29 @@ func NewWriter(sink io.Writer, logger *logrus.Logger) *Writer {
 	}
 }
 
+func (w *Writer) EnablePipelineMode() {
+	w.pMode = true
+}
+
 func (w *Writer) Write(data []byte) (int, error) {
-	return w.Conn.Write(data)
+	if !w.pMode {
+		return w.Conn.Write(data)
+	}
+	if w.tmp == nil {
+		w.tmp = &bytes.Buffer{}
+	}
+	return w.tmp.Write(data)
 }
 
 func (w *Writer) Flush() error {
+	if w.pMode {
+		if w.tmp == nil {
+			return nil
+		}
+		_, err := w.Conn.Write(w.tmp.Bytes())
+		w.tmp.Reset()
+		return err
+	}
 	if f, ok := w.Conn.(*bufio.Writer); ok {
 		return f.Flush()
 	}

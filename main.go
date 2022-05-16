@@ -155,7 +155,7 @@ func main() {
 		select {}
 	}
 
-	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), noAuthMsg) {
+	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), redisproto.ErrNoAuth.Error()) {
 		return
 	}
 

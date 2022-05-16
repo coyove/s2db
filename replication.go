@@ -255,7 +255,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 		case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 			_, err = parseDel(cmd, name, command, dd).f(ltx)
 		case "ZADD":
-			_, err = parseZAdd(cmd, name, command, dd).f(ltx)
+			_, err = s.parseZAdd(cmd, name, command, dd).f(ltx)
 		case "ZINCRBY":
 			_, err = parseZIncrBy(cmd, name, command, dd).f(ltx)
 		default:

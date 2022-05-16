@@ -24,7 +24,6 @@ import (
 
 const ShardLogNum = 32
 const rejectedByMasterMsg = "rejected by master"
-const noAuthMsg = "NOAUTH"
 
 type Server struct {
 	ln           net.Listener
@@ -67,6 +66,7 @@ type Server struct {
 		Passthrough      s2pkg.Survey ``
 		FirstRunSleep    s2pkg.Survey ``
 		LogCompaction    s2pkg.Survey `metrics:"qps"`
+		DSLT             s2pkg.Survey ``
 		Command          sync.Map
 	}
 
@@ -251,7 +251,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
-					writer.WriteError(noAuthMsg)
+					writer.WriteError(redisproto.ErrNoAuth.Error())
 				}
 				writer.Flush()
 				continue
@@ -372,20 +372,19 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteBulkString(strings.Join(s.InfoCommand(key), "\r\n"))
 	case "DUMPDB":
-		go func() {
-			start := time.Now()
-			log.Infof("dump to %s in %v: %v", key, time.Since(start),
-				s.DB.Checkpoint(key, pebble.WithFlushedWAL()))
-		}()
+		go func(start time.Time) {
+			log.Infof("start dumping to %s", key)
+			err := s.DB.Checkpoint(key, pebble.WithFlushedWAL())
+			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
+		}(start)
 		return w.WriteSimpleString("STARTED")
 	case "SSDISKSIZE":
-		startKey, startKey2, _ := getZSetRangeKey(key)
-		var endKey, endKey2 []byte
-		if command.ArgCount() == 3 {
-			endKey, endKey2, _ = getZSetRangeKey(command.Get(2))
-		} else {
-			endKey, endKey2, _ = getZSetRangeKey(key + "\xff")
+		end := command.Get(2)
+		if end == "" {
+			end = key + "\xff"
 		}
+		startKey, startKey2, _ := getZSetRangeKey(key)
+		endKey, endKey2, _ := getZSetRangeKey(end)
 		return w.WriteObjects(
 			itfs(s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))),
 			itfs(s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))),
@@ -446,7 +445,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dd(command)), w)
 	case "ZADD":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZAdd(cmd, key, command, dd(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dd(command)), w)
 	}
@@ -546,7 +545,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 
 func (s *Server) checkWritable() error {
 	if s.ReadOnly {
-		return fmt.Errorf("server is read-only")
+		return redisproto.ErrServerReadonly
 	}
 	return nil
 }

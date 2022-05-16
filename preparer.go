@@ -39,7 +39,7 @@ func getShardLogKey(shard int16) []byte {
 	return []byte(fmt.Sprintf("log%04x_", shard))
 }
 
-func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+func (s *Server) parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	var xx, nx, ch, pd, data bool
 	var dslt = math.NaN()
 	var idx = 2
@@ -79,7 +79,7 @@ func parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) prepared
 			pairs = append(pairs, p)
 		}
 	}
-	return prepareZAdd(key, pairs, nx, xx, ch, pd, dslt, dd)
+	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, dslt, dd)
 }
 
 func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
@@ -160,7 +160,7 @@ func prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float64, dd []byte) preparedTx {
+func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float64, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		if !math.IsNaN(dslt) {
 			// Filter out all DSLT in advance
@@ -242,6 +242,7 @@ func prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float
 					break
 				}
 			}
+			s.Survey.DSLT.Incr(int64(x))
 		}
 
 		if added != 0 {

@@ -8,6 +8,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -352,10 +353,11 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	for i := 0; i < rv.NumField(); i++ {
 		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
 			m, n := sv.Metrics(), rt.Field(i)
-			if t := n.Tag.Get("metrics"); t == "mean" || t == "" {
+			t := n.Tag.Get("metrics")
+			if t == "mean" || t == "" {
 				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_Mean", Score: m.Mean[0]})
 			}
-			if t := n.Tag.Get("metrics"); t == "qps" || t == "" {
+			if t == "qps" || t == "" {
 				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_QPS", Score: m.QPS[0]})
 			}
 		}
@@ -366,6 +368,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		return true
 	})
 	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})
+	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
 
 	lsmMetrics := s.DB.Metrics()
 	dbm := reflect.ValueOf(lsmMetrics).Elem()

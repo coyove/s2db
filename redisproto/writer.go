@@ -97,8 +97,10 @@ func (w *Writer) WriteSimpleString(s string) error {
 }
 
 func (w *Writer) WriteError(s string) error {
-	if !strings.Contains(s, "NOAUTH") && s != ErrUnknownCommand.Error() {
-		logrus.Error("redisproto: ", s)
+	if !strings.Contains(s, "NOAUTH") &&
+		s != ErrUnknownCommand.Error() &&
+		s != ErrServerReadonly.Error() {
+		logrus.Error("redis wire error: ", s)
 	}
 	s = strings.Replace(s, "\n", " ", -1)
 	s = strings.Replace(s, "\r", " ", -1)

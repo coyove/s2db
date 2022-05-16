@@ -84,7 +84,7 @@ func IdDiff(a, b uint64) string {
 		return "0"
 	}
 	if IdNano(a) == IdNano(b) {
-		return fmt.Sprintf("0.%d", int(a&counterMask)-int(b&counterMask))
+		return fmt.Sprintf("#%d", int(a&counterMask)-int(b&counterMask))
 	}
 	if a != 0 && b == 0 {
 		return "?"

@@ -199,6 +199,11 @@ func (s *Server) logPusher(shard int) {
 }
 
 func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, logtail uint64, err error) {
+	s.shards[shard].runLogLock.Lock(func() {
+		log.Errorf("slow runLog(%d), logs size: %d", shard, len(logs.Logs))
+	})
+	defer s.shards[shard].runLogLock.Unlock()
+
 	tx := s.DB.NewIndexedBatch()
 	defer tx.Close()
 

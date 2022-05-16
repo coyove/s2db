@@ -73,6 +73,7 @@ type Server struct {
 	DB *pebble.DB
 
 	shards [ShardLogNum]struct {
+		runLogLock        s2pkg.Locker
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
 		batchCloseSignal  chan bool

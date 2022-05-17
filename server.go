@@ -43,8 +43,10 @@ type Server struct {
 	SelfManager      *bas.Program
 	Cache            *s2pkg.MasterLRU
 	WeakCache        *s2pkg.MasterLRU
-	EvalLock         sync.RWMutex
-	SwitchMasterLock sync.RWMutex
+	evalLock         sync.RWMutex
+	switchMasterLock sync.RWMutex
+
+	rangeDeleteWatcher s2pkg.Survey
 
 	Survey struct {
 		StartAt          time.Time
@@ -67,6 +69,7 @@ type Server struct {
 		FirstRunSleep    s2pkg.Survey ``
 		LogCompaction    s2pkg.Survey `metrics:"qps"`
 		DSLT             s2pkg.Survey ``
+		DSLTFull         s2pkg.Survey `metrics:"qps"`
 		Command          sync.Map
 	}
 
@@ -196,7 +199,7 @@ func (s *Server) Serve(addr string) (err error) {
 		go s.logPusher(i)
 	}
 	go s.startCronjobs()
-	// go s.schedCompactionJob() // TODO: close signal
+	go s.schedDSLTWalker() // TODO: close signal
 	go s.webConsoleServer()
 	go s.acceptor(s.lnLocal)
 	s.acceptor(s.ln)
@@ -332,11 +335,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
 	case "EVAL", "EVALRO":
 		if cmd == "EVALRO" {
-			s.EvalLock.RLock()
-			defer s.EvalLock.RUnlock()
+			s.evalLock.RLock()
+			defer s.evalLock.RUnlock()
 		} else {
-			s.EvalLock.Lock()
-			defer s.EvalLock.Unlock()
+			s.evalLock.Lock()
+			defer s.evalLock.Unlock()
 		}
 		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...)))
 		return w.WriteBulkString(v.String())
@@ -395,8 +398,8 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	// Log commands
 	switch cmd {
 	case "PUSHLOGS": // PUSHLOGS <Shard> <LogsBytes>
-		s.SwitchMasterLock.RLock()
-		defer s.SwitchMasterLock.RUnlock()
+		s.switchMasterLock.RLock()
+		defer s.switchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
 			return w.WriteError(rejectedByMasterMsg)
 		}
@@ -424,16 +427,16 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		}
 		return w.WriteInt(int64(logtail))
 	case "SWITCHMASTER":
-		s.SwitchMasterLock.Lock()
-		defer s.SwitchMasterLock.Unlock()
+		s.switchMasterLock.Lock()
+		defer s.switchMasterLock.Unlock()
 		if _, err := s.UpdateConfig("markmaster", "1", false); err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.ReadOnly = false
 		return w.WriteSimpleString("OK")
 	case "SWITCHREADONLY":
-		s.SwitchMasterLock.Lock()
-		defer s.SwitchMasterLock.Unlock()
+		s.switchMasterLock.Lock()
+		defer s.switchMasterLock.Unlock()
 		s.ReadOnly = true
 		return w.WriteSimpleString("OK")
 	}
@@ -442,9 +445,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	deferred := parseRunFlag(command)
 	switch cmd {
 	case "DEL":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dd(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseDel(cmd, key, command, dd(command)), w)
 	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseDel(cmd, key, command, dd(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseDel(cmd, key, command, dd(command)), w)
 	case "ZADD":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)
 	case "ZINCRBY":

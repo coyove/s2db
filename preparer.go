@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"math"
 	"strings"
@@ -15,7 +16,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const DSLTMaxKeys = 1024
+var DSLTMaxMembers = flag.Int("db.dsltlimit", 1024, "[perf] limit max members to delete during DSLT")
+var DeleteKeyQPSLimit = flag.Int("db.delkeylimit", 1024, "[perf] max qps of deleting keys")
 
 var zsetKeyScoreFullRange = &pebble.IterOptions{
 	LowerBound: []byte("zsetks__"),
@@ -82,12 +84,12 @@ func (s *Server) parseZAdd(cmd, key string, command *redisproto.Command, dd []by
 	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, dslt, dd)
 }
 
-func parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+func (s *Server) parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
 	switch cmd {
 	case "DEL":
 		// DEL key
 		// DEL start end
-		return prepareDel(key, command.Get(2), dd)
+		return s.prepareDel(key, command.Get(2), dd)
 	case "ZREM":
 		return prepareZRem(key, toStrings(2, command), dd)
 	}
@@ -129,7 +131,20 @@ func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 	return writeLog(tx, dd)
 }
 
-func prepareDel(startKey, endKey string, dd []byte) preparedTx {
+func (s *Server) deleteKey(tx s2pkg.Storage, key string, bkName, bkScore, bkCounter []byte) error {
+	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *DeleteKeyQPSLimit {
+		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *DeleteKeyQPSLimit)
+	}
+	if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
+		return err
+	}
+	if err := tx.DeleteRange(bkScore, s2pkg.IncBytes(bkScore), pebble.Sync); err != nil {
+		return err
+	}
+	return tx.Delete(bkCounter, pebble.Sync)
+}
+
+func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	f := func(tx s2pkg.LogTx) (interface{}, error) {
 		if endKey != "" {
 			bkStartName, bkStartScore, bkStartCounter := getZSetRangeKey(startKey)
@@ -146,13 +161,7 @@ func prepareDel(startKey, endKey string, dd []byte) preparedTx {
 			return 1, writeLog(tx, dd)
 		}
 		bkName, bkScore, bkCounter := getZSetRangeKey(startKey)
-		if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
-			return nil, err
-		}
-		if err := tx.DeleteRange(bkScore, s2pkg.IncBytes(bkScore), pebble.Sync); err != nil {
-			return nil, err
-		}
-		if err := tx.Delete(bkCounter, pebble.Sync); err != nil {
+		if err := s.deleteKey(tx, startKey, bkName, bkScore, bkCounter); err != nil {
 			return nil, err
 		}
 		return 1, writeLog(tx, dd)
@@ -222,8 +231,20 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 			})
 			defer c.Close()
 
+			if c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore) {
+				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
+				if score < dslt {
+					// Special case: all members can be deleted
+					if err := s.deleteKey(tx, key, bkName, bkScore, bkCounter); err != nil {
+						logrus.Errorf("[DSLT] delete key: %s, dslt: %f, error: %v", key, dslt, err)
+					}
+					s.Survey.DSLTFull.Incr(1)
+					return math.MinInt64, writeLog(tx, dd)
+				}
+			}
+
 			x := 0
-			dsltThreshold := int(math.Max(float64(len(pairs))*2, DSLTMaxKeys))
+			dsltThreshold := int(math.Max(float64(len(pairs))*2, float64(*DSLTMaxMembers)))
 			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
 				if score >= dslt {
@@ -242,6 +263,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 					break
 				}
 			}
+
 			s.Survey.DSLT.Incr(int64(x))
 		}
 

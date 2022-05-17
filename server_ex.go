@@ -238,7 +238,9 @@ func (s *Server) ShardLogInfoCommand(shard int) []string {
 		fmt.Sprintf("batch_queue:%v", len(x.batchTx)),
 		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
 		fmt.Sprintf("timespan:%d", logSpan),
-		fmt.Sprintf("compacted:%v", compacted),
+	}
+	if !compacted {
+		tmp = append(tmp, fmt.Sprintf("compacted:%v", compacted))
 	}
 	if s.Slave.Redis() != nil {
 		tail := s.Slave.Logtails[shard]

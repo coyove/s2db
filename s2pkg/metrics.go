@@ -31,7 +31,7 @@ func (s *Survey) _i() (uint64, uint32) {
 	return sec % surveyCount, uint32(sec) * surveyIntervalSec
 }
 
-func (s *Survey) Incr(v int64) {
+func (s *Survey) Incr(v int64) (int64, int32) {
 	idx, ts := s._i()
 	oldValue := atomic.LoadInt64(&s.Value[idx])
 	oldCount := atomic.LoadInt32(&s.Count[idx])
@@ -51,8 +51,9 @@ func (s *Survey) Incr(v int64) {
 		old := s.Max[idx]
 		atomic.CompareAndSwapInt64(&s.Max[idx], old, v)
 	}
-	atomic.AddInt64(&s.Value[idx], v)
-	atomic.AddInt32(&s.Count[idx], 1)
+	nv := atomic.AddInt64(&s.Value[idx], v)
+	nc := atomic.AddInt32(&s.Count[idx], 1)
+	return nv, nc
 }
 
 func (s Survey) String() string {

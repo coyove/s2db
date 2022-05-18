@@ -4,7 +4,7 @@ go 1.16
 
 require (
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
-	github.com/coyove/nj v0.0.0-20220509062621-58858f0dd837
+	github.com/coyove/nj v0.0.0-20220517085300-409d8bac07d9
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/golang/protobuf v1.5.2
 	github.com/sirupsen/logrus v1.8.1

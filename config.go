@@ -364,7 +364,11 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	}
 	s.Survey.Command.Range(func(k, v interface{}) bool {
 		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
-		pairs = append(pairs, s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]}, s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]})
+		pairs = append(pairs,
+			s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]},
+			s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]},
+			s2pkg.Pair{Member: n + "_Max", Score: float64(m.Max[0])},
+		)
 		return true
 	})
 	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})

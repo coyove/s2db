@@ -147,6 +147,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		data = append(data, "# server_misc",
 			fmt.Sprintf("cwd:%v", cwd),
 			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
+			fmt.Sprintf("data_files:%d", len(dataFiles)),
 			fmt.Sprintf("data_size:%d", dataSize),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			"")

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -55,12 +56,12 @@ type Server struct {
 		SysWrite         s2pkg.Survey ``
 		SysWriteDiscards s2pkg.Survey ``
 		CacheReq         s2pkg.Survey `metrics:"qps"`
-		CacheSize        s2pkg.Survey ``
+		CacheSize        s2pkg.Survey `metrics:"mean"`
 		CacheHit         s2pkg.Survey `metrics:"qps"`
 		WeakCacheHit     s2pkg.Survey `metrics:"qps"`
 		BatchSize        s2pkg.Survey ``
 		BatchLat         s2pkg.Survey ``
-		BatchSizeSv      s2pkg.Survey ``
+		BatchSizeSv      s2pkg.Survey `metrics:"mean"`
 		BatchLatSv       s2pkg.Survey ``
 		DBBatchSize      s2pkg.Survey ``
 		SlowLogs         s2pkg.Survey ``
@@ -96,9 +97,10 @@ func Open(dbPath string) (x *Server, err error) {
 			Logger:       dbLogger,
 			Cache:        pebble.NewCache(int64(*pebbleCacheSize) << 20),
 			MemTableSize: *pebbleMemtableSize << 20,
+			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
 	}
-	x.DBOptions.FS = s2pkg.NoLinkFS{FS: x.DBOptions.FS}
+	x.DBOptions.FS = &s2pkg.VFS{FS: x.DBOptions.FS}
 	x.DBOptions.EventListener = x.createDBListener()
 	x.DB, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
@@ -370,11 +372,25 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			return w.WriteBulkStrings(s.listConfigCommand())
 		}
 	case "INFO":
-		key = strings.ToLower(key)
-		if strings.HasPrefix(key, "log") {
+		lkey := strings.ToLower(key)
+		if strings.HasPrefix(lkey, "metrics.") {
+			var sv *s2pkg.Survey
+			if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key[8:]); rv.IsValid() {
+				sv = rv.Addr().Interface().(*s2pkg.Survey)
+			} else {
+				x, ok := s.Survey.Command.Load(key[8:])
+				if !ok {
+					return w.WriteError("invalid metrics key: " + key[8:])
+				}
+				sv = x.(*s2pkg.Survey)
+			}
+			m := sv.Metrics()
+			return w.WriteObjects(m.QPS[0], m.QPS[1], m.QPS[2], m.Mean[0], m.Mean[1], m.Mean[2], m.Max[0], m.Max[1], m.Max[2])
+		}
+		if strings.HasPrefix(lkey, "log") {
 			return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(s2pkg.MustParseInt(key[3:])), "\r\n"))
 		}
-		return w.WriteBulkString(strings.Join(s.InfoCommand(key), "\r\n"))
+		return w.WriteBulkString(strings.Join(s.InfoCommand(lkey), "\r\n"))
 	case "DUMPDB":
 		go func(start time.Time) {
 			log.Infof("start dumping to %s", key)

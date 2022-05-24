@@ -3,11 +3,17 @@ package s2pkg
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
+	"github.com/coyove/s2db/clock"
 )
 
 type Storage interface {
@@ -171,10 +177,122 @@ func (bs *BuoySignal) String() string {
 	return fmt.Sprintf("%d-%d", bs.list[0].watermark, bs.list[len(bs.list)-1].watermark)
 }
 
-type NoLinkFS struct {
-	vfs.FS
+type VFS struct {
+	FS    vfs.FS
+	Files sync.Map
 }
 
-func (fs NoLinkFS) Link(string, string) error {
+type vfsFileRecord struct {
+	Name       string
+	Count      int64
+	Start, End int64
+	Closed     bool
+}
+
+type vfsFile struct {
+	fs   *VFS
+	name string
+	vfs.File
+}
+
+func (vf vfsFile) Close() error {
+	if r, ok := vf.fs.Files.Load(vf.name); ok {
+		r.(*vfsFileRecord).Closed = true
+	}
+	return vf.File.Close()
+}
+
+func (fs *VFS) Create(name string) (vfs.File, error) {
+	return fs.FS.Create(name)
+}
+
+func (fs *VFS) Link(string, string) error {
 	return fmt.Errorf("NoLinkFS")
+}
+
+func (fs *VFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
+	fn := filepath.Base(name)
+	ctr, loaded := fs.Files.LoadOrStore(fn, new(vfsFileRecord))
+	vf := ctr.(*vfsFileRecord)
+	atomic.AddInt64(&vf.Count, 1)
+	vf.Name = name
+	vf.End = clock.UnixNano()
+	if !loaded {
+		vf.Start = clock.UnixNano()
+	}
+	f, err := fs.FS.Open(name, opts...)
+	if f != nil {
+		return vfsFile{fs, fn, f}, err
+	}
+	return f, err
+}
+
+func (fs *VFS) OpenDir(name string) (vfs.File, error) {
+	return fs.FS.OpenDir(name)
+}
+
+func (fs *VFS) Remove(name string) error {
+	fs.Files.Delete(filepath.Base(name))
+	return fs.FS.Remove(name)
+}
+
+func (fs *VFS) RemoveAll(name string) error {
+	return fs.FS.RemoveAll(name)
+}
+
+func (fs *VFS) Rename(oldname, newname string) error {
+	return fs.FS.Rename(oldname, newname)
+}
+
+func (fs *VFS) ReuseForWrite(oldname, newname string) (vfs.File, error) {
+	return fs.FS.ReuseForWrite(oldname, newname)
+}
+
+func (fs *VFS) MkdirAll(dir string, perm os.FileMode) error {
+	return fs.FS.MkdirAll(dir, perm)
+}
+
+func (fs *VFS) Lock(name string) (io.Closer, error) {
+	return fs.FS.Lock(name)
+}
+
+func (fs *VFS) List(dir string) ([]string, error) {
+	return fs.FS.List(dir)
+}
+
+func (fs *VFS) Stat(name string) (os.FileInfo, error) {
+	return fs.FS.Stat(name)
+}
+
+func (fs *VFS) PathBase(path string) string {
+	return fs.FS.PathBase(path)
+}
+
+func (fs *VFS) PathJoin(elem ...string) string {
+	return fs.FS.PathJoin(elem...)
+}
+
+func (fs *VFS) PathDir(path string) string {
+	return fs.FS.PathDir(path)
+}
+
+func (fs *VFS) GetDiskUsage(path string) (vfs.DiskUsage, error) {
+	return fs.FS.GetDiskUsage(path)
+}
+
+func (fs *VFS) SSTOpenCount() (res []vfsFileRecord) {
+	fs.Files.Range(func(key, value interface{}) bool {
+		k := key.(string)
+		if !strings.HasSuffix(k, ".sst") {
+			return true
+		}
+		res = append(res, *value.(*vfsFileRecord))
+		return true
+	})
+	sort.Slice(res, func(i, j int) bool { return res[i].Count < res[j].Count })
+	return
+}
+
+func (vf vfsFileRecord) String() string {
+	return fmt.Sprintf("%s (%d in %ds)", vf.Name, vf.Count, (vf.End-vf.Start)/1e9)
 }

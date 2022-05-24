@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	"math"
 	"strings"
@@ -15,9 +14,6 @@ import (
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/sirupsen/logrus"
 )
-
-var DSLTMaxMembers = flag.Int("db.dsltlimit", 1024, "[perf] limit max members to delete during DSLT")
-var DeleteKeyQPSLimit = flag.Int("db.delkeylimit", 1024, "[perf] max qps of deleting keys")
 
 var zsetKeyScoreFullRange = &pebble.IterOptions{
 	LowerBound: []byte("zsetks__"),
@@ -132,8 +128,8 @@ func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 }
 
 func (s *Server) deleteKey(tx s2pkg.Storage, key string, bkName, bkScore, bkCounter []byte) error {
-	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *DeleteKeyQPSLimit {
-		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *DeleteKeyQPSLimit)
+	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
+		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
 	}
 	if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
 		return err
@@ -244,7 +240,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 			}
 
 			x := 0
-			dsltThreshold := int(math.Max(float64(len(pairs))*2, float64(*DSLTMaxMembers)))
+			dsltThreshold := int(math.Max(float64(len(pairs))*2, float64(*dsltMaxMembers)))
 			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
 				if score >= dslt {
@@ -264,7 +260,9 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 				}
 			}
 
-			s.Survey.DSLT.Incr(int64(x))
+			if x > 0 {
+				s.Survey.DSLT.Incr(int64(x))
+			}
 		}
 
 		if added != 0 {

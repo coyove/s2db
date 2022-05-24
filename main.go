@@ -42,6 +42,10 @@ var (
 	}()
 	pebbleMemtableSize = flag.Int("pebble.memtablesize", 128, "[pebble] memtable size in megabytes")
 	pebbleCacheSize    = flag.Int("pebble.cachesize", 1024, "[pebble] cache size in megabytes")
+	pebbleMaxOpenFiles = flag.Int("pebble.maxopenfiles", 1024, "[pebble] max open files")
+	dsltMaxMembers     = flag.Int("db.dsltlimit", 1024, "[db] limit max members to delete during DSLT")
+	deleteKeyQPSLimit  = flag.Int("db.delkeylimit", 1024, "[db] max QPS of deleting keys")
+	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members a single command can return")
 
 	testFlag   = false
 	slowLogger *log.Logger
@@ -55,6 +59,7 @@ func main() {
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
 	go s2pkg.OSWatcher()
+	s2pkg.RangeHardLimit = *rangeHardLimit
 
 	if *showVersion {
 		fmt.Println("s2db", Version)

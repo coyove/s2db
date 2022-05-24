@@ -253,7 +253,11 @@
                         spanGaps: false,
                         label: src[i-1],
                         width: 1,
-                        value: (self, rawValue) => rawValue.toFixed(3).replace(/\B(?<!\.\d*)(?=(\d{3})+(?!\d))/g, ","),
+                        value: function(self, rawValue) {
+                            if (rawValue < 1e6 && !Number.isInteger(rawValue))
+                                return rawValue.toFixed(3);
+                            return rawValue.toFixed(0).replace(/\B(?<!\.\d*)(?=(\d{3})+(?!\d))/g, ",");
+                        },
                         stroke: "hsla(" + l + ", 50%, 47%, 1)",
                         fill: "hsla(" + l + ", 50%, 47%, 0.3)",
                     })

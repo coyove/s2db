@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/sirupsen/logrus"
 )
 
@@ -183,6 +184,10 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			}
 		case uint64:
 			if err := w.WriteInt(int64(v)); err != nil {
+				return err
+			}
+		case float64:
+			if err := w.WriteBulk(s2pkg.FormatFloatBulk(v)); err != nil {
 				return err
 			}
 		case []interface{}:

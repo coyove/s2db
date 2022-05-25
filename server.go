@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/redisproto"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
@@ -46,6 +48,7 @@ type Server struct {
 	WeakCache        *s2pkg.MasterLRU
 	evalLock         sync.RWMutex
 	switchMasterLock sync.RWMutex
+	dumpWireLock     s2pkg.Locker
 
 	rangeDeleteWatcher s2pkg.Survey
 
@@ -100,7 +103,10 @@ func Open(dbPath string) (x *Server, err error) {
 			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
 	}
-	x.DBOptions.FS = &s2pkg.VFS{FS: x.DBOptions.FS}
+	x.DBOptions.FS = &s2pkg.VFS{
+		FS:       x.DBOptions.FS,
+		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatUint(clock.Id(), 16)),
+	}
 	x.DBOptions.EventListener = x.createDBListener()
 	x.DB, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
@@ -397,6 +403,9 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 			err := s.DB.Checkpoint(key, pebble.WithFlushedWAL())
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
 		}(start)
+		return w.WriteSimpleString("STARTED")
+	case "DUMPWIRE":
+		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SSDISKSIZE":
 		end := command.Get(2)

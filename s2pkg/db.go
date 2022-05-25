@@ -2,7 +2,10 @@ package s2pkg
 
 import (
 	"fmt"
+	"hash"
+	"hash/crc32"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +17,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
 	"github.com/coyove/s2db/clock"
+	"github.com/sirupsen/logrus"
 )
 
 type Storage interface {
@@ -180,6 +184,9 @@ func (bs *BuoySignal) String() string {
 type VFS struct {
 	FS    vfs.FS
 	Files sync.Map
+
+	DumpVDir string
+	DumpTo   string
 }
 
 type vfsFileRecord struct {
@@ -203,6 +210,9 @@ func (vf vfsFile) Close() error {
 }
 
 func (fs *VFS) Create(name string) (vfs.File, error) {
+	if strings.HasPrefix(name, fs.DumpVDir) && strings.HasSuffix(name, ".sst") {
+		return NewVFSVirtualDumpFile(filepath.Base(name), fs.DumpTo)
+	}
 	return fs.FS.Create(name)
 }
 
@@ -295,4 +305,76 @@ func (fs *VFS) SSTOpenCount() (res []vfsFileRecord) {
 
 func (vf vfsFileRecord) String() string {
 	return fmt.Sprintf("%s (%d in %ds)", vf.Name, vf.Count, (vf.End-vf.Start)/1e9)
+}
+
+type VFSVirtualDumpFile struct {
+	start  time.Time
+	name   string
+	h      hash.Hash32
+	w      *io.PipeWriter
+	reqSig chan int
+}
+
+func NewVFSVirtualDumpFile(name string, dest string) (*VFSVirtualDumpFile, error) {
+	if !strings.HasPrefix(dest, "http") {
+		dest = "http://" + dest
+	}
+
+	logrus.Infof("VFSVirtualDumpFile started, dump %q to %q", name, dest)
+
+	r, w := io.Pipe()
+	req, err := http.NewRequest("PUT", dest, r)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add("X-Path", name)
+
+	reqSig := make(chan int)
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			w.Close()
+			logrus.Infof("VFSVirtualDumpFile %q http error: %v", name, err)
+			reqSig <- -1
+		} else {
+			resp.Body.Close()
+			reqSig <- resp.StatusCode
+		}
+	}()
+
+	return &VFSVirtualDumpFile{
+		start:  clock.Now(),
+		name:   name,
+		h:      crc32.NewIEEE(),
+		w:      w,
+		reqSig: reqSig,
+	}, nil
+}
+
+func (vf *VFSVirtualDumpFile) Close() error {
+	_, err := vf.w.Write(vf.h.Sum(nil))
+	vf.w.Close()
+	logrus.Infof("VFSVirtualDumpFile %q finished in %v, code=%v", vf.name, clock.Now().Sub(vf.start), <-vf.reqSig)
+	return err
+}
+
+func (vf *VFSVirtualDumpFile) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("VFSVirtualDumpFile.Read not supported")
+}
+
+func (vf *VFSVirtualDumpFile) ReadAt(p []byte, off int64) (n int, err error) {
+	return 0, fmt.Errorf("VFSVirtualDumpFile.ReadAt not supported")
+}
+
+func (vf *VFSVirtualDumpFile) Stat() (os.FileInfo, error) {
+	return nil, fmt.Errorf("VFSVirtualDumpFile.Stat not supported")
+}
+
+func (vf *VFSVirtualDumpFile) Write(p []byte) (int, error) {
+	vf.h.Write(p)
+	return vf.w.Write(p)
+}
+
+func (vf *VFSVirtualDumpFile) Sync() error {
+	return nil
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,7 @@ var (
 		}
 		return f
 	}()
+	dumpRemote         = flag.String("dump", "", "dump database")
 	pebbleMemtableSize = flag.Int("pebble.memtablesize", 128, "[pebble] memtable size in megabytes")
 	pebbleCacheSize    = flag.Int("pebble.cachesize", 1024, "[pebble] cache size in megabytes")
 	pebbleMaxOpenFiles = flag.Int("pebble.maxopenfiles", 1024, "[pebble] max open files")
@@ -76,6 +78,38 @@ func main() {
 			errorExit("cmd: " + err.Error())
 		}
 		fmt.Println(v)
+		return
+	}
+
+	if *dumpRemote != "" {
+		s2pkg.PanicErr(os.MkdirAll(*dumpRemote, 0666))
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			p := r.Header.Get("X-Path")
+			if p == "" {
+				w.WriteHeader(400)
+				return
+			}
+			fn, err := os.Create(filepath.Join(*dumpRemote, p))
+			if err != nil {
+				fmt.Printf("dump: create local file %s: %v\n", p, err)
+				w.WriteHeader(500)
+				return
+			}
+			defer fn.Close()
+
+			start := time.Now()
+			fmt.Printf("dump: receive %q\n", p)
+			_, ok, err := s2pkg.CopyCrc32(fn, r.Body, func(int) {})
+			if err != nil || !ok {
+				fmt.Printf("dump: copy crc32 of %s: %v\n", p, err)
+				w.WriteHeader(500)
+				return
+			}
+			w.WriteHeader(200)
+			fmt.Printf("dump: finished receiving %q in %v\n", p, time.Since(start))
+		})
+		fmt.Printf("dumping receiver address: %v to %v\n", *listenAddr, *dumpRemote)
+		http.ListenAndServe(*listenAddr, nil)
 		return
 	}
 

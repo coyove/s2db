@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"io"
+	"io/ioutil"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,4 +158,52 @@ func getTTLByName(ttls []s2pkg.Pair, name string) int {
 		return int(ttls[idx-1].Score)
 	}
 	return -1
+}
+
+func (s *Server) DumpWire(dest string) {
+	start := time.Now()
+
+	s.dumpWireLock.Lock(func() { log.Info("wire dumping already started") })
+	defer s.dumpWireLock.Unlock()
+
+	vfs := s.DBOptions.FS.(*s2pkg.VFS)
+	log.Infof("DUMPWIRE started, remove virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
+
+	vfs.DumpTo = dest
+	defer func() { vfs.DumpTo = "" }()
+
+	if err := s.DB.Checkpoint(vfs.DumpVDir, pebble.WithFlushedWAL()); err != nil {
+		log.Errorf("failed to dump over wire: %v", err)
+		return
+	}
+
+	files, err := ioutil.ReadDir(vfs.DumpVDir)
+	if err != nil {
+		log.Errorf("failed to dump over wire: %v", err)
+		return
+	}
+
+	for _, f := range files {
+		if err := func() error {
+			src, err := os.Open(filepath.Join(vfs.DumpVDir, f.Name()))
+			if err != nil {
+				return err
+			}
+			defer src.Close()
+			vf, err := s2pkg.NewVFSVirtualDumpFile(f.Name(), dest)
+			if err != nil {
+				return err
+			}
+			defer vf.Close()
+			if _, err = io.Copy(vf, src); err != nil {
+				return err
+			}
+			return vf.Sync()
+		}(); err != nil {
+			log.Errorf("failed to write metadata %q, %v", f.Name(), err)
+			return
+		}
+	}
+
+	log.Infof("DUMPWIRE all cleared in %v", time.Since(start))
 }

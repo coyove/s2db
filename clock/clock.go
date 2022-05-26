@@ -40,6 +40,10 @@ func UnixNano() int64 {
 	return runtimeNano() - startupNano + startupWallNano
 }
 
+func Unix() int64 {
+	return UnixNano() / 1e9
+}
+
 func Now() time.Time {
 	return time.Unix(0, UnixNano())
 }

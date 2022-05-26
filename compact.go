@@ -5,6 +5,7 @@ import (
 	"io"
 	"io/ioutil"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -161,25 +162,45 @@ func getTTLByName(ttls []s2pkg.Pair, name string) int {
 }
 
 func (s *Server) DumpWire(dest string) {
+	if !strings.HasPrefix(dest, "http") {
+		dest = "http://" + dest
+	}
+
 	start := time.Now()
+	log := log.WithField("shard", "dw")
 
 	s.dumpWireLock.Lock(func() { log.Info("wire dumping already started") })
 	defer s.dumpWireLock.Unlock()
 
-	vfs := s.DBOptions.FS.(*s2pkg.VFS)
-	log.Infof("DUMPWIRE started, remove virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
+	dbDir, err := os.Open(s.DBPath)
+	if err != nil {
+		log.Errorf("failed to read data dir: %v", err)
+		return
+	}
+	defer dbDir.Close()
+	dataFiles, err := dbDir.Readdirnames(-1)
+	if err != nil {
+		log.Errorf("failed to read data dir: %v", err)
+		return
+	}
 
-	vfs.DumpTo = dest
-	defer func() { vfs.DumpTo = "" }()
+	vfs := s.DBOptions.FS.(*s2pkg.VFS)
+	log.Infof("DUMPWIRE started, clear virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
+
+	vfs.DumpTx.HTTPEndpoint = dest
+	vfs.DumpTx.Counter = 0
+	vfs.DumpTx.TotalFiles = len(dataFiles)
+	vfs.DumpTx.Logger = log
+	defer func() { vfs.DumpTx.HTTPEndpoint = "" }()
 
 	if err := s.DB.Checkpoint(vfs.DumpVDir, pebble.WithFlushedWAL()); err != nil {
-		log.Errorf("failed to dump over wire: %v", err)
+		log.Errorf("failed to dump (checkpoint): %v", err)
 		return
 	}
 
 	files, err := ioutil.ReadDir(vfs.DumpVDir)
 	if err != nil {
-		log.Errorf("failed to dump over wire: %v", err)
+		log.Errorf("failed to dump (readdir): %v", err)
 		return
 	}
 
@@ -190,7 +211,7 @@ func (s *Server) DumpWire(dest string) {
 				return err
 			}
 			defer src.Close()
-			vf, err := s2pkg.NewVFSVirtualDumpFile(f.Name(), dest)
+			vf, err := s2pkg.NewVFSVirtualDumpFile(f.Name(), dest, vfs)
 			if err != nil {
 				return err
 			}
@@ -205,5 +226,66 @@ func (s *Server) DumpWire(dest string) {
 		}
 	}
 
+	vf, err := s2pkg.NewVFSVirtualDumpFile("EOT", dest, vfs)
+	if err != nil {
+		log.Errorf("failed to create end marker file: %v", err)
+		return
+	}
+	vf.Close()
+
 	log.Infof("DUMPWIRE all cleared in %v", time.Since(start))
+}
+
+func dumpReceiver(dest string) {
+	if files, _ := os.ReadDir(dest); len(files) > 0 {
+		errorExit(dest + " is not empty")
+	}
+
+	if err := os.MkdirAll(dest, 0666); err != nil {
+		errorExit(err.Error())
+	}
+
+	log := log.WithField("shard", "dump")
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		p := r.Header.Get("X-Path")
+		if p == "" {
+			w.WriteHeader(400)
+			return
+		}
+
+		var out io.Writer
+		if p != "EOT" {
+			fn, err := os.Create(filepath.Join(dest, p))
+			if err != nil {
+				log.Errorf("failed to create local file %q: %v", p, err)
+				w.WriteHeader(500)
+				return
+			}
+			defer fn.Close()
+			out = fn
+			log.Infof("put file %q", p)
+		} else {
+			out = ioutil.Discard
+		}
+
+		start := time.Now()
+		size, ok, err := s2pkg.CopyCrc32(out, r.Body, func(int) {})
+		if err != nil || !ok {
+			log.Errorf("failed to copy %q: %v, checksum=%v", p, err, ok)
+			w.WriteHeader(410)
+			return
+		}
+
+		w.WriteHeader(200)
+
+		if p == "EOT" {
+			log.Infof("received EOT, gracefully exit")
+			time.AfterFunc(time.Second, func() { os.Exit(0) })
+		} else {
+			diff := time.Since(start)
+			log.Infof("finished receiving %q (%.1f K) in %v", p, float64(size)/1024, diff)
+		}
+	})
+	log.Infof("dump-receiver address: %v -> %v", *listenAddr, dest)
+	http.ListenAndServe(*listenAddr, nil)
 }

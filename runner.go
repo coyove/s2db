@@ -111,7 +111,7 @@ type batchTask struct {
 }
 
 func (s *Server) batchWorker(shard int) {
-	log := log.WithField("shard", strconv.Itoa(shard))
+	log := log.WithField("shard", "#"+strconv.Itoa(shard))
 
 	defer s2pkg.Recover(func() {
 		time.Sleep(time.Second)

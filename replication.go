@@ -121,7 +121,7 @@ func (s *Server) compactLogs(shard int, first bool) {
 func (s *Server) logPusher(shard int) {
 	defer s2pkg.Recover(func() { time.Sleep(time.Second); go s.logPusher(shard) })
 	ctx := context.TODO()
-	log := log.WithField("shard", strconv.Itoa(shard))
+	log := log.WithField("shard", "#"+strconv.Itoa(shard))
 	ticker := time.NewTicker(time.Second)
 	logtailChanged := false
 

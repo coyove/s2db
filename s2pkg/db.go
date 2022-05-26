@@ -182,11 +182,16 @@ func (bs *BuoySignal) String() string {
 }
 
 type VFS struct {
-	FS    vfs.FS
-	Files sync.Map
-
+	FS       vfs.FS
+	Files    sync.Map
 	DumpVDir string
-	DumpTo   string
+
+	DumpTx struct {
+		HTTPEndpoint string
+		Logger       *logrus.Entry
+		Counter      int
+		TotalFiles   int
+	}
 }
 
 type vfsFileRecord struct {
@@ -211,7 +216,10 @@ func (vf vfsFile) Close() error {
 
 func (fs *VFS) Create(name string) (vfs.File, error) {
 	if strings.HasPrefix(name, fs.DumpVDir) && strings.HasSuffix(name, ".sst") {
-		return NewVFSVirtualDumpFile(filepath.Base(name), fs.DumpTo)
+		if fs.DumpTx.HTTPEndpoint == "" {
+			return nil, fmt.Errorf("vdf HTTP endpoint not found")
+		}
+		return NewVFSVirtualDumpFile(filepath.Base(name), fs.DumpTx.HTTPEndpoint, fs)
 	}
 	return fs.FS.Create(name)
 }
@@ -308,6 +316,7 @@ func (vf vfsFileRecord) String() string {
 }
 
 type VFSVirtualDumpFile struct {
+	vfs    *VFS
 	start  time.Time
 	name   string
 	h      hash.Hash32
@@ -315,12 +324,13 @@ type VFSVirtualDumpFile struct {
 	reqSig chan int
 }
 
-func NewVFSVirtualDumpFile(name string, dest string) (*VFSVirtualDumpFile, error) {
+func NewVFSVirtualDumpFile(name string, dest string, vfs *VFS) (*VFSVirtualDumpFile, error) {
 	if !strings.HasPrefix(dest, "http") {
 		dest = "http://" + dest
 	}
 
-	logrus.Infof("VFSVirtualDumpFile started, dump %q to %q", name, dest)
+	vfs.DumpTx.Counter++
+	vfs.DumpTx.Logger.Infof("vdf: %q started, %d of ~%d", name, vfs.DumpTx.Counter, vfs.DumpTx.TotalFiles)
 
 	r, w := io.Pipe()
 	req, err := http.NewRequest("PUT", dest, r)
@@ -334,7 +344,7 @@ func NewVFSVirtualDumpFile(name string, dest string) (*VFSVirtualDumpFile, error
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			w.Close()
-			logrus.Infof("VFSVirtualDumpFile %q http error: %v", name, err)
+			vfs.DumpTx.Logger.Infof("vdf: put %q http error: %v", name, err)
 			reqSig <- -1
 		} else {
 			resp.Body.Close()
@@ -347,27 +357,35 @@ func NewVFSVirtualDumpFile(name string, dest string) (*VFSVirtualDumpFile, error
 		name:   name,
 		h:      crc32.NewIEEE(),
 		w:      w,
+		vfs:    vfs,
 		reqSig: reqSig,
 	}, nil
 }
 
 func (vf *VFSVirtualDumpFile) Close() error {
-	_, err := vf.w.Write(vf.h.Sum(nil))
+	if _, err := vf.w.Write(vf.h.Sum(nil)); err != nil {
+		return err
+	}
 	vf.w.Close()
-	logrus.Infof("VFSVirtualDumpFile %q finished in %v, code=%v", vf.name, clock.Now().Sub(vf.start), <-vf.reqSig)
-	return err
+
+	code := <-vf.reqSig
+	vf.vfs.DumpTx.Logger.Infof("vdf: %q finished in %v, code=%v", vf.name, clock.Now().Sub(vf.start), code)
+	if code != 200 {
+		return fmt.Errorf("vdf remote error: %v", code)
+	}
+	return nil
 }
 
 func (vf *VFSVirtualDumpFile) Read([]byte) (int, error) {
-	return 0, fmt.Errorf("VFSVirtualDumpFile.Read not supported")
+	return 0, fmt.Errorf("internal: vdf.Read not supported")
 }
 
 func (vf *VFSVirtualDumpFile) ReadAt(p []byte, off int64) (n int, err error) {
-	return 0, fmt.Errorf("VFSVirtualDumpFile.ReadAt not supported")
+	return 0, fmt.Errorf("internal: vdf.ReadAt not supported")
 }
 
 func (vf *VFSVirtualDumpFile) Stat() (os.FileInfo, error) {
-	return nil, fmt.Errorf("VFSVirtualDumpFile.Stat not supported")
+	return nil, fmt.Errorf("internal: vdf.Stat not supported")
 }
 
 func (vf *VFSVirtualDumpFile) Write(p []byte) (int, error) {

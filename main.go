@@ -18,8 +18,9 @@ import (
 	"time"
 
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
@@ -60,7 +61,7 @@ func main() {
 	flag.Parse()
 	rand.Seed(time.Now().Unix())
 	go s2pkg.OSWatcher()
-	s2pkg.RangeHardLimit = *rangeHardLimit
+	ranges.HardLimit = *rangeHardLimit
 
 	if *showVersion {
 		fmt.Println("s2db", Version)
@@ -74,11 +75,11 @@ func main() {
 	}))
 
 	if *sendRedisCmd != "" {
-		cfg, err := redisproto.ParseConnString(*listenAddr)
+		cfg, err := wire.ParseConnString(*listenAddr)
 		if err != nil {
 			errorExit("cmd: invalid address: " + err.Error())
 		}
-		v, err := cfg.GetClient().Do(context.TODO(), redisproto.SplitCmdLine(*sendRedisCmd)...).Result()
+		v, err := cfg.GetClient().Do(context.TODO(), wire.SplitCmdLine(*sendRedisCmd)...).Result()
 		if err != nil {
 			errorExit("cmd: " + err.Error())
 		}
@@ -166,7 +167,7 @@ func main() {
 		select {}
 	}
 
-	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), redisproto.ErrNoAuth.Error()) {
+	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), wire.ErrNoAuth.Error()) {
 		return
 	}
 

@@ -1,4 +1,4 @@
-package redisproto
+package wire
 
 import (
 	"bufio"

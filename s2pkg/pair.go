@@ -3,7 +3,6 @@ package s2pkg
 import (
 	"bytes"
 	"container/heap"
-	"strings"
 
 	"github.com/golang/protobuf/proto"
 	protoV2 "google.golang.org/protobuf/proto"
@@ -115,70 +114,3 @@ func (h *PairHeap) ToPairs(n int, reversed bool) (p []Pair) {
 	}
 	return
 }
-
-type RangeLimit struct {
-	Value     string
-	Float     float64
-	Inclusive bool
-	LexPlus   bool
-}
-
-type RangeOptions struct {
-	OffsetStart int    // Z[REV]RANGE *start* ...
-	OffsetEnd   int    // Z[REV]RANGE ... *end*
-	Limit       int    // ... LIMIT 0 *limit*
-	WithData    bool   // return attached data
-	Rev         bool   // reversed range
-	Match       string // BYLEX: match member name, BYSCORE: match member name and its data
-	DeleteLog   []byte // if provided, returned pairs will be deleted first
-	Append      func(pairs *[]Pair, p Pair) bool
-}
-
-func DefaultRangeAppend(pairs *[]Pair, p Pair) bool {
-	*pairs = append(*pairs, p)
-	return true
-}
-
-func NewLexRL(v string) (r RangeLimit) {
-	r.Value = v
-	r.Inclusive = true
-	if strings.HasPrefix(v, "[") {
-		r.Value = r.Value[1:]
-	} else if strings.HasPrefix(v, "(") {
-		r.Value = r.Value[1:]
-		r.Inclusive = false
-	} else if v == "+" {
-		r.Value = "\xff"
-		r.LexPlus = true
-	} else if v == "-" {
-		r.Value = ""
-	}
-	return r
-}
-
-func NewScoreRL(v string) (r RangeLimit) {
-	r.Inclusive = true
-	if strings.HasPrefix(v, "[") {
-		r.Float = MustParseFloat(v[1:])
-	} else if strings.HasPrefix(v, "(") {
-		r.Float = MustParseFloat(v[1:])
-		r.Inclusive = false
-	} else {
-		r.Float = MustParseFloat(v)
-	}
-	return r
-}
-
-func (o *RangeOptions) TranslateOffset(keyName string, sizeof func() int) {
-	if o.OffsetStart < 0 || o.OffsetEnd < 0 {
-		n := sizeof()
-		if o.OffsetStart < 0 {
-			o.OffsetStart += n
-		}
-		if o.OffsetEnd < 0 {
-			o.OffsetEnd += n
-		}
-	}
-}
-
-var RangeHardLimit = 65535

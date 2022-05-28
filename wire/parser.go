@@ -1,4 +1,4 @@
-package redisproto
+package wire
 
 import (
 	"bytes"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
+	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 )
 
@@ -369,8 +370,8 @@ type Flags struct {
 
 func (c Command) Flags(start int) (f Flags) {
 	f.Command = c
-	f.LIMIT = s2pkg.RangeHardLimit
-	f.COUNT = s2pkg.RangeHardLimit
+	f.LIMIT = ranges.HardLimit
+	f.COUNT = ranges.HardLimit
 	f.TIMEOUT = time.Second
 	if start == -1 {
 		return
@@ -378,8 +379,8 @@ func (c Command) Flags(start int) (f Flags) {
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
-			if f.COUNT > s2pkg.RangeHardLimit {
-				f.COUNT = s2pkg.RangeHardLimit
+			if f.COUNT > ranges.HardLimit {
+				f.COUNT = ranges.HardLimit
 			}
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
@@ -387,8 +388,8 @@ func (c Command) Flags(start int) (f Flags) {
 				panic("non-zero limit offset not supported")
 			}
 			f.LIMIT = s2pkg.MustParseInt(c.Get(i + 2))
-			if f.LIMIT > s2pkg.RangeHardLimit {
-				f.LIMIT = s2pkg.RangeHardLimit
+			if f.LIMIT > ranges.HardLimit {
+				f.LIMIT = ranges.HardLimit
 			}
 			i += 2
 		} else if c.EqualFold(i, "MATCH") {

@@ -19,8 +19,9 @@ import (
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -103,7 +104,7 @@ func Open(dbPath string) (x *Server, err error) {
 			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
 	}
-	x.DBOptions.FS = &s2pkg.VFS{
+	x.DBOptions.FS = &extdb.VFS{
 		FS:       x.DBOptions.FS,
 		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatUint(clock.Id(), 16)),
 	}
@@ -239,13 +240,13 @@ func (s *Server) acceptor(ln net.Listener) {
 
 func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 	defer conn.Close()
-	parser := redisproto.NewParser(conn)
-	writer := redisproto.NewWriter(conn, log.StandardLogger())
+	parser := wire.NewParser(conn)
+	writer := wire.NewWriter(conn, log.StandardLogger())
 	var ew error
 	for auth := false; ; {
 		command, err := parser.ReadCommand()
 		if err != nil {
-			_, ok := err.(*redisproto.ProtocolError)
+			_, ok := err.(*wire.ProtocolError)
 			if ok {
 				ew = writer.WriteError(err.Error())
 			} else {
@@ -263,7 +264,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
-					writer.WriteError(redisproto.ErrNoAuth.Error())
+					writer.WriteError(wire.ErrNoAuth.Error())
 				}
 				writer.Flush()
 				continue
@@ -280,7 +281,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 	}
 }
 
-func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *redisproto.Command) error {
+func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.Command) error {
 	var (
 		cmd   = strings.ToUpper(command.Get(0))
 		isRev = strings.HasPrefix(cmd, "ZREV")
@@ -573,12 +574,12 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 
-	return w.WriteError(redisproto.ErrUnknownCommand.Error())
+	return w.WriteError(wire.ErrUnknownCommand.Error())
 }
 
 func (s *Server) checkWritable() error {
 	if s.ReadOnly {
-		return redisproto.ErrServerReadonly
+		return wire.ErrServerReadonly
 	}
 	return nil
 }

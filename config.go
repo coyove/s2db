@@ -17,8 +17,9 @@ import (
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -45,7 +46,7 @@ type ServerConfig struct {
 
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := s2pkg.GetKey(s.DB, []byte("config__"+strings.ToLower(f.Name)))
+		buf, err := extdb.GetKey(s.DB, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
@@ -134,7 +135,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		old := fmt.Sprint(fv.Interface())
 		if old == value {
 			found = true
-			return errSafeExit
+			return nil
 		}
 		switch f.Type {
 		case reflect.TypeOf(0):
@@ -143,7 +144,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 			fv.SetString(value)
 		}
 		found = true
-		return errSafeExit
+		return nil
 	})
 	if found {
 		if err := s.saveConfig(); err != nil {
@@ -194,7 +195,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	case "slave", "SLAVE":
 		return s.Slave.Redis()
 	}
-	cfg, err := redisproto.ParseConnString(addr)
+	cfg, err := wire.ParseConnString(addr)
 	s2pkg.PanicErr(err)
 	if cli, ok := s.rdbCache.Get(cfg.Raw); ok {
 		return cli.(*redis.Client)
@@ -272,7 +273,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
 			SetProp("ctx", bas.ValueOf(context.TODO())).
 			SetProp("args", bas.Array(a...)).
 			SetMethod("flags", func(env *bas.Env) {
-				cmd := redisproto.Command{}
+				cmd := wire.Command{}
 				for _, v := range env.Stack() {
 					cmd.Argv = append(cmd.Argv, bas.ToReadonlyBytes(v))
 				}
@@ -324,7 +325,7 @@ func (s *Server) LocalStorage() *LocalStorage {
 }
 
 func (s *LocalStorage) Get(k string) (string, error) {
-	v, err := s2pkg.GetKey(s.db, []byte("local___"+k))
+	v, err := extdb.GetKey(s.db, []byte("local___"+k))
 	return string(v), err
 }
 

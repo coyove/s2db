@@ -15,8 +15,10 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -79,7 +81,7 @@ func (s *Server) dsltWalker(tables [][]pebble.SSTableInfo, ttls []s2pkg.Pair) bo
 	log.Infof("dsltWalker finished: %d keys collected in %v", len(keys), time.Since(start))
 
 	for _, key := range keys {
-		cmd := &redisproto.Command{
+		cmd := &wire.Command{
 			Argv: [][]byte{[]byte("ZADD"), []byte(key.Member), []byte("DSLT"), s2pkg.FormatFloatBulk(key.Score)},
 		}
 		if err := s.checkWritable(); err != nil {
@@ -108,7 +110,7 @@ func (s *Server) schedDSLTWalker() {
 			log.Errorf("failed to list sstables: %v", err)
 			return nil, nil
 		}
-		ttls, _ := s.ZRange(false, "dslt_clk", 0, -1, redisproto.Flags{LIMIT: s2pkg.RangeHardLimit})
+		ttls, _ := s.ZRange(false, "dslt_clk", 0, -1, wire.Flags{LIMIT: ranges.HardLimit})
 		tablesCache.tables = tables
 		tablesCache.ttls = ttls
 		tablesCache.ts = time.Now()
@@ -184,7 +186,7 @@ func (s *Server) DumpWire(dest string) {
 		return
 	}
 
-	vfs := s.DBOptions.FS.(*s2pkg.VFS)
+	vfs := s.DBOptions.FS.(*extdb.VFS)
 	log.Infof("DUMPWIRE started, clear virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
 
 	vfs.DumpTx.HTTPEndpoint = dest
@@ -211,7 +213,7 @@ func (s *Server) DumpWire(dest string) {
 				return err
 			}
 			defer src.Close()
-			vf, err := s2pkg.NewVFSVirtualDumpFile(f.Name(), dest, vfs)
+			vf, err := extdb.NewVFSVirtualDumpFile(f.Name(), dest, vfs)
 			if err != nil {
 				return err
 			}
@@ -226,7 +228,7 @@ func (s *Server) DumpWire(dest string) {
 		}
 	}
 
-	vf, err := s2pkg.NewVFSVirtualDumpFile("EOT", dest, vfs)
+	vf, err := extdb.NewVFSVirtualDumpFile("EOT", dest, vfs)
 	if err != nil {
 		log.Errorf("failed to create end marker file: %v", err)
 		return

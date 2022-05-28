@@ -10,8 +10,10 @@ import (
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	"github.com/sirupsen/logrus"
 )
 
@@ -37,7 +39,7 @@ func getShardLogKey(shard int16) []byte {
 	return []byte(fmt.Sprintf("log%04x_", shard))
 }
 
-func (s *Server) parseZAdd(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	var xx, nx, ch, pd, data bool
 	var dslt = math.NaN()
 	var idx = 2
@@ -80,7 +82,7 @@ func (s *Server) parseZAdd(cmd, key string, command *redisproto.Command, dd []by
 	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, dslt, dd)
 }
 
-func (s *Server) parseDel(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	switch cmd {
 	case "DEL":
 		// DEL key
@@ -102,7 +104,7 @@ func (s *Server) parseDel(cmd, key string, command *redisproto.Command, dd []byt
 	}
 }
 
-func parseZIncrBy(cmd, key string, command *redisproto.Command, dd []byte) preparedTx {
+func parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	// ZINCRBY key score member [datafunc]
 	var dataFunc bas.Value
 	if code := command.Get(4); code != "" {
@@ -111,7 +113,7 @@ func parseZIncrBy(cmd, key string, command *redisproto.Command, dd []byte) prepa
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dataFunc, dd)
 }
 
-func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {
+func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {
 	bkName, bkScore, bkCounter := getZSetRangeKey(key)
 	for _, p := range pairs {
 		if err := tx.Delete(append(bkName, p.Member...), pebble.Sync); err != nil {
@@ -121,13 +123,13 @@ func deletePair(tx s2pkg.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 			return err
 		}
 	}
-	if err := s2pkg.IncrKey(tx, bkCounter, -int64(len(pairs))); err != nil {
+	if err := extdb.IncrKey(tx, bkCounter, -int64(len(pairs))); err != nil {
 		return err
 	}
 	return writeLog(tx, dd)
 }
 
-func (s *Server) deleteKey(tx s2pkg.Storage, key string, bkName, bkScore, bkCounter []byte) error {
+func (s *Server) deleteKey(tx extdb.Storage, key string, bkName, bkScore, bkCounter []byte) error {
 	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
 		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
 	}
@@ -141,7 +143,7 @@ func (s *Server) deleteKey(tx s2pkg.Storage, key string, bkName, bkScore, bkCoun
 }
 
 func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
+	f := func(tx extdb.LogTx) (interface{}, error) {
 		if endKey != "" {
 			bkStartName, bkStartScore, bkStartCounter := getZSetRangeKey(startKey)
 			bkEndName, bkEndScore, bkEndCounter := getZSetRangeKey(endKey)
@@ -166,7 +168,7 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 }
 
 func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float64, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
+	f := func(tx extdb.LogTx) (interface{}, error) {
 		if !math.IsNaN(dslt) {
 			// Filter out all DSLT in advance
 			for i := len(pairs) - 1; i >= 0; i-- {
@@ -202,7 +204,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 					continue
 				}
 				if pd && len(p.Data) == 0 {
-					p.Data, err = s2pkg.GetKey(tx, scoreKey)
+					p.Data, err = extdb.GetKey(tx, scoreKey)
 					if err != nil {
 						return nil, err
 					}
@@ -269,7 +271,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 		}
 
 		if added != 0 {
-			if err := s2pkg.IncrKey(tx, bkCounter, int64(added)); err != nil {
+			if err := extdb.IncrKey(tx, bkCounter, int64(added)); err != nil {
 				return nil, err
 			}
 		}
@@ -282,11 +284,11 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 }
 
 func prepareZRem(key string, members []string, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (count interface{}, err error) {
+	f := func(tx extdb.LogTx) (count interface{}, err error) {
 		bkName, _, _ := getZSetRangeKey(key)
 		var pairs []s2pkg.Pair
 		for _, member := range members {
-			scoreBuf, err := s2pkg.GetKey(tx, append(bkName, member...))
+			scoreBuf, err := extdb.GetKey(tx, append(bkName, member...))
 			if err != nil {
 				return nil, err
 			}
@@ -301,12 +303,12 @@ func prepareZRem(key string, members []string, dd []byte) preparedTx {
 }
 
 func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (newValue interface{}, err error) {
+	f := func(tx extdb.LogTx) (newValue interface{}, err error) {
 		bkName, bkScore, bkCounter := getZSetRangeKey(key)
 		score := 0.0
 		added := false
 
-		score, _, foundScore, err := s2pkg.GetKeyNumber(tx, append(bkName, member...))
+		score, _, foundScore, err := extdb.GetKeyNumber(tx, append(bkName, member...))
 		if err != nil {
 			return nil, err
 		}
@@ -314,7 +316,7 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 		var dataBuf []byte
 		if foundScore {
 			oldKey := append(append(bkScore, s2pkg.FloatToBytes(score)...), member...)
-			dataBuf, err = s2pkg.GetKey(tx, oldKey)
+			dataBuf, err = extdb.GetKey(tx, oldKey)
 			if err != nil {
 				return nil, err
 			}
@@ -351,7 +353,7 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 			return 0, err
 		}
 		if added {
-			if err := s2pkg.IncrKey(tx, bkCounter, 1); err != nil {
+			if err := extdb.IncrKey(tx, bkCounter, 1); err != nil {
 				return nil, err
 			}
 		}
@@ -361,45 +363,45 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 }
 
 func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		_, c, err := rangeScore(key, MinScoreRange, MaxScoreRange, s2pkg.RangeOptions{
+	f := func(tx extdb.LogTx) (interface{}, error) {
+		c, err := rangeScore(key, MinScoreRange, MaxScoreRange, ranges.Options{
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
-			Limit:       s2pkg.RangeHardLimit,
-			Append:      s2pkg.DefaultRangeAppend,
+			Limit:       ranges.HardLimit,
+			Append:      ranges.DefaultAppend,
 		})(tx)
-		return c, err
+		return c.Count, err
 	}
 	return preparedTx{f: f}
 }
 
 func prepareZRemRangeByLex(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		rangeStart := s2pkg.NewLexRL(start)
-		rangeEnd := s2pkg.NewLexRL(end)
-		_, c, err := rangeLex(key, rangeStart, rangeEnd, s2pkg.RangeOptions{
+	f := func(tx extdb.LogTx) (interface{}, error) {
+		rangeStart := ranges.Lex(start)
+		rangeEnd := ranges.Lex(end)
+		c, err := rangeLex(key, rangeStart, rangeEnd, ranges.Options{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
-			Limit:       s2pkg.RangeHardLimit,
-			Append:      s2pkg.DefaultRangeAppend,
+			Limit:       ranges.HardLimit,
+			Append:      ranges.DefaultAppend,
 		})(tx)
-		return c, err
+		return c.Count, err
 	}
 	return preparedTx{f: f}
 }
 
 func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx s2pkg.LogTx) (interface{}, error) {
-		_, c, err := rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), s2pkg.RangeOptions{
+	f := func(tx extdb.LogTx) (interface{}, error) {
+		c, err := rangeScore(key, ranges.Score(start), ranges.Score(end), ranges.Options{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,
-			Limit:       s2pkg.RangeHardLimit,
-			Append:      s2pkg.DefaultRangeAppend,
+			Limit:       ranges.HardLimit,
+			Append:      ranges.DefaultAppend,
 		})(tx)
-		return c, err
+		return c.Count, err
 	}
 	return preparedTx{f: f}
 }

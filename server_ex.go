@@ -16,8 +16,9 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -41,8 +42,8 @@ var (
 )
 
 func init() {
-	redisproto.MaxBulkSize = 1 << 20
-	redisproto.MaxNumArg = 10000
+	wire.MaxBulkSize = 1 << 20
+	wire.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 }
 
@@ -64,7 +65,7 @@ func toStrings(b [][]byte) (keys []string) {
 	return keys
 }
 
-func redisPairs(in []s2pkg.Pair, flags redisproto.Flags) []string {
+func redisPairs(in []s2pkg.Pair, flags wire.Flags) []string {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Member)
@@ -78,36 +79,20 @@ func redisPairs(in []s2pkg.Pair, flags redisproto.Flags) []string {
 	return data
 }
 
-func (s *Server) fillPairsData(key string, in []s2pkg.Pair) error {
-	if len(in) == 0 {
-		return nil
-	}
-	keys := make([]string, len(in))
-	for i, el := range in {
-		keys[i] = el.Member
-	}
-	data, err := s.ZMData(key, keys)
-	if err != nil {
-		return err
-	}
-	for i := range in {
-		in[i].Data = data[i]
-	}
-	return nil
+func itfs(args ...interface{}) []interface{} {
+	return args
 }
 
-func itfs(args ...interface{}) []interface{} { return args }
-
-func dd(cmd *redisproto.Command) []byte {
+func dd(cmd *wire.Command) []byte {
 	return joinMultiBytes(cmd.Argv)
 }
 
-func splitRawMultiBytesNoHeader(buf []byte) (*redisproto.Command, error) {
+func splitRawMultiBytesNoHeader(buf []byte) (*wire.Command, error) {
 	tmp := &s2pkg.BytesArray{}
 	if err := tmp.UnmarshalBytes(buf); err != nil {
 		return nil, err
 	}
-	return &redisproto.Command{Argv: tmp.Data}, nil
+	return &wire.Command{Argv: tmp.Data}, nil
 }
 
 func joinMultiBytesEmptyNoSig() []byte {
@@ -278,7 +263,7 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
-func parseWeakFlag(in *redisproto.Command) time.Duration {
+func parseWeakFlag(in *wire.Command) time.Duration {
 	i := in.ArgCount() - 2
 	if i >= 2 && in.EqualFold(i, "WEAK") {
 		x := s2pkg.MustParseFloatBytes(in.Argv[i+1])
@@ -466,7 +451,7 @@ func (s *Server) createDBListener() pebble.EventListener {
 }
 
 func (s *Server) ZCard(key string) (count int64) {
-	_, i, _, err := s2pkg.GetKeyNumber(s.DB, getZSetCounterKey(key))
+	_, i, _, err := extdb.GetKeyNumber(s.DB, getZSetCounterKey(key))
 	s2pkg.PanicErr(err)
 	return int64(i)
 }
@@ -480,7 +465,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 	}
 	bkName, _, _ := getZSetRangeKey(key)
 	for i, m := range memebrs {
-		score, _, found, _ := s2pkg.GetKeyNumber(s.DB, append(bkName, m...))
+		score, _, found, _ := extdb.GetKeyNumber(s.DB, append(bkName, m...))
 		if found {
 			scores[i] = score
 		}
@@ -495,9 +480,9 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 	data = make([][]byte, len(members))
 	bkName, bkScore, _ := getZSetRangeKey(key)
 	for i, m := range members {
-		scoreBuf, _ := s2pkg.GetKey(s.DB, append(bkName, m...))
+		scoreBuf, _ := extdb.GetKey(s.DB, append(bkName, m...))
 		if len(scoreBuf) != 0 {
-			d, err := s2pkg.GetKey(s.DB, append(bkScore, append(scoreBuf, m...)...))
+			d, err := extdb.GetKey(s.DB, append(bkScore, append(scoreBuf, m...)...))
 			if err != nil {
 				return nil, err
 			}

@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -18,7 +20,7 @@ const (
 	RunSync
 )
 
-func parseRunFlag(in *redisproto.Command) int {
+func parseRunFlag(in *wire.Command) int {
 	if len(in.Argv) > 2 {
 		if bytes.EqualFold(in.Argv[2], []byte("--defer--")) {
 			in.Argv = append(in.Argv[:2], in.Argv[3:]...)
@@ -35,15 +37,18 @@ func parseRunFlag(in *redisproto.Command) int {
 	return RunNormal
 }
 
-type rangeFunc func(s2pkg.LogTx) ([]s2pkg.Pair, int, error)
+type rangeFunc func(extdb.LogTx) (ranges.Result, error)
 
-func (s *Server) runPreparedRangeTx(key string, f rangeFunc) (pairs []s2pkg.Pair, count int, err error) {
-	pairs, count, err = f(s2pkg.LogTx{Storage: s.DB})
+func (s *Server) runPreparedRangeTx(key string, f rangeFunc) (r ranges.Result, err error) {
+	r, err = f(extdb.LogTx{Storage: s.DB})
+	if err == ranges.ErrAppendSafeExit {
+		err = nil
+	}
 	return
 }
 
 type preparedTx struct {
-	f func(tx s2pkg.LogTx) (interface{}, error)
+	f func(tx extdb.LogTx) (interface{}, error)
 }
 
 func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (interface{}, error) {
@@ -79,7 +84,7 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 	return out, nil
 }
 
-func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx preparedTx, w *redisproto.Writer) error {
+func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx preparedTx, w *wire.Writer) error {
 	out, err := s.runPreparedTx(cmd, key, runType, ptx)
 	if err != nil {
 		return w.WriteError(err.Error())
@@ -102,7 +107,7 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx prepare
 }
 
 type batchTask struct {
-	f       func(s2pkg.LogTx) (interface{}, error)
+	f       func(extdb.LogTx) (interface{}, error)
 	key     string
 	runType int
 
@@ -195,7 +200,7 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 	b := s.DB.NewIndexedBatch()
 	defer b.Close()
 
-	ltx := s2pkg.LogTx{
+	ltx := extdb.LogTx{
 		OutLogtail: new(uint64),
 		LogPrefix:  getShardLogKey(int16(shard)),
 		Storage:    b,

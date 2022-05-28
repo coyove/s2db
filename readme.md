@@ -105,4 +105,4 @@ By implementing certain functions in `InspectorSource`, s2db users (like devops)
 3. `function cronjob300()`: the function will be called roughly every 300 seconds.
 
 # Redirected 3rd-party Lib
-1. https://github.com/secmask/go-redisproto
+1. https://github.com/secmask/go-wire

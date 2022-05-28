@@ -13,13 +13,14 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/redisproto"
+	"github.com/coyove/s2db/extdb"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
 
-func writeLog(tx s2pkg.LogTx, dd []byte) error {
+func writeLog(tx extdb.LogTx, dd []byte) error {
 	var id uint64
 	if tx.InLogtail == nil {
 		id = clock.Id()
@@ -208,7 +209,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 	defer tx.Close()
 
 	logPrefix := getShardLogKey(int16(shard))
-	ltx := s2pkg.LogTx{
+	ltx := extdb.LogTx{
 		Storage:   tx,
 		LogPrefix: logPrefix,
 		InLogtail: new(uint64),
@@ -329,7 +330,7 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 type endpoint struct {
 	mu     sync.RWMutex
 	client *redis.Client
-	config redisproto.RedisConfig
+	config wire.RedisConfig
 
 	RemoteIP   string
 	LogtailOK  [ShardLogNum]bool
@@ -350,7 +351,7 @@ func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
 	defer e.mu.Unlock()
 	if connString != e.config.Raw {
 		if connString != "" {
-			cfg, err := redisproto.ParseConnString(connString)
+			cfg, err := wire.ParseConnString(connString)
 			if err != nil {
 				return false, err
 			}
@@ -365,7 +366,7 @@ func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
 		} else {
 			e.client.Close()
 			e.client = nil
-			e.config = redisproto.RedisConfig{}
+			e.config = wire.RedisConfig{}
 		}
 		for i := range e.LogtailOK {
 			e.LogtailOK[i] = false
@@ -381,7 +382,7 @@ func (e *endpoint) Redis() *redis.Client {
 	return e.client
 }
 
-func (e *endpoint) Config() redisproto.RedisConfig {
+func (e *endpoint) Config() wire.RedisConfig {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.config

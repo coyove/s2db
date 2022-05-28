@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/clock"
+	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -514,13 +515,13 @@ func TestRange2D(t *testing.T) {
 		}
 	}
 
-	s2pkg.RangeHardLimit = 4
+	ranges.HardLimit = 4
 	v, _ := rdb.Do(ctx, "ZRANGEBYSCORE", "r1", "-inf", "+inf", "LIMIT", 0, 6, "UNION", "r2").Result()
 	assertEqual([]string{"1", "2", "2", "3"}, v)
-	s2pkg.RangeHardLimit = 6
+	ranges.HardLimit = 6
 	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2").Result()
 	assertEqual([]string{"40", "40", "39", "38", "38", "37"}, v)
-	s2pkg.RangeHardLimit = 10
+	ranges.HardLimit = 10
 	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2", "UNION", "r3").Result()
 	assertEqual([]string{"40", "40", "39", "39", "38", "38", "37", "36", "36", "36"}, v)
 

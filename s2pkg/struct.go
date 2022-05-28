@@ -120,19 +120,18 @@ type RangeLimit struct {
 	Value     string
 	Float     float64
 	Inclusive bool
-	LexEnd    bool
+	LexPlus   bool
 }
 
 type RangeOptions struct {
-	OffsetStart    int    // Z[REV]RANGE *start* ...
-	OffsetEnd      int    // Z[REV]RANGE ... *end*
-	Limit          int    // ... LIMIT 0 *limit*
-	WithData       bool   // return attached data
-	Rev            bool   // reversed range
-	LexMatch       string // match member name
-	ScoreMatchData string // match data, only available in Z[REV]RANGEBYSCORE
-	DeleteLog      []byte // if provided, returned pairs will be deleted first
-	Append         func(pairs *[]Pair, p Pair) bool
+	OffsetStart int    // Z[REV]RANGE *start* ...
+	OffsetEnd   int    // Z[REV]RANGE ... *end*
+	Limit       int    // ... LIMIT 0 *limit*
+	WithData    bool   // return attached data
+	Rev         bool   // reversed range
+	Match       string // BYLEX: match member name, BYSCORE: match member name and its data
+	DeleteLog   []byte // if provided, returned pairs will be deleted first
+	Append      func(pairs *[]Pair, p Pair) bool
 }
 
 func DefaultRangeAppend(pairs *[]Pair, p Pair) bool {
@@ -150,7 +149,7 @@ func NewLexRL(v string) (r RangeLimit) {
 		r.Inclusive = false
 	} else if v == "+" {
 		r.Value = "\xff"
-		r.LexEnd = true
+		r.LexPlus = true
 	} else if v == "-" {
 		r.Value = ""
 	}

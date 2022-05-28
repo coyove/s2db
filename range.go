@@ -25,7 +25,7 @@ func (s *Server) ZCount(lex bool, key string, start, end string, flags redisprot
 	ro := s2pkg.RangeOptions{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		LexMatch:    flags.MATCH,
+		Match:       flags.MATCH,
 		Limit:       s2pkg.RangeHardLimit,
 	}
 	if lex {
@@ -54,8 +54,8 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags redisproto.F
 
 func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
 	ro := s2pkg.RangeOptions{
-		Rev:      rev,
-		LexMatch: flags.MATCH,
+		Rev:   rev,
+		Match: flags.MATCH,
 	}
 	p, err = s.zRangeScoreLex(key, &ro, flags, func() rangeFunc { return rangeLex(key, s2pkg.NewLexRL(start), s2pkg.NewLexRL(end), ro) })
 	if flags.WITHDATA && err == nil {
@@ -66,12 +66,11 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags redi
 
 func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
 	ro := s2pkg.RangeOptions{
-		Rev:            rev,
-		OffsetStart:    0,
-		OffsetEnd:      math.MaxInt64,
-		LexMatch:       flags.MATCH,
-		ScoreMatchData: flags.MATCHDATA,
-		WithData:       flags.WITHDATA,
+		Rev:         rev,
+		OffsetStart: 0,
+		OffsetEnd:   math.MaxInt64,
+		Match:       flags.MATCH,
+		WithData:    flags.WITHDATA,
 	}
 	return s.zRangeScoreLex(key, &ro, flags, func() rangeFunc { return rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro) })
 }
@@ -101,13 +100,12 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 func (s *Server) ZRangeByScore2D(rev bool, keys []string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
 	ph := &s2pkg.PairHeap{Desc: !rev}
 	ro := s2pkg.RangeOptions{
-		Rev:            rev,
-		OffsetStart:    0,
-		OffsetEnd:      math.MaxInt64,
-		LexMatch:       flags.MATCH,
-		ScoreMatchData: flags.MATCHDATA,
-		WithData:       flags.WITHDATA,
-		Limit:          flags.LIMIT,
+		Rev:         rev,
+		OffsetStart: 0,
+		OffsetEnd:   math.MaxInt64,
+		Match:       flags.MATCH,
+		WithData:    flags.WITHDATA,
+		Limit:       flags.LIMIT,
 		Append: func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
 			*pairs = append(*pairs, p)
 			heap.Push(ph, p)
@@ -137,10 +135,8 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 		defer c.Close()
 
 		do := func(k, sc []byte) error {
-			if opt.LexMatch != "" {
-				if !s2pkg.MatchBinary(opt.LexMatch, k) {
-					return nil
-				}
+			if opt.Match != "" && !s2pkg.MatchBinary(opt.Match, k) {
+				return nil
 			}
 
 			p := s2pkg.Pair{Member: string(k), Score: s2pkg.BytesToFloat(sc)}
@@ -153,51 +149,51 @@ func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) r
 
 		startBuf, endBuf := append(s2pkg.Bytes(bkName), start.Value...), append(s2pkg.Bytes(bkName), end.Value...)
 		if opt.Rev {
-			endFlag := 0
-			if !end.Inclusive {
-				endFlag = 1
+			if end.LexPlus {
+				goto EXIT
 			}
-			if start.Inclusive && !start.LexEnd {
-				startBuf = s2pkg.IncBytes(startBuf)
-			}
-			if !c.SeekGE(startBuf) {
+			if start.LexPlus {
 				c.Last()
 			} else {
-				c.Prev()
+				if start.Inclusive {
+					startBuf = append(startBuf, 0)
+				}
+				c.SeekLT(startBuf)
 			}
-			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
-				k, sc := c.Key(), c.Value()
-				if len(sc) > 0 && bytes.Compare(k, startBuf) <= 0 && bytes.Compare(k, endBuf) >= endFlag {
-					if err := do(k[len(bkName):], sc); err != nil {
-						return pairs, 0, err
-					}
-					c.Prev()
-				} else {
+			for ; c.Valid() && len(pairs) < opt.Limit; c.Prev() {
+				if end.Inclusive && bytes.Compare(c.Key(), endBuf) < 0 {
 					break
+				}
+				if !end.Inclusive && bytes.Compare(c.Key(), endBuf) <= 0 {
+					break
+				}
+				if err := do(c.Key()[len(bkName):], c.Value()); err != nil {
+					return pairs, 0, err
 				}
 			}
 		} else {
+			if start.LexPlus {
+				goto EXIT
+			}
 			if !start.Inclusive {
 				startBuf = append(startBuf, 0)
 			}
-			endFlag := 0
-			if !end.Inclusive {
-				endFlag = -1
-			}
 			c.SeekGE(startBuf)
-			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
-				k, sc := c.Key(), c.Value()
-				if len(sc) > 0 && bytes.Compare(k, startBuf) >= 0 && bytes.Compare(k, endBuf) <= endFlag {
-					if err := do(k[len(bkName):], sc); err != nil {
-						return pairs, 0, err
+			for ; c.Valid() && len(pairs) < opt.Limit; c.Next() {
+				if !end.LexPlus {
+					if end.Inclusive && bytes.Compare(c.Key(), endBuf) > 0 {
+						break
 					}
-					c.Next()
-				} else {
-					break
+					if !end.Inclusive && bytes.Compare(c.Key(), endBuf) >= 0 {
+						break
+					}
+				}
+				if err := do(c.Key()[len(bkName):], c.Value()); err != nil {
+					return pairs, 0, err
 				}
 			}
 		}
-
+	EXIT:
 		if len(opt.DeleteLog) > 0 {
 			return pairs, count, deletePair(tx, key, pairs, opt.DeleteLog)
 		}
@@ -228,13 +224,8 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 		do := func(k, dataBuf []byte) error {
 			k = k[len(bkScore):]
 			key := string(k[8:])
-			if opt.LexMatch != "" {
-				if !s2pkg.Match(opt.LexMatch, key) {
-					return nil
-				}
-			}
-			if opt.ScoreMatchData != "" {
-				if !s2pkg.Match(opt.ScoreMatchData, key) && !s2pkg.MatchBinary(opt.ScoreMatchData, dataBuf) {
+			if opt.Match != "" {
+				if !s2pkg.Match(opt.Match, key) && !s2pkg.MatchBinary(opt.Match, dataBuf) {
 					return nil
 				}
 			}
@@ -249,57 +240,45 @@ func rangeScore(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions)
 			return nil
 		}
 
-		startInt := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
-		endInt := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
+		startBuf := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
+		endBuf := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
 		if opt.Rev {
 			if start.Inclusive {
-				startInt = s2pkg.IncBytes(startInt)
+				startBuf = s2pkg.IncBytes(startBuf)
 			}
 			if !end.Inclusive {
-				endInt = s2pkg.IncBytes(endInt)
+				endBuf = s2pkg.IncBytes(endBuf)
 			}
-			if !c.SeekGE(startInt) {
-				c.Last()
-			} else {
-				c.Prev()
-			}
-			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
-				x := c.Key()
-				if bytes.Compare(x, startInt) <= 0 && bytes.Compare(x, endInt) >= 0 {
-					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
-						if err := do(c.Key(), c.Value()); err != nil {
-							return pairs, 0, err
-						}
-					} else if i > opt.OffsetEnd {
-						break
-					}
-					c.Prev()
-				} else {
+			c.SeekLT(startBuf)
+			for i := 0; c.Valid() && len(pairs) < opt.Limit && i <= opt.OffsetEnd; i++ {
+				if bytes.Compare(c.Key(), endBuf) < 0 {
 					break
 				}
+				if i >= opt.OffsetStart {
+					if err := do(c.Key(), c.Value()); err != nil {
+						return pairs, 0, err
+					}
+				}
+				c.Prev()
 			}
 		} else {
 			if !start.Inclusive {
-				startInt = s2pkg.IncBytes(startInt)
+				startBuf = s2pkg.IncBytes(startBuf)
 			}
 			if end.Inclusive {
-				endInt = s2pkg.IncBytes(endInt)
+				endBuf = s2pkg.IncBytes(endBuf)
 			}
-			c.SeekGE(startInt)
-			for i := 0; c.Valid() && len(pairs) < opt.Limit; i++ {
-				x := c.Key()
-				if bytes.Compare(x, startInt) >= 0 && bytes.Compare(x, endInt) < 0 {
-					if i >= opt.OffsetStart && i <= opt.OffsetEnd {
-						if err := do(c.Key(), c.Value()); err != nil {
-							return pairs, 0, err
-						}
-					} else if i > opt.OffsetEnd {
-						break
-					}
-					c.Next()
-				} else {
+			c.SeekGE(startBuf)
+			for i := 0; c.Valid() && len(pairs) < opt.Limit && i <= opt.OffsetEnd; i++ {
+				if bytes.Compare(c.Key(), endBuf) >= 0 {
 					break
 				}
+				if i >= opt.OffsetStart {
+					if err := do(c.Key(), c.Value()); err != nil {
+						return pairs, 0, err
+					}
+				}
+				c.Next()
 			}
 		}
 

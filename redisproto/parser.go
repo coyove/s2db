@@ -353,9 +353,8 @@ type IntersectFlags struct {
 
 type Flags struct {
 	Command
-	MATCH     string
-	MATCHDATA string
-	TWOHOPS   struct {
+	MATCH   string
+	TWOHOPS struct {
 		ENDPOINT string
 		KEYMAP   bas.Value
 	}
@@ -394,9 +393,6 @@ func (c Command) Flags(start int) (f Flags) {
 			i += 2
 		} else if c.EqualFold(i, "MATCH") {
 			f.MATCH = c.Get(i + 1)
-			i++
-		} else if c.EqualFold(i, "MATCHDATA") {
-			f.MATCHDATA = c.Get(i + 1)
 			i++
 		} else if not := c.EqualFold(i, "NOTINTERSECT"); c.EqualFold(i, "INTERSECT") || not {
 			if f.INTERSECT == nil {

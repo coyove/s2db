@@ -182,6 +182,9 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 			if err := checkScore(p.Score); err != nil {
 				return nil, err
 			}
+			if p.Member == "" {
+				return nil, fmt.Errorf("empty member name")
+			}
 			scoreBuf, scoreBufCloser, err := tx.Get(append(bkName, p.Member...))
 			if err == pebble.ErrNotFound {
 				// Add new key

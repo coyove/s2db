@@ -487,7 +487,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZSCORE", "ZMSCORE":
 		x, cached := s.getCache(cmdHash, weak).([]float64)
 		if !cached {
-			x, err = s.ZMScore(key, toStrings(2, command))
+			x, err = s.ZMScore(key, toStrings(command.Argv[2:]))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -504,7 +504,7 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 	case "ZDATA", "ZMDATA":
 		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
-			x, err = s.ZMData(key, toStrings(2, command))
+			x, err = s.ZMData(key, toStrings(command.Argv[2:]))
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -556,7 +556,11 @@ func (s *Server) runCommand(w *redisproto.Writer, remoteAddr net.Addr, command *
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
 		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			p, err = s.ZRangeByScore(isRev, key, start, end, flags)
+			if len(flags.UNIONS) > 0 {
+				p, err = s.ZRangeByScore2D(isRev, append(flags.UNIONS, key), start, end, flags)
+			} else {
+				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
+			}
 		}
 		if err != nil {
 			return w.WriteError(err.Error())

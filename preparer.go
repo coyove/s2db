@@ -87,7 +87,7 @@ func (s *Server) parseDel(cmd, key string, command *redisproto.Command, dd []byt
 		// DEL start end
 		return s.prepareDel(key, command.Get(2), dd)
 	case "ZREM":
-		return prepareZRem(key, toStrings(2, command), dd)
+		return prepareZRem(key, toStrings(command.Argv[2:]), dd)
 	}
 	start, end := command.Get(2), command.Get(3)
 	switch cmd {

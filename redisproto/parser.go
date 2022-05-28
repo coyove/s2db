@@ -359,6 +359,7 @@ type Flags struct {
 		ENDPOINT string
 		KEYMAP   bas.Value
 	}
+	UNIONS     []string
 	INTERSECT  map[string]IntersectFlags
 	LIMIT      int
 	COUNT      int
@@ -378,12 +379,18 @@ func (c Command) Flags(start int) (f Flags) {
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
 			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
+			if f.COUNT > s2pkg.RangeHardLimit {
+				f.COUNT = s2pkg.RangeHardLimit
+			}
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
 			if c.Get(i+1) != "0" {
 				panic("non-zero limit offset not supported")
 			}
 			f.LIMIT = s2pkg.MustParseInt(c.Get(i + 2))
+			if f.LIMIT > s2pkg.RangeHardLimit {
+				f.LIMIT = s2pkg.RangeHardLimit
+			}
 			i += 2
 		} else if c.EqualFold(i, "MATCH") {
 			f.MATCH = c.Get(i + 1)
@@ -400,6 +407,9 @@ func (c Command) Flags(start int) (f Flags) {
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
 			f.TWOHOPS.ENDPOINT, f.TWOHOPS.KEYMAP = splitCode(c, c.Get(i+1))
+			i++
+		} else if c.EqualFold(i, "UNION") {
+			f.UNIONS = append(f.UNIONS, c.Get(i+1))
 			i++
 		} else if c.EqualFold(i, "TIMEOUT") {
 			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))

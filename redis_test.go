@@ -482,6 +482,39 @@ func TestIntersect(t *testing.T) {
 	s.Close()
 }
 
+func TestRange2D(t *testing.T) {
+	s, _ := Open("test")
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "r1")
+	rdb.Del(ctx, "r2")
+	rdb.Del(ctx, "r3")
+
+	for i := 1; i <= 40; i++ {
+		rdb.Do(ctx, "ZADD", "r1", i, strconv.Itoa(i))
+		if i%2 == 0 {
+			rdb.Do(ctx, "ZADD", "r2", i, strconv.Itoa(i))
+		}
+		if i%3 == 0 {
+			rdb.Do(ctx, "ZADD", "r3", i, strconv.Itoa(i))
+		}
+	}
+
+	s2pkg.RangeHardLimit = 4
+	v, _ := rdb.Do(ctx, "ZRANGEBYSCORE", "r1", "-inf", "+inf", "LIMIT", 0, 6, "UNION", "r2").Result()
+	assertEqual([]string{"1", "2", "2", "3"}, v)
+	s2pkg.RangeHardLimit = 6
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2").Result()
+	assertEqual([]string{"40", "40", "39", "38", "38", "37"}, v)
+	s2pkg.RangeHardLimit = 10
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2", "UNION", "r3").Result()
+	assertEqual([]string{"40", "40", "39", "39", "38", "38", "37", "36", "36", "36"}, v)
+
+	s.Close()
+}
+
 func TestPipeline(t *testing.T) {
 	s, _ := Open("test")
 	go s.Serve(":6666")

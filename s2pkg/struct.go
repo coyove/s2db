@@ -2,6 +2,7 @@ package s2pkg
 
 import (
 	"bytes"
+	"container/heap"
 	"strings"
 
 	"github.com/golang/protobuf/proto"
@@ -100,6 +101,19 @@ func (h *PairHeap) Pop() interface{} {
 	x := old[n-1]
 	h.Pairs = old[0 : n-1]
 	return x
+}
+
+func (h *PairHeap) ToPairs(n int, reversed bool) (p []Pair) {
+	for len(p) < n && h.Len() > 0 {
+		p = append(p, heap.Pop(h).(Pair))
+	}
+	if reversed {
+		for i := 0; i < len(p)/2; i++ {
+			j := len(p) - i - 1
+			p[i], p[j] = p[j], p[i]
+		}
+	}
+	return
 }
 
 type RangeLimit struct {

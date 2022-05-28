@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"container/heap"
 	"fmt"
 	"math"
 	"time"
@@ -95,6 +96,35 @@ func (s *Server) zRangeScoreLex(key string, ro *s2pkg.RangeOptions, flags redisp
 		err = nil
 	}
 	return p, err
+}
+
+func (s *Server) ZRangeByScore2D(rev bool, keys []string, start, end string, flags redisproto.Flags) (p []s2pkg.Pair, err error) {
+	ph := &s2pkg.PairHeap{Desc: !rev}
+	ro := s2pkg.RangeOptions{
+		Rev:            rev,
+		OffsetStart:    0,
+		OffsetEnd:      math.MaxInt64,
+		LexMatch:       flags.MATCH,
+		ScoreMatchData: flags.MATCHDATA,
+		WithData:       flags.WITHDATA,
+		Limit:          flags.LIMIT,
+		Append: func(pairs *[]s2pkg.Pair, p s2pkg.Pair) bool {
+			*pairs = append(*pairs, p)
+			heap.Push(ph, p)
+			if ph.Len() > flags.LIMIT {
+				heap.Pop(ph)
+			}
+			return true
+		},
+	}
+
+	for _, key := range keys {
+		_, _, err := s.runPreparedRangeTx(key, rangeScore(key, s2pkg.NewScoreRL(start), s2pkg.NewScoreRL(end), ro))
+		if err != errSafeExit && err != nil {
+			return nil, err
+		}
+	}
+	return ph.ToPairs(ro.Limit, true), nil
 }
 
 func rangeLex(key string, start, end s2pkg.RangeLimit, opt s2pkg.RangeOptions) rangeFunc {

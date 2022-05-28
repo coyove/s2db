@@ -276,15 +276,38 @@ func dumpReceiver(dest string) {
 			return
 		}
 
-		w.WriteHeader(200)
-
 		if p == "EOT" {
+			if err := func() error {
+				db, err := pebble.Open(dest, &pebble.Options{})
+				if err != nil {
+					return err
+				}
+				defer db.Close()
+				size, err := db.EstimateDiskUsage([]byte{0}, []byte{0xff})
+				if err != nil {
+					return err
+				}
+				if err := db.Set([]byte("config__servername"), []byte(""), pebble.Sync); err != nil {
+					return err
+				}
+				if err := db.Set([]byte("config__slave"), []byte(""), pebble.Sync); err != nil {
+					return err
+				}
+				log.Infof("EstimateDiskUsage=%d", size)
+				return nil
+			}(); err != nil {
+				log.Errorf("failed to open database: %v", err)
+				w.WriteHeader(510)
+				return
+			}
 			log.Infof("received EOT, gracefully exit")
 			time.AfterFunc(time.Second, func() { os.Exit(0) })
 		} else {
 			diff := time.Since(start)
 			log.Infof("finished receiving %q (%.1f K) in %v", p, float64(size)/1024, diff)
 		}
+
+		w.WriteHeader(200)
 	})
 	log.Infof("dump-receiver address: %v -> %v", *listenAddr, dest)
 	http.ListenAndServe(*listenAddr, nil)

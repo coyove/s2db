@@ -57,9 +57,9 @@ func shardIndex(key string) int {
 	return int(s2pkg.HashStr(key) % ShardLogNum)
 }
 
-func toStrings(i int, command *redisproto.Command) (keys []string) {
-	for ; i < command.ArgCount(); i++ {
-		keys = append(keys, string(command.At(i)))
+func toStrings(b [][]byte) (keys []string) {
+	for _, b := range b {
+		keys = append(keys, string(b))
 	}
 	return keys
 }

@@ -3,27 +3,20 @@ package main
 import (
 	"context"
 	_ "embed"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"html/template"
-	"io"
 	"math/rand"
-	"net/http"
 	_ "net/http/pprof"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/coyove/nj"
 	"github.com/coyove/s2db/ranges"
-	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 var (
@@ -48,6 +41,9 @@ var (
 	dsltMaxMembers     = flag.Int("db.dsltlimit", 1024, "[db] limit max members to delete during DSLT")
 	deleteKeyQPSLimit  = flag.Int("db.delkeylimit", 1024, "[db] max QPS of deleting keys")
 	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members a single command can return")
+	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
+	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
+	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
 
 	testFlag   = false
 	slowLogger *log.Logger
@@ -69,10 +65,7 @@ func main() {
 	}
 
 	log.SetReportCaller(true)
-	log.SetFormatter(&s2pkg.LogFormatter{})
-	log.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "log/runtime.log", MaxSize: 100, MaxBackups: 8, MaxAge: 28, Compress: true,
-	}))
+	s2pkg.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
 
 	if *sendRedisCmd != "" {
 		cfg, err := wire.ParseConnString(*listenAddr)
@@ -93,16 +86,10 @@ func main() {
 	}
 
 	slowLogger = log.New()
-	slowLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
-	slowLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "log/slow.log", MaxSize: 100, MaxBackups: 8, MaxAge: 7, Compress: true,
-	}))
+	s2pkg.SetLogger(slowLogger, *logSlowConfig, true)
 
 	dbLogger = log.New()
-	dbLogger.SetFormatter(&s2pkg.LogFormatter{SlowLog: true})
-	dbLogger.SetOutput(io.MultiWriter(os.Stdout, &lumberjack.Logger{
-		Filename: "log/db.log", MaxSize: 100, MaxBackups: 16, MaxAge: 28, Compress: true,
-	}))
+	s2pkg.SetLogger(dbLogger, *logDBConfig, true)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        *listenAddr,
@@ -197,93 +184,4 @@ func main() {
 	s.ReadOnly = *readOnly
 	log.Error(s.Serve(*listenAddr))
 	time.Sleep(time.Second)
-}
-
-func errorExit(msg string) {
-	log.Error(msg)
-	os.Exit(1)
-}
-
-func (s *Server) webConsoleServer() {
-	if testFlag {
-		return
-	}
-	uuid := s2pkg.UUID()
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		start := time.Now()
-
-		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
-			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
-			w.Header().Add("Content-Type", "text/json")
-			data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
-			if len(data) == 0 {
-				w.Write([]byte("[]"))
-				return
-			}
-			m := []interface{}{data[0].Timestamp}
-			for _, d := range data {
-				m = append(m, d.Value)
-			}
-			json.NewEncoder(w).Encode(m)
-			return
-		}
-
-		if s.Password != "" && s.Password != q.Get("p") {
-			w.WriteHeader(400)
-			w.Write([]byte("s2db: password required"))
-			return
-		}
-
-		shardInfos, wg := [ShardLogNum][]string{}, sync.WaitGroup{}
-		if q.Get("noshard") != "1" {
-			for i := 0; i < ShardLogNum; i++ {
-				wg.Add(1)
-				go func(i int) { shardInfos[i] = s.ShardLogInfoCommand(i); wg.Done() }(i)
-			}
-			wg.Wait()
-		}
-
-		sp := []string{s.DBPath}
-		// sp = append(sp, filepath.Dir(s.db.
-		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
-		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
-		}
-		w.Header().Add("Content-Type", "text/html")
-		template.Must(template.New("").Funcs(template.FuncMap{
-			"kv": func(s string) template.HTML {
-				var r struct{ Key, Value template.HTML }
-				r.Key = template.HTML(s)
-				if idx := strings.Index(s, ":"); idx > 0 {
-					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
-				}
-				if strings.Count(string(r.Value), " ") == ShardLogNum-1 {
-					parts := strings.Split(string(r.Value)+"   ", " ")
-					for i, p := range parts {
-						if p == "" {
-							parts[i] = "<div class=box>" + p + "</div>"
-						} else {
-							parts[i] = "<div class=box><span class=mark>" + strconv.Itoa(i) + "</span>" + p + "</div>"
-						}
-					}
-					r.Value = template.HTML("<div class=section-box>" + strings.Join(parts, "") + "</div>")
-				} else {
-					r.Value = makeHTMLStat(string(r.Value))
-				}
-				return template.HTML(fmt.Sprintf("<div class=s-key>%v</div><div class=s-value>%v</div>", r.Key, r.Value))
-			},
-			"stat":      makeHTMLStat,
-			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
-		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "start": start,
-			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
-		})
-	})
-	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
-		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
-			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
-			"println(ok, err)", s.getScriptEnviron())(w, r)
-	})
-	go http.Serve(s.lnWebConsole, nil)
 }

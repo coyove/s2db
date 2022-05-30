@@ -2,19 +2,24 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"html/template"
 	"io/ioutil"
 	"math"
+	"net/http"
 	"os"
 	"reflect"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/nj"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
@@ -42,8 +47,6 @@ var (
 )
 
 func init() {
-	wire.MaxBulkSize = 1 << 20
-	wire.MaxNumArg = 10000
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 }
 
@@ -282,44 +285,6 @@ func joinArray(v interface{}) string {
 	return strings.Join(p, " ")
 }
 
-func (s *Server) BigKeys(n, shard int) []s2pkg.Pair {
-	return nil
-	// if n <= 0 {
-	// 	n = 10
-	// }
-	// h := &s2pkg.PairHeap{}
-	// heap.Init(h)
-	// for i := range s.shards {
-	// 	if shard != -1 && i != shard {
-	// 		continue
-	// 	}
-	// 	s.shards[i].View(func(tx *bbolt.Tx) error {
-	// 		return tx.ForEach(func(name []byte, bk *bbolt.Bucket) error {
-	// 			if bytes.HasPrefix(name, []byte("zset.score.")) {
-	// 				return nil
-	// 			}
-	// 			if bytes.HasPrefix(name, []byte("zset.")) {
-	// 				heap.Push(h, s2pkg.Pair{Member: string(name[5:]), Score: float64(sizeOfBucket(bk))})
-	// 			}
-	// 			if bytes.HasPrefix(name, []byte("q.")) {
-	// 				_, _, l := queueLenImpl(bk)
-	// 				heap.Push(h, s2pkg.Pair{Member: string(name[2:]), Score: float64(l)})
-	// 			}
-	// 			if h.Len() > n {
-	// 				heap.Pop(h)
-	// 			}
-	// 			return nil
-	// 		})
-	// 	})
-	// }
-	// var x []s2pkg.Pair
-	// for h.Len() > 0 {
-	// 	p := heap.Pop(h).(s2pkg.Pair)
-	// 	x = append(x, p)
-	// }
-	// return x
-}
-
 func (s *Server) removeCache(key string) {
 	s.Cache.Delete(key)
 }
@@ -369,7 +334,8 @@ func makeHTMLStat(s string) template.HTML {
 	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
 		return template.HTML(s)
 	}
-	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s", s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
+	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s",
+		s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
 }
 
 func bAppendUint64(b []byte, v uint64) []byte {
@@ -377,76 +343,26 @@ func bAppendUint64(b []byte, v uint64) []byte {
 }
 
 func (s *Server) createDBListener() pebble.EventListener {
+	L, R := dbLogger.Info, s.runScriptFunc
 	return pebble.EventListener{
-		BackgroundError: func(a error) {
-			dbLogger.Error(a)
-			s.runScriptFunc("PebbleBackgroundError", a)
-		},
-		CompactionBegin: func(a pebble.CompactionInfo) {
-			dbLogger.Info("[CompactionBegin] ", a)
-			s.runScriptFunc("PebbleCompactionBegin", a)
-		},
-		CompactionEnd: func(a pebble.CompactionInfo) {
-			dbLogger.Info("[CompactionEnd] ", a)
-			s.runScriptFunc("PebbleCompactionEnd", a)
-		},
-		DiskSlow: func(a pebble.DiskSlowInfo) {
-			dbLogger.Info("[DiskSlow] ", a)
-			s.runScriptFunc("PebbleDiskSlow", a)
-		},
-		FlushBegin: func(a pebble.FlushInfo) {
-			dbLogger.Info("[FlushBegin] ", a)
-			s.runScriptFunc("PebbleFlushBegin", a)
-		},
-		FlushEnd: func(a pebble.FlushInfo) {
-			dbLogger.Info("[FlushEnd] ", a)
-			s.runScriptFunc("PebbleFlushEnd", a)
-		},
-		FormatUpgrade: func(a pebble.FormatMajorVersion) {
-			dbLogger.Info("[FormatUpgrade] ", a)
-			s.runScriptFunc("PebbleFormatUpgrade", a)
-		},
-		ManifestCreated: func(a pebble.ManifestCreateInfo) {
-			dbLogger.Info("[ManifestCreated] ", a)
-			s.runScriptFunc("PebbleManifestCreated", a)
-		},
-		ManifestDeleted: func(a pebble.ManifestDeleteInfo) {
-			dbLogger.Info("[ManifestDeleted] ", a)
-			s.runScriptFunc("PebbleManifestDeleted", a)
-		},
-		TableCreated: func(a pebble.TableCreateInfo) {
-			// dbLogger.Info("[TableCreated] ", a)
-			s.runScriptFunc("PebbleTableCreated", a)
-		},
-		TableDeleted: func(a pebble.TableDeleteInfo) {
-			// dbLogger.Info("[TableDeleted] ", a)
-			s.runScriptFunc("PebbleTableDeleted", a)
-		},
-		TableIngested: func(a pebble.TableIngestInfo) {
-			dbLogger.Info("[TableIngested] ", a)
-			s.runScriptFunc("PebbleTableIngested", a)
-		},
-		TableStatsLoaded: func(a pebble.TableStatsInfo) {
-			dbLogger.Info("[TableStatsLoaded] ", a)
-			s.runScriptFunc("PebbleTableStatsLoaded", a)
-		},
-		TableValidated: func(a pebble.TableValidatedInfo) {
-			dbLogger.Info("[TableValidated] ", a)
-			s.runScriptFunc("PebbleTableValidated", a)
-		},
-		WALCreated: func(a pebble.WALCreateInfo) {
-			dbLogger.Info("[WALCreated] ", a)
-			s.runScriptFunc("PebbleWALCreated", a)
-		},
-		WALDeleted: func(a pebble.WALDeleteInfo) {
-			dbLogger.Info("[WALDeleted] ", a)
-			s.runScriptFunc("PebbleWALDeleted", a)
-		},
-		WriteStallBegin: func(a pebble.WriteStallBeginInfo) {
-			dbLogger.Info("[WriteStallBegin] ", a)
-			s.runScriptFunc("PebbleWriteStallBegin", a)
-		},
-		WriteStallEnd: func() { dbLogger.Info("WriteStallEnd") },
+		BackgroundError:  func(a error) { dbLogger.Error(a); R("DBBackgroundError", a) },
+		CompactionBegin:  func(a pebble.CompactionInfo) { L("[CompactionBegin] ", a); R("DBCompactionBegin", a) },
+		CompactionEnd:    func(a pebble.CompactionInfo) { L("[CompactionEnd] ", a); R("DBCompactionEnd", a) },
+		DiskSlow:         func(a pebble.DiskSlowInfo) { L("[DiskSlow] ", a); R("DBDiskSlow", a) },
+		FlushBegin:       func(a pebble.FlushInfo) { L("[FlushBegin] ", a); R("DBFlushBegin", a) },
+		FlushEnd:         func(a pebble.FlushInfo) { L("[FlushEnd] ", a); R("DBFlushEnd", a) },
+		FormatUpgrade:    func(a pebble.FormatMajorVersion) { L("[FormatUpgrade] ", a); R("DBFormatUpgrade", a) },
+		ManifestCreated:  func(a pebble.ManifestCreateInfo) { L("[ManifestCreated] ", a); R("DBManifestCreated", a) },
+		ManifestDeleted:  func(a pebble.ManifestDeleteInfo) { L("[ManifestDeleted] ", a); R("DBManifestDeleted", a) },
+		TableCreated:     func(a pebble.TableCreateInfo) { R("DBTableCreated", a) },
+		TableDeleted:     func(a pebble.TableDeleteInfo) { R("DBTableDeleted", a) },
+		TableIngested:    func(a pebble.TableIngestInfo) { L("[TableIngested] ", a); R("DBTableIngested", a) },
+		TableStatsLoaded: func(a pebble.TableStatsInfo) { L("[TableStatsLoaded] ", a); R("DBTableStatsLoaded", a) },
+		TableValidated:   func(a pebble.TableValidatedInfo) { L("[TableValidated] ", a); R("DBTableValidated", a) },
+		WALCreated:       func(a pebble.WALCreateInfo) { L("[WALCreated] ", a); R("DBWALCreated", a) },
+		WALDeleted:       func(a pebble.WALDeleteInfo) { L("[WALDeleted] ", a); R("DBWALDeleted", a) },
+		WriteStallBegin:  func(a pebble.WriteStallBeginInfo) { L("[WriteStallBegin] ", a); R("DBWriteStallBegin", a) },
+		WriteStallEnd:    func() { L("WriteStallEnd"); R("DBWriteStallEnd") },
 	}
 }
 
@@ -490,4 +406,100 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 		}
 	}
 	return
+}
+
+func errorExit(msg string) {
+	log.Error(msg)
+	os.Exit(1)
+}
+
+func (s *Server) webConsoleServer() {
+	if testFlag {
+		return
+	}
+	uuid := s2pkg.UUID()
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		start := time.Now()
+
+		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
+			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
+			w.Header().Add("Content-Type", "text/json")
+			data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
+			if len(data) == 0 {
+				w.Write([]byte("[]"))
+				return
+			}
+			m := []interface{}{data[0].Timestamp}
+			for _, d := range data {
+				m = append(m, d.Value)
+			}
+			json.NewEncoder(w).Encode(m)
+			return
+		}
+
+		if s.Password != "" && s.Password != q.Get("p") {
+			w.WriteHeader(400)
+			w.Write([]byte("s2db: password required"))
+			return
+		}
+
+		shardInfos, wg := [ShardLogNum][]string{}, sync.WaitGroup{}
+		if q.Get("noshard") != "1" {
+			for i := 0; i < ShardLogNum; i++ {
+				wg.Add(1)
+				go func(i int) { shardInfos[i] = s.ShardLogInfoCommand(i); wg.Done() }(i)
+			}
+			wg.Wait()
+		}
+
+		sp := []string{s.DBPath}
+		// sp = append(sp, filepath.Dir(s.db.
+		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
+		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
+		}
+		w.Header().Add("Content-Type", "text/html")
+		template.Must(template.New("").Funcs(template.FuncMap{
+			"kv": func(s string) template.HTML {
+				var r struct{ Key, Value template.HTML }
+				r.Key = template.HTML(s)
+				if idx := strings.Index(s, ":"); idx > 0 {
+					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
+				}
+				if strings.Count(string(r.Value), " ") == ShardLogNum-1 {
+					parts := strings.Split(string(r.Value)+"   ", " ")
+					for i, p := range parts {
+						if p == "" {
+							parts[i] = "<div class=box>" + p + "</div>"
+						} else {
+							parts[i] = "<div class=box><span class=mark>" + strconv.Itoa(i) + "</span>" + p + "</div>"
+						}
+					}
+					r.Value = template.HTML("<div class=section-box>" + strings.Join(parts, "") + "</div>")
+				} else {
+					r.Value = makeHTMLStat(string(r.Value))
+				}
+				return template.HTML(fmt.Sprintf("<div class=s-key>%v</div><div class=s-value>%v</div>", r.Key, r.Value))
+			},
+			"stat":      makeHTMLStat,
+			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
+		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
+			"s": s, "start": start,
+			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
+			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+		})
+	})
+	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
+		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
+			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
+			"println(ok, err)", s.getScriptEnviron())(w, r)
+	})
+	go http.Serve(s.lnWebConsole, nil)
+}
+
+func (s *Server) checkWritable() error {
+	if s.ReadOnly {
+		return wire.ErrServerReadonly
+	}
+	return nil
 }

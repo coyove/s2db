@@ -8,7 +8,6 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -186,13 +185,6 @@ func SizeOfPairs(in []Pair) int {
 	return sz
 }
 
-func RemoveFile(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil
-	}
-	return os.Remove(path)
-}
-
 type Locker struct {
 	mu sync.Mutex
 }
@@ -233,19 +225,6 @@ func Match(pattern string, text string) bool {
 		logrus.Errorf("Match: invalid pattern: `%s` %v", pattern, err)
 	}
 	return m
-}
-
-func ExtractAllHeadCirc(text string) ([]string, string) {
-	var res []string
-	for {
-		rp, rest := ExtractHeadCirc(text)
-		if rp != "" {
-			res = append(res, rp)
-			text = rest
-		} else {
-			return res, rest
-		}
-	}
 }
 
 func ExtractHeadCirc(text string) (string, string) {

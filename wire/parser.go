@@ -31,9 +31,9 @@ var (
 	ErrNoAuth          = errors.New("NOAUTH")
 
 	ReadBufferInitSize = 1 << 16
-	MaxNumArg          = 20
-	MaxBulkSize        = 1 << 16
-	MaxTelnetLine      = 1 << 10
+	MaxNumArg          = 20000
+	MaxBulkSize        = 1 << 20
+	MaxTelnetLine      = 1 << 20
 	spaceSlice         = []byte{' '}
 	emptyBulk          = [0]byte{}
 )

@@ -109,6 +109,7 @@ func Open(dbPath string) (x *Server, err error) {
 		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatUint(clock.Id(), 16)),
 	}
 	x.DBOptions.EventListener = x.createDBListener()
+	start := time.Now()
 	x.DB, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
 		return nil, err
@@ -116,6 +117,7 @@ func Open(dbPath string) (x *Server, err error) {
 	if err := x.loadConfig(); err != nil {
 		return nil, err
 	}
+	log.Infof("open data: %s in %v", dbPath, time.Since(start))
 
 	b := x.DB.NewBatch()
 	defer b.Close()
@@ -419,11 +421,14 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			itfs(s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))),
 			itfs(s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))),
 		)
-	}
-
-	// Log commands
-	switch cmd {
-	case "PUSHLOGS": // PUSHLOGS <Shard> <LogsBytes>
+	case "SLOW.LOG":
+		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+	case "DB.LOG":
+		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+	case "RUNTIME.LOG":
+		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+	case "PUSHLOGS":
+		// PUSHLOGS <Shard> <LogsBytes>
 		s.switchMasterLock.RLock()
 		defer s.switchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
@@ -452,18 +457,17 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteInt(int64(logtail))
-	case "SWITCHMASTER":
+	case "SWITCH":
 		s.switchMasterLock.Lock()
 		defer s.switchMasterLock.Unlock()
-		if _, err := s.UpdateConfig("markmaster", "1", false); err != nil {
-			return w.WriteError(err.Error())
+		if strings.EqualFold(key, "master") {
+			if _, err := s.UpdateConfig("markmaster", "1", false); err != nil {
+				return w.WriteError(err.Error())
+			}
+			s.ReadOnly = false
+		} else {
+			s.ReadOnly = true
 		}
-		s.ReadOnly = false
-		return w.WriteSimpleString("OK")
-	case "SWITCHREADONLY":
-		s.switchMasterLock.Lock()
-		defer s.switchMasterLock.Unlock()
-		s.ReadOnly = true
 		return w.WriteSimpleString("OK")
 	}
 
@@ -575,11 +579,4 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())
-}
-
-func (s *Server) checkWritable() error {
-	if s.ReadOnly {
-		return wire.ErrServerReadonly
-	}
-	return nil
 }

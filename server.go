@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
@@ -49,6 +49,7 @@ type Server struct {
 	WeakCache        *s2pkg.MasterLRU
 	evalLock         sync.RWMutex
 	switchMasterLock sync.RWMutex
+	dieLock          sync.Mutex
 	dumpWireLock     s2pkg.Locker
 
 	rangeDeleteWatcher s2pkg.Survey
@@ -144,7 +145,9 @@ func Open(dbPath string) (x *Server, err error) {
 	return x, b.Commit(pebble.Sync)
 }
 
-func (s *Server) Close() error {
+func (s *Server) Close() (err error) {
+	s.dieLock.Lock()
+	s.waitSlave()
 	s.Closed = true
 	s.ReadOnly = true
 	s.DBOptions.Cache.Unref()
@@ -171,22 +174,17 @@ func (s *Server) Close() error {
 	}
 	wg.Wait()
 
+	errs <- s.DB.Flush()
 	errs <- s.DB.Close()
 
-	p := bytes.Buffer{}
 	close(errs)
-	for err := range errs {
-		if err != nil {
-			p.WriteString(err.Error())
-			p.WriteString(" ")
+	for e := range errs {
+		if e != nil {
+			err = errors.CombineErrors(err, e)
 		}
 	}
-	if p.Len() > 0 {
-		return fmt.Errorf(p.String())
-	}
-
-	log.Info("server closed")
-	return nil
+	log.Info("server closed, err=", err)
+	return err
 }
 
 func (s *Server) Serve(addr string) (err error) {
@@ -339,11 +337,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	// General commands
 	switch cmd {
 	case "DIE":
-		s.waitSlave()
 		log.Info(s.Close())
 		os.Exit(0)
 	case "AUTH":
-		return w.WriteSimpleString("OK") // at this stage all AUTH can succeed
+		// AUTH command is processed before runComamnd, always OK here
+		return w.WriteSimpleString("OK")
 	case "EVAL", "EVALRO":
 		if cmd == "EVALRO" {
 			s.evalLock.RLock()

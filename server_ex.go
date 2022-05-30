@@ -242,7 +242,7 @@ func (s *Server) ShardLogInfoCommand(shard int) []string {
 
 func (s *Server) waitSlave() {
 	if !s.Slave.IsAcked(s) {
-		log.Info("waitSlave: no need to wait")
+		log.Info("wait: no acknowledged slave found")
 		return
 	}
 	s.ReadOnly = true
@@ -257,7 +257,7 @@ func (s *Server) waitSlave() {
 			return
 		}
 	}
-	log.Error("waitSlave: timeout")
+	log.Errorf("wait %s: timeout", s.Slave.RemoteIP)
 }
 
 func ifZero(v *int, v2 int) {

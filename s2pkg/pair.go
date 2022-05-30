@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 
-	"github.com/golang/protobuf/proto"
-	protoV2 "google.golang.org/protobuf/proto"
+	"github.com/gogo/protobuf/proto"
 )
 
 type Logs struct {
@@ -18,13 +17,23 @@ type Log struct {
 	Data []byte `protobuf:"bytes,2,opt,name=data"`
 }
 
-func (doc *Logs) Reset() { *doc = Logs{} }
+func (doc *Logs) Reset() {
+	*doc = Logs{}
+}
 
-func (doc *Logs) String() string { return proto.CompactTextString(doc) }
+func (doc *Logs) String() string {
+	return proto.CompactTextString(doc)
+}
 
-func (doc *Logs) MarshalBytes() []byte { buf, err := proto.Marshal(doc); PanicErr(err); return buf }
+func (doc *Logs) MarshalBytes() []byte {
+	buf, err := proto.Marshal(doc)
+	PanicErr(err)
+	return buf
+}
 
-func (doc *Logs) UnmarshalBytes(buf []byte) error { return proto.Unmarshal(buf, doc) }
+func (doc *Logs) UnmarshalBytes(buf []byte) error {
+	return proto.Unmarshal(buf, doc)
+}
 
 func (*Logs) ProtoMessage() {}
 
@@ -32,16 +41,18 @@ type BytesArray struct {
 	Data [][]byte `protobuf:"bytes,1,rep,name=data"`
 }
 
-func (doc *BytesArray) Reset() { *doc = BytesArray{} }
+func (doc *BytesArray) Reset() {
+	*doc = BytesArray{}
+}
 
-func (doc *BytesArray) String() string { return proto.CompactTextString(doc) }
+func (doc *BytesArray) String() string {
+	return proto.CompactTextString(doc)
+}
 
 func (doc *BytesArray) MarshalAppend(buf []byte) []byte {
-	mi := proto.MessageV2(doc)
-	opt := protoV2.MarshalOptions{Deterministic: true, AllowPartial: true}
-	buf, err := opt.MarshalAppend(buf, mi)
+	x, err := proto.Marshal(doc)
 	PanicErr(err)
-	return buf
+	return append(buf, x...)
 }
 
 func (doc *BytesArray) UnmarshalBytes(buf []byte) error {

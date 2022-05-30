@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
@@ -206,10 +207,9 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	return
 }
 
-func (s *Server) CopyConfig(remoteAddr, key string) error {
+func (s *Server) CopyConfig(remoteAddr, key string) (finalErr error) {
 	rdb := s.getRedis(remoteAddr)
 
-	errBuf := bytes.Buffer{}
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
 		switch rf.Name {
 		case "ServerName", "MarkMaster", "Slave", "Passthrough":
@@ -221,25 +221,22 @@ func (s *Server) CopyConfig(remoteAddr, key string) error {
 		cmd := redis.NewStringSliceCmd(context.TODO(), "CONFIG", "GET", rf.Name)
 		rdb.Process(context.TODO(), cmd)
 		if cmd.Err() != nil {
-			errBuf.WriteString(fmt.Sprintf("get(%q): %v ", rf.Name, cmd.Err()))
+			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("get(%q): %v", rf.Name, cmd.Err()))
 			return nil
 		}
 		v := cmd.Val()
 		if len(v) != 2 {
-			errBuf.WriteString(fmt.Sprintf("get(%q): %v ", rf.Name, v))
+			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("get(%q): %v", rf.Name, v))
 			return nil
 		}
 		_, err := s.UpdateConfig(rf.Name, v[1], false)
 		if err != nil {
-			errBuf.WriteString(fmt.Sprintf("update(%q): %v ", rf.Name, err))
+			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("update(%q): %v", rf.Name, err))
 			return nil
 		}
 		return nil
 	})
-	if errBuf.Len() > 0 {
-		return fmt.Errorf(errBuf.String())
-	}
-	return nil
+	return finalErr
 }
 
 func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, error) {

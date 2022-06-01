@@ -22,6 +22,7 @@ import (
 	"github.com/coyove/nj"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	log "github.com/sirupsen/logrus"
@@ -80,10 +81,6 @@ func redisPairs(in []s2pkg.Pair, flags wire.Flags) []string {
 		}
 	}
 	return data
-}
-
-func itfs(args ...interface{}) []interface{} {
-	return args
 }
 
 func dd(cmd *wire.Command) []byte {
@@ -338,7 +335,7 @@ func makeHTMLStat(s string) template.HTML {
 		s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
 }
 
-func bAppendUint64(b []byte, v uint64) []byte {
+func appendUint(b []byte, v uint64) []byte {
 	return append(s2pkg.Bytes(b), s2pkg.Uint64ToBytes(v)...)
 }
 
@@ -367,7 +364,7 @@ func (s *Server) createDBListener() pebble.EventListener {
 }
 
 func (s *Server) ZCard(key string) (count int64) {
-	_, i, _, err := extdb.GetKeyNumber(s.DB, getZSetCounterKey(key))
+	_, i, _, err := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(key))
 	s2pkg.PanicErr(err)
 	return int64(i)
 }
@@ -379,7 +376,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 	for range memebrs {
 		scores = append(scores, math.NaN())
 	}
-	bkName, _, _ := getZSetRangeKey(key)
+	bkName, _, _ := ranges.GetZSetRangeKey(key)
 	for i, m := range memebrs {
 		score, _, found, _ := extdb.GetKeyNumber(s.DB, append(bkName, m...))
 		if found {
@@ -394,7 +391,7 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 		return nil, nil
 	}
 	data = make([][]byte, len(members))
-	bkName, bkScore, _ := getZSetRangeKey(key)
+	bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
 	for i, m := range members {
 		scoreBuf, _ := extdb.GetKey(s.DB, append(bkName, m...))
 		if len(scoreBuf) != 0 {

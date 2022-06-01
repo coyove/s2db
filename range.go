@@ -15,11 +15,6 @@ import (
 	"github.com/coyove/s2db/wire"
 )
 
-var (
-	MinScoreRange = ranges.Limit{Float: math.Inf(-1), Inclusive: true}
-	MaxScoreRange = ranges.Limit{Float: math.Inf(1), Inclusive: true}
-)
-
 func (s *Server) ZCount(lex bool, key string, start, end string, flags wire.Flags) (int, error) {
 	ro := ranges.Options{
 		OffsetStart: 0,
@@ -37,9 +32,9 @@ func (s *Server) ZCount(lex bool, key string, start, end string, flags wire.Flag
 }
 
 func (s *Server) ZRange(rev bool, key string, start, end int, flags wire.Flags) ([]s2pkg.Pair, error) {
-	rangeStart, rangeEnd := MinScoreRange, MaxScoreRange
+	rangeStart, rangeEnd := ranges.MinScoreRange, ranges.MaxScoreRange
 	if rev {
-		rangeStart, rangeEnd = MaxScoreRange, MinScoreRange
+		rangeStart, rangeEnd = ranges.MaxScoreRange, ranges.MinScoreRange
 	}
 	p, err := s.runPreparedRangeTx(key, rangeScore(key, rangeStart, rangeEnd, ranges.Options{
 		Rev:         rev,
@@ -120,7 +115,7 @@ func (s *Server) ZRangeByScore2D(rev bool, keys []string, start, end string, fla
 
 func rangeLex(key string, start, end ranges.Limit, opt ranges.Options) rangeFunc {
 	return func(tx extdb.LogTx) (rr ranges.Result, err error) {
-		bkName, bkScore, _ := getZSetRangeKey(key)
+		bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
 		c := tx.NewIter(&pebble.IterOptions{
 			LowerBound: bkName,
 			UpperBound: s2pkg.IncBytes(bkName),
@@ -199,7 +194,7 @@ func rangeLex(key string, start, end ranges.Limit, opt ranges.Options) rangeFunc
 
 func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFunc {
 	return func(tx extdb.LogTx) (rr ranges.Result, err error) {
-		_, bkScore, bkCounter := getZSetRangeKey(key)
+		_, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
 		c := tx.NewIter(&pebble.IterOptions{
 			LowerBound: bkScore,
 			UpperBound: s2pkg.IncBytes(bkScore),
@@ -284,11 +279,8 @@ func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFu
 func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, err error) {
 	keybuf := []byte(member)
 	func() {
-		_, bkScore, _ := getZSetRangeKey(key)
-		c := s.DB.NewIter(&pebble.IterOptions{
-			LowerBound: bkScore,
-			UpperBound: s2pkg.IncBytes(bkScore),
-		})
+		_, bkScore, _ := ranges.GetZSetRangeKey(key)
+		c := ranges.NewPrefixIter(s.DB, bkScore)
 		defer c.Close()
 		if rev {
 			for c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Prev() {
@@ -342,13 +334,12 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 			timedout = k
 			return false
 		}
-		_, _, bkCounter := getZSetRangeKey(k)
-		_, v, _, _ := extdb.GetKeyNumber(s.DB, bkCounter)
+		_, v, _, _ := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(k))
 		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
 		return len(pairs) < count
 	})
 	if timedout != "" {
-		return nil, timedout
+		return pairs, timedout
 	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
@@ -357,7 +348,7 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 }
 
 func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
-	iter := s.DB.NewIter(zsetKeyScoreFullRange)
+	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
 	ddl := time.Now().Add(flags.TIMEOUT)
 	endpoint := flags.TWOHOPS.ENDPOINT
 	return func(r *ranges.Result, p s2pkg.Pair) error {
@@ -369,7 +360,7 @@ func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair)
 			}
 			member = res.String()
 		}
-		bkName, _, _ := getZSetRangeKey(member)
+		bkName, _, _ := ranges.GetZSetRangeKey(member)
 		x := append(bkName, endpoint...)
 		iter.SeekGE(x)
 		if iter.Valid() && bytes.Equal(iter.Key(), x) {
@@ -384,7 +375,7 @@ func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair)
 }
 
 func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg.Pair) error, func() error) {
-	iter := s.DB.NewIter(zsetKeyScoreFullRange)
+	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
 	ddl := time.Now().Add(flags.TIMEOUT)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
 		count, hits := 0, 0
@@ -396,7 +387,7 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 				}
 				key = res.String()
 			}
-			bkName, _, _ := getZSetRangeKey(key)
+			bkName, _, _ := ranges.GetZSetRangeKey(key)
 			x := append(bkName, p.Member...)
 			iter.SeekGE(x)
 			exist := iter.Valid() && bytes.Equal(iter.Key(), x)

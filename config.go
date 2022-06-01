@@ -19,6 +19,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
@@ -396,13 +397,14 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	}
 
 	b := s.DB.NewBatch()
+	defer b.Close()
 	for _, mp := range pairs {
 		key := []byte("metrics_" + mp.Member + "\x00")
-		if err := b.Set(bAppendUint64(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
+		if err := b.Set(appendUint(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 			return err
 		}
 		if clock.Rand() <= 0.01 {
-			if err := b.DeleteRange(key, bAppendUint64(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
+			if err := b.DeleteRange(key, appendUint(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
 				return err
 			}
 		}
@@ -418,10 +420,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 
 func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
-	c := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: key,
-		UpperBound: s2pkg.IncBytes(key),
-	})
+	c := ranges.NewPrefixIter(s.DB, key)
 	defer c.Close()
 	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
 		k := c.Key()[8:]
@@ -439,10 +438,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	res := map[string]s2pkg.GroupedMetrics{}
 	getter := func(f string) {
 		key := []byte("metrics_" + f + "\x00")
-		c := s.DB.NewIter(&pebble.IterOptions{
-			LowerBound: key,
-			UpperBound: s2pkg.IncBytes(key),
-		})
+		c := ranges.NewPrefixIter(s.DB, key)
 		defer c.Close()
 
 		for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {

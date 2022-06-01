@@ -20,6 +20,7 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
+	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
@@ -135,7 +136,7 @@ func Open(dbPath string) (x *Server, err error) {
 		d.batchTx = make(chan *batchTask, 1024)
 		d.syncWaiter = s2pkg.NewBuoySignal(time.Duration(x.ServerConfig.PingTimeout)*time.Millisecond,
 			&x.Survey.Sync)
-		if err := b.Set(append(getShardLogKey(int16(i)), s2pkg.Uint64ToBytes(0)...), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
+		if err := b.Set(append(ranges.GetShardLogKey(int16(i)), s2pkg.Uint64ToBytes(0)...), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
 			return nil, err
 		}
 	}
@@ -147,6 +148,9 @@ func Open(dbPath string) (x *Server, err error) {
 
 func (s *Server) Close() (err error) {
 	s.dieLock.Lock()
+	if err := s.DB.Flush(); err != nil {
+		return err
+	}
 	s.waitSlave()
 	s.Closed = true
 	s.ReadOnly = true
@@ -174,7 +178,6 @@ func (s *Server) Close() (err error) {
 	}
 	wg.Wait()
 
-	errs <- s.DB.Flush()
 	errs <- s.DB.Close()
 
 	close(errs)
@@ -413,12 +416,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if end == "" {
 			end = key + "\xff"
 		}
-		startKey, startKey2, _ := getZSetRangeKey(key)
-		endKey, endKey2, _ := getZSetRangeKey(end)
-		return w.WriteObjects(
-			itfs(s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))),
-			itfs(s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))),
-		)
+		startKey, startKey2, _ := ranges.GetZSetRangeKey(key)
+		endKey, endKey2, _ := ranges.GetZSetRangeKey(end)
+		keyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))
+		scoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))
+		return w.WriteObjects(keyScore, scoreKey)
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
 	case "DB.LOG":

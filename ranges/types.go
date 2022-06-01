@@ -2,9 +2,25 @@ package ranges
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2pkg"
+)
+
+var (
+	MinScoreRange = Limit{Float: math.Inf(-1), Inclusive: true}
+	MaxScoreRange = Limit{Float: math.Inf(1), Inclusive: true}
+
+	ZSetKeyScoreFullRange = &pebble.IterOptions{
+		LowerBound: []byte("zsetks__"),
+		UpperBound: []byte("zsetks_\xff"),
+	}
+	ZSetScoreKeyValueFullRange = &pebble.IterOptions{
+		LowerBound: []byte("zsetskv_"),
+		UpperBound: []byte("zsetskv\xff"),
+	}
 )
 
 type Limit struct {

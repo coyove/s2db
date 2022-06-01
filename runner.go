@@ -202,7 +202,7 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 
 	ltx := extdb.LogTx{
 		OutLogtail: new(uint64),
-		LogPrefix:  getShardLogKey(int16(shard)),
+		LogPrefix:  ranges.GetShardLogKey(int16(shard)),
 		Storage:    b,
 	}
 

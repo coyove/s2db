@@ -17,28 +17,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var zsetKeyScoreFullRange = &pebble.IterOptions{
-	LowerBound: []byte("zsetks__"),
-	UpperBound: []byte("zsetks_\xff"),
-}
-
-var zsetScoreKeyValueFullRange = &pebble.IterOptions{
-	LowerBound: []byte("zsetskv_"),
-	UpperBound: []byte("zsetskv\xff"),
-}
-
-func getZSetRangeKey(key string) ([]byte, []byte, []byte) {
-	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), getZSetCounterKey(key)
-}
-
-func getZSetCounterKey(key string) []byte {
-	return []byte("zsetctr_" + key)
-}
-
-func getShardLogKey(shard int16) []byte {
-	return []byte(fmt.Sprintf("log%04x_", shard))
-}
-
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	var xx, nx, ch, pd, data bool
 	var dslt = math.NaN()
@@ -114,7 +92,7 @@ func parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx 
 }
 
 func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {
-	bkName, bkScore, bkCounter := getZSetRangeKey(key)
+	bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
 	for _, p := range pairs {
 		if err := tx.Delete(append(bkName, p.Member...), pebble.Sync); err != nil {
 			return err
@@ -145,8 +123,8 @@ func (s *Server) deleteKey(tx extdb.Storage, key string, bkName, bkScore, bkCoun
 func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
 		if endKey != "" {
-			bkStartName, bkStartScore, bkStartCounter := getZSetRangeKey(startKey)
-			bkEndName, bkEndScore, bkEndCounter := getZSetRangeKey(endKey)
+			bkStartName, bkStartScore, bkStartCounter := ranges.GetZSetRangeKey(startKey)
+			bkEndName, bkEndScore, bkEndCounter := ranges.GetZSetRangeKey(endKey)
 			if err := tx.DeleteRange(bkStartName, s2pkg.IncBytes(bkEndName), pebble.Sync); err != nil {
 				return nil, err
 			}
@@ -158,7 +136,7 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 			}
 			return 1, writeLog(tx, dd)
 		}
-		bkName, bkScore, bkCounter := getZSetRangeKey(startKey)
+		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(startKey)
 		if err := s.deleteKey(tx, startKey, bkName, bkScore, bkCounter); err != nil {
 			return nil, err
 		}
@@ -178,7 +156,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 			}
 		}
 
-		bkName, bkScore, bkCounter := getZSetRangeKey(key)
+		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
 		added, updated := 0, 0
 		for _, p := range pairs {
 			if err := checkScore(p.Score); err != nil {
@@ -285,7 +263,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 
 func prepareZRem(key string, members []string, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (count interface{}, err error) {
-		bkName, _, _ := getZSetRangeKey(key)
+		bkName, _, _ := ranges.GetZSetRangeKey(key)
 		var pairs []s2pkg.Pair
 		for _, member := range members {
 			scoreBuf, err := extdb.GetKey(tx, append(bkName, member...))
@@ -304,7 +282,7 @@ func prepareZRem(key string, members []string, dd []byte) preparedTx {
 
 func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (newValue interface{}, err error) {
-		bkName, bkScore, bkCounter := getZSetRangeKey(key)
+		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
 		score := 0.0
 		added := false
 
@@ -364,7 +342,7 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 
 func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
-		c, err := rangeScore(key, MinScoreRange, MaxScoreRange, ranges.Options{
+		c, err := rangeScore(key, ranges.MinScoreRange, ranges.MaxScoreRange, ranges.Options{
 			OffsetStart: start,
 			OffsetEnd:   end,
 			DeleteLog:   dd,
@@ -378,9 +356,7 @@ func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
 
 func prepareZRemRangeByLex(key string, start, end string, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
-		rangeStart := ranges.Lex(start)
-		rangeEnd := ranges.Lex(end)
-		c, err := rangeLex(key, rangeStart, rangeEnd, ranges.Options{
+		c, err := rangeLex(key, ranges.Lex(start), ranges.Lex(end), ranges.Options{
 			OffsetStart: 0,
 			OffsetEnd:   math.MaxInt64,
 			DeleteLog:   dd,

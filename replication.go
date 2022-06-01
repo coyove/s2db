@@ -14,7 +14,8 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
-	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/ranges"
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -30,11 +31,11 @@ func writeLog(tx extdb.LogTx, dd []byte) error {
 	if tx.OutLogtail != nil {
 		*tx.OutLogtail = id
 	}
-	return tx.Set(bAppendUint64(tx.LogPrefix, id), dd, pebble.Sync)
+	return tx.Set(appendUint(tx.LogPrefix, id), dd, pebble.Sync)
 }
 
 func (s *Server) ShardLogtail(shard int) uint64 {
-	key := getShardLogKey(int16(shard))
+	key := ranges.GetShardLogKey(int16(shard))
 	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: s2pkg.IncBytes(key),
@@ -47,7 +48,7 @@ func (s *Server) ShardLogtail(shard int) uint64 {
 }
 
 func (s *Server) ShardLogInfo(shard int) (logtail uint64, logSpan int64, compacted bool) {
-	key := getShardLogKey(int16(shard))
+	key := ranges.GetShardLogKey(int16(shard))
 	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: key,
 		UpperBound: s2pkg.IncBytes(key),
@@ -101,16 +102,16 @@ func (s *Server) compactLogs(shard int, first bool) {
 
 	s.Survey.LogCompaction.Incr(1)
 
-	logPrefix := getShardLogKey(int16(shard))
+	logPrefix := ranges.GetShardLogKey(int16(shard))
 	logx := clock.IdBeforeSeconds(logtail, s.ServerConfig.CompactLogsTTL)
 
 	if err := func() error {
 		b := s.DB.NewBatch()
 		defer b.Close()
-		if err := b.DeleteRange(bAppendUint64(logPrefix, 2), bAppendUint64(logPrefix, logx), pebble.Sync); err != nil {
+		if err := b.DeleteRange(appendUint(logPrefix, 2), appendUint(logPrefix, logx), pebble.Sync); err != nil {
 			return err
 		}
-		if err := b.Set(bAppendUint64(logPrefix, 1), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
+		if err := b.Set(appendUint(logPrefix, 1), joinMultiBytesEmptyNoSig(), pebble.Sync); err != nil {
 			return err
 		}
 		return b.Commit(pebble.Sync)
@@ -208,7 +209,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 	tx := s.DB.NewIndexedBatch()
 	defer tx.Close()
 
-	logPrefix := getShardLogKey(int16(shard))
+	logPrefix := ranges.GetShardLogKey(int16(shard))
 	ltx := extdb.LogTx{
 		Storage:   tx,
 		LogPrefix: logPrefix,
@@ -246,7 +247,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 				return nil, 0, fmt.Errorf("corrupted log checksum: %v", data)
 			}
 		} else {
-			return nil, 0, fmt.Errorf("invalid log version: %x and data: %v", data[0], data)
+			return nil, 0, fmt.Errorf("invalid log data: %v", data)
 		}
 		command, err := splitRawMultiBytesNoHeader(data)
 		if err != nil {
@@ -285,7 +286,7 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 		return nil, fmt.Errorf("can't respond logs at #1 (compaction checkpoint)")
 	}
 
-	logPrefix := getShardLogKey(int16(shard))
+	logPrefix := ranges.GetShardLogKey(int16(shard))
 	c := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: logPrefix,
 		UpperBound: s2pkg.IncBytes(logPrefix),
@@ -299,7 +300,11 @@ func (s *Server) respondLog(shard int, startLogId uint64) (logs *s2pkg.Logs, err
 	}
 	if !bytes.Equal(startBuf, c.Key()) {
 		if bytes.HasPrefix(c.Key(), logPrefix) {
-			return nil, fmt.Errorf("log %d not found, got %d at its closest", startLogId, s2pkg.BytesToUint64(c.Key()[len(logPrefix):]))
+			closestLogId := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
+			if startLogId < closestLogId {
+				return nil, fmt.Errorf("log %d not found, oldest log is %d (local compacted)", startLogId, closestLogId)
+			}
+			return nil, fmt.Errorf("log %d not found, got %d at its closest", startLogId, closestLogId)
 		}
 		return nil, fmt.Errorf("log %d not found, got %v", startLogId, c.Key())
 	}

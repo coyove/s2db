@@ -67,6 +67,14 @@ func main() {
 	log.SetReportCaller(true)
 	s2pkg.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
 
+	if *influxdb1MetricsEndpoint != "" {
+		cli, db, err := getInfluxDB1Client(*influxdb1MetricsEndpoint)
+		if err != nil {
+			errorExit("failed to craete influxdb1 client: " + err.Error())
+		}
+		influxdb1Client.Client, influxdb1Client.Database = cli, db
+	}
+
 	if *sendRedisCmd != "" {
 		cfg, err := wire.ParseConnString(*listenAddr)
 		if err != nil {

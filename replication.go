@@ -225,11 +225,14 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 	if !c.Valid() || !bytes.HasPrefix(c.Key(), logPrefix) {
 		return nil, 0, fmt.Errorf("fatal: no log found")
 	}
+
+	currentLogtail := s2pkg.BytesToUint64(c.Key()[len(logPrefix):])
 	if len(logs.Logs) == 0 {
-		return nil, s2pkg.BytesToUint64(c.Key()[len(logPrefix):]), nil
+		return nil, currentLogtail, nil
 	}
 	if currentSig := binary.BigEndian.Uint32(c.Value()[1:]); logs.PrevSig != currentSig {
-		return nil, 0, fmt.Errorf("running unrelated logs at %v, got %x, expects %x", c.Key(), currentSig, logs.PrevSig)
+		log.Errorf("running unrelated logs at %v, got %x, expects %x", c.Key(), currentSig, logs.PrevSig)
+		return nil, currentLogtail, nil
 	}
 
 	names = map[string]bool{}

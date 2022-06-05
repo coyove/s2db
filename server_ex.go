@@ -73,10 +73,10 @@ func redisPairs(in []s2pkg.Pair, flags wire.Flags) []string {
 	data := make([]string, 0, len(in))
 	for _, p := range in {
 		data = append(data, p.Member)
-		if flags.WITHSCORES || flags.WITHDATA {
+		if flags.WithScores || flags.WithData {
 			data = append(data, s2pkg.FormatFloat(p.Score))
 		}
-		if flags.WITHDATA {
+		if flags.WithData {
 			data = append(data, string(p.Data))
 		}
 	}

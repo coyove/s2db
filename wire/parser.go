@@ -12,8 +12,6 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/coyove/nj"
-	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 )
@@ -347,88 +345,85 @@ func (r *Parser) Commands() <-chan *Command {
 	return cmds
 }
 
-type IntersectFlags struct {
-	F   bas.Value
-	Not bool
-}
-
 type Flags struct {
-	Command
-	MATCH   string
-	TWOHOPS struct {
-		ENDPOINT string
-		KEYMAP   bas.Value
+	Match   string
+	TwoHops struct {
+		Member  string
+		KeyFunc func(string) string
 	}
-	UNIONS     []string
-	INTERSECT  map[string]IntersectFlags
-	LIMIT      int
-	COUNT      int
-	WITHDATA   bool
-	WITHSCORES bool
-	TIMEOUT    time.Duration
+	Union      []string
+	Intersect  map[string]bool
+	Limit      int
+	Count      int
+	WithData   bool
+	WithScores bool
+	Timeout    time.Duration
 }
 
 func (c Command) Flags(start int) (f Flags) {
-	f.Command = c
-	f.LIMIT = ranges.HardLimit
-	f.COUNT = ranges.HardLimit
-	f.TIMEOUT = time.Second
+	f.Limit = ranges.HardLimit
+	f.Count = ranges.HardLimit
+	f.Timeout = time.Second
 	if start == -1 {
 		return
 	}
 	for i := start; i < c.ArgCount(); i++ {
 		if c.EqualFold(i, "COUNT") {
-			f.COUNT = s2pkg.MustParseInt(c.Get(i + 1))
-			if f.COUNT > ranges.HardLimit {
-				f.COUNT = ranges.HardLimit
+			f.Count = s2pkg.MustParseInt(c.Get(i + 1))
+			if f.Count > ranges.HardLimit {
+				f.Count = ranges.HardLimit
 			}
 			i++
 		} else if c.EqualFold(i, "LIMIT") {
 			if c.Get(i+1) != "0" {
 				panic("non-zero limit offset not supported")
 			}
-			f.LIMIT = s2pkg.MustParseInt(c.Get(i + 2))
-			if f.LIMIT > ranges.HardLimit {
-				f.LIMIT = ranges.HardLimit
+			f.Limit = s2pkg.MustParseInt(c.Get(i + 2))
+			if f.Limit > ranges.HardLimit {
+				f.Limit = ranges.HardLimit
 			}
 			i += 2
 		} else if c.EqualFold(i, "MATCH") {
-			f.MATCH = c.Get(i + 1)
+			f.Match = c.Get(i + 1)
 			i++
-		} else if not := c.EqualFold(i, "NOTINTERSECT"); c.EqualFold(i, "INTERSECT") || not {
-			if f.INTERSECT == nil {
-				f.INTERSECT = map[string]IntersectFlags{}
+		} else if c.EqualFold(i, "INTERSECT") {
+			if f.Intersect == nil {
+				f.Intersect = map[string]bool{}
 			}
-			key, fun := splitCode(c, c.Get(i+1))
-			f.INTERSECT[key] = IntersectFlags{fun, not}
+			f.Intersect[c.Get(i+1)] = true
+			i++
+		} else if c.EqualFold(i, "NOTINTERSECT") {
+			if f.Intersect == nil {
+				f.Intersect = map[string]bool{}
+			}
+			f.Intersect[c.Get(i+1)] = false
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
-			f.TWOHOPS.ENDPOINT, f.TWOHOPS.KEYMAP = splitCode(c, c.Get(i+1))
+			f.TwoHops.Member = c.Get(i + 1)
+			f.TwoHops.KeyFunc = func(in string) string { return in }
 			i++
+			if c.EqualFold(i+1, "CONCATKEY") {
+				i++
+				prefix := c.Get(i + 1)
+				start, end := int(c.Int64(i+2)), int(c.Int64(i+3))
+				suffix := c.Get(i + 4)
+				f.TwoHops.KeyFunc = func(in string) string {
+					s := (start + len(in)) % len(in)
+					e := (end + len(in)) % len(in)
+					return prefix + in[s:e+1] + suffix
+				}
+				i += 4
+			}
 		} else if c.EqualFold(i, "UNION") {
-			f.UNIONS = append(f.UNIONS, c.Get(i+1))
+			f.Union = append(f.Union, c.Get(i+1))
 			i++
 		} else if c.EqualFold(i, "TIMEOUT") {
-			f.TIMEOUT, _ = time.ParseDuration(c.Get(i + 1))
+			f.Timeout, _ = time.ParseDuration(c.Get(i + 1))
 			i++
 		} else {
-			f.WITHDATA = f.WITHDATA || c.EqualFold(i, "WITHDATA")
-			f.WITHSCORES = f.WITHSCORES || c.EqualFold(i, "WITHSCORES")
+			f.WithData = f.WithData || c.EqualFold(i, "WITHDATA")
+			f.WithScores = f.WithScores || c.EqualFold(i, "WITHSCORES")
 		}
 	}
 	return
-}
-
-func splitCode(c Command, key string) (string, bas.Value) {
-	if idx := strings.Index(key, "{"); idx > 0 && strings.HasSuffix(key, "}") {
-		key2 := key[:idx]
-		code, err := nj.LoadString(key[idx+1:len(key)-1], &bas.Environment{
-			Globals: bas.NewObject(2).SetProp("left", bas.Str(c.Get(1))).SetProp("right", bas.Str(key2)),
-		})
-		s2pkg.PanicErr(err)
-		res, err := code.Run()
-		s2pkg.PanicErr(err)
-		return key2, res
-	}
-	return key, bas.Nil
 }

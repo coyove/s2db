@@ -110,7 +110,7 @@ func (s *Server) schedDSLTWalker() {
 			log.Errorf("failed to list sstables: %v", err)
 			return nil, nil
 		}
-		ttls, _ := s.ZRange(false, "dslt_clk", 0, -1, wire.Flags{LIMIT: ranges.HardLimit})
+		ttls, _ := s.ZRange(false, "dslt_clk", 0, -1, wire.Flags{Limit: ranges.HardLimit})
 		tablesCache.tables = tables
 		tablesCache.ttls = ttls
 		tablesCache.ts = time.Now()

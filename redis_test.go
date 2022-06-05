@@ -491,6 +491,10 @@ func TestIntersect(t *testing.T) {
 	assertEqual([]string{"m1", "m2", "m3", "m4", "m5", "m6"}, v)
 	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "NOTINTERSECT", "iz2", "INTERSECT", "iz3").Result()
 	assertEqual([]string{"m3", "m9", "m15", "m21", "m27", "m33"}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "TWOHOPS", "m3").Result()
+	assertEqual([]string{}, v)
+	v, _ = rdb.Do(ctx, "ZRANGEBYSCORE", "iz", "-inf", "+inf", "LIMIT", 0, 6, "TWOHOPS", "m9", "CONCATKEY", "iz", 1, -1, "").Result()
+	assertEqual([]string{"m3"}, v)
 
 	s.Close()
 }

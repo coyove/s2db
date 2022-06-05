@@ -3,12 +3,10 @@ package main
 import (
 	"bytes"
 	"container/heap"
-	"fmt"
 	"math"
 	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
@@ -19,7 +17,7 @@ func (s *Server) ZCount(lex bool, key string, start, end string, flags wire.Flag
 	ro := ranges.Options{
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		Match:       flags.MATCH,
+		Match:       flags.Match,
 		Limit:       ranges.HardLimit,
 		Append:      func(rr *ranges.Result, p s2pkg.Pair) error { rr.Count++; return nil },
 	}
@@ -40,8 +38,8 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags wire.Flags) 
 		Rev:         rev,
 		OffsetStart: start,
 		OffsetEnd:   end,
-		Limit:       flags.LIMIT,
-		WithData:    flags.WITHDATA,
+		Limit:       flags.Limit,
+		WithData:    flags.WithData,
 		Append:      ranges.DefaultAppend,
 	}))
 	return p.Pairs, err
@@ -50,8 +48,8 @@ func (s *Server) ZRange(rev bool, key string, start, end int, flags wire.Flags) 
 func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags wire.Flags) ([]s2pkg.Pair, error) {
 	ro, closer := s.createRangeOptions(ranges.Options{
 		Rev:      rev,
-		Match:    flags.MATCH,
-		WithData: flags.WITHDATA,
+		Match:    flags.Match,
+		WithData: flags.WithData,
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeLex(key, ranges.Lex(start), ranges.Lex(end), ro))
@@ -63,8 +61,8 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 		Rev:         rev,
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		Match:       flags.MATCH,
-		WithData:    flags.WITHDATA,
+		Match:       flags.Match,
+		WithData:    flags.WithData,
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeScore(key, ranges.Score(start), ranges.Score(end), ro))
@@ -72,14 +70,14 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 }
 
 func (s *Server) createRangeOptions(ro ranges.Options, flags wire.Flags) (_ ranges.Options, closer func() error) {
-	if flags.INTERSECT != nil {
+	if flags.Intersect != nil {
 		ro.Limit = math.MaxInt64
 		ro.Append, closer = s.makeIntersect(flags)
-	} else if flags.TWOHOPS.ENDPOINT != "" {
+	} else if flags.TwoHops.Member != "" {
 		ro.Limit = math.MaxInt64
 		ro.Append, closer = s.makeTwoHops(flags)
 	} else {
-		ro.Limit = flags.LIMIT
+		ro.Limit = flags.Limit
 		ro.Append, closer = ranges.DefaultAppend, func() error { return nil }
 	}
 	return ro, closer
@@ -91,13 +89,13 @@ func (s *Server) ZRangeByScore2D(rev bool, keys []string, start, end string, fla
 		Rev:         rev,
 		OffsetStart: 0,
 		OffsetEnd:   math.MaxInt64,
-		Match:       flags.MATCH,
-		WithData:    flags.WITHDATA,
-		Limit:       flags.LIMIT,
+		Match:       flags.Match,
+		WithData:    flags.WithData,
+		Limit:       flags.Limit,
 		Append: func(r *ranges.Result, p s2pkg.Pair) error {
 			r.Count++
 			heap.Push(ph, p)
-			if ph.Len() > flags.LIMIT {
+			if ph.Len() > flags.Limit {
 				heap.Pop(ph)
 			}
 			return nil
@@ -325,12 +323,12 @@ func (s *Server) Foreach(cursor string, f func(string) bool) {
 }
 
 func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count, timedout, start := flags.COUNT+1, "", time.Now()
+	count, timedout, start := flags.Count+1, "", time.Now()
 	s.Foreach(cursor, func(k string) bool {
-		if flags.MATCH != "" && !s2pkg.Match(flags.MATCH, k) {
+		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
 			return true
 		}
-		if time.Since(start) > flags.TIMEOUT {
+		if time.Since(start) > flags.Timeout {
 			timedout = k
 			return false
 		}
@@ -349,25 +347,17 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 
 func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
-	ddl := time.Now().Add(flags.TIMEOUT)
-	endpoint := flags.TWOHOPS.ENDPOINT
+	ddl := time.Now().Add(flags.Timeout)
+	endpoint := flags.TwoHops.Member
 	return func(r *ranges.Result, p s2pkg.Pair) error {
-		member := p.Member
-		if bas.IsCallable(flags.TWOHOPS.KEYMAP) {
-			res, err := bas.Call2(flags.TWOHOPS.KEYMAP.Object(), bas.Str(member))
-			if err != nil {
-				return fmt.Errorf("TwoHopsFunc %q: %v", member, err)
-			}
-			member = res.String()
-		}
-		bkName, _, _ := ranges.GetZSetRangeKey(member)
+		bkName, _, _ := ranges.GetZSetRangeKey(flags.TwoHops.KeyFunc(p.Member))
 		x := append(bkName, endpoint...)
 		iter.SeekGE(x)
 		if iter.Valid() && bytes.Equal(iter.Key(), x) {
 			r.Count++
 			r.Pairs = append(r.Pairs, p)
 		}
-		if r.Count < flags.LIMIT && time.Now().Before(ddl) {
+		if r.Count < flags.Limit && time.Now().Before(ddl) {
 			return nil
 		}
 		return ranges.ErrAppendSafeExit
@@ -376,22 +366,15 @@ func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair)
 
 func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
-	ddl := time.Now().Add(flags.TIMEOUT)
+	ddl := time.Now().Add(flags.Timeout)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
 		count, hits := 0, 0
-		for key, f := range flags.INTERSECT {
-			if bas.IsCallable(f.F) {
-				res, err := bas.Call2(f.F.Object(), bas.Str(key))
-				if err != nil {
-					return fmt.Errorf("IntersectFunc %q: %v", key, err)
-				}
-				key = res.String()
-			}
+		for key, mustIntersect := range flags.Intersect {
 			bkName, _, _ := ranges.GetZSetRangeKey(key)
 			x := append(bkName, p.Member...)
 			iter.SeekGE(x)
 			exist := iter.Valid() && bytes.Equal(iter.Key(), x)
-			if f.Not {
+			if !mustIntersect {
 				if exist {
 					goto OUT
 				}
@@ -407,7 +390,7 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 			r.Pairs = append(r.Pairs, p)
 		}
 	OUT:
-		if r.Count < flags.LIMIT && time.Now().Before(ddl) {
+		if r.Count < flags.Limit && time.Now().Before(ddl) {
 			return nil
 		}
 		return ranges.ErrAppendSafeExit

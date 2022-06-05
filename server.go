@@ -535,7 +535,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		c, cached := s.getCache(cmdHash, weak).(int)
 		if !cached {
 			// COMMAND name key COUNT X
-			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3).COUNT)
+			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3).Count)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -561,8 +561,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
 		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			if len(flags.UNIONS) > 0 {
-				p, err = s.ZRangeByScore2D(isRev, append(flags.UNIONS, key), start, end, flags)
+			if len(flags.Union) > 0 {
+				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
 			} else {
 				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
 			}

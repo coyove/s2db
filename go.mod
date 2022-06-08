@@ -3,6 +3,7 @@ module github.com/coyove/s2db
 go 1.16
 
 require (
+	github.com/RoaringBitmap/roaring v1.1.0
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
 	github.com/coyove/nj v0.0.0-20220517085300-409d8bac07d9

@@ -38,9 +38,12 @@ type Server struct {
 
 	LocalRedis *redis.Client
 	Slave      endpoint
-	MasterIP   string
-	DBPath     string
-	DBOptions  *pebble.Options
+	Master     struct {
+		IP      string
+		LastAck time.Time
+	}
+	DBPath    string
+	DBOptions *pebble.Options
 
 	ServerConfig
 	ReadOnly         bool
@@ -211,7 +214,6 @@ func (s *Server) Serve(addr string) (err error) {
 		go s.logPusher(i)
 	}
 	go s.startCronjobs()
-	go s.schedDSLTWalker() // TODO: close signal
 	go s.webConsoleServer()
 	go s.acceptor(s.lnLocal)
 	s.acceptor(s.ln)
@@ -449,7 +451,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
-		s.MasterIP = s2pkg.GetRemoteIP(remoteAddr).String()
+		s.Master.IP = s2pkg.GetRemoteIP(remoteAddr).String()
+		s.Master.LastAck = start
 		if len(names) > 0 {
 			select {
 			case s.shards[shard].pusherTrigger <- true:
@@ -506,10 +509,14 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
 		return w.WriteBulks(data...)
-	case "ZDATA", "ZMDATA":
+	case "ZDATA", "ZMDATA", "ZDATABITS":
 		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
-			x, err = s.ZMData(key, toStrings(command.Argv[2:]))
+			if cmd == "ZDATABITS" {
+				x, err = s.ZDataBits(key, command.Get(2))
+			} else {
+				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
+			}
 			if err != nil {
 				return w.WriteError(err.Error())
 			}

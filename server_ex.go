@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/s2db/clock"
@@ -32,7 +33,7 @@ var (
 	isReadCommand = map[string]bool{
 		"ZCARD":  true,
 		"ZSCORE": true, "ZMSCORE": true,
-		"ZDATA": true, "ZMDATA": true,
+		"ZDATA": true, "ZMDATA": true, "ZDATABITS": true,
 		"ZCOUNT": true, "ZCOUNTBYLEX": true,
 		"ZRANK": true, "ZREVRANK": true,
 		"ZRANGE": true, "ZREVRANGE": true,
@@ -157,8 +158,11 @@ func (s *Server) InfoCommand(section string) (data []string) {
 				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
 			)
 		}
-		if s.MasterIP != "" {
-			data = append(data, fmt.Sprintf("master_ip:%v", s.MasterIP))
+		if s.Master.IP != "" {
+			data = append(data,
+				fmt.Sprintf("master_ip:%v", s.Master.IP),
+				fmt.Sprintf("master_ack_before:%v", time.Since(s.Master.LastAck)),
+			)
 		}
 		data = append(data, "")
 	}
@@ -401,6 +405,26 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 			}
 			data[i] = d
 		}
+	}
+	return
+}
+
+func (s *Server) ZDataBits(key string, member string) (bits [][]byte, err error) {
+	bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
+	scoreBuf, _ := extdb.GetKey(s.DB, append(bkName, member...))
+	if len(scoreBuf) != 0 {
+		d, err := extdb.GetKey(s.DB, append(bkScore, append(scoreBuf, member...)...))
+		if err != nil {
+			return nil, err
+		}
+		m := roaring.New()
+		if err := m.UnmarshalBinary(d); err != nil {
+			return nil, err
+		}
+		m.Iterate(func(v uint32) bool {
+			bits = append(bits, s2pkg.FormatFloatBulk(float64(v)))
+			return len(bits) < ranges.HardLimit
+		})
 	}
 	return
 }

@@ -6,6 +6,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
@@ -18,7 +19,7 @@ import (
 )
 
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	var xx, nx, ch, pd, data bool
+	var xx, nx, ch, pd, data, bitData bool
 	var dslt = math.NaN()
 	var idx = 2
 	for ; ; idx++ {
@@ -38,6 +39,9 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 		case "DATA":
 			data = true
 			continue
+		case "BIT":
+			bitData = true
+			continue
 		case "DSLT":
 			idx++
 			dslt = command.Float64(idx)
@@ -54,10 +58,13 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
 			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Get(i + 1), Data: command.Bytes(i + 2)}
+			if bitData {
+				s2pkg.MustParseFloatBytes(p.Data)
+			}
 			pairs = append(pairs, p)
 		}
 	}
-	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, dslt, dd)
+	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, bitData, dslt, dd)
 }
 
 func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) preparedTx {
@@ -145,7 +152,7 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool, dslt float64, dd []byte) preparedTx {
+func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bitData bool, dslt float64, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
 		if !math.IsNaN(dslt) {
 			// Filter out all DSLT in advance
@@ -171,8 +178,14 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 				if xx {
 					continue
 				}
+				if bitData {
+					m := roaring.New()
+					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
+					p.Data, _ = m.ToBytes()
+				}
 				added++
 			} else if err != nil {
+				// Bad error
 				return nil, err
 			} else {
 				// Old key exists
@@ -180,6 +193,18 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd bool
 				scoreBufCloser.Close()
 				if nx {
 					continue
+				}
+				if bitData {
+					mb, err := extdb.GetKey(tx, scoreKey)
+					if err != nil {
+						return nil, err
+					}
+					m := roaring.New()
+					if err := m.UnmarshalBinary(mb); err != nil {
+						return nil, err
+					}
+					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
+					p.Data, _ = m.ToBytes()
 				}
 				if pd && len(p.Data) == 0 {
 					p.Data, err = extdb.GetKey(tx, scoreKey)

@@ -563,3 +563,35 @@ func TestPipeline(t *testing.T) {
 	}
 	s.Close()
 }
+
+func TestZAddDataBits(t *testing.T) {
+	s, _ := Open("test")
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.Del(ctx, "ztmp")
+	rdb.ConfigSet(ctx, "slave", "")
+	rand.Seed(time.Now().Unix())
+
+	start := time.Now()
+	m := map[uint32]bool{}
+	for i := 0; i < 100; i++ {
+		v := rand.Uint32()
+		rdb.Do(ctx, "ZADD", "ztmp", "BIT", 1, "b", v).Result()
+		m[v] = true
+	}
+
+	v, _ := rdb.Do(ctx, "ZDATABITS", "ztmp", "b").Result()
+	for _, res := range v.([]interface{}) {
+		v, _ := strconv.ParseInt(fmt.Sprint(res), 10, 64)
+		delete(m, uint32(v))
+	}
+	if len(m) != 0 {
+		t.Fatal(len(m), v)
+	}
+
+	fmt.Println(time.Since(start))
+
+	s.Close()
+}

@@ -40,7 +40,7 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 			data = true
 			continue
 		case "BIT":
-			bitData = true
+			bitData, data = true, true
 			continue
 		case "DSLT":
 			idx++

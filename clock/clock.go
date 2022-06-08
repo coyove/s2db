@@ -1,10 +1,8 @@
 package clock
 
 import (
-	"fmt"
 	"math/rand"
 	_ "runtime"
-	"strconv"
 	"sync"
 	"time"
 	_ "unsafe"
@@ -83,17 +81,10 @@ func IdBeforeSeconds(id uint64, seconds int) uint64 {
 	return uint64(idsec-int64(seconds))<<28 + 1
 }
 
-func IdDiff(a, b uint64) string {
-	if a == b {
-		return "0"
-	}
-	if IdNano(a) == IdNano(b) {
-		return fmt.Sprintf("#%d", int(a&counterMask)-int(b&counterMask))
-	}
-	if a != 0 && b == 0 {
-		return "?"
-	}
-	return strconv.FormatInt(IdNano(a)-IdNano(b), 10)
+func IdDiff(a, b uint64) float64 {
+	d := float64(IdNano(a) - IdNano(b))
+	f := float64(a&counterMask-b&counterMask) / counterMask
+	return d + f
 }
 
 var randMu sync.Mutex

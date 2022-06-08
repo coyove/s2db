@@ -146,15 +146,18 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		if s.Slave.Redis() != nil {
-			diffs := [ShardLogNum]string{}
+			diffs := [ShardLogNum]float64{}
+			var diffSum float64
 			for i := range s.shards {
 				diffs[i] = clock.IdDiff(s.ShardLogtail(i), s.Slave.Logtails[i])
+				diffSum += diffs[i]
 			}
 			data = append(data,
 				fmt.Sprintf("slave_conn:%v", s.Slave.Config().Raw),
 				fmt.Sprintf("slave_ack:%v", s.Slave.IsAcked(s)),
 				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()),
 				fmt.Sprintf("slave_logtail:%v", joinArray(s.Slave.Logtails)),
+				fmt.Sprintf("slave_logtail_diff_sum:%v", diffSum),
 				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
 			)
 		}

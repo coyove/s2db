@@ -303,48 +303,6 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 	return
 }
 
-func (s *Server) Foreach(cursor string, f func(string) bool) {
-	opts := &pebble.IterOptions{}
-	opts.LowerBound = []byte("zsetks__" + cursor)
-	opts.UpperBound = []byte("zsetks_\xff")
-	c := s.DB.NewIter(opts)
-	defer c.Close()
-	if !c.First() {
-		return
-	}
-	for c.Valid() {
-		k := c.Key()[8:]
-		key := string(k[:bytes.IndexByte(k, 0)])
-		if !f(key) {
-			return
-		}
-		c.SeekGE([]byte("zsetks__" + key + "\x01"))
-	}
-}
-
-func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count, timedout, start := flags.Count+1, "", time.Now()
-	s.Foreach(cursor, func(k string) bool {
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		if time.Since(start) > flags.Timeout {
-			timedout = k
-			return false
-		}
-		_, v, _, _ := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(k))
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
-		return len(pairs) < count
-	})
-	if timedout != "" {
-		return pairs, timedout
-	}
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
-	}
-	return
-}
-
 func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
 	ddl := time.Now().Add(flags.Timeout)
@@ -395,4 +353,46 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 		}
 		return ranges.ErrAppendSafeExit
 	}, iter.Close
+}
+
+func (s *Server) Foreach(cursor string, f func(string) bool) {
+	opts := &pebble.IterOptions{}
+	opts.LowerBound = []byte("zsetks__" + cursor)
+	opts.UpperBound = []byte("zsetks_\xff")
+	c := s.DB.NewIter(opts)
+	defer c.Close()
+	if !c.First() {
+		return
+	}
+	for c.Valid() {
+		k := c.Key()[8:]
+		key := string(k[:bytes.IndexByte(k, 0)])
+		if !f(key) {
+			return
+		}
+		c.SeekGE([]byte("zsetks__" + key + "\x01"))
+	}
+}
+
+func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
+	count, timedout, start := flags.Count+1, "", time.Now()
+	s.Foreach(cursor, func(k string) bool {
+		if time.Since(start) > flags.Timeout {
+			timedout = k
+			return false
+		}
+		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+			return true
+		}
+		_, v, _, _ := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(k))
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
+		return len(pairs) < count
+	})
+	if timedout != "" {
+		return pairs, timedout
+	}
+	if len(pairs) >= count {
+		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
+	}
+	return
 }

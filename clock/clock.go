@@ -83,8 +83,10 @@ func IdBeforeSeconds(id uint64, seconds int) uint64 {
 
 func IdDiff(a, b uint64) float64 {
 	d := float64(IdNano(a) - IdNano(b))
-	f := float64(a&counterMask-b&counterMask) / counterMask
-	return d + f
+	if d != 0 {
+		return d
+	}
+	return float64(a&counterMask-b&counterMask) / counterMask
 }
 
 var randMu sync.Mutex

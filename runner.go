@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
@@ -235,10 +236,18 @@ func (s *Server) runTasks(log *log.Entry, tasks []*batchTask, shard int) {
 		}
 	}
 
-	select {
-	case s.shards[shard].pusherTrigger <- true:
-	default:
+	triggerPush := true
+	if s.ServerConfig.PushLogsDice > 0 {
+		triggerPush = clock.Rand() < 1/float64(s.ServerConfig.PushLogsDice)
 	}
+
+	if triggerPush {
+		select {
+		case s.shards[shard].pusherTrigger <- true:
+		default:
+		}
+	}
+
 	s.Survey.BatchLat.Incr(time.Since(start).Milliseconds())
 	s.Survey.BatchSize.Incr(int64(len(tasks)))
 }

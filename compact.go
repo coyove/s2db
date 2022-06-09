@@ -181,6 +181,9 @@ func dumpReceiver(dest string) {
 				if err := db.Set([]byte("config__slave"), []byte(""), pebble.Sync); err != nil {
 					return err
 				}
+				if err := db.Set([]byte("config__markmaster"), []byte("0"), pebble.Sync); err != nil {
+					return err
+				}
 				log.Infof("EstimateDiskUsage=%d", size)
 				return nil
 			}(); err != nil {
@@ -193,10 +196,11 @@ func dumpReceiver(dest string) {
 		} else {
 			diff := time.Since(start)
 			log.Infof("finished receiving %q (%.1f K) in %v", p, float64(size)/1024, diff)
+			w.Header().Add("X-Dump-Size", strconv.Itoa(size))
 		}
 
 		w.WriteHeader(200)
 	})
-	log.Infof("dump-receiver address: %v -> %v", *listenAddr, dest)
+	log.Infof("dump-receiver listen: %v -> %v, waiting...", *listenAddr, dest)
 	http.ListenAndServe(*listenAddr, nil)
 }

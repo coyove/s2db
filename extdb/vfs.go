@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,7 +160,7 @@ type VFSVirtualDumpFile struct {
 	name   string
 	h      hash.Hash32
 	w      *io.PipeWriter
-	reqSig chan int
+	reqSig chan [2]int
 }
 
 func NewVFSVirtualDumpFile(name string, dest string, vfs *VFS) (*VFSVirtualDumpFile, error) {
@@ -177,16 +178,17 @@ func NewVFSVirtualDumpFile(name string, dest string, vfs *VFS) (*VFSVirtualDumpF
 	}
 	req.Header.Add("X-Path", name)
 
-	reqSig := make(chan int)
+	reqSig := make(chan [2]int)
 	go func() {
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			w.Close()
 			vfs.DumpTx.Logger.Infof("vdf: put %q http error: %v", name, err)
-			reqSig <- -1
+			reqSig <- [2]int{-1, -1}
 		} else {
 			resp.Body.Close()
-			reqSig <- resp.StatusCode
+			sz, _ := strconv.Atoi(resp.Header.Get("X-Dump-Size"))
+			reqSig <- [2]int{resp.StatusCode, int(sz)}
 		}
 	}()
 
@@ -207,8 +209,8 @@ func (vf *VFSVirtualDumpFile) Close() error {
 	vf.w.Close()
 
 	code := <-vf.reqSig
-	vf.vfs.DumpTx.Logger.Infof("vdf: %q finished in %v, code=%v", vf.name, clock.Now().Sub(vf.start), code)
-	if code != 200 {
+	vf.vfs.DumpTx.Logger.Infof("vdf: %q finished in %v, [code, size]=%v", vf.name, clock.Now().Sub(vf.start), code)
+	if code[0] != 200 {
 		return fmt.Errorf("vdf remote error: %v", code)
 	}
 	return nil

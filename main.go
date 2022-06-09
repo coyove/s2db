@@ -108,6 +108,24 @@ func main() {
 	if *benchmark == "write" {
 		wg := sync.WaitGroup{}
 		ctx := context.TODO()
+		for i := 0; i < 100; i++ {
+			wg.Add(1)
+			go func(i int) {
+				fmt.Println("client #", i)
+				for c := 0; c < 10000; c++ {
+					rdb.ZAdd(ctx, "bench", &redis.Z{Member: strconv.Itoa(c + i*100), Score: rand.Float64()*10 - 5})
+				}
+				wg.Done()
+			}(i)
+		}
+		wg.Wait()
+		fmt.Println(time.Since(start).Seconds())
+		return
+	}
+
+	if *benchmark == "writepipe" {
+		wg := sync.WaitGroup{}
+		ctx := context.TODO()
 		for i := 0; i < 100; i += 1 {
 			wg.Add(1)
 			go func(i int) {

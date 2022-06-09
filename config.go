@@ -37,6 +37,7 @@ type ServerConfig struct {
 	BatchFirstRunSleep int // ms
 	CompactLogsTTL     int // sec
 	CompactLogsDice    int
+	PushLogsDice       int
 	MetricsEndpoint    string
 	InspectorSource    string
 }

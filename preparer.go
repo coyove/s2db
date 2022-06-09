@@ -18,53 +18,60 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type zaddFlag struct {
+	xx, nx, ch      bool
+	withData        bool
+	preserveOldData bool // if old data exists
+	isBitData       bool
+	delScoreLt      float64
+}
+
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	var xx, nx, ch, pd, data, bitData bool
-	var dslt = math.NaN()
+	flags := zaddFlag{delScoreLt: math.NaN()}
 	var idx = 2
 	for ; ; idx++ {
 		switch strings.ToUpper(command.Get(idx)) {
 		case "XX":
-			xx = true
+			flags.xx = true
 			continue
 		case "NX":
-			nx = true
+			flags.nx = true
 			continue
 		case "CH":
-			ch = true
+			flags.ch = true
 			continue
 		case "PD":
-			pd = true
+			flags.preserveOldData = true
 			continue
 		case "DATA":
-			data = true
+			flags.withData = true
 			continue
 		case "BIT":
-			bitData, data = true, true
+			flags.isBitData, flags.withData = true, true
 			continue
 		case "DSLT":
 			idx++
-			dslt = command.Float64(idx)
+			flags.delScoreLt = command.Float64(idx)
 			continue
 		}
 		break
 	}
 
 	var pairs []s2pkg.Pair
-	if !data {
+	if !flags.withData {
 		for i := idx; i < command.ArgCount(); i += 2 {
 			pairs = append(pairs, s2pkg.Pair{Member: command.Get(i + 1), Score: command.Float64(i)})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
 			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Get(i + 1), Data: command.Bytes(i + 2)}
-			if bitData {
+			if flags.isBitData {
 				s2pkg.MustParseFloatBytes(p.Data)
 			}
 			pairs = append(pairs, p)
 		}
 	}
-	return s.prepareZAdd(key, pairs, nx, xx, ch, pd, bitData, dslt, dd)
+	return s.prepareZAdd(key, pairs, flags, dd)
 }
 
 func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) preparedTx {
@@ -108,7 +115,7 @@ func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 			return err
 		}
 	}
-	if err := extdb.IncrKey(tx, bkCounter, -int64(len(pairs))); err != nil {
+	if _, err := extdb.IncrKey(tx, bkCounter, -int64(len(pairs))); err != nil {
 		return err
 	}
 	return writeLog(tx, dd)
@@ -152,12 +159,12 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bitData bool, dslt float64, dd []byte) preparedTx {
+func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
-		if !math.IsNaN(dslt) {
+		if !math.IsNaN(flags.delScoreLt) {
 			// Filter out all DSLT in advance
 			for i := len(pairs) - 1; i >= 0; i-- {
-				if pairs[i].Score < dslt {
+				if pairs[i].Score < flags.delScoreLt {
 					pairs = append(pairs[:i], pairs[i+1:]...)
 				}
 			}
@@ -175,10 +182,10 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 			scoreBuf, scoreBufCloser, err := tx.Get(append(bkName, p.Member...))
 			if err == pebble.ErrNotFound {
 				// Add new key
-				if xx {
+				if flags.xx {
 					continue
 				}
-				if bitData {
+				if flags.isBitData {
 					m := roaring.New()
 					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
 					p.Data, _ = m.ToBytes()
@@ -191,10 +198,10 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 				// Old key exists
 				scoreKey := append(append(bkScore, scoreBuf...), p.Member...)
 				scoreBufCloser.Close()
-				if nx {
+				if flags.nx {
 					continue
 				}
-				if bitData {
+				if flags.isBitData {
 					mb, err := extdb.GetKey(tx, scoreKey)
 					if err != nil {
 						return nil, err
@@ -206,7 +213,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
 					p.Data, _ = m.ToBytes()
 				}
-				if pd && len(p.Data) == 0 {
+				if flags.preserveOldData && len(p.Data) == 0 {
 					p.Data, err = extdb.GetKey(tx, scoreKey)
 					if err != nil {
 						return nil, err
@@ -228,7 +235,8 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 			}
 		}
 
-		if !math.IsNaN(dslt) {
+		// Delete members whose scores are smaller than DSLT
+		if !math.IsNaN(flags.delScoreLt) {
 			c := tx.NewIter(&pebble.IterOptions{
 				LowerBound: bkScore,
 				UpperBound: s2pkg.IncBytes(bkScore),
@@ -237,12 +245,13 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 
 			if c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore) {
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
-				if score < dslt {
+				if score < flags.delScoreLt {
 					// Special case: all members can be deleted
 					if err := s.deleteKey(tx, key, bkName, bkScore, bkCounter); err != nil {
-						logrus.Errorf("[DSLT] delete key: %s, dslt: %f, error: %v", key, dslt, err)
+						logrus.Errorf("[DSLT] delete key: %s, dslt: %f, error: %v", key, flags.delScoreLt, err)
+					} else {
+						s.Survey.DSLTFull.Incr(1)
 					}
-					s.Survey.DSLTFull.Incr(1)
 					return math.MinInt64, writeLog(tx, dd)
 				}
 			}
@@ -251,7 +260,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 			dsltThreshold := int(math.Max(float64(len(pairs))*2, float64(*dsltMaxMembers)))
 			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
-				if score >= dslt {
+				if score >= flags.delScoreLt {
 					break
 				}
 				if err := tx.Delete(c.Key(), pebble.Sync); err != nil {
@@ -263,7 +272,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 				added--
 				if x++; x > dsltThreshold {
 					logrus.Infof("[DSLT] reach hard limit on key: %s, current score: %f, dslt: %f, batch limit: %d",
-						key, score, dslt, dsltThreshold)
+						key, score, flags.delScoreLt, dsltThreshold)
 					break
 				}
 			}
@@ -274,11 +283,11 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, nx, xx, ch, pd, bit
 		}
 
 		if added != 0 {
-			if err := extdb.IncrKey(tx, bkCounter, int64(added)); err != nil {
+			if _, err := extdb.IncrKey(tx, bkCounter, int64(added)); err != nil {
 				return nil, err
 			}
 		}
-		if ch {
+		if flags.ch {
 			return added + updated, writeLog(tx, dd)
 		}
 		return added, writeLog(tx, dd)
@@ -356,7 +365,7 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 			return 0, err
 		}
 		if added {
-			if err := extdb.IncrKey(tx, bkCounter, 1); err != nil {
+			if _, err := extdb.IncrKey(tx, bkCounter, 1); err != nil {
 				return nil, err
 			}
 		}

@@ -50,19 +50,19 @@ func GetKeyNumber(db Storage, key []byte) (float64, uint64, bool, error) {
 	return s2pkg.BytesToFloat(buf), s2pkg.BytesToUint64(buf), true, nil
 }
 
-func IncrKey(db Storage, key []byte, v int64) error {
+func IncrKey(db Storage, key []byte, v int64) (int64, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {
 		if err == pebble.ErrNotFound {
-			return db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
+			return v, db.Set(key, s2pkg.Uint64ToBytes(uint64(v)), pebble.Sync)
 		}
-		return err
+		return 0, err
 	}
 	old := int64(s2pkg.BytesToUint64(buf))
 	rd.Close()
 	old += v
 	if old == 0 {
-		return db.Delete(key, pebble.Sync)
+		return 0, db.Delete(key, pebble.Sync)
 	}
-	return db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
+	return old, db.Set(key, s2pkg.Uint64ToBytes(uint64(old)), pebble.Sync)
 }

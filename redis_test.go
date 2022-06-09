@@ -570,8 +570,9 @@ func TestZAddDataBits(t *testing.T) {
 
 	ctx := context.TODO()
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
-	rdb.Del(ctx, "ztmp")
 	rdb.ConfigSet(ctx, "slave", "")
+	rdb.Del(ctx, "ztmp")
+	ranges.HardLimit = 1e8
 	rand.Seed(time.Now().Unix())
 
 	start := time.Now()

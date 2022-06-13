@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	_ "net/http/pprof"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -210,4 +211,9 @@ func main() {
 	s.ReadOnly = *readOnly
 	log.Error(s.Serve(*listenAddr))
 	time.Sleep(time.Second)
+}
+
+func errorExit(msg string) {
+	log.Error(msg)
+	os.Exit(1)
 }

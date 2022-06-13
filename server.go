@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -318,7 +319,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
-			// log.Error(r, string(debug.Stack()))
+			if testFlag {
+				fmt.Println(r, string(debug.Stack()))
+			}
 			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r))
 		} else {
 			diff := time.Since(start)
@@ -484,7 +487,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "ZADD":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, parseZIncrBy(cmd, key, command, dd(command)), w)
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZIncrBy(cmd, key, command, dd(command)), w)
 	}
 
 	cmdHash := s2pkg.HashMultiBytes(command.Argv)

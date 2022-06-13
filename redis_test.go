@@ -605,10 +605,15 @@ func TestZRangeNorm(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
 	rdb.ConfigSet(ctx, "slave", "")
 	rdb.Del(ctx, "ztmp")
+	rdb.Del(ctx, "ztmp2")
 
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 40; i++ {
 		rdb.Do(ctx, "ZADD", "ztmp", i, i).Result()
+		if i%2 == 0 {
+			rdb.Do(ctx, "ZADD", "ztmp2", i, i).Result()
+		}
 	}
+
 	rdb.Do(ctx, "ZADD", "ztmp", 10.1, "10.1").Result()
 	assertEqual([]string{"0", "1", "2", "3", "4", "5"}, rdb.Do(ctx, "zrangebyscore", "ztmp", "--norm--", 10, 0, 5).Val())
 	assertEqual([]string{"0", "1", "2", "3", "4"}, rdb.Do(ctx, "zrangebyscore", "ztmp", "--norm--", 10, 0, 4).Val())
@@ -616,6 +621,11 @@ func TestZRangeNorm(t *testing.T) {
 	assertEqual([]string{"9", "8", "7", "6", "5"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "(10", 5).Val())
 	assertEqual([]string{"12", "11", "10.1"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "12", 10.1).Val())
 	assertEqual([]string{"12", "11"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "12", "(10.1").Val())
+	assertEqual([]string{}, rdb.Do(ctx, "zrangebyscore", "ztmp", "--norm--", 10, "10", "(10").Val())
+	assertEqual([]string{}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "(11", "(10.1").Val())
+	assertEqual([]string{"10.1"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "(11", "10.1").Val())
+	assertEqual([]string{"23", "22", "22", "21", "20", "20", "19"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "23", "19", "union", "ztmp2").Val())
+	assertEqual([]string{"21", "20", "20", "19", "18", "18"}, rdb.Do(ctx, "zrevrangebyscore", "ztmp", "--norm--", 10, "21", "18", "union", "ztmp2").Val())
 
 	s.Close()
 }

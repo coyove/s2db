@@ -264,12 +264,6 @@ func (s *Server) waitSlave() {
 	log.Errorf("wait %s: timeout", s.Slave.RemoteIP)
 }
 
-func ifZero(v *int, v2 int) {
-	if *v <= 0 {
-		*v = v2
-	}
-}
-
 func parseWeakFlag(in *wire.Command) time.Duration {
 	i := in.ArgCount() - 2
 	if i >= 2 && in.EqualFold(i, "WEAK") {
@@ -300,7 +294,7 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 			x++
 		}
 		normStart.Float = float64(x * normValue)
-		in.Argv[2] = []byte(normStart.ToScoreString())
+		in.Argv[2] = normStart.ToScore()
 	}
 
 	normEnd := end
@@ -310,11 +304,11 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 			x++
 		}
 		normEnd.Float = float64(x * normValue)
-		in.Argv[3] = []byte(normEnd.ToScoreString())
+		in.Argv[3] = normEnd.ToScore()
 	}
 
 	if testFlag {
-		fmt.Println(toStrings(in.Argv))
+		fmt.Println(toStrings(in.Argv), string(start.ToScore()), string(end.ToScore()))
 	}
 
 	return func(data []s2pkg.Pair) []s2pkg.Pair {
@@ -322,12 +316,12 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 			for i, d := range data {
 				if (d.Score <= start.Float && start.Inclusive) || (d.Score < start.Float && !start.Inclusive) {
 					data = data[i:]
-					break
-				}
-			}
-			for i := len(data) - 1; i >= 0; i-- {
-				if d := data[i]; (d.Score >= end.Float && end.Inclusive) || (d.Score > end.Float && !end.Inclusive) {
-					data = data[:i+1]
+					for i := len(data) - 1; i >= 0; i-- {
+						if d := data[i]; (d.Score >= end.Float && end.Inclusive) || (d.Score > end.Float && !end.Inclusive) {
+							data = data[:i+1]
+							return data
+						}
+					}
 					break
 				}
 			}
@@ -335,17 +329,17 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 			for i, d := range data {
 				if (d.Score >= start.Float && start.Inclusive) || (d.Score > start.Float && !start.Inclusive) {
 					data = data[i:]
-					break
-				}
-			}
-			for i := len(data) - 1; i >= 0; i-- {
-				if d := data[i]; (d.Score <= end.Float && end.Inclusive) || (d.Score < end.Float && !end.Inclusive) {
-					data = data[:i+1]
+					for i := len(data) - 1; i >= 0; i-- {
+						if d := data[i]; (d.Score <= end.Float && end.Inclusive) || (d.Score < end.Float && !end.Inclusive) {
+							data = data[:i+1]
+							return data
+						}
+					}
 					break
 				}
 			}
 		}
-		return data
+		return data[:0]
 	}
 }
 
@@ -499,11 +493,6 @@ func (s *Server) ZDataBits(key string, member string) (bits [][]byte, err error)
 		})
 	}
 	return
-}
-
-func errorExit(msg string) {
-	log.Error(msg)
-	os.Exit(1)
 }
 
 func (s *Server) webConsoleServer() {

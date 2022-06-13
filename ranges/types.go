@@ -25,9 +25,9 @@ var (
 )
 
 type Limit struct {
-	LexValue  string
 	Float     float64
 	Inclusive bool
+	LexValue  string
 	LexPlus   bool
 }
 
@@ -86,10 +86,9 @@ func Score(v string) (r Limit) {
 	return r
 }
 
-func (l Limit) ToScoreString() string {
-	v := strconv.FormatFloat(l.Float, 'f', -1, 64)
+func (l Limit) ToScore() (buf []byte) {
 	if !l.Inclusive {
-		v = "(" + v
+		buf = append(buf, '(')
 	}
-	return v
+	return strconv.AppendFloat(buf, l.Float, 'f', -1, 64)
 }

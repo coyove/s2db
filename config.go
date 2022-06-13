@@ -338,3 +338,9 @@ func (s *LocalStorage) Set(k string, v interface{}) (err error) {
 func (s *LocalStorage) Delete(k string) (err error) {
 	return s.db.Delete([]byte("local___"+k), pebble.Sync)
 }
+
+func ifZero(v *int, v2 int) {
+	if *v <= 0 {
+		*v = v2
+	}
+}

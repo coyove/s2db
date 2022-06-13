@@ -96,7 +96,7 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 	}
 }
 
-func parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
+func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	// ZINCRBY key score member [datafunc]
 	var dataFunc bas.Value
 	if code := command.Get(4); code != "" {

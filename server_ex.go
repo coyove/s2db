@@ -280,6 +280,75 @@ func parseWeakFlag(in *wire.Command) time.Duration {
 	return 0
 }
 
+func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
+	if !in.EqualFold(2, "--NORM--") {
+		return func(in []s2pkg.Pair) []s2pkg.Pair { return in }
+	}
+
+	normValue := in.Int64(3)
+	if normValue <= 0 {
+		panic("invalid normalization value")
+	}
+
+	in.Argv = append(in.Argv[:2], in.Argv[4:]...)
+	start, end := ranges.Score(in.Get(2)), ranges.Score(in.Get(3))
+
+	normStart := start
+	if !math.IsInf(start.Float, 0) {
+		x := int64(start.Float) / normValue
+		if rev {
+			x++
+		}
+		normStart.Float = float64(x * normValue)
+		in.Argv[2] = []byte(normStart.ToScoreString())
+	}
+
+	normEnd := end
+	if !math.IsInf(end.Float, 0) {
+		x := int64(end.Float) / normValue
+		if !rev {
+			x++
+		}
+		normEnd.Float = float64(x * normValue)
+		in.Argv[3] = []byte(normEnd.ToScoreString())
+	}
+
+	if testFlag {
+		fmt.Println(toStrings(in.Argv))
+	}
+
+	return func(data []s2pkg.Pair) []s2pkg.Pair {
+		if rev {
+			for i, d := range data {
+				if (d.Score <= start.Float && start.Inclusive) || (d.Score < start.Float && !start.Inclusive) {
+					data = data[i:]
+					break
+				}
+			}
+			for i := len(data) - 1; i >= 0; i-- {
+				if d := data[i]; (d.Score >= end.Float && end.Inclusive) || (d.Score > end.Float && !end.Inclusive) {
+					data = data[:i+1]
+					break
+				}
+			}
+		} else {
+			for i, d := range data {
+				if (d.Score >= start.Float && start.Inclusive) || (d.Score > start.Float && !start.Inclusive) {
+					data = data[i:]
+					break
+				}
+			}
+			for i := len(data) - 1; i >= 0; i-- {
+				if d := data[i]; (d.Score <= end.Float && end.Inclusive) || (d.Score < end.Float && !end.Inclusive) {
+					data = data[:i+1]
+					break
+				}
+			}
+		}
+		return data
+	}
+}
+
 func joinArray(v interface{}) string {
 	rv := reflect.ValueOf(v)
 	p := make([]string, 0, rv.Len())

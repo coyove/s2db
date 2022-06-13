@@ -3,6 +3,7 @@ package ranges
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
@@ -83,4 +84,12 @@ func Score(v string) (r Limit) {
 		r.Float = s2pkg.MustParseFloat(v)
 	}
 	return r
+}
+
+func (l Limit) ToScoreString() string {
+	v := strconv.FormatFloat(l.Float, 'f', -1, 64)
+	if !l.Inclusive {
+		v = "(" + v
+	}
+	return v
 }

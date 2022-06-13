@@ -552,7 +552,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteBulk(nil)
 		}
 		return w.WriteInt(int64(c))
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
 		if v := s.getCache(cmdHash, weak); v != nil {
@@ -567,18 +567,30 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			p, err = s.ZRange(isRev, key, s2pkg.MustParseInt(start), s2pkg.MustParseInt(end), flags)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
-		case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-			if len(flags.Union) > 0 {
-				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
-			} else {
-				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
-			}
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		s.addCache(key, cmdHash, p, mwm)
 		return w.WriteBulkStrings(redisPairs(p, flags))
+	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
+		pf := parseNormFlag(isRev, command)
+		flags := command.Flags(4)
+		if v := s.getCache(cmdHash, weak); v != nil {
+			p = v.([]s2pkg.Pair)
+		} else {
+			start, end := command.Get(2), command.Get(3)
+			if len(flags.Union) > 0 {
+				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
+			} else {
+				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
+			}
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			s.addCache(key, cmdHash, p, mwm)
+		}
+		return w.WriteBulkStrings(redisPairs(pf(p), flags))
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)

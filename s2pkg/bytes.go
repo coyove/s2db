@@ -19,6 +19,11 @@ import (
 )
 
 func MustParseFloat(a string) float64 {
+	if strings.HasPrefix(a, "0x") {
+		v, err := strconv.ParseUint(a[2:], 16, 64)
+		PanicErr(err)
+		return math.Float64frombits(v)
+	}
 	v, err := strconv.ParseFloat(a, 64)
 	PanicErr(err)
 	return v
@@ -97,6 +102,15 @@ func BytesToFloatZero(b []byte) float64 {
 
 func BytesToFloat(b []byte) float64 {
 	x := binary.BigEndian.Uint64(b)
+	if x>>63 == 1 {
+		x = x << 1 >> 1
+	} else {
+		x = ^x
+	}
+	return math.Float64frombits(x)
+}
+
+func OrderedUint64ToFloat(x uint64) float64 {
 	if x>>63 == 1 {
 		x = x << 1 >> 1
 	} else {

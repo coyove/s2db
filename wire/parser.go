@@ -354,6 +354,7 @@ type Flags struct {
 	Union      []string
 	Intersect  map[string]bool
 	Limit      int
+	ILimit     *float64
 	Count      int
 	WithData   bool
 	WithScores bool

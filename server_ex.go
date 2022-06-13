@@ -274,9 +274,13 @@ func parseWeakFlag(in *wire.Command) time.Duration {
 	return 0
 }
 
-func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
+func defaultNorm(in []s2pkg.Pair) []s2pkg.Pair {
+	return in
+}
+
+func parseNormFlag(rev bool, in *wire.Command) (func([]s2pkg.Pair) []s2pkg.Pair, wire.Flags) {
 	if !in.EqualFold(2, "--NORM--") {
-		return func(in []s2pkg.Pair) []s2pkg.Pair { return in }
+		return defaultNorm, in.Flags(4)
 	}
 
 	normValue := in.Int64(3)
@@ -285,6 +289,7 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 	}
 
 	in.Argv = append(in.Argv[:2], in.Argv[4:]...)
+	flags := in.Flags(4)
 	start, end := ranges.Score(in.Get(2)), ranges.Score(in.Get(3))
 
 	normStart := start
@@ -295,6 +300,13 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 		}
 		normStart.Float = float64(x * normValue)
 		in.Argv[2] = normStart.ToScore()
+
+		flags.ILimit = new(float64)
+		*flags.ILimit = start.Float
+		if !start.Inclusive {
+			x := s2pkg.FloatToOrderedUint64(start.Float) + uint64(ifInt(rev, -1, 1))
+			*flags.ILimit = s2pkg.OrderedUint64ToFloat(x)
+		}
 	}
 
 	normEnd := end
@@ -340,7 +352,7 @@ func parseNormFlag(rev bool, in *wire.Command) func([]s2pkg.Pair) []s2pkg.Pair {
 			}
 		}
 		return data[:0]
-	}
+	}, flags
 }
 
 func joinArray(v interface{}) string {

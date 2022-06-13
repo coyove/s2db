@@ -32,13 +32,14 @@ type Limit struct {
 }
 
 type Options struct {
-	OffsetStart int    // Z[REV]RANGE *start* ...
-	OffsetEnd   int    // Z[REV]RANGE ... *end*
-	Limit       int    // ... LIMIT 0 *limit*
-	WithData    bool   // return attached data
-	Rev         bool   // reversed range
-	Match       string // BYLEX: match member name, BYSCORE: match member name and its data
-	DeleteLog   []byte // if provided, returned pairs will be deleted first
+	OffsetStart int      // Z[REV]RANGE *start* ...
+	OffsetEnd   int      // Z[REV]RANGE ... *end*
+	Limit       int      // ... LIMIT 0 *limit*
+	ILimit      *float64 //
+	WithData    bool     // return attached data
+	Rev         bool     // reversed range
+	Match       string   // BYLEX: match member name, BYSCORE: match member name and its data
+	DeleteLog   []byte   // if provided, returned pairs will be deleted first
 	Append      func(*Result, s2pkg.Pair) error
 }
 

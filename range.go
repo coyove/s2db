@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"container/heap"
+	"fmt"
 	"math"
 	"time"
 
@@ -63,6 +64,7 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 		OffsetEnd:   math.MaxInt64,
 		Match:       flags.Match,
 		WithData:    flags.WithData,
+		ILimit:      flags.ILimit,
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeScore(key, ranges.Score(start), ranges.Score(end), ro))
@@ -222,7 +224,25 @@ func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFu
 			if opt.WithData {
 				p.Data = s2pkg.Bytes(dataBuf)
 			}
-			return opt.Append(&rr, p)
+			err := opt.Append(&rr, p)
+			if opt.ILimit != nil {
+				// Before reaching ILimit, we don't count.
+				// Refer to TestZRangeNorm in redis_test.go for examples.
+				if len(rr.Pairs) > ranges.HardLimit {
+					return fmt.Errorf("range [start:ILimit] is too large to store")
+				}
+
+				if il := *opt.ILimit; opt.Rev {
+					if p.Score > il {
+						rr.Count = 0
+					}
+				} else {
+					if p.Score < il {
+						rr.Count = 0
+					}
+				}
+			}
+			return err
 		}
 
 		startBuf := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(start.Float)...)

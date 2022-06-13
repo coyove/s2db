@@ -344,3 +344,10 @@ func ifZero(v *int, v2 int) {
 		*v = v2
 	}
 }
+
+func ifInt(v bool, a, b int) int {
+	if v {
+		return a
+	}
+	return b
+}

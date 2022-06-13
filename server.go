@@ -577,14 +577,14 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		s.addCache(key, cmdHash, p, mwm)
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		pf := parseNormFlag(isRev, command)
-		flags := command.Flags(4)
+		pf, flags := parseNormFlag(isRev, command)
 		if v := s.getCache(cmdHash, weak); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
 			start, end := command.Get(2), command.Get(3)
 			if len(flags.Union) > 0 {
 				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
+				pf = defaultNorm
 			} else {
 				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
 			}

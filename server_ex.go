@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"reflect"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,7 +38,7 @@ var (
 		"ZRANGE": true, "ZREVRANGE": true,
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
-		"SCAN": true,
+		"SCAN": true, "SCANSCORE": true,
 	}
 	isWriteCommand = map[string]bool{
 		"DEL":  true,
@@ -47,17 +46,6 @@ var (
 		"ZADD": true, "ZINCRBY": true,
 	}
 )
-
-func init() {
-	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-}
-
-func checkScore(s float64) error {
-	if math.IsNaN(s) {
-		return fmt.Errorf("score is NaN")
-	}
-	return nil
-}
 
 func shardIndex(key string) int {
 	return int(s2pkg.HashStr(key) % ShardLogNum)
@@ -389,8 +377,7 @@ func (s *Server) getCache(h string, ttl time.Duration) interface{} {
 	return nil
 }
 
-func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
-	var sz int
+func (s *Server) checkCacheSize(data interface{}) (sz int) {
 	switch data := data.(type) {
 	case []s2pkg.Pair:
 		sz = s2pkg.SizeOfPairs(data)
@@ -399,12 +386,38 @@ func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
 	}
 	if sz > 0 {
 		if sz > s.CacheObjMaxSize*1024 {
-			log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
-			return
+			return -1
 		}
 		s.Survey.CacheSize.Incr(int64(sz))
 	}
-	s.Cache.Add(key, h, data, wm)
+	return sz
+}
+
+func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
+	sz := s.checkCacheSize(data)
+	if sz == -1 {
+		log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
+		return
+	}
+	if !s.Cache.Add(key, h, data, wm) {
+		s.Survey.CacheAddConflict.Incr(1)
+	}
+	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, 0)
+}
+
+func (s *Server) addCacheMultiKeys(keys []string, h string, data interface{}, wms []int64) {
+	sz := s.checkCacheSize(data)
+	if sz == -1 {
+		log.Infof("omit big key cache: %v->%q (%db)", keys, h, sz)
+		return
+	}
+	for i, key := range keys {
+		if !s.Cache.Add(key, h, data, wms[i]) {
+			s.Survey.CacheAddConflict.Incr(1)
+			s.Cache.Delete(h)
+			return
+		}
+	}
 	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, 0)
 }
 

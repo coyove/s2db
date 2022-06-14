@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"container/heap"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -123,5 +124,15 @@ func (h *PairHeap) ToPairs(n int, reversed bool) (p []Pair) {
 			p[i], p[j] = p[j], p[i]
 		}
 	}
+	return
+}
+
+func PairFromSKVCursor(c *pebble.Iterator) (key string, p Pair) {
+	k := c.Key()[8:]
+	idx := bytes.IndexByte(k, 0)
+	key = string(k[:idx])
+	p.Score = BytesToFloat(k[idx+1 : idx+9])
+	p.Member = string(k[idx+9:])
+	p.Data = Bytes(c.Value())
 	return
 }

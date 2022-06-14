@@ -415,3 +415,10 @@ func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedT
 	}
 	return preparedTx{f: f}
 }
+
+func checkScore(s float64) error {
+	if math.IsNaN(s) {
+		return fmt.Errorf("score is NaN")
+	}
+	return nil
+}

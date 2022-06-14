@@ -529,6 +529,11 @@ func TestRange2D(t *testing.T) {
 	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2", "UNION", "r3").Result()
 	assertEqual([]string{"40", "40", "39", "39", "38", "38", "37", "36", "36", "36"}, v)
 
+	rdb.ZRem(ctx, "r2", 38)
+	ranges.HardLimit = 6
+	v, _ = rdb.Do(ctx, "ZREVRANGEBYSCORE", "r1", "+inf", "30", "UNION", "r2").Result()
+	assertEqual([]string{"40", "40", "39", "38", "37", "36"}, v)
+
 	s.Close()
 }
 

@@ -81,6 +81,7 @@ type Server struct {
 		LogCompaction    s2pkg.Survey `metrics:"qps"`
 		DSLT             s2pkg.Survey ``
 		DSLTFull         s2pkg.Survey `metrics:"qps"`
+		CacheAddConflict s2pkg.Survey `metrics:"qps"`
 		Command          sync.Map
 	}
 
@@ -152,9 +153,14 @@ func Open(dbPath string) (x *Server, err error) {
 
 func (s *Server) Close() (err error) {
 	s.dieLock.Lock()
+
+	log.Info("server closing flush")
 	if err := s.DB.Flush(); err != nil {
+		log.Info("server closing: failed to flush: ", err)
 		return err
 	}
+
+	log.Info("server closing jobs")
 	s.waitSlave()
 	s.Closed = true
 	s.ReadOnly = true
@@ -345,7 +351,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	// General commands
 	switch cmd {
 	case "DIE":
-		log.Info(s.Close())
+		s.Close()
 		os.Exit(0)
 	case "AUTH":
 		// AUTH command is processed before runComamnd, always OK here
@@ -492,7 +498,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 
 	cmdHash := s2pkg.HashMultiBytes(command.Argv)
 	weak := parseWeakFlag(command)
-	mwm := s.Cache.GetMasterWatermark(key)
+	mwm := s.Cache.GetWatermark(key)
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
@@ -582,7 +588,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			p = v.([]s2pkg.Pair)
 		} else {
 			start, end := command.Get(2), command.Get(3)
+			var wms []int64
 			if len(flags.Union) > 0 {
+				wms = s.Cache.GetWatermarks(flags.Union)
 				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
 				pf = defaultNorm
 			} else {
@@ -592,11 +600,19 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				return w.WriteError(err.Error())
 			}
 			s.addCache(key, cmdHash, p, mwm)
+			if len(flags.Union) > 0 {
+				s.addCacheMultiKeys(flags.Union, cmdHash, p, wms)
+			}
 		}
 		return w.WriteBulkStrings(redisPairs(pf(p), flags))
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)
+		return w.WriteObjects(next, redisPairs(p, flags))
+	case "SCANSCORE":
+		// SCANSCORE cursor start_score end_score
+		flags := command.Flags(4)
+		p, next := s.ScanScore(key, command.Float64(2), command.Float64(3), flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 

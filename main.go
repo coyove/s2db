@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	_ "net/http/pprof"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,10 @@ var (
 
 //go:embed scripts/index.html
 var webuiHTML string
+
+func init() {
+	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
+}
 
 func main() {
 	flag.Parse()

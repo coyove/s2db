@@ -416,3 +416,47 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 	}
 	return
 }
+
+func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Flags) (pairs []s2pkg.Pair, cursor string) {
+	count, startAt := flags.Count+1, time.Now()
+
+	c := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("zsetskv_" + startCursor),
+		UpperBound: []byte("zsetskv\xff"),
+	})
+	defer c.Close()
+
+	if !c.First() {
+		return
+	}
+
+	var pair s2pkg.Pair
+	for c.Valid() && len(pairs) < count {
+		cursor, pair = s2pkg.PairFromSKVCursor(c)
+		if pair.Score < start {
+			if time.Since(startAt) > flags.Timeout {
+				return pairs, cursor
+			}
+			c.SeekGE(append([]byte("zsetskv_"+cursor+"\x00"), s2pkg.FloatToBytes(start)...))
+			continue
+		}
+		if pair.Score > end {
+			if time.Since(startAt) > flags.Timeout {
+				return pairs, cursor
+			}
+			c.SeekGE([]byte("zsetskv_" + cursor + "\x01"))
+			continue
+		}
+		pair.Member = cursor + "\x00" + pair.Member
+		pairs = append(pairs, pair)
+		c.Next()
+	}
+
+	if len(pairs) == count {
+		pairs = pairs[:count-1]
+		cursor += string(append([]byte{0}, s2pkg.FloatToBytes(pair.Score)...))
+	} else {
+		cursor = ""
+	}
+	return
+}

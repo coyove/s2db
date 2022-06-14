@@ -55,7 +55,6 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		)
 		return true
 	})
-	pairs = append(pairs, s2pkg.Pair{Member: "AddWatermarkConflict_QPS", Score: s.Cache.AddWatermarkConflict.Metrics().QPS[0]})
 	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
 
 	lsmMetrics := s.DB.Metrics()

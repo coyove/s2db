@@ -13,6 +13,7 @@ s2db_darwin
 s2db.exe
 s2db.7z
 s2db.log
+s2dbench
 *.rdb
 deploy.*
 s.db

@@ -10,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/coyove/s2db/ranges"
@@ -28,7 +27,6 @@ var (
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
 	showVersion  = flag.Bool("v", false, "print s2db version then exit")
 	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
-	benchmark    = flag.String("bench", "", "")
 	configSet    = func() (f [6]*string) {
 		for i := range f {
 			f[i] = flag.String("C"+strconv.Itoa(i), "", "update config before serving, form: key=value")
@@ -104,82 +102,6 @@ func main() {
 		Addr:        *listenAddr,
 		DialTimeout: time.Second / 2,
 	})
-
-	start := time.Now()
-	if *benchmark == "write" {
-		wg := sync.WaitGroup{}
-		ctx := context.TODO()
-		for i := 0; i < 100; i++ {
-			wg.Add(1)
-			go func(i int) {
-				fmt.Println("client #", i)
-				for c := 0; c < 10000; c++ {
-					rdb.ZAdd(ctx, "bench", &redis.Z{Member: strconv.Itoa(c + i*100), Score: rand.Float64()*10 - 5})
-				}
-				wg.Done()
-			}(i)
-		}
-		wg.Wait()
-		fmt.Println(time.Since(start).Seconds())
-		return
-	}
-
-	if *benchmark == "writepipe" {
-		wg := sync.WaitGroup{}
-		ctx := context.TODO()
-		for i := 0; i < 100; i += 1 {
-			wg.Add(1)
-			go func(i int) {
-				fmt.Println("client #", i)
-				p := rdb.Pipeline()
-				for c := 0; c < 100; c++ {
-					p.ZAdd(ctx, "bench", &redis.Z{Member: strconv.Itoa(c), Score: rand.Float64()*10 - 5})
-				}
-				_, err := p.Exec(ctx)
-				if err != nil {
-					fmt.Println(err)
-				}
-				wg.Done()
-			}(i)
-		}
-		wg.Wait()
-		fmt.Println(time.Since(start).Seconds())
-		return
-	}
-
-	if *benchmark == "seqwrite" {
-		ctx := context.TODO()
-		for i := 0; i < 1000; i += 1 {
-			args := []interface{}{"ZADD", "seqbench"}
-			for c := 0; c < 100; c++ {
-				args = append(args, i*100+c, fmt.Sprintf("s%09d", i*100+c))
-			}
-			cmd := redis.NewStringCmd(ctx, args...)
-			rdb.Process(ctx, cmd)
-			if cmd.Err() != nil {
-				fmt.Println(i, cmd.Err())
-			}
-		}
-		fmt.Println(time.Since(start).Seconds())
-		return
-	}
-
-	if *benchmark != "" {
-		ctx := context.TODO()
-		for i := 0; i < 100; i += 1 {
-			go func(i int) {
-				fmt.Println("client #", i)
-				for {
-					start, end := rand.Intn(10), rand.Intn(10)+10
-					err := rdb.ZRevRange(ctx, *benchmark, int64(start), int64(end)).Err()
-					if err != nil {
-						fmt.Println(err)
-					}
-				}
-			}(i)
-		}
-		select {}
-	}
 
 	if err := rdb.Ping(context.TODO()).Err(); err == nil || strings.Contains(err.Error(), wire.ErrNoAuth.Error()) {
 		return

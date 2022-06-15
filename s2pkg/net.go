@@ -29,7 +29,8 @@ func (bc BufioConn) Close() error {
 }
 
 type LocalListener struct {
-	c chan net.Conn
+	c      chan net.Conn
+	closed int64
 }
 
 func NewLocalListener() *LocalListener {
@@ -50,7 +51,9 @@ func (ll *LocalListener) Accept() (net.Conn, error) {
 
 func (ll *LocalListener) Close() error {
 	defer Recover(nil)
-	close(ll.c)
+	if atomic.CompareAndSwapInt64(&ll.closed, 0, 1) {
+		close(ll.c)
+	}
 	return nil
 }
 

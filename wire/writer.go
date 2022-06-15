@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/sirupsen/logrus"
 )
@@ -99,6 +100,7 @@ func (w *Writer) WriteSimpleString(s string) error {
 
 func (w *Writer) WriteError(s string) error {
 	if !strings.Contains(s, "NOAUTH") &&
+		s != pebble.ErrClosed.Error() &&
 		s != ErrUnknownCommand.Error() &&
 		s != ErrServerReadonly.Error() {
 		logrus.Error("redis wire error: ", s)

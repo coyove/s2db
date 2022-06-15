@@ -215,10 +215,8 @@ func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFu
 		process := func(k, dataBuf []byte) error {
 			k = k[len(bkScore):]
 			key := string(k[8:])
-			if opt.Match != "" {
-				if !s2pkg.Match(opt.Match, key) && !s2pkg.MatchBinary(opt.Match, dataBuf) {
-					return nil
-				}
+			if opt.Match != "" && !s2pkg.MatchBinary(opt.Match, dataBuf) {
+				return nil
 			}
 			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:])}
 			if opt.WithData {
@@ -433,20 +431,31 @@ func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Fl
 	var pair s2pkg.Pair
 	for c.Valid() && len(pairs) < count {
 		cursor, pair = s2pkg.PairFromSKVCursor(c)
-		if pair.Score < start {
-			if time.Since(startAt) > flags.Timeout {
+		if time.Since(startAt) > flags.Timeout {
+			if pair.Score < start {
 				return pairs, cursor
 			}
+			if pair.Score > end {
+				return pairs, cursor + "\x00"
+			}
+			return pairs, cursor + string(append([]byte{0}, s2pkg.FloatToBytes(pair.Score)...))
+		}
+		if pair.Score < start {
 			c.SeekGE(append([]byte("zsetskv_"+cursor+"\x00"), s2pkg.FloatToBytes(start)...))
 			continue
 		}
 		if pair.Score > end {
-			if time.Since(startAt) > flags.Timeout {
-				return pairs, cursor
-			}
 			c.SeekGE([]byte("zsetskv_" + cursor + "\x01"))
 			continue
 		}
+
+		if flags.Match != "" {
+			if !s2pkg.MatchBinary(flags.Match, pair.Data) {
+				c.Next()
+				continue
+			}
+		}
+
 		pair.Member = cursor + "\x00" + pair.Member
 		pairs = append(pairs, pair)
 		c.Next()

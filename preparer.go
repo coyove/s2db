@@ -6,11 +6,11 @@ import (
 	"math"
 	"strings"
 
-	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
+	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
@@ -22,8 +22,16 @@ type zaddFlag struct {
 	xx, nx, ch      bool
 	withData        bool
 	preserveOldData bool // if old data exists
-	isBitData       bool
+	bm16Data        bool
 	delScoreLt      float64
+}
+
+type zincrbyFlag struct {
+	dataFunc bas.Value
+	setData  bool
+	data     []byte
+	bm16Data bool
+	bm16     uint16
 }
 
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
@@ -46,8 +54,8 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 		case "DATA":
 			flags.withData = true
 			continue
-		case "BIT":
-			flags.isBitData, flags.withData = true, true
+		case "BM16":
+			flags.bm16Data, flags.withData = true, true
 			continue
 		case "DSLT":
 			idx++
@@ -65,7 +73,7 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
 			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Get(i + 1), Data: command.Bytes(i + 2)}
-			if flags.isBitData {
+			if flags.bm16Data {
 				s2pkg.MustParseFloatBytes(p.Data)
 			}
 			pairs = append(pairs, p)
@@ -97,12 +105,17 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 }
 
 func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	// ZINCRBY key score member [datafunc]
-	var dataFunc bas.Value
-	if code := command.Get(4); code != "" {
-		dataFunc = nj.MustRun(nj.LoadString(code, nil))
+	// ZINCRBY key score member [DF datafunc] [BM16 bit] [DATA data]
+	var flags zincrbyFlag
+	switch strings.ToUpper(command.Get(4)) {
+	case "DF":
+		flags.dataFunc = nj.MustRun(nj.LoadString(command.Get(5), nil))
+	case "BM16":
+		flags.bm16Data, flags.bm16 = true, uint16(command.Int64(5))
+	case "DATA":
+		flags.setData, flags.data = true, command.Bytes(5)
 	}
-	return prepareZIncrBy(key, command.Get(3), command.Float64(2), dataFunc, dd)
+	return prepareZIncrBy(key, command.Get(3), command.Float64(2), flags, dd)
 }
 
 func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {
@@ -185,10 +198,8 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				if flags.xx {
 					continue
 				}
-				if flags.isBitData {
-					m := roaring.New()
-					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
-					p.Data, _ = m.ToBytes()
+				if flags.bm16Data {
+					p.Data, _ = bitmap.Add(nil, uint16(s2pkg.MustParseFloatBytes(p.Data)))
 				}
 				added++
 			} else if err != nil {
@@ -201,17 +212,12 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				if flags.nx {
 					continue
 				}
-				if flags.isBitData {
+				if flags.bm16Data {
 					mb, err := extdb.GetKey(tx, scoreKey)
 					if err != nil {
 						return nil, err
 					}
-					m := roaring.New()
-					if err := m.UnmarshalBinary(mb); err != nil {
-						return nil, err
-					}
-					m.Add(uint32(s2pkg.MustParseFloatBytes(p.Data)))
-					p.Data, _ = m.ToBytes()
+					p.Data, _ = bitmap.Add(mb, uint16(s2pkg.MustParseFloatBytes(p.Data)))
 				}
 				if flags.preserveOldData && len(p.Data) == 0 {
 					p.Data, err = extdb.GetKey(tx, scoreKey)
@@ -314,7 +320,7 @@ func prepareZRem(key string, members []string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value, dd []byte) preparedTx {
+func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (newValue interface{}, err error) {
 		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
 		score := 0.0
@@ -339,8 +345,9 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 			dataBuf = []byte("")
 			added = true
 		}
-		if bas.IsCallable(dataUpdate) {
-			res, err := bas.Call2(dataUpdate.Object(), bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
+
+		if bas.IsCallable(flags.dataFunc) {
+			res, err := bas.Call2(flags.dataFunc.Object(), bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
 			if err != nil {
 				return 0, err
 			}
@@ -348,6 +355,10 @@ func prepareZIncrBy(key string, member string, by float64, dataUpdate bas.Value,
 				return 0, fmt.Errorf("ZINCRBY datafunc: expects string or bytes")
 			}
 			dataBuf = bas.ToReadonlyBytes(res)
+		} else if flags.bm16Data {
+			dataBuf, _ = bitmap.Add(dataBuf, flags.bm16)
+		} else if flags.setData {
+			dataBuf = flags.data
 		}
 
 		if by == 0 {

@@ -6,10 +6,10 @@ import (
 	"hash/crc32"
 	"math"
 	"math/rand"
-	"regexp"
 	"testing"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	s2pkg "github.com/coyove/s2db/s2pkg"
 )
 
@@ -107,17 +107,10 @@ func TestFloatBytesComparison(t *testing.T) {
 	}
 }
 
-func BenchmarkGlobMatch(b *testing.B) {
-	for i := 0; i < b.N; i++ {
-		s2pkg.Match("ab*e", "abccccccd")
+func TestBitmap(t *testing.T) {
+	m := roaring.New()
+	for i := 0; i < 65536; i++ {
+		m.Add(uint32(i))
 	}
-}
-
-func BenchmarkRegexpMatch(b *testing.B) {
-	b.StopTimer()
-	rx := regexp.MustCompile("ab.*e")
-	b.StartTimer()
-	for i := 0; i < b.N; i++ {
-		rx.MatchString("abccccccd")
-	}
+	fmt.Println(m.GetSizeInBytes())
 }

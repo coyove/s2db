@@ -197,8 +197,11 @@ func TestZSet(t *testing.T) {
 	assertEqual(-2, rdb.ZScore(ctx, "zset", "foo").Val())
 	assertEqual(6, rdb.ZScore(ctx, "zset", "bar").Val())
 
-	rdb.Do(ctx, "zincrby", "zset", 1, "bar", "lambda(old, score, by) 'a-%d-%d'.format(score, by) end")
+	rdb.Do(ctx, "zincrby", "zset", 1, "bar", "df", "lambda(old, score, by) 'a-%d-%d'.format(score, by) end")
 	assertEqual("a-6-1", rdb.Do(ctx, "zdata", "zset", "bar").Val())
+
+	rdb.Do(ctx, "zincrby", "zset", 2, "foo", "bm16", 100)
+	assertEqual([]string{"100"}, rdb.Do(ctx, "zdatabm16", "zset", "foo").Val())
 
 	rdb.Del(ctx, "zset")
 	fmt.Println(rdb.ZAdd(ctx, "zset", z(math.Inf(-1), "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(math.Inf(1), "g")).Err())
@@ -581,17 +584,17 @@ func TestZAddDataBits(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
 	start := time.Now()
-	m := map[uint32]bool{}
+	m := map[uint16]bool{}
 	for i := 0; i < 100; i++ {
-		v := rand.Uint32()
-		rdb.Do(ctx, "ZADD", "ztmp", "BIT", 1, "b", v).Result()
+		v := uint16(rand.Uint32())
+		rdb.Do(ctx, "ZADD", "ztmp", "BM16", 1, "b", v).Result()
 		m[v] = true
 	}
 
-	v, _ := rdb.Do(ctx, "ZDATABITS", "ztmp", "b").Result()
+	v, _ := rdb.Do(ctx, "ZDATABM16", "ztmp", "b").Result()
 	for _, res := range v.([]interface{}) {
 		v, _ := strconv.ParseInt(fmt.Sprint(res), 10, 64)
-		delete(m, uint32(v))
+		delete(m, uint16(v))
 	}
 	if len(m) != 0 {
 		t.Fatal(len(m), v)

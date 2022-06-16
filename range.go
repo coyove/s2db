@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/nj"
+	"github.com/coyove/nj/bas"
+	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
@@ -467,5 +470,43 @@ func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Fl
 	} else {
 		cursor = ""
 	}
+	return
+}
+
+func (s *Server) ScanFunc(cursor string, fun string, flags wire.Flags) (pairs []s2pkg.Pair, nextStart string) {
+	count, startAt := flags.Count, time.Now()
+	f := nj.MustRun(nj.LoadString(fun, nil))
+
+	c := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
+	defer c.Close()
+
+	curBuf := make([]byte, 1024)
+	for len(pairs) < count {
+		if time.Since(startAt) > flags.Timeout {
+			return pairs, cursor
+		}
+
+		buf := append(append(curBuf[:0], "zsetks__"...), cursor...)
+		if !c.SeekGE(buf) {
+			break
+		}
+		if bytes.HasPrefix(c.Key(), buf) {
+			idx := bytes.IndexByte(c.Key(), 0)
+			key := c.Key()[8:idx]
+			pairs = append(pairs, s2pkg.Pair{
+				Member: string(key),
+			})
+		}
+		if !bas.IsCallable(f) {
+			break
+		}
+		res := bas.Call(f.Object(), bas.Str(cursor))
+		if res.Type() != typ.String {
+			break
+		}
+		cursor = res.Str()
+	}
+
+	nextStart = cursor
 	return
 }

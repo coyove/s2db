@@ -518,11 +518,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
 		return w.WriteBulks(data...)
-	case "ZDATA", "ZMDATA", "ZDATABITS":
+	case "ZDATA", "ZMDATA", "ZDATABM16":
 		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
-			if cmd == "ZDATABITS" {
-				x, err = s.ZDataBits(key, command.Get(2))
+			if cmd == "ZDATABM16" {
+				x, err = s.ZDataBM16(key, command.Get(2))
 			} else {
 				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
 			}
@@ -609,10 +609,13 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
-	case "SCANSCORE":
-		// SCANSCORE cursor start_score end_score
+	case "SCANSCORE": // cursor start_score end_score
 		flags := command.Flags(4)
 		p, next := s.ScanScore(key, command.Float64(2), command.Float64(3), flags)
+		return w.WriteObjects(next, redisPairs(p, flags))
+	case "SCANFUNC": // cursor fun
+		flags := command.Flags(3)
+		p, next := s.ScanFunc(key, command.Get(2), flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 

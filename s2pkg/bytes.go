@@ -354,7 +354,10 @@ func Bytes(b []byte) []byte {
 }
 
 func IncBytes(b []byte) []byte {
-	b = Bytes(b)
+	return IncBytesInplace(Bytes(b))
+}
+
+func IncBytesInplace(b []byte) []byte {
 	for i := len(b) - 1; i >= 0; i-- {
 		b[i]++
 		if b[i] != 0 {

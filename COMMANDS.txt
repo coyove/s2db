@@ -1,0 +1,100 @@
+DEL key [key2]
+    Delete 'key'. If 'key2' is specified, all keys between [key, key2] will be deleted.
+    Range deletion is a heavy command and will NOT invalidate related caches, use with cautions.
+
+ZADD key [--DEFER--|--SYNC--] [NX|XX] [CH] [PD] [DSLT dslt_score] score member [score member ...]
+    --DEFER--:
+        The operation will be queued up and executed later, server returns 'OK' immediately.
+        Server will group continuous deferred operations together for better performance,
+        so caller should use '--DEFER--' whenever possible.
+        This flag must be positioned right after 'key' and not be used along with --SYNC--
+    --SYNC--:
+        If slave exists, the operation will only succeed when slave also acknowledges successfully,
+        thus strong consistency is guaranteed. If slave fails to respond within the timeout
+        specified by the config 'PingTimeout', master will return a timeout error (to caller).
+        This flag must be positioned right after 'key' and not be used along with --DEFER--
+    DSLT dslt_score:
+        If provided, all to-be-added members (and existing members in 'key') with scores less than
+        'dslt_score' will be deleted during the operation.
+    PD:
+        Preserve existing members' data if not empty, otherwise they will be overwritten.
+        
+ZADD key DATA score member data [score member data ...]
+    Behaves similar to the above command, but you can attach data to each member.
+    All flags of the original ZADD can be used along with.
+
+Z[M]DATA key member [member ...]
+    Retrieve the data attached to the members.
+
+ZADD key BM16 score member bit [score member bit ...]
+    Behaves similar to the above command, but every 'bit' argument represents a bit to be added into
+    'member' bitmap, ranging from 0 to 65535.
+
+ZDATABM16 key member start end
+    Retrieve member bitmap's 1-bits within [start, end]. Results will be an array of integers.
+
+ZINCRBY key [--DEFER--|--SYNC--] increment memebr [DF data_func] [DATA data] [BM16 bit]
+    Behaves exactly like redis.
+    DF data_func:
+        By calling 'data_func(old_score, increment, old_data)', its returned value (bytes or string)
+        will be stored as member's new data.
+    DATA data:
+        Provided 'data' will be stored as member's new data.
+    BM16 bit:
+        Provided 'bit' will be added into member's bitmap.
+
+ZREM key [--DEFER--|--SYNC--] member [member ...]
+    Behaves exactly like redis.
+
+ZREMRANGEBY[LEX|SCORE|RANK] [--DEFER--|--SYNC--] key left right
+    Behaves exactly like redis.
+
+ZCARD key
+    Behaves exactly like redis.
+
+ZCOUNT key min max
+    Behaves exactly like redis.
+
+ZCOUNTLEX key min max [MATCH pattern]
+    Behaves similar to ZCOUNT, but sorts lexicographically.
+
+Z[M]SCORE key member
+    Behaves exactly like redis.
+
+Z[REV]RANK key member
+    Behaves exactly like redis.
+
+Z[REV]RANGE key start end
+    Behaves exactly like redis.
+
+Z[REV]RANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES]
+    LIMIT:
+        First argument (offset) must be 0 if provided.
+    INTERSECT key:
+        Returned members must exist in all INTERSECT keys:
+            ZRANGEBYLEX key - + INTERSECT key2 INTERSECT key3
+    NOTINTERSECT key:
+        Returned members must not exist in all NOTINTERSECT keys:
+            ZRANGEBYLEX key - + NOTINTERSECT key2 NOTINTERSECT key3
+        Can be used along with INTERSECT:
+            ZRANGEBYLEX key - + INTERSECT key2 NOTINTERSECT key3
+    TWOHOPS member [CONCATKEY prefix start end suffix]:
+        Returned members each pointes to a zset with the same name, which must contain 'member'.
+            ZADD key 2 key2 3 key3 4 key4
+            ZADD key2 2 member
+            ZADD key4 0 member
+            ZRANGEBYLEX key - + TWOHOPS member
+                returns [key2, key4]
+        Use CONCATKEY to transform member names into key names if they have different formats:
+        (key = prefix + member[start:end+1] + suffix):
+            ZADD user 1 user1 2 user2 3 user3 4 user4
+            ZADD af:user2 2 member
+            ZADD af:user4 0 member
+            ZRANGEBYLEX key - + TWOHOPS member CONCATKEY 'af:' 0 -1 ''
+                returns [key2, key4]
+
+SCAN cursor [MATCH pattern] [COUNT count]
+    Scan keys starting at 'cursor'.
+
+EVAL[RO] code [arg0 [arg1 ...]]
+    Evaluate the code with provided arguments, which are stored in 'args' variable.

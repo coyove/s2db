@@ -500,19 +500,25 @@ func (s *Server) ZMData(key string, members []string) (data [][]byte, err error)
 	return
 }
 
-func (s *Server) ZDataBM16(key string, member string) (bits [][]byte, err error) {
+func (s *Server) ZDataBM16(key string, member string, start, end uint16) (bits [][]byte, err error) {
 	bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
-	scoreBuf, _ := extdb.GetKey(s.DB, append(bkName, member...))
-	if len(scoreBuf) != 0 {
-		d, err := extdb.GetKey(s.DB, append(bkScore, append(scoreBuf, member...)...))
-		if err != nil {
-			return nil, err
-		}
-		bitmap.Iterate(d, func(v uint16) bool {
-			bits = append(bits, s2pkg.FormatFloatBulk(float64(v)))
-			return true
+	bkName = append(bkName, member...)
+	err = extdb.GetKeyFunc(s.DB, bkName, func(scoreBuf []byte) error {
+		bkScore = append(bkScore, append(scoreBuf, member...)...)
+		return extdb.GetKeyFunc(s.DB, bkScore, func(d []byte) error {
+			bitmap.Iterate(d, func(v uint16) bool {
+				if start != 0 && v < start {
+					return true
+				}
+				if end != 0 && v > end {
+					return false
+				}
+				bits = append(bits, s2pkg.FormatFloatBulk(float64(v)))
+				return true
+			})
+			return nil
 		})
-	}
+	})
 	return
 }
 

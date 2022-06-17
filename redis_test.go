@@ -201,7 +201,7 @@ func TestZSet(t *testing.T) {
 	assertEqual("a-6-1", rdb.Do(ctx, "zdata", "zset", "bar").Val())
 
 	rdb.Do(ctx, "zincrby", "zset", 2, "foo", "bm16", 100)
-	assertEqual([]string{"100"}, rdb.Do(ctx, "zdatabm16", "zset", "foo").Val())
+	assertEqual([]string{"100"}, rdb.Do(ctx, "zdatabm16", "zset", "foo", 99, 101).Val())
 
 	rdb.Del(ctx, "zset")
 	fmt.Println(rdb.ZAdd(ctx, "zset", z(math.Inf(-1), "a"), z(1, "b"), z(2, "c"), z(3, "d"), z(4, "e"), z(5, "f"), z(math.Inf(1), "g")).Err())
@@ -591,7 +591,7 @@ func TestZAddDataBits(t *testing.T) {
 		m[v] = true
 	}
 
-	v, _ := rdb.Do(ctx, "ZDATABM16", "ztmp", "b").Result()
+	v, _ := rdb.Do(ctx, "ZDATABM16", "ztmp", "b", 0, 65535).Result()
 	for _, res := range v.([]interface{}) {
 		v, _ := strconv.ParseInt(fmt.Sprint(res), 10, 64)
 		delete(m, uint16(v))

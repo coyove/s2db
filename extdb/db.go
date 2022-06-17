@@ -35,6 +35,18 @@ func GetKey(db Storage, key []byte) ([]byte, error) {
 	return s2pkg.Bytes(buf), nil
 }
 
+func GetKeyFunc(db Storage, key []byte, f func([]byte) error) error {
+	buf, rd, err := db.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil
+		}
+		return err
+	}
+	defer rd.Close()
+	return f(buf)
+}
+
 func GetKeyNumber(db Storage, key []byte) (float64, uint64, bool, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {

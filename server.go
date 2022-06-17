@@ -522,7 +522,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
 			if cmd == "ZDATABM16" {
-				x, err = s.ZDataBM16(key, command.Get(2))
+				x, err = s.ZDataBM16(key, command.Get(2), uint16(command.Int64(3)), uint16(command.Int64(4)))
 			} else {
 				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
 			}

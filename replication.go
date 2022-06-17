@@ -177,7 +177,7 @@ func (s *Server) logPusher(shard int) {
 				if s2pkg.IsRemoteOfflineError(err) {
 					log.Error("[M] slave offline")
 				} else if err != redis.Nil {
-					if err.Error() == rejectedByMasterMsg {
+					if err.Error() == wire.ErrRejectedByMaster.Error() {
 						_, err := s.UpdateConfig("slave", "", false)
 						log.Info("[M] endpoint is master and rejected PUSHLOGS, clearing slave config: ", err)
 						continue

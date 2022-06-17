@@ -2,6 +2,7 @@ package ranges
 
 import (
 	"fmt"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -92,4 +93,10 @@ func (l Limit) ToScore() (buf []byte) {
 		buf = append(buf, '(')
 	}
 	return strconv.AppendFloat(buf, l.Float, 'f', -1, 64)
+}
+
+type ScanScoreMarathon struct {
+	Out    io.Writer
+	Stop   bool
+	TaskId uint64
 }

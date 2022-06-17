@@ -12,6 +12,16 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func MatchMemberOrData(pattern, member string, data []byte) bool {
+	if strings.HasPrefix(pattern, "\\member{}") {
+		return Match(pattern[9:], member)
+	}
+	if strings.HasPrefix(pattern, "\\data{}") {
+		return MatchBinary(pattern[7:], data)
+	}
+	return Match(pattern, member) || MatchBinary(pattern, data)
+}
+
 func MatchBinary(pattern string, buf []byte) bool {
 	return Match(pattern, *(*string)(unsafe.Pointer(&buf)))
 }

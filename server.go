@@ -29,7 +29,6 @@ import (
 )
 
 const ShardLogNum = 32
-const rejectedByMasterMsg = "rejected by master"
 
 type Server struct {
 	ln           net.Listener
@@ -443,7 +442,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		s.switchMasterLock.RLock()
 		defer s.switchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
-			return w.WriteError(rejectedByMasterMsg)
+			return w.WriteError(wire.ErrRejectedByMaster.Error())
 		}
 		shard := s2pkg.MustParseInt(key)
 		logs := &s2pkg.Logs{}

@@ -18,3 +18,4 @@ s2dbench
 deploy.*
 s.db
 log
+test.pb

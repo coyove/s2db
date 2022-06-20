@@ -337,7 +337,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				s.Survey.SlowLogs.Incr(diffMs)
 			}
 			if isReadCommand[cmd] {
-				s.Survey.SysRead.Incr(diffMs)
+				if !strings.HasPrefix(cmd, "SCAN") {
+					s.Survey.SysRead.Incr(diffMs)
+				}
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 				x.(*s2pkg.Survey).Incr(diffMs)
 			}

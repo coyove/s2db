@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unsafe"
 
+	"github.com/coyove/s2db/bitmap"
 	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -74,6 +75,21 @@ func runSubMatch(key, value, rest string, text string) bool {
 		return ParseFloat(text) == ParseFloat(value)
 	case "ne":
 		return ParseFloat(text) != ParseFloat(value)
+	case "bm16":
+		for len(value) > 0 {
+			idx := strings.IndexByte(value, ',')
+			var v int
+			if idx == -1 {
+				v, _ = strconv.Atoi(value)
+				value = ""
+			} else {
+				v, _ = strconv.Atoi(value[:idx])
+				value = value[idx+1:]
+			}
+			if bitmap.StringContains(text, uint16(v)) {
+				return true
+			}
+		}
 	}
 
 	if strings.HasPrefix(key, "json:") {

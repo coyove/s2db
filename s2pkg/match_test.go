@@ -3,6 +3,8 @@ package s2pkg
 import (
 	"regexp"
 	"testing"
+
+	"github.com/coyove/s2db/bitmap"
 )
 
 func TestMatch(t *testing.T) {
@@ -40,6 +42,20 @@ func TestMatch(t *testing.T) {
 		t.Fatal()
 	}
 	if Match("\\or{\\prefix{ab}\\prefix{ba}}", `xyz`) {
+		t.Fatal()
+	}
+
+	buf := string(bitmap.Encode(nil, 1, 103, 2005, 30007, 50009))
+	if !Match("\\bm16{102,103,104,105}", string(buf)) {
+		t.Fatal()
+	}
+	if !Match("\\bm16{50009,100000}", string(buf)) {
+		t.Fatal()
+	}
+	if Match("\\bm16{50000}", string(buf)) {
+		t.Fatal()
+	}
+	if Match("\\not{\\bm16{30007}}", string(buf)) {
 		t.Fatal()
 	}
 }

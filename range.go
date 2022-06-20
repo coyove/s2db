@@ -3,11 +3,9 @@ package main
 import (
 	"bytes"
 	"container/heap"
-	"encoding/csv"
 	"fmt"
 	"math"
 	"time"
-	"unsafe"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
@@ -17,7 +15,6 @@ import (
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
-	log "github.com/sirupsen/logrus"
 )
 
 func (s *Server) ZCount(lex bool, key string, start, end string, flags wire.Flags) (int, error) {
@@ -421,9 +418,7 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 	return
 }
 
-func (s *Server) ScanScore(startCursor string, start, end float64, ssm *ranges.ScanScoreMarathon, flags wire.Flags) (
-	pairs []s2pkg.Pair, cursor string,
-) {
+func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Flags) (pairs []s2pkg.Pair, cursor string) {
 	count, startAt := flags.Count+1, time.Now()
 
 	opt := &pebble.IterOptions{
@@ -431,17 +426,7 @@ func (s *Server) ScanScore(startCursor string, start, end float64, ssm *ranges.S
 		UpperBound: []byte("zsetskv\xff"),
 	}
 
-	var c *pebble.Iterator
-	var cw *csv.Writer
-	if ssm != nil {
-		snap := s.DB.NewSnapshot()
-		defer snap.Close()
-
-		cw = csv.NewWriter(ssm.Out)
-		c = snap.NewIter(opt)
-	} else {
-		c = s.DB.NewIter(opt)
-	}
+	c := s.DB.NewIter(opt)
 	defer c.Close()
 
 	if !c.First() {
@@ -450,10 +435,6 @@ func (s *Server) ScanScore(startCursor string, start, end float64, ssm *ranges.S
 
 	var pair s2pkg.Pair
 	for c.Valid() && len(pairs) < count {
-		if ssm != nil && ssm.Stop {
-			log.Infof("ScanScoreMarathon %d stopped", ssm.TaskId)
-			break
-		}
 		cursor, pair = s2pkg.PairFromSKVCursor(c)
 		if time.Since(startAt) > flags.Timeout {
 			if pair.Score < start {
@@ -478,12 +459,8 @@ func (s *Server) ScanScore(startCursor string, start, end float64, ssm *ranges.S
 			continue
 		}
 
-		if ssm != nil {
-			cw.Write([]string{cursor, pair.Member, *(*string)(unsafe.Pointer(&pair.Data))})
-		} else {
-			pair.Member = cursor + "\x00" + pair.Member
-			pairs = append(pairs, pair)
-		}
+		pair.Member = cursor + "\x00" + pair.Member
+		pairs = append(pairs, pair)
 		c.Next()
 	}
 

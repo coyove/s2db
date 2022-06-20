@@ -23,12 +23,18 @@ func TestBitmapExistingMember(t *testing.T) {
 func TestBitmap(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 
-	check := func(res []uint16, m *roaring.Bitmap) {
+	check := func(buf []byte, res []uint16, m *roaring.Bitmap) {
 		for _, v := range res {
 			if !m.Contains(uint32(v)) {
 				t.Fatal(v, m.ToArray())
 			}
 		}
+		m.Iterate(func(v uint32) bool {
+			if !Contains(buf, uint16(v)) {
+				t.Fatal(v, m.ToArray())
+			}
+			return true
+		})
 		if len(res) != int(m.GetCardinality()) {
 			dedup := map[uint16]bool{}
 			for _, v := range res {
@@ -53,7 +59,7 @@ func TestBitmap(t *testing.T) {
 		enc := Encode(nil, v...)
 		res, _ := Decode(enc)
 
-		check(res, m)
+		check(enc, res, m)
 
 		x := res[len(res)-1] + 1
 		enc, _ = Add(enc, x)
@@ -61,7 +67,7 @@ func TestBitmap(t *testing.T) {
 
 		res2, _ := Decode(enc)
 		// fmt.Println(x, res[len(res)-10:], res2[len(res2)-10:])
-		check(res2, m)
+		check(enc, res2, m)
 
 		for i := 0; i < 2000; i++ {
 			x := uint16(rand.Uint32())
@@ -70,7 +76,7 @@ func TestBitmap(t *testing.T) {
 		}
 
 		res3, _ := Decode(enc)
-		check(res3, m)
+		check(enc, res3, m)
 
 		m.Clear()
 		enc = enc[:0]
@@ -80,7 +86,7 @@ func TestBitmap(t *testing.T) {
 		}
 
 		res4, _ := Decode(enc)
-		check(res4, m)
+		check(enc, res4, m)
 	}
 }
 

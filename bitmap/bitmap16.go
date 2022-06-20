@@ -2,6 +2,7 @@ package bitmap
 
 import (
 	"sort"
+	"unsafe"
 )
 
 type Uint16Slice []uint16
@@ -109,4 +110,21 @@ func Iterate(buf []byte, f func(uint16) bool) (ok bool) {
 		}
 	}
 	return true
+}
+
+func StringContains(buf string, v uint16) (ok bool) {
+	if len(buf)%33 != 0 {
+		return false
+	}
+	hi, lo := byte(v>>8), byte(v)
+	idx := sort.Search(len(buf)/33, func(i int) bool { return buf[i*33] >= hi })
+	if idx < len(buf)/33 && buf[idx*33] == hi {
+		run := buf[idx*33+1 : idx*33+33]
+		return run[lo/8]&(1<<(lo%8)) > 0
+	}
+	return false
+}
+
+func Contains(buf []byte, v uint16) (ok bool) {
+	return StringContains(*(*string)(unsafe.Pointer(&buf)), v)
 }

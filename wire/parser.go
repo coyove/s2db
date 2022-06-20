@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -95,7 +94,7 @@ func (c *Command) Args() []interface{} {
 	return a
 }
 
-func (c *Command) Dump(full bool) string {
+func (c *Command) String() string {
 	if len(c.Argv) == 0 {
 		return "NOP"
 	}
@@ -108,22 +107,19 @@ func (c *Command) Dump(full bool) string {
 			buf.WriteString(" ")
 		}
 		if utf8.Valid(msg) {
-			buf.Write(strconv.AppendQuote(nil, *(*string)(unsafe.Pointer(&msg))))
+			x := *(*string)(unsafe.Pointer(&msg))
+			if _, err := strconv.ParseFloat(x, 64); err == nil {
+				buf.WriteString(x)
+			} else {
+				buf.Write(strconv.AppendQuote(nil, x))
+			}
 		} else {
 			w := base64.NewEncoder(base64.URLEncoding, buf)
 			w.Write(msg)
 			w.Close()
 		}
-		if i >= 4 && !full {
-			buf.WriteString(fmt.Sprintf(" (%d args)", c.ArgCount()-1))
-			break
-		}
 	}
 	return buf.String()
-}
-
-func (c *Command) String() string {
-	return c.Dump(false)
 }
 
 type Parser struct {

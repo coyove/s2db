@@ -98,7 +98,16 @@ func runSubMatch(key, value, rest string, text string) bool {
 		return Match(value, gjson.Parse(text).Get(key[5:]).String())
 	}
 	if strings.HasPrefix(key, "pb:") {
-		return Match(value, gjson.Parse(text).Get(key[5:]).String())
+		var a = struct {
+			s string
+			i int
+		}{text, len(text)}
+		v, err := ReadProtobuf(*(*[]byte)(unsafe.Pointer(&a)), key[3:])
+		if err != nil {
+			logrus.Errorf("Match: failed to read protobuf: %v", err)
+			return false
+		}
+		return Match(value, fmt.Sprint(v))
 	}
 	return false
 }
@@ -164,7 +173,7 @@ func ExtractEscape(text string) (key, value, rest string) {
 func readVarint(buf *[]byte) (int64, uint64, error) {
 	v, n := binary.Varint(*buf)
 	if n <= 0 {
-		return 0, 0, fmt.Errorf("invalid varint encoding: %q", buf)
+		return 0, 0, fmt.Errorf("invalid varint encoding: %q", *buf)
 	}
 	u, _ := binary.Uvarint(*buf)
 	*buf = (*buf)[n:]
@@ -177,14 +186,12 @@ READ:
 		return nil, fmt.Errorf("field index %d not found", idx)
 	}
 
-	fmt.Println("===", buf)
 	_, v, err := readVarint(&buf)
 	if err != nil {
 		return nil, err
 	}
 
 	fidx, wtyp := v>>3, v&7
-	fmt.Println(fidx, wtyp)
 
 	switch wtyp {
 	case 0:
@@ -228,6 +235,9 @@ READ:
 		if int(fidx) != idx {
 			buf = buf[length:]
 			goto READ
+		}
+		if typ == 's' {
+			return string(buf[:length]), nil
 		}
 		return buf[:length], nil
 	case 3, 4:

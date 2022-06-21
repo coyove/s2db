@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
+	"net/http"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -188,6 +189,16 @@ func Recover(f func()) {
 			f()
 		}
 	}
+}
+
+func HTTPRecover(w http.ResponseWriter, rr *http.Request) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.WriteHeader(500)
+			w.Write(debug.Stack())
+			logrus.Errorf("fatal HTTP error of %q: %v", rr.RequestURI, r)
+		}
+	}()
 }
 
 func SizeOfBytes(in [][]byte) int {

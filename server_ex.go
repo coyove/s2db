@@ -528,6 +528,8 @@ func (s *Server) webConsoleServer() {
 	}
 	uuid := s2pkg.UUID()
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		defer s2pkg.HTTPRecover(w, r)
+
 		q := r.URL.Query()
 		start := time.Now()
 
@@ -596,6 +598,45 @@ func (s *Server) webConsoleServer() {
 			"s": s, "start": start,
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+		})
+	})
+	http.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
+		defer s2pkg.HTTPRecover(w, r)
+
+		q := r.URL.Query()
+
+		if s.Password != "" && s.Password != q.Get("p") {
+			w.WriteHeader(400)
+			w.Write([]byte("s2db: password required"))
+			return
+		}
+
+		sk, ek := q.Get("from"), q.Get("to")
+		if sk == "" {
+			w.WriteHeader(400)
+			w.Write([]byte("s2db: ssd start key required"))
+			return
+		}
+
+		if ek == "" {
+			ek = sk
+		}
+
+		start, end := math.Inf(-1), math.Inf(1)
+		if sv := q.Get("start"); sv != "" {
+			start = s2pkg.MustParseFloat(sv)
+		}
+		if sv := q.Get("end"); sv != "" {
+			end = s2pkg.MustParseFloat(sv)
+		}
+
+		w.Header().Add("Content-Type", "application/octet-stream")
+		w.Header().Add("Content-Encoding", "gzip")
+		w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"ssd_%d.csv\"", clock.UnixNano()))
+		fmt.Println(q.Get("match"))
+		s.ScanScoreDump(w, sk, ek, start, end, wire.Flags{
+			WithData: q.Get("data") == "1",
+			Match:    q.Get("match"),
 		})
 	})
 	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {

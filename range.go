@@ -2,19 +2,23 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"container/heap"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"math"
+	"strconv"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/nj"
-	"github.com/coyove/nj/bas"
-	"github.com/coyove/nj/typ"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	log "github.com/sirupsen/logrus"
 )
 
 func (s *Server) ZCount(lex bool, key string, start, end string, flags wire.Flags) (int, error) {
@@ -125,9 +129,15 @@ func rangeLex(key string, start, end ranges.Limit, opt ranges.Options) rangeFunc
 		})
 		defer c.Close()
 
+		startclk := clock.Now()
 		process := func(keyBuf, scoreBuf []byte) error {
-			if opt.Match != "" && !s2pkg.MatchBinary(opt.Match, keyBuf) {
-				return nil
+			if opt.Match != "" {
+				if !s2pkg.MatchBinary(opt.Match, keyBuf) {
+					return nil
+				}
+				if clock.Now().Sub(startclk) > ranges.HardMatchTimeout {
+					return ranges.ErrAppendSafeExit
+				}
 			}
 			p := s2pkg.Pair{Member: string(keyBuf), Score: s2pkg.BytesToFloat(scoreBuf)}
 			if opt.WithData {
@@ -215,11 +225,17 @@ func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFu
 			opt.OffsetEnd += int(n)
 		}
 
+		startclk := clock.Now()
 		process := func(k, dataBuf []byte) error {
 			k = k[len(bkScore):]
 			key := string(k[8:])
-			if opt.Match != "" && !s2pkg.MatchMemberOrData(opt.Match, key, dataBuf) {
-				return nil
+			if opt.Match != "" {
+				if !s2pkg.MatchMemberOrData(opt.Match, key, dataBuf) {
+					return nil
+				}
+				if clock.Now().Sub(startclk) > ranges.HardMatchTimeout {
+					return ranges.ErrAppendSafeExit
+				}
 			}
 			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:])}
 			if opt.WithData {
@@ -418,33 +434,35 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 	return
 }
 
-func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Flags) (pairs []s2pkg.Pair, cursor string) {
-	count, startAt := flags.Count+1, time.Now()
+func (s *Server) ScanScoreDump(out io.Writer, startCursor, endCursor string, start, end float64, flags wire.Flags) {
+	log := log.WithField("shard", fmt.Sprintf("ssd%04x", uint16(clock.UnixNano())))
 
-	opt := &pebble.IterOptions{
+	gw := gzip.NewWriter(out)
+	defer gw.Close()
+
+	w := csv.NewWriter(gw)
+	defer w.Flush()
+
+	snap := s.DB.NewSnapshot()
+	defer snap.Close()
+
+	log.Infof("ScanScoreDump starts range %q-%q, %v-%v", startCursor, endCursor, start, end)
+
+	c := snap.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("zsetskv_" + startCursor),
-		UpperBound: []byte("zsetskv\xff"),
-	}
-
-	c := s.DB.NewIter(opt)
+		UpperBound: s2pkg.IncBytesInplace([]byte("zsetskv_" + endCursor)),
+	})
 	defer c.Close()
 
 	if !c.First() {
+		log.Infof("finished dumping")
+		w.Write([]string{"na"})
 		return
 	}
 
-	var pair s2pkg.Pair
-	for c.Valid() && len(pairs) < count {
-		cursor, pair = s2pkg.PairFromSKVCursor(c)
-		if time.Since(startAt) > flags.Timeout {
-			if pair.Score < start {
-				return pairs, cursor
-			}
-			if pair.Score > end {
-				return pairs, cursor + "\x00"
-			}
-			return pairs, cursor + string(append([]byte{0}, s2pkg.FloatToBytes(pair.Score)...))
-		}
+	var buf = []string{"", "", "", ""}
+	for c.Valid() {
+		cursor, pair := s2pkg.PairFromSKVCursor(c)
 		if pair.Score < start {
 			c.SeekGE(append([]byte("zsetskv_"+cursor+"\x00"), s2pkg.FloatToBytes(start)...))
 			continue
@@ -459,54 +477,28 @@ func (s *Server) ScanScore(startCursor string, start, end float64, flags wire.Fl
 			continue
 		}
 
-		pair.Member = cursor + "\x00" + pair.Member
-		pairs = append(pairs, pair)
+		buf[0] = cursor
+		buf[1] = strconv.FormatFloat(pair.Score, 'f', -1, 64)
+		buf[2] = pair.Member
+		if flags.WithData {
+			buf[3] = *(*string)(unsafe.Pointer(&pair.Data))
+		} else {
+			buf[3] = ""
+		}
+
+		if err := w.Write(buf); err != nil {
+			log.Errorf("write error: %v", err)
+			return
+		}
+
+		if clock.Rand() < 0.001 {
+			if err := gw.Flush(); err != nil {
+				log.Errorf("flush error: %v", err)
+				return
+			}
+		}
 		c.Next()
 	}
 
-	if len(pairs) == count {
-		pairs = pairs[:count-1]
-		cursor += string(append([]byte{0}, s2pkg.FloatToBytes(pair.Score)...))
-	} else {
-		cursor = ""
-	}
-	return
-}
-
-func (s *Server) ScanFunc(cursor string, fun string, flags wire.Flags) (pairs []s2pkg.Pair, nextStart string) {
-	count, startAt := flags.Count, time.Now()
-	f := nj.MustRun(nj.LoadString(fun, nil))
-
-	c := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
-	defer c.Close()
-
-	curBuf := make([]byte, 1024)
-	for len(pairs) < count {
-		if time.Since(startAt) > flags.Timeout {
-			return pairs, cursor
-		}
-
-		buf := append(append(curBuf[:0], "zsetks__"...), cursor...)
-		if !c.SeekGE(buf) {
-			break
-		}
-		if bytes.HasPrefix(c.Key(), buf) {
-			idx := bytes.IndexByte(c.Key(), 0)
-			key := c.Key()[8:idx]
-			pairs = append(pairs, s2pkg.Pair{
-				Member: string(key),
-			})
-		}
-		if !bas.IsCallable(f) {
-			break
-		}
-		res := bas.Call(f.Object(), bas.Str(cursor))
-		if res.Type() != typ.String {
-			break
-		}
-		cursor = res.Str()
-	}
-
-	nextStart = cursor
-	return
+	log.Infof("finished dumping")
 }

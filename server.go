@@ -610,14 +610,6 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
-	case "SCANSCORE": // cursor start_score end_score
-		flags := command.Flags(4)
-		p, next := s.ScanScore(key, command.Float64(2), command.Float64(3), flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
-	case "SCANFUNC": // cursor fun
-		flags := command.Flags(3)
-		p, next := s.ScanFunc(key, command.Get(2), flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2pkg"
@@ -45,6 +46,7 @@ type Options struct {
 
 var ErrAppendSafeExit = fmt.Errorf("exit")
 var HardLimit = 65535
+var HardMatchTimeout = time.Second * 30
 
 type Result struct {
 	Pairs []s2pkg.Pair

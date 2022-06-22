@@ -446,7 +446,7 @@ func (s *Server) ScanScoreDump(out io.Writer, startCursor, endCursor string, sta
 	snap := s.DB.NewSnapshot()
 	defer snap.Close()
 
-	log.Infof("ScanScoreDump starts range %q-%q, %v-%v", startCursor, endCursor, start, end)
+	log.Infof("ScanScoreDump starts range %q-%q, %v-%v, match: %q", startCursor, endCursor, start, end, flags.Match)
 
 	c := snap.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("zsetskv_" + startCursor),
@@ -460,19 +460,43 @@ func (s *Server) ScanScoreDump(out io.Writer, startCursor, endCursor string, sta
 		return
 	}
 
+	skips := 0
+	dummyWrite := func() bool {
+		if skips++; skips%1000 == 0 {
+			if err := w.Write([]string{"", "", "", ""}); err != nil {
+				log.Errorf("write error: %v", err)
+				return false
+			}
+			if err := gw.Flush(); err != nil {
+				log.Errorf("flush error: %v", err)
+				return false
+			}
+		}
+		return true
+	}
+
 	var buf = []string{"", "", "", ""}
 	for c.Valid() {
 		cursor, pair := s2pkg.PairFromSKVCursor(c)
 		if pair.Score < start {
+			if !dummyWrite() {
+				return
+			}
 			c.SeekGE(append([]byte("zsetskv_"+cursor+"\x00"), s2pkg.FloatToBytes(start)...))
 			continue
 		}
 		if pair.Score > end {
+			if !dummyWrite() {
+				return
+			}
 			c.SeekGE([]byte("zsetskv_" + cursor + "\x01"))
 			continue
 		}
 
 		if flags.Match != "" && !s2pkg.MatchMemberOrData(flags.Match, pair.Member, pair.Data) {
+			if !dummyWrite() {
+				return
+			}
 			c.Next()
 			continue
 		}

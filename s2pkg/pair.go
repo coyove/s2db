@@ -51,9 +51,13 @@ func (doc *BytesArray) String() string {
 }
 
 func (doc *BytesArray) MarshalAppend(buf []byte) []byte {
-	x, err := proto.Marshal(doc)
+	var info proto.InternalMessageInfo
+	buf, err := info.Marshal(buf, doc, false)
 	PanicErr(err)
-	return append(buf, x...)
+	return buf
+	// x, err := proto.Marshal(doc)
+	// PanicErr(err)
+	// return append(buf, x...)
 }
 
 func (doc *BytesArray) UnmarshalBytes(buf []byte) error {

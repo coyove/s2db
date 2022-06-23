@@ -38,7 +38,7 @@ var (
 		"ZRANGE": true, "ZREVRANGE": true,
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
-		"SCAN": true, "SCANSCORE": true,
+		"SCAN": true,
 	}
 	isWriteCommand = map[string]bool{
 		"DEL":  true,
@@ -396,7 +396,7 @@ func (s *Server) checkCacheSize(data interface{}) (sz int) {
 func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
 	sz := s.checkCacheSize(data)
 	if sz == -1 {
-		log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
+		// log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
 		return
 	}
 	if !s.Cache.Add(key, h, data, wm) {
@@ -408,7 +408,7 @@ func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
 func (s *Server) addCacheMultiKeys(keys []string, h string, data interface{}, wms []int64) {
 	sz := s.checkCacheSize(data)
 	if sz == -1 {
-		log.Infof("omit big key cache: %v->%q (%db)", keys, h, sz)
+		// log.Infof("omit big key cache: %v->%q (%db)", keys, h, sz)
 		return
 	}
 	for i, key := range keys {
@@ -471,7 +471,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 	for range memebrs {
 		scores = append(scores, math.NaN())
 	}
-	bkName, _, _ := ranges.GetZSetRangeKey(key)
+	bkName := ranges.GetZSetNameKey(key)
 	for i, m := range memebrs {
 		score, _, found, _ := extdb.GetKeyNumber(s.DB, append(bkName, m...))
 		if found {
@@ -522,7 +522,7 @@ func (s *Server) ZDataBM16(key string, member string, start, end uint16) (bits [
 	return
 }
 
-func (s *Server) webConsoleServer() {
+func (s *Server) webConsoleHandler() {
 	if testFlag {
 		return
 	}
@@ -532,22 +532,6 @@ func (s *Server) webConsoleServer() {
 
 		q := r.URL.Query()
 		start := time.Now()
-
-		if chartSources := strings.Split(q.Get("chart"), ","); len(chartSources) > 0 && chartSources[0] != "" {
-			startTs, endTs := s2pkg.MustParseInt64(q.Get("chart-start")), s2pkg.MustParseInt64(q.Get("chart-end"))
-			w.Header().Add("Content-Type", "text/json")
-			data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
-			if len(data) == 0 {
-				w.Write([]byte("[]"))
-				return
-			}
-			m := []interface{}{data[0].Timestamp}
-			for _, d := range data {
-				m = append(m, d.Value)
-			}
-			json.NewEncoder(w).Encode(m)
-			return
-		}
 
 		if s.Password != "" && s.Password != q.Get("p") {
 			w.WriteHeader(400)
@@ -599,6 +583,26 @@ func (s *Server) webConsoleServer() {
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 		})
+	})
+	http.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
+		defer s2pkg.HTTPRecover(w, r)
+		chartSources := strings.Split(r.URL.Path[7:], ",")
+		if len(chartSources) == 0 || chartSources[0] == "" {
+			w.Write([]byte("[]"))
+			return
+		}
+		startTs, endTs := s2pkg.MustParseInt64(r.URL.Query().Get("start")), s2pkg.MustParseInt64(r.URL.Query().Get("end"))
+		w.Header().Add("Content-Type", "text/json")
+		data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
+		if len(data) == 0 {
+			w.Write([]byte("[]"))
+			return
+		}
+		m := []interface{}{data[0].Timestamp}
+		for _, d := range data {
+			m = append(m, d.Value)
+		}
+		json.NewEncoder(w).Encode(m)
 	})
 	http.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
 		defer s2pkg.HTTPRecover(w, r)

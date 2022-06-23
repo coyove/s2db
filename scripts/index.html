@@ -233,7 +233,7 @@
             const end = document.getElementById('chart-end').valueAsDate.getTime() + offset;
             const old_range = window.UPLOT ? [window.UPLOT.scales.x.min, window.UPLOT.scales.x.max] : [start / 1000, end / 1000];
 
-            fetch('?chart=' + src.join(',') + '&chart-start=' + start + '&chart-end=' + end).
+            fetch('/chart/' + src.join(',') + '?start=' + start + '&end=' + end).
             then(response => response.json()).
             then(function(data) {
                 const el = document.getElementById('chart');

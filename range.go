@@ -132,11 +132,11 @@ func rangeLex(key string, start, end ranges.Limit, opt ranges.Options) rangeFunc
 		startclk := clock.Now()
 		process := func(keyBuf, scoreBuf []byte) error {
 			if opt.Match != "" {
-				if !s2pkg.MatchBinary(opt.Match, keyBuf) {
-					return nil
-				}
 				if clock.Now().Sub(startclk) > ranges.HardMatchTimeout {
 					return ranges.ErrAppendSafeExit
+				}
+				if !s2pkg.MatchBinary(opt.Match, keyBuf) {
+					return nil
 				}
 			}
 			p := s2pkg.Pair{Member: string(keyBuf), Score: s2pkg.BytesToFloat(scoreBuf)}
@@ -230,11 +230,11 @@ func rangeScore(key string, start, end ranges.Limit, opt ranges.Options) rangeFu
 			k = k[len(bkScore):]
 			key := string(k[8:])
 			if opt.Match != "" {
-				if !s2pkg.MatchMemberOrData(opt.Match, key, dataBuf) {
-					return nil
-				}
 				if clock.Now().Sub(startclk) > ranges.HardMatchTimeout {
 					return ranges.ErrAppendSafeExit
+				}
+				if !s2pkg.MatchMemberOrData(opt.Match, key, dataBuf) {
+					return nil
 				}
 			}
 			p := s2pkg.Pair{Member: key, Score: s2pkg.BytesToFloat(k[:])}

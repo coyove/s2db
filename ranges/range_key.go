@@ -8,7 +8,11 @@ import (
 )
 
 func GetZSetRangeKey(key string) ([]byte, []byte, []byte) {
-	return []byte("zsetks__" + key + "\x00"), []byte("zsetskv_" + key + "\x00"), GetZSetCounterKey(key)
+	return GetZSetNameKey(key), []byte("zsetskv_" + key + "\x00"), GetZSetCounterKey(key)
+}
+
+func GetZSetNameKey(key string) []byte {
+	return []byte("zsetks__" + key + "\x00")
 }
 
 func GetZSetCounterKey(key string) []byte {

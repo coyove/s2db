@@ -220,7 +220,7 @@ func (s *Server) Serve(addr string) (err error) {
 		go s.logPusher(i)
 	}
 	go s.startCronjobs()
-	go s.webConsoleServer()
+	go s.webConsoleHandler()
 	go s.acceptor(s.lnLocal)
 	s.acceptor(s.ln)
 	return nil

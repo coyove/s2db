@@ -581,7 +581,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		s.addCache(key, cmdHash, p, mwm)
+		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
 		return w.WriteBulkStrings(redisPairs(p, flags))
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		pf, flags := parseNormFlag(isRev, command)
@@ -600,7 +600,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
-			s.addCache(key, cmdHash, p, mwm)
+			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
 			if len(flags.Union) > 0 {
 				s.addCacheMultiKeys(flags.Union, cmdHash, p, wms)
 			}

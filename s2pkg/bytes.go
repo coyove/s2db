@@ -298,3 +298,7 @@ func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err e
 		}
 	}
 }
+
+func BitsMask(hi, lo int64) int64 {
+	return int64(1<<hi - 1<<lo + 1<<hi)
+}

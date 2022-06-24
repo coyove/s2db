@@ -644,3 +644,39 @@ func TestZRangeNorm(t *testing.T) {
 
 	s.Close()
 }
+
+func TestZAddMergeScore(t *testing.T) {
+	s, _ := Open("test")
+	go s.Serve(":6666")
+
+	ctx := context.TODO()
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:6666"})
+	rdb.ConfigSet(ctx, "slave", "")
+	rdb.Del(ctx, "ztmp")
+
+	do := func(c string, i int, args ...interface{}) interface{} {
+		args = append([]interface{}{"zadd", "ztmp", "msbit" + c, 63, 33, i}, args...)
+		return rdb.Do(ctx, args...).Val()
+	}
+
+	rdb.ZAdd(ctx, "ztmp", z(1, "a"))
+	assertEqual(1, rdb.ZScore(ctx, "ztmp", "a").Val())
+
+	do("set", 33, 2, "a")
+	assertEqual(1<<33+2, rdb.ZScore(ctx, "ztmp", "a").Val())
+	do("set", 33, 3, "a")
+	assertEqual(1<<33+3, rdb.ZScore(ctx, "ztmp", "a").Val())
+	do("clr", 34, "data", 4, "a", "hello")
+	assertEqual(1<<33+4, rdb.ZScore(ctx, "ztmp", "a").Val())
+	assertEqual("hello", rdb.Do(ctx, "zdata", "ztmp", "a").Val())
+	do("clr", 33, "pd", 5, "a")
+	assertEqual(5, rdb.ZScore(ctx, "ztmp", "a").Val())
+	assertEqual("hello", rdb.Do(ctx, "zdata", "ztmp", "a").Val())
+	do("inv", 33, "data", 6, "a", "world")
+	assertEqual(1<<33+6, rdb.ZScore(ctx, "ztmp", "a").Val())
+	assertEqual("world", rdb.Do(ctx, "zdata", "ztmp", "a").Val())
+	rdb.Do(ctx, "zadd", "ztmp", "msbit", 63, 33, 7, "a")
+	assertEqual(1<<33+7, rdb.ZScore(ctx, "ztmp", "a").Val())
+
+	s.Close()
+}

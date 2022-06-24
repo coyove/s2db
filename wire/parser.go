@@ -358,6 +358,10 @@ type Flags struct {
 	Timeout    time.Duration
 }
 
+func (f *Flags) IsSpecial() bool {
+	return f.TwoHops.Member != "" || len(f.Intersect) > 0
+}
+
 func (c Command) Flags(start int) (f Flags) {
 	f.Limit = ranges.HardLimit
 	f.Count = ranges.HardLimit

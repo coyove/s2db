@@ -345,7 +345,7 @@ func ifZero(v *int, v2 int) {
 	}
 }
 
-func ifInt(v bool, a, b int) int {
+func ifInt(v bool, a, b int64) int64 {
 	if v {
 		return a
 	}

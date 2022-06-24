@@ -24,6 +24,7 @@ type zaddFlag struct {
 	preserveOldData bool // if old data exists
 	bm16Data        bool
 	delScoreLt      float64
+	mergeScore      func(float64, float64) float64
 }
 
 type zincrbyFlag struct {
@@ -34,37 +35,75 @@ type zincrbyFlag struct {
 	bm16     uint16
 }
 
+func defaultMergeScore(old, new float64) float64 {
+	return new
+}
+
+func parseMergeScoreBitRange(command *wire.Command, idx int, rangeOnly bool) (int64, int64) {
+	hi, lo := command.Int64(idx+1), command.Int64(idx+2)
+	if hi < lo || hi < 0 || lo < 0 {
+		panic(fmt.Sprintf("invalid bits range: %d-%d", hi, lo))
+	}
+	if rangeOnly {
+		return s2pkg.BitsMask(hi, lo), 0
+	}
+	at := command.Int64(idx + 3)
+	if at > hi || at < lo {
+		panic(fmt.Sprintf("invalid bit position: %d", at))
+	}
+	return s2pkg.BitsMask(hi, lo), 1 << at
+}
+
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	flags := zaddFlag{delScoreLt: math.NaN()}
+	flags := zaddFlag{
+		delScoreLt: math.NaN(),
+		mergeScore: defaultMergeScore,
+	}
+
 	var idx = 2
 	for ; ; idx++ {
 		switch strings.ToUpper(command.Get(idx)) {
 		case "XX":
 			flags.xx = true
-			continue
 		case "NX":
 			flags.nx = true
-			continue
 		case "CH":
 			flags.ch = true
-			continue
 		case "PD":
 			flags.preserveOldData = true
-			continue
 		case "DATA":
 			flags.withData = true
-			continue
 		case "BM16":
 			flags.bm16Data, flags.withData = true, true
-			continue
 		case "DSLT":
 			idx++
 			flags.delScoreLt = command.Float64(idx)
-			continue
+		case "MSSUM":
+			flags.mergeScore = func(old, new float64) float64 { return old + new }
+		case "MSAVG":
+			flags.mergeScore = func(old, new float64) float64 { return (old + new) / 2 }
+		case "MSBIT": // hi lo
+			mask, _ := parseMergeScoreBitRange(command, idx, true)
+			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) | int64(n)) }
+			idx += 2
+		case "MSBITSET": // hi lo at
+			mask, at := parseMergeScoreBitRange(command, idx, false)
+			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) | at | int64(n)) }
+			idx += 3
+		case "MSBITCLR": // hi lo at
+			mask, at := parseMergeScoreBitRange(command, idx, false)
+			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o)&mask)&^at | int64(n)) }
+			idx += 3
+		case "MSBITINV": // hi lo at
+			mask, at := parseMergeScoreBitRange(command, idx, false)
+			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) ^ at | int64(n)) }
+			idx += 3
+		default:
+			goto MEMEBRS
 		}
-		break
 	}
 
+MEMEBRS:
 	var pairs []s2pkg.Pair
 	if !flags.withData {
 		for i := idx; i < command.ArgCount(); i += 2 {
@@ -107,13 +146,18 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
 	// ZINCRBY key score member [DF datafunc] [BM16 bit] [DATA data]
 	var flags zincrbyFlag
-	switch strings.ToUpper(command.Get(4)) {
-	case "DF":
-		flags.dataFunc = nj.MustRun(nj.LoadString(command.Get(5), nil))
-	case "BM16":
-		flags.bm16Data, flags.bm16 = true, uint16(command.Int64(5))
-	case "DATA":
-		flags.setData, flags.data = true, command.Bytes(5)
+	for i := 4; i < command.ArgCount(); i++ {
+		switch strings.ToUpper(command.Get(i)) {
+		case "DF":
+			flags.dataFunc = nj.MustRun(nj.LoadString(command.Get(i+1), nil))
+			i++
+		case "BM16":
+			flags.bm16Data, flags.bm16 = true, uint16(command.Int64(i+1))
+			i++
+		case "DATA":
+			flags.setData, flags.data = true, command.Bytes(i+1)
+			i++
+		}
 	}
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), flags, dd)
 }
@@ -201,6 +245,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				if flags.bm16Data {
 					p.Data, _ = bitmap.Add(nil, uint16(s2pkg.MustParseFloatBytes(p.Data)))
 				}
+				p.Score = flags.mergeScore(0, p.Score)
 				added++
 			} else if err != nil {
 				// Bad error
@@ -228,7 +273,9 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				if err := tx.Delete(scoreKey, pebble.Sync); err != nil {
 					return nil, err
 				}
-				if p.Score != s2pkg.BytesToFloat(scoreBuf) {
+				oldScore := s2pkg.BytesToFloat(scoreBuf)
+				p.Score = flags.mergeScore(oldScore, p.Score)
+				if p.Score != oldScore {
 					updated++
 				}
 			}

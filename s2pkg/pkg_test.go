@@ -8,6 +8,7 @@ import (
 	"io"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -414,4 +415,18 @@ func (c *LRUCache) removeElement(e *list.Element, doCallback bool) {
 	c.ll.Remove(e)
 	c.curWeight -= e.Value.(*lruEntry).weight
 	delete(c.cache, kv.key)
+}
+
+func TestBitsMask(t *testing.T) {
+	if v := fmt.Sprintf("%b", BitsMask(63, 0)); v != "-1" {
+		t.Fatal(v)
+	}
+	if v := fmt.Sprintf("%b", BitsMask(63, 1)); v != "-10" {
+		t.Fatal(v)
+	}
+	for i := 0; i < 10; i++ {
+		if v := fmt.Sprintf("%b", BitsMask(62, int64(i))); v != strings.Repeat("1", 63-i)+strings.Repeat("0", i) {
+			t.Fatal(v)
+		}
+	}
 }

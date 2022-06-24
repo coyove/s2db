@@ -6,7 +6,7 @@ require (
 	github.com/RoaringBitmap/roaring v1.1.0
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
-	github.com/coyove/nj v0.0.0-20220622064252-cc4ce2f7f136
+	github.com/coyove/nj v0.0.0-20220624064807-00845b27ef87
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/snappy v0.0.3

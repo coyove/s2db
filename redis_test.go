@@ -197,8 +197,9 @@ func TestZSet(t *testing.T) {
 	assertEqual(-2, rdb.ZScore(ctx, "zset", "foo").Val())
 	assertEqual(6, rdb.ZScore(ctx, "zset", "bar").Val())
 
-	rdb.Do(ctx, "zincrby", "zset", 1, "bar", "df", "lambda(old, score, by) 'a-%d-%d'.format(score, by) end")
+	incrToRet := rdb.Do(ctx, "zincrby", "zset", 1, "bar", "df", "function(old, score, by) 'a-%d-%d'.format(score, by) end", "incrto").Val()
 	assertEqual("a-6-1", rdb.Do(ctx, "zdata", "zset", "bar").Val())
+	assertEqual("-5", incrToRet)
 
 	rdb.Do(ctx, "zincrby", "zset", 2, "foo", "bm16", 100)
 	assertEqual([]string{"100"}, rdb.Do(ctx, "zdatabm16", "zset", "foo", 99, 101).Val())
@@ -677,6 +678,8 @@ func TestZAddMergeScore(t *testing.T) {
 	assertEqual("world", rdb.Do(ctx, "zdata", "ztmp", "a").Val())
 	rdb.Do(ctx, "zadd", "ztmp", "msbit", 63, 33, 7, "a")
 	assertEqual(1<<33+7, rdb.ZScore(ctx, "ztmp", "a").Val())
+	rdb.Do(ctx, "zadd", "ztmp", "mssum", 8, "a")
+	assertEqual(1<<33+7+8, rdb.ZScore(ctx, "ztmp", "a").Val())
 
 	s.Close()
 }

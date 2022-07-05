@@ -28,11 +28,14 @@ type zaddFlag struct {
 }
 
 type zincrbyFlag struct {
-	dataFunc bas.Value
-	setData  bool
-	data     []byte
-	bm16Data bool
-	bm16     uint16
+	dataFunc    bas.Value
+	incrToValue bool
+	setData     bool
+	data        []byte
+	bm16Data    bool
+	bm16        uint16
+	addToMember string
+	subToMember string
 }
 
 func defaultMergeScore(old, new float64) float64 {
@@ -156,6 +159,14 @@ func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte)
 			i++
 		case "DATA":
 			flags.setData, flags.data = true, command.Bytes(i+1)
+			i++
+		case "INCRTO":
+			flags.incrToValue = true
+		case "ADDTM":
+			flags.addToMember = command.Get(i + 1)
+			i++
+		case "SUBTM":
+			flags.subToMember = command.Get(i + 1)
 			i++
 		}
 	}
@@ -408,14 +419,17 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 			dataBuf = flags.data
 		}
 
-		if by == 0 {
-			_ = "special case: zincrby name 0 non_existed_key"
+		newScore := score + by
+		retScore := newScore
+		if flags.incrToValue {
+			retScore = by - score
+			newScore = by
 		}
-		if err := checkScore(score + by); err != nil {
+		if err := checkScore(newScore); err != nil {
 			return 0, err
 		}
 
-		scoreBuf := s2pkg.FloatToBytes(score + by)
+		scoreBuf := s2pkg.FloatToBytes(newScore)
 		if err := tx.Set(append(bkName, member...), scoreBuf, pebble.Sync); err != nil {
 			return 0, err
 		}
@@ -427,7 +441,18 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 				return nil, err
 			}
 		}
-		return score + by, writeLog(tx, dd)
+		return retScore, writeLog(tx, dd)
+	}
+	if flags.addToMember != "" {
+		flags.addToMember = ""
+		f2 := func(tx extdb.LogTx) (interface{}, error) {
+			v, err := f(tx)
+			if err != nil {
+				return v, err
+			}
+			prepareZIncrBy(key, flags.addToMember, v.(float64), flags)
+		}
+		f = f2
 	}
 	return preparedTx{f: f}
 }

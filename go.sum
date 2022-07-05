@@ -47,6 +47,8 @@ github.com/coyove/nj v0.0.0-20220622064252-cc4ce2f7f136 h1:XdIrSE8mlEcJXNi5Tj8lY
 github.com/coyove/nj v0.0.0-20220622064252-cc4ce2f7f136/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/coyove/nj v0.0.0-20220624064807-00845b27ef87 h1:Ux+S0GnFBRksjxcprPDp/cLvyIWClFiGdqUxRYg1SBE=
 github.com/coyove/nj v0.0.0-20220624064807-00845b27ef87/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
+github.com/coyove/nj v0.0.0-20220701110002-7dfa682a37f9 h1:6bTp15ftmKy6avjS/pZEgWALPexZ98M1Skw0iDDgvQg=
+github.com/coyove/nj v0.0.0-20220701110002-7dfa682a37f9/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

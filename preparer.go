@@ -25,7 +25,10 @@ type zaddFlag struct {
 	preserveOldData bool // if old data exists
 	bm16Data        bool
 	delScoreLt      float64
-	mergeScore      func(float64, float64) float64
+	mergeScore      struct {
+		f      func(float64, float64) float64
+		custom bool
+	}
 }
 
 type zincrbyFlag struct {
@@ -62,10 +65,8 @@ func parseMergeScoreBitRange(command *wire.Command, idx int, rangeOnly bool) (in
 }
 
 func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	flags := zaddFlag{
-		delScoreLt: math.NaN(),
-		mergeScore: defaultMergeScore,
-	}
+	flags := zaddFlag{delScoreLt: math.NaN()}
+	flags.mergeScore.f = defaultMergeScore
 
 	var idx = 2
 	for ; ; idx++ {
@@ -86,24 +87,30 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 			idx++
 			flags.delScoreLt = command.Float64(idx)
 		case "MSSUM":
-			flags.mergeScore = func(old, new float64) float64 { return old + new }
+			flags.mergeScore.f = func(old, new float64) float64 { return old + new }
+			flags.mergeScore.custom = true
 		case "MSAVG":
-			flags.mergeScore = func(old, new float64) float64 { return (old + new) / 2 }
+			flags.mergeScore.f = func(old, new float64) float64 { return (old + new) / 2 }
+			flags.mergeScore.custom = true
 		case "MSBIT": // hi lo
 			mask, _ := parseMergeScoreBitRange(command, idx, true)
-			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) | int64(n)) }
+			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) | int64(n)) }
+			flags.mergeScore.custom = true
 			idx += 2
 		case "MSBITSET": // hi lo at
 			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) | at | int64(n)) }
+			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) | at | int64(n)) }
+			flags.mergeScore.custom = true
 			idx += 3
 		case "MSBITCLR": // hi lo at
 			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o)&mask)&^at | int64(n)) }
+			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o)&mask)&^at | int64(n)) }
+			flags.mergeScore.custom = true
 			idx += 3
 		case "MSBITINV": // hi lo at
 			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore = func(o, n float64) float64 { return float64((int64(o) & mask) ^ at | int64(n)) }
+			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) ^ at | int64(n)) }
+			flags.mergeScore.custom = true
 			idx += 3
 		default:
 			goto MEMEBRS
@@ -240,8 +247,8 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 
 func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
-		if !math.IsNaN(flags.delScoreLt) {
-			// Filter out all DSLT in advance
+		if !math.IsNaN(flags.delScoreLt) && !flags.mergeScore.custom {
+			// Filter out all DSLT in advance, if no custom mergeScore function is provided
 			for i := len(pairs) - 1; i >= 0; i-- {
 				if pairs[i].Score < flags.delScoreLt {
 					pairs = append(pairs[:i], pairs[i+1:]...)
@@ -267,7 +274,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				if flags.bm16Data {
 					p.Data, _ = bitmap.Add(nil, uint16(s2pkg.MustParseFloatBytes(p.Data)))
 				}
-				p.Score = flags.mergeScore(0, p.Score)
+				p.Score = flags.mergeScore.f(0, p.Score)
 				added++
 			} else if err != nil {
 				// Bad error
@@ -296,7 +303,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 					return nil, err
 				}
 				oldScore := s2pkg.BytesToFloat(scoreBuf)
-				p.Score = flags.mergeScore(oldScore, p.Score)
+				p.Score = flags.mergeScore.f(oldScore, p.Score)
 				if p.Score != oldScore {
 					updated++
 				}

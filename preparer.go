@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/pebble"
@@ -29,13 +30,16 @@ type zaddFlag struct {
 
 type zincrbyFlag struct {
 	dataFunc    bas.Value
-	incrToValue bool
+	incrToScore bool
 	setData     bool
 	data        []byte
 	bm16Data    bool
 	bm16        uint16
-	addToMember string
-	subToMember string
+	add         struct {
+		score2   float64
+		retScale float64
+		member   string
+	}
 }
 
 func defaultMergeScore(old, new float64) float64 {
@@ -147,7 +151,7 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 }
 
 func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	// ZINCRBY key score member [DF datafunc] [BM16 bit] [DATA data]
+	// ZINCRBY key score member [DF datafunc] [BM16 bit] [DATA data] [ADD source member2] [INCRTO]
 	var flags zincrbyFlag
 	for i := 4; i < command.ArgCount(); i++ {
 		switch strings.ToUpper(command.Get(i)) {
@@ -161,13 +165,20 @@ func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte)
 			flags.setData, flags.data = true, command.Bytes(i+1)
 			i++
 		case "INCRTO":
-			flags.incrToValue = true
-		case "ADDTM":
-			flags.addToMember = command.Get(i + 1)
-			i++
-		case "SUBTM":
-			flags.subToMember = command.Get(i + 1)
-			i++
+			flags.incrToScore = true
+		case "ADD":
+			source := command.Get(i + 1)
+			if v, err := strconv.ParseFloat(source, 64); err == nil {
+				flags.add.score2, flags.add.retScale = v, math.NaN()
+			} else if strings.EqualFold(source, "result") {
+				flags.add.score2, flags.add.retScale = math.NaN(), 1
+			} else if strings.EqualFold(source, "negresult") {
+				flags.add.score2, flags.add.retScale = math.NaN(), -1
+			} else {
+				panic("ZINCRBY ADD invalid source: " + source)
+			}
+			flags.add.member = command.Get(i + 2)
+			i += 2
 		}
 	}
 	return prepareZIncrBy(key, command.Get(3), command.Float64(2), flags, dd)
@@ -421,7 +432,7 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 
 		newScore := score + by
 		retScore := newScore
-		if flags.incrToValue {
+		if flags.incrToScore {
 			retScore = by - score
 			newScore = by
 		}
@@ -441,18 +452,35 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 				return nil, err
 			}
 		}
+		if dd == nil {
+			// Special case: (ZINCRBY key score member) (ADD ...)
+			// dd has been written in the first ZINCRBY, there is no need to
+			// write again in the second ADD
+			return retScore, nil
+		}
 		return retScore, writeLog(tx, dd)
 	}
-	if flags.addToMember != "" {
-		flags.addToMember = ""
-		f2 := func(tx extdb.LogTx) (interface{}, error) {
-			v, err := f(tx)
+	if flags.add.member != "" {
+		f2 := f
+		f = func(tx extdb.LogTx) (interface{}, error) {
+			flags2 := flags
+			am := flags2.add.member
+			flags2.add.member = ""
+			flags2.incrToScore = false
+			v, err := f2(tx)
 			if err != nil {
-				return v, err
+				return nil, err
 			}
-			prepareZIncrBy(key, flags.addToMember, v.(float64), flags)
+			if math.Abs(flags2.add.retScale) == 1 {
+				_, err = prepareZIncrBy(key, am, v.(float64)*flags.add.retScale, flags2, nil).f(tx)
+			} else {
+				_, err = prepareZIncrBy(key, am, flags2.add.score2, flags2, nil).f(tx)
+			}
+			if err != nil {
+				return nil, err
+			}
+			return v, nil
 		}
-		f = f2
 	}
 	return preparedTx{f: f}
 }

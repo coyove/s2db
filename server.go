@@ -470,6 +470,13 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteInt(int64(logtail))
+	case "REQUESTLOGS":
+		// REQUESTLOGS <Shard> <LogStart>
+		logs, err := s.respondLog(s2pkg.MustParseInt(key), uint64(command.Int64(2)))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulk(logs.MarshalBytes())
 	case "SWITCH":
 		s.switchMasterLock.Lock()
 		defer s.switchMasterLock.Unlock()

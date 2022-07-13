@@ -10,6 +10,26 @@ import (
 	"github.com/golang/snappy"
 )
 
+// func TestRoaring(t *testing.T) {
+// 	m := roaring.New()
+// 	h := s2pkg.PairHeap{}
+// 	rand.Seed(time.Now().Unix())
+// 	for i := 0; i < 65536; i++ {
+// 		v := rand.Uint32()
+// 		m.Add(v)
+// 		heap.Push(&h, s2pkg.Pair{Score: float64(v)})
+// 	}
+//
+// 	x := &bytes.Buffer{}
+// 	w := gzip.NewWriter(x)
+// 	for h.Len() > 0 {
+// 		p := heap.Pop(&h).(s2pkg.Pair)
+// 		binary.Write(w, binary.BigEndian, uint32(p.Score))
+// 	}
+// 	w.Close()
+// 	fmt.Println(m.GetSizeInBytes(), x.Len())
+// }
+
 func TestBitmapExistingMember(t *testing.T) {
 	var e []byte
 	e, _ = Add(e, 10)

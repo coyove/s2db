@@ -382,12 +382,16 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 	ddl := time.Now().Add(flags.Timeout)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
 		count, hits := 0, 0
-		for key, mustIntersect := range flags.Intersect {
-			bkName, _, _ := ranges.GetZSetRangeKey(key)
-			x := append(bkName, p.Member...)
-			iter.SeekGE(x)
-			exist := iter.Valid() && bytes.Equal(iter.Key(), x)
-			if !mustIntersect {
+		for _, ia := range flags.Intersect {
+			var exist bool
+			if ia.Bitmap != nil {
+				exist = ia.Bitmap.Contains(s2pkg.HashStr32(p.Member))
+			} else {
+				bkName, _, _ := ranges.GetZSetRangeKey(ia.Key)
+				x := append(bkName, p.Member...)
+				exist = iter.SeekGE(x) && bytes.Equal(iter.Key(), x)
+			}
+			if ia.Not {
 				if exist {
 					goto OUT
 				}

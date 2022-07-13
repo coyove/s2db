@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 )
@@ -342,6 +343,12 @@ func (r *Parser) Commands() <-chan *Command {
 	return cmds
 }
 
+type intersectArgs struct {
+	Key    string
+	Bitmap *roaring.Bitmap
+	Not    bool
+}
+
 type Flags struct {
 	Match   string
 	TwoHops struct {
@@ -349,7 +356,7 @@ type Flags struct {
 		KeyFunc func(string) string
 	}
 	Union        []string
-	Intersect    map[string]bool
+	Intersect    []intersectArgs
 	Limit        int
 	ILimit       *float64
 	Count        int
@@ -390,16 +397,15 @@ func (c Command) Flags(start int) (f Flags) {
 			f.Match = c.Get(i + 1)
 			i++
 		} else if c.EqualFold(i, "INTERSECT") {
-			if f.Intersect == nil {
-				f.Intersect = map[string]bool{}
-			}
-			f.Intersect[c.Get(i+1)] = true
+			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Get(i + 1)})
 			i++
 		} else if c.EqualFold(i, "NOTINTERSECT") {
-			if f.Intersect == nil {
-				f.Intersect = map[string]bool{}
-			}
-			f.Intersect[c.Get(i+1)] = false
+			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Get(i + 1), Not: true})
+			i++
+		} else if c.EqualFold(i, "INBITMAP") {
+			m := roaring.New()
+			s2pkg.PanicErr(m.UnmarshalBinary(c.At(i + 1)))
+			f.Intersect = append(f.Intersect, intersectArgs{Bitmap: m})
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
 			f.TwoHops.Member = c.Get(i + 1)

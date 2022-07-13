@@ -12,6 +12,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
@@ -61,6 +62,7 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags wire
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeLex(key, ranges.Lex(start), ranges.Lex(end), ro))
+	c.BitmapToFakePair()
 	return c.Pairs, err
 }
 
@@ -75,11 +77,27 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeScore(key, ranges.Score(start), ranges.Score(end), ro))
+	c.BitmapToFakePair()
 	return c.Pairs, err
 }
 
 func (s *Server) createRangeOptions(ro ranges.Options, flags wire.Flags) (_ ranges.Options, closer func() error) {
-	if flags.Intersect != nil {
+	if flags.MemberBitmap {
+		ro.Limit = flags.Limit
+		ro.Append, closer = func(r *ranges.Result, p s2pkg.Pair) error {
+			if r.Bitmap == nil {
+				r.Bitmap = roaring.New()
+			}
+			r.Bitmap.Add(s2pkg.HashStr32(p.Member))
+			r.Count++
+			if len(r.Pairs) == 0 {
+				r.Pairs = []s2pkg.Pair{p}
+			} else {
+				r.Pairs[0] = p
+			}
+			return nil
+		}, func() error { return nil }
+	} else if flags.Intersect != nil {
 		ro.Limit = math.MaxInt64
 		ro.Append, closer = s.makeIntersect(flags)
 	} else if flags.TwoHops.Member != "" {

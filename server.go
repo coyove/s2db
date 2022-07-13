@@ -573,7 +573,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
 		if v := s.getCache(cmdHash, weak); v != nil {
-			return w.WriteBulkStrings(redisPairs(v.([]s2pkg.Pair), flags))
+			return w.WriteBulksSlice(redisPairs(v.([]s2pkg.Pair), flags))
 		}
 		start, end := command.Get(2), command.Get(3)
 		if end == "" {
@@ -589,7 +589,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteError(err.Error())
 		}
 		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
-		return w.WriteBulkStrings(redisPairs(p, flags))
+		return w.WriteBulksSlice(redisPairs(p, flags))
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		pf, flags := parseNormFlag(isRev, command)
 		if v := s.getCache(cmdHash, weak); v != nil {
@@ -612,7 +612,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				s.addCacheMultiKeys(flags.Union, cmdHash, p, wms)
 			}
 		}
-		return w.WriteBulkStrings(redisPairs(pf(p), flags))
+		return w.WriteBulksSlice(redisPairs(pf(p), flags))
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)

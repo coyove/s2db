@@ -58,15 +58,15 @@ func toStrings(b [][]byte) (keys []string) {
 	return keys
 }
 
-func redisPairs(in []s2pkg.Pair, flags wire.Flags) []string {
-	data := make([]string, 0, len(in))
+func redisPairs(in []s2pkg.Pair, flags wire.Flags) [][]byte {
+	data := make([][]byte, 0, len(in))
 	for _, p := range in {
-		data = append(data, p.Member)
+		data = append(data, []byte(p.Member))
 		if flags.WithScores || flags.WithData {
-			data = append(data, s2pkg.FormatFloat(p.Score))
+			data = append(data, s2pkg.FormatFloatBulk(p.Score))
 		}
 		if flags.WithData {
-			data = append(data, string(p.Data))
+			data = append(data, p.Data)
 		}
 	}
 	return data

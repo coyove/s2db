@@ -348,14 +348,15 @@ type Flags struct {
 		Member  string
 		KeyFunc func(string) string
 	}
-	Union      []string
-	Intersect  map[string]bool
-	Limit      int
-	ILimit     *float64
-	Count      int
-	WithData   bool
-	WithScores bool
-	Timeout    time.Duration
+	Union        []string
+	Intersect    map[string]bool
+	Limit        int
+	ILimit       *float64
+	Count        int
+	WithData     bool
+	WithScores   bool
+	MemberBitmap bool
+	Timeout      time.Duration
 }
 
 func (f *Flags) IsSpecial() bool {
@@ -425,6 +426,10 @@ func (c Command) Flags(start int) (f Flags) {
 		} else {
 			f.WithData = f.WithData || c.EqualFold(i, "WITHDATA")
 			f.WithScores = f.WithScores || c.EqualFold(i, "WITHSCORES")
+			f.MemberBitmap = f.MemberBitmap || c.EqualFold(i, "MBRBITMAP")
+			if f.MemberBitmap {
+				f.WithData = true
+			}
 		}
 	}
 	return

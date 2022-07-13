@@ -164,6 +164,10 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			if err := w.WriteBulkStrings(v); err != nil {
 				return err
 			}
+		case [][]byte:
+			if err := w.WriteBulksSlice(v); err != nil {
+				return err
+			}
 		case []byte:
 			if err := w.WriteBulk(v); err != nil {
 				return err

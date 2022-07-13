@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2pkg"
 )
@@ -49,8 +50,21 @@ var HardLimit = 65535
 var HardMatchTimeout = time.Second * 30
 
 type Result struct {
-	Pairs []s2pkg.Pair
-	Count int
+	Pairs  []s2pkg.Pair
+	Count  int
+	Bitmap *roaring.Bitmap
+}
+
+func (rr *Result) BitmapToFakePair() {
+	if rr.Bitmap == nil {
+		return
+	}
+	b, _ := rr.Bitmap.MarshalBinary()
+	rr.Pairs = append(rr.Pairs, s2pkg.Pair{
+		Member: "mbrbitmap",
+		Score:  float64(rr.Bitmap.GetCardinality()),
+		Data:   b,
+	})
 }
 
 func DefaultAppend(r *Result, p s2pkg.Pair) error {

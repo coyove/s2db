@@ -166,6 +166,13 @@ func HashStr(s string) (h uint64) {
 	return h
 }
 
+func HashStr32(s string) (h uint32) {
+	var b []byte
+	*(*[2]int)(unsafe.Pointer(&b)) = *(*[2]int)(unsafe.Pointer(&s))
+	(*(*[3]int)(unsafe.Pointer(&b)))[2] = len(s)
+	return crc32.ChecksumIEEE(b)
+}
+
 func HashMultiBytes(in [][]byte) string {
 	h := [2]uint64{0, 5381}
 	for _, buf := range in {

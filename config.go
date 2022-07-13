@@ -42,6 +42,38 @@ type ServerConfig struct {
 	InspectorSource    string
 }
 
+func init() {
+	bas.AddGlobal("ctx", bas.ValueOf(context.TODO()))
+	bas.AddGlobalMethod("flags", func(env *bas.Env) {
+		cmd := wire.Command{}
+		for _, v := range env.Stack() {
+			cmd.Argv = append(cmd.Argv, bas.ToReadonlyBytes(v))
+		}
+		env.A = bas.ValueOf(cmd.Flags(0))
+	})
+	bas.AddGlobalMethod("log", func(env *bas.Env) {
+		x := bytes.Buffer{}
+		for _, a := range env.Stack() {
+			x.WriteString(a.String() + " ")
+		}
+		log.Info("[logIO] ", x.String())
+	})
+	bas.AddGlobalMethod("shardOf", func(e *bas.Env) {
+		e.A = bas.Int(shardIndex(e.Str(0)))
+	})
+	bas.AddGlobalMethod("atof", func(e *bas.Env) {
+		v := s2pkg.MustParseFloat(e.Str(0))
+		e.A = bas.Float64(v)
+	})
+	bas.AddGlobalMethod("hashmb", func(e *bas.Env) {
+		v := make([][]byte, 0, e.Size())
+		for i := range v {
+			v = append(v, bas.ToReadonlyBytes(e.Get(i)))
+		}
+		e.A = bas.Str(s2pkg.HashMultiBytes(v))
+	})
+}
+
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		buf, err := extdb.GetKey(s.DB, []byte("config__"+strings.ToLower(f.Name)))
@@ -242,58 +274,25 @@ func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, err
 	}
 	defer s2pkg.Recover(nil)
 	f, _ := s.SelfManager.Get(name)
-	if !bas.IsCallable(f) {
+	if !f.IsObject() {
 		return f, nil
 	}
 	in := make([]bas.Value, len(args))
 	for i := range in {
 		in[i] = bas.ValueOf(args[i])
 	}
-	res, err := bas.Call2(f.Object(), in...)
+	res, err := f.Object().TryCall(nil, in...)
 	if err != nil {
 		log.Errorf("runScript(%s): %v", name, err)
 	}
 	return res, err
 }
 
-func (s *Server) getScriptEnviron(args ...[]byte) *bas.Environment {
-	var a []bas.Value
-	for _, arg := range args {
-		a = append(a, bas.Str(string(arg)))
-	}
-	return &bas.Environment{
-		Globals: bas.NewObject(0).
+func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
+	return &nj.LoadOptions{
+		Globals: bas.NewObject(8).
 			SetProp("server", bas.ValueOf(s)).
-			SetProp("ctx", bas.ValueOf(context.TODO())).
-			SetProp("args", bas.Array(a...)).
-			SetMethod("flags", func(env *bas.Env) {
-				cmd := wire.Command{}
-				for _, v := range env.Stack() {
-					cmd.Argv = append(cmd.Argv, bas.ToReadonlyBytes(v))
-				}
-				env.A = bas.ValueOf(cmd.Flags(0))
-			}).
-			SetMethod("log", func(env *bas.Env) {
-				x := bytes.Buffer{}
-				for _, a := range env.Stack() {
-					x.WriteString(a.String() + " ")
-				}
-				log.Info("[logIO] ", x.String())
-			}).
-			SetMethod("shardOf", func(e *bas.Env) {
-				e.A = bas.Int(shardIndex(e.Str(0)))
-			}).
-			SetMethod("atof", func(e *bas.Env) {
-				v := s2pkg.MustParseFloat(e.Str(0))
-				e.A = bas.Float64(v)
-			}).
-			SetMethod("hashmb", func(e *bas.Env) {
-				v := make([][]byte, 0, e.Size())
-				for i := range v {
-					v = append(v, bas.ToReadonlyBytes(e.Get(i)))
-				}
-				e.A = bas.Str(s2pkg.HashMultiBytes(v))
-			}).
+			SetProp("args", bas.ValueOf(args)).
 			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {

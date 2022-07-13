@@ -422,8 +422,8 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 			added = true
 		}
 
-		if bas.IsCallable(flags.dataFunc) {
-			res, err := bas.Call2(flags.dataFunc.Object(), bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
+		if flags.dataFunc.IsObject() {
+			res, err := flags.dataFunc.Object().TryCall(nil, bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
 			if err != nil {
 				return 0, err
 			}

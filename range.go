@@ -12,8 +12,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/RoaringBitmap/roaring"
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
@@ -62,7 +62,7 @@ func (s *Server) ZRangeByLex(rev bool, key string, start, end string, flags wire
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeLex(key, ranges.Lex(start), ranges.Lex(end), ro))
-	c.BitmapToFakePair()
+	c.BFToFakePair()
 	return c.Pairs, err
 }
 
@@ -77,23 +77,23 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 	}, flags)
 	defer closer()
 	c, err := s.runPreparedRangeTx(key, rangeScore(key, ranges.Score(start), ranges.Score(end), ro))
-	c.BitmapToFakePair()
+	c.BFToFakePair()
 	return c.Pairs, err
 }
 
 func (s *Server) createRangeOptions(ro ranges.Options, flags wire.Flags) (_ ranges.Options, closer func() error) {
-	if flags.MemberBitmap {
+	if !math.IsNaN(flags.MemberBF) {
 		ro.Limit = flags.Limit
 		ro.Append, closer = func(r *ranges.Result, p s2pkg.Pair) error {
-			if r.Bitmap == nil {
-				r.Bitmap = roaring.New()
+			if r.Bloom == nil {
+				r.Bloom = bitmap.NewBloomFilter(int(ro.Limit), flags.MemberBF)
 			}
-			r.Bitmap.Add(s2pkg.HashStr32(p.Member))
+			r.Bloom.Add(p.Member)
 			r.Count++
 			if len(r.Pairs) == 0 {
-				r.Pairs = []s2pkg.Pair{p}
+				r.Pairs = []s2pkg.Pair{p, p}
 			} else {
-				r.Pairs[0] = p
+				r.Pairs[1] = p
 			}
 			return nil
 		}, func() error { return nil }
@@ -384,8 +384,8 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 		count, hits := 0, 0
 		for _, ia := range flags.Intersect {
 			var exist bool
-			if ia.Bitmap != nil {
-				exist = ia.Bitmap.Contains(s2pkg.HashStr32(p.Member))
+			if ia.Bloom != nil {
+				exist = ia.Bloom.Contains(p.Member)
 			} else {
 				bkName, _, _ := ranges.GetZSetRangeKey(ia.Key)
 				x := append(bkName, p.Member...)

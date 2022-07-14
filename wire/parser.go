@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/RoaringBitmap/roaring"
+	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 )
@@ -344,9 +345,9 @@ func (r *Parser) Commands() <-chan *Command {
 }
 
 type intersectArgs struct {
-	Key    string
-	Bitmap *roaring.Bitmap
-	Not    bool
+	Key   string
+	Bloom *bitmap.Bloom
+	Not   bool
 }
 
 type Flags struct {
@@ -355,15 +356,15 @@ type Flags struct {
 		Member  string
 		KeyFunc func(string) string
 	}
-	Union        []string
-	Intersect    []intersectArgs
-	Limit        int
-	ILimit       *float64
-	Count        int
-	WithData     bool
-	WithScores   bool
-	MemberBitmap bool
-	Timeout      time.Duration
+	Union      []string
+	Intersect  []intersectArgs
+	Limit      int
+	ILimit     *float64
+	Count      int
+	WithData   bool
+	WithScores bool
+	MemberBF   float64
+	Timeout    time.Duration
 }
 
 func (f *Flags) IsSpecial() bool {
@@ -374,6 +375,7 @@ func (c Command) Flags(start int) (f Flags) {
 	f.Limit = ranges.HardLimit
 	f.Count = ranges.HardLimit
 	f.Timeout = time.Second
+	f.MemberBF = math.NaN()
 	if start == -1 {
 		return
 	}
@@ -402,10 +404,10 @@ func (c Command) Flags(start int) (f Flags) {
 		} else if c.EqualFold(i, "NOTINTERSECT") {
 			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Get(i + 1), Not: true})
 			i++
-		} else if c.EqualFold(i, "INBITMAP") {
-			m := roaring.New()
-			s2pkg.PanicErr(m.UnmarshalBinary(c.At(i + 1)))
-			f.Intersect = append(f.Intersect, intersectArgs{Bitmap: m})
+		} else if c.EqualFold(i, "INTBFDATA") {
+			bf, err := bitmap.BloomFilterUnmarshalBinary(c.At(i + 1))
+			s2pkg.PanicErr(err)
+			f.Intersect = append(f.Intersect, intersectArgs{Bloom: bf})
 			i++
 		} else if c.EqualFold(i, "TWOHOPS") {
 			f.TwoHops.Member = c.Get(i + 1)
@@ -429,13 +431,12 @@ func (c Command) Flags(start int) (f Flags) {
 		} else if c.EqualFold(i, "TIMEOUT") {
 			f.Timeout, _ = time.ParseDuration(c.Get(i + 1))
 			i++
+		} else if c.EqualFold(i, "MEMBERBF") {
+			f.MemberBF, f.WithData = c.Float64(i+1), true
+			i++
 		} else {
 			f.WithData = f.WithData || c.EqualFold(i, "WITHDATA")
 			f.WithScores = f.WithScores || c.EqualFold(i, "WITHSCORES")
-			f.MemberBitmap = f.MemberBitmap || c.EqualFold(i, "MBRBITMAP")
-			if f.MemberBitmap {
-				f.WithData = true
-			}
 		}
 	}
 	return

@@ -3,6 +3,7 @@ package bitmap
 import (
 	"fmt"
 	"math/rand"
+	"strconv"
 	"testing"
 	"time"
 
@@ -10,25 +11,36 @@ import (
 	"github.com/golang/snappy"
 )
 
-// func TestRoaring(t *testing.T) {
-// 	m := roaring.New()
-// 	h := s2pkg.PairHeap{}
-// 	rand.Seed(time.Now().Unix())
-// 	for i := 0; i < 65536; i++ {
-// 		v := rand.Uint32()
-// 		m.Add(v)
-// 		heap.Push(&h, s2pkg.Pair{Score: float64(v)})
-// 	}
-//
-// 	x := &bytes.Buffer{}
-// 	w := gzip.NewWriter(x)
-// 	for h.Len() > 0 {
-// 		p := heap.Pop(&h).(s2pkg.Pair)
-// 		binary.Write(w, binary.BigEndian, uint32(p.Score))
-// 	}
-// 	w.Close()
-// 	fmt.Println(m.GetSizeInBytes(), x.Len())
-// }
+func TestBloom(t *testing.T) {
+	const N = 1e5
+	r := map[uint32]bool{}
+	m := roaring.New()
+	m2 := NewBloomFilter(N, 0.01)
+	rand.Seed(time.Now().Unix())
+	for i := 0; i < N*2; i++ {
+		v := rand.Uint32()
+		if i%2 == 0 {
+			m.Add(v)
+			m2.Add(strconv.FormatUint(uint64(v), 10))
+		}
+		r[v] = true
+	}
+	x := m2.MarshalBinary()
+	b, _ := BloomFilterUnmarshalBinary(x)
+	fmt.Println(m.GetSerializedSizeInBytes(), len(x))
+
+	fp := 0
+	for v := range r {
+		vs := strconv.FormatUint(uint64(v), 10)
+		if m2.Contains(vs) != b.Contains(vs) {
+			t.Fatal()
+		}
+		if !m2.Contains(vs) {
+			fp++
+		}
+	}
+	fmt.Println(fp, N)
+}
 
 func TestBitmapExistingMember(t *testing.T) {
 	var e []byte

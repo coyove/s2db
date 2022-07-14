@@ -13,6 +13,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
+	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	s2pkg "github.com/coyove/s2db/s2pkg"
@@ -71,6 +72,11 @@ func init() {
 			v = append(v, bas.ToReadonlyBytes(e.Get(i)))
 		}
 		e.A = bas.Str(s2pkg.HashMultiBytes(v))
+	})
+	bas.AddGlobalMethod("bfparse", func(e *bas.Env) {
+		bf, err := bitmap.BloomFilterUnmarshalBinary(bas.ToReadonlyBytes(e.Get(0)))
+		s2pkg.PanicErr(err)
+		e.A = bas.ValueOf(bf)
 	})
 }
 

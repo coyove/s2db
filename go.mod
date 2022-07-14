@@ -3,7 +3,9 @@ module github.com/coyove/s2db
 go 1.16
 
 require (
+	github.com/AndreasBriese/bbloom v0.0.0-20190306092124-e2d15f34fcf9
 	github.com/RoaringBitmap/roaring v1.1.0
+	github.com/bits-and-blooms/bitset v1.2.2 // indirect
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
 	github.com/coyove/nj v0.0.0-20220713031930-edc802d54cd4

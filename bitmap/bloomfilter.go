@@ -99,7 +99,7 @@ func BloomFilterUnmarshalBinary(b []byte) (*Bloom, error) {
 	}
 	switch b[0] {
 	case 0:
-		b = b[1:]
+		b = append([]byte{}, b[1:]...)
 	case 1:
 		rd, err := gzip.NewReader(bytes.NewReader(b[1:]))
 		if err != nil {

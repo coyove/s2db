@@ -356,6 +356,11 @@ type Flags struct {
 		Member  string
 		KeyFunc func(string) string
 	}
+	FanoutScore struct {
+		Enabled    bool
+		KeyFunc    func(string) string
+		Start, End ranges.Limit
+	}
 	Union      []string
 	Intersect  []intersectArgs
 	Limit      int
@@ -368,7 +373,7 @@ type Flags struct {
 }
 
 func (f *Flags) IsSpecial() bool {
-	return f.TwoHops.Member != "" || len(f.Intersect) > 0
+	return f.TwoHops.Member != "" || len(f.Intersect) > 0 || f.FanoutScore.Enabled
 }
 
 func (c Command) Flags(start int) (f Flags) {
@@ -415,16 +420,13 @@ func (c Command) Flags(start int) (f Flags) {
 			i++
 			if c.EqualFold(i+1, "CONCATKEY") {
 				i++
-				prefix := c.Get(i + 1)
-				start, end := int(c.Int64(i+2)), int(c.Int64(i+3))
-				suffix := c.Get(i + 4)
-				f.TwoHops.KeyFunc = func(in string) string {
-					s := (start + len(in)) % len(in)
-					e := (end + len(in)) % len(in)
-					return prefix + in[s:e+1] + suffix
-				}
-				i += 4
+				f.TwoHops.KeyFunc = parseConcatKeyFunc(&i, &c)
 			}
+		} else if c.EqualFold(i, "FANOUTSCORE") {
+			f.FanoutScore.Enabled = true
+			f.FanoutScore.KeyFunc = parseConcatKeyFunc(&i, &c)
+			f.FanoutScore.Start, f.FanoutScore.End = ranges.Score(c.Get(i+1)), ranges.Score(c.Get(i+2))
+			i += 2
 		} else if c.EqualFold(i, "UNION") {
 			f.Union = append(f.Union, c.Get(i+1))
 			i++
@@ -440,4 +442,21 @@ func (c Command) Flags(start int) (f Flags) {
 		}
 	}
 	return
+}
+
+func parseConcatKeyFunc(i *int, c *Command) func(string) string {
+	prefix := c.Get(*i + 1)
+	if c.EqualFold(*i+2, "~") {
+		*i += 2
+		return func(in string) string { return prefix + in }
+	}
+	start := int(c.Int64(*i + 2))
+	end := int(c.Int64(*i + 3))
+	suffix := c.Get(*i + 4)
+	*i += 4
+	return func(in string) string {
+		s := (start + len(in)) % len(in)
+		e := (end + len(in)) % len(in)
+		return prefix + in[s:e+1] + suffix
+	}
 }

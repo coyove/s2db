@@ -11,35 +11,69 @@ import (
 	"github.com/golang/snappy"
 )
 
-func TestBloom(t *testing.T) {
-	const N = 1e5
-	r := map[uint32]bool{}
+func TestRoaring(t *testing.T) {
 	m := roaring.New()
-	m2 := NewBloomFilter(N, 0.01)
 	rand.Seed(time.Now().Unix())
-	for i := 0; i < N*2; i++ {
-		v := rand.Uint32()
-		if i%2 == 0 {
-			m.Add(v)
-			m2.Add(strconv.FormatUint(uint64(v), 10))
-		}
-		r[v] = true
+	c := rand.Uint32() % 1000000
+	for i := 0; i < 1e7; i++ {
+		m.Add(uint32(c))
+		c += rand.Uint32() / 100
 	}
-	x := m2.MarshalBinary()
-	b, _ := BloomFilterUnmarshalBinary(x)
-	fmt.Println(m.GetSerializedSizeInBytes(), len(x))
+	b, _ := m.MarshalBinary()
+	fmt.Println(len(b))
+	m.UnmarshalBinary(b)
+	fmt.Println(len(b))
+}
 
-	fp := 0
-	for v := range r {
-		vs := strconv.FormatUint(uint64(v), 10)
-		if m2.Contains(vs) != b.Contains(vs) {
-			t.Fatal()
+func TestBloom(t *testing.T) {
+	do := func(N int) {
+		r := map[uint32]bool{}
+		m := roaring.New()
+		m2 := NewBloomFilter(N, 0.01)
+		rand.Seed(time.Now().Unix())
+		for i := 0; i < N*2; i++ {
+			v := rand.Uint32()
+			if i%2 == 0 {
+				m.Add(v)
+				m2.Add(strconv.FormatUint(uint64(v), 10))
+			}
+			r[v] = true
 		}
-		if !m2.Contains(vs) {
-			fp++
+		x := m2.MarshalBinary()
+		b, _ := BloomFilterUnmarshalBinary(x)
+		fmt.Println(m.GetSerializedSizeInBytes(), len(x))
+
+		fp := 0
+		for v := range r {
+			vs := strconv.FormatUint(uint64(v), 10)
+			if m2.Contains(vs) != b.Contains(vs) {
+				t.Fatal()
+			}
+			if !m2.Contains(vs) {
+				fp++
+			}
 		}
+		fmt.Println("test", fp, N)
 	}
-	fmt.Println(fp, N)
+	do(1e5)
+	do(1e4)
+	do(1e3)
+	do(1e2)
+	do(1e1)
+
+	bf := NewBloomFilter(10, 0.01)
+	for i := 0; i < 10; i++ {
+		bf.Add(strconv.Itoa(i))
+	}
+	if !bf.Contains("5") {
+		t.Fatal()
+	}
+	fmt.Println(bf.tiny32)
+	bf.MarshalBinary()
+	if !bf.Contains("5") {
+		t.Fatal()
+	}
+	fmt.Println(bf.tiny32)
 }
 
 func TestBitmapExistingMember(t *testing.T) {

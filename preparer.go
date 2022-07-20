@@ -318,7 +318,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 		}
 
 		// Delete members whose scores are smaller than DSLT
-		if !math.IsNaN(flags.delScoreLt) {
+		if !math.IsNaN(flags.delScoreLt) && *dsltMaxMembers > 0 {
 			c := tx.NewIter(&pebble.IterOptions{
 				LowerBound: bkScore,
 				UpperBound: s2pkg.IncBytes(bkScore),

@@ -38,6 +38,7 @@ var (
 		"ZRANGE": true, "ZREVRANGE": true,
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
+		"ZRANGERANGEBYSCORE": true, "ZREVRANGERANGEBYSCORE": true,
 		"SCAN": true,
 	}
 	isWriteCommand = map[string]bool{
@@ -67,6 +68,23 @@ func redisPairs(in []s2pkg.Pair, flags wire.Flags) [][]byte {
 		}
 		if flags.WithData {
 			data = append(data, p.Data)
+		}
+	}
+	return data
+}
+
+func redisPairsNested(in []s2pkg.Pair, flags wire.Flags) []interface{} {
+	data := make([]interface{}, 0, len(in))
+	for _, p := range in {
+		data = append(data, []byte(p.Member))
+		if flags.WithScores || flags.WithData {
+			data = append(data, s2pkg.FormatFloatBulk(p.Score))
+		}
+		if flags.WithData {
+			data = append(data, p.Data)
+		}
+		if p.Children != nil {
+			data = append(data, redisPairsNested(*p.Children, flags))
 		}
 	}
 	return data
@@ -254,7 +272,7 @@ func (s *Server) waitSlave() {
 
 func parseWeakFlag(in *wire.Command) time.Duration {
 	i := in.ArgCount() - 2
-	if i >= 2 && in.EqualFold(i, "WEAK") {
+	if i >= 2 && in.StrEqFold(i, "WEAK") {
 		x := s2pkg.MustParseFloatBytes(in.Argv[i+1])
 		in.Argv = in.Argv[:i]
 		return time.Duration(int64(x*1e6) * 1e3)
@@ -267,7 +285,7 @@ func defaultNorm(in []s2pkg.Pair) []s2pkg.Pair {
 }
 
 func parseNormFlag(rev bool, in *wire.Command) (func([]s2pkg.Pair) []s2pkg.Pair, wire.Flags) {
-	if !in.EqualFold(2, "--NORM--") {
+	if !in.StrEqFold(2, "--NORM--") {
 		return defaultNorm, in.Flags(4)
 	}
 
@@ -278,7 +296,7 @@ func parseNormFlag(rev bool, in *wire.Command) (func([]s2pkg.Pair) []s2pkg.Pair,
 
 	in.Argv = append(in.Argv[:2], in.Argv[4:]...)
 	flags := in.Flags(4)
-	start, end := ranges.Score(in.Get(2)), ranges.Score(in.Get(3))
+	start, end := ranges.Score(in.Str(2)), ranges.Score(in.Str(3))
 
 	normStart := start
 	if !math.IsInf(start.Float, 0) {

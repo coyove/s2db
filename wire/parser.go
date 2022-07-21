@@ -2,14 +2,13 @@ package wire
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 	"unsafe"
 
 	"github.com/coyove/s2db/bitmap"
@@ -51,7 +50,11 @@ type Command struct {
 	last bool
 }
 
-func (c *Command) At(index int) []byte {
+func (c *Command) Bytes(index int) []byte {
+	return append([]byte{}, c.BytesRef(index)...)
+}
+
+func (c *Command) BytesRef(index int) []byte {
 	if index >= 0 && index < len(c.Argv) {
 		return c.Argv[index]
 	} else {
@@ -59,25 +62,40 @@ func (c *Command) At(index int) []byte {
 	}
 }
 
-func (c *Command) Get(index int) string {
-	return string(c.At(index))
+func (c *Command) Str(index int) string {
+	return string(c.BytesRef(index))
+}
+
+func (c *Command) StrRef(index int) (s string) {
+	buf := c.BytesRef(index)
+	*(*[2]uintptr)(unsafe.Pointer(&s)) = *(*[2]uintptr)(unsafe.Pointer(&buf))
+	return
+}
+
+func (c *Command) Int(index int) int {
+	return int(c.Int64(index))
 }
 
 func (c *Command) Int64(index int) int64 {
-	return s2pkg.MustParseInt64(string(c.At(index)))
+	i, err := strconv.ParseInt(c.StrRef(index), 10, 64)
+	c.panicNumber(err, index)
+	return i
 }
 
 func (c *Command) Float64(index int) float64 {
-	return s2pkg.MustParseFloatBytes(c.At(index))
+	v, err := strconv.ParseFloat(c.StrRef(index), 64)
+	c.panicNumber(err, index)
+	return v
 }
 
-func (c *Command) Bytes(index int) []byte {
-	return append([]byte{}, c.At(index)...)
+func (c *Command) panicNumber(err error, index int) {
+	if err != nil {
+		panic(fmt.Errorf("invalid number %q at #%d: %v", c.BytesRef(index), index, err))
+	}
 }
 
-func (c *Command) EqualFold(index int, v string) bool {
-	buf := c.At(index)
-	return strings.EqualFold(*(*string)(unsafe.Pointer(&buf)), v)
+func (c *Command) StrEqFold(index int, v string) bool {
+	return strings.EqualFold(c.StrRef(index), v)
 }
 
 func (c *Command) ArgCount() int {
@@ -88,7 +106,7 @@ func (c *Command) IsLast() bool {
 	return c.last
 }
 
-func (c *Command) Args() []interface{} {
+func (c *Command) ArgsRef() []interface{} {
 	a := make([]interface{}, len(c.Argv))
 	for i := range c.Argv {
 		a[i] = c.Argv[i]
@@ -100,28 +118,17 @@ func (c *Command) String() string {
 	if len(c.Argv) == 0 {
 		return "NOP"
 	}
-	buf := bytes.NewBufferString(c.Get(0))
+	buf := bytes.ToUpper(c.BytesRef(0))
 	for i := 1; i < c.ArgCount(); i++ {
-		msg := c.At(i)
-		if i == 1 {
-			buf.WriteString("\t")
+		buf = append(buf, ' ')
+		msg := c.StrRef(i)
+		if _, err := strconv.ParseFloat(msg, 64); err == nil {
+			buf = append(buf, msg...)
 		} else {
-			buf.WriteString(" ")
-		}
-		if utf8.Valid(msg) {
-			x := *(*string)(unsafe.Pointer(&msg))
-			if _, err := strconv.ParseFloat(x, 64); err == nil {
-				buf.WriteString(x)
-			} else {
-				buf.Write(strconv.AppendQuote(nil, x))
-			}
-		} else {
-			w := base64.NewEncoder(base64.URLEncoding, buf)
-			w.Write(msg)
-			w.Close()
+			buf = strconv.AppendQuote(buf, msg)
 		}
 	}
-	return buf.String()
+	return string(buf)
 }
 
 type Parser struct {
@@ -351,16 +358,9 @@ type intersectArgs struct {
 }
 
 type Flags struct {
-	Match   string
-	TwoHops struct {
-		Member  string
-		KeyFunc func(string) string
-	}
-	FanoutScore struct {
-		Enabled    bool
-		KeyFunc    func(string) string
-		Start, End ranges.Limit
-	}
+	Match      string
+	TwoHops    string
+	KeyFunc    func(string) string
 	Union      []string
 	Intersect  []intersectArgs
 	Limit      int
@@ -373,7 +373,7 @@ type Flags struct {
 }
 
 func (f *Flags) IsSpecial() bool {
-	return f.TwoHops.Member != "" || len(f.Intersect) > 0 || f.FanoutScore.Enabled
+	return f.TwoHops != "" || len(f.Intersect) > 0
 }
 
 func (c Command) Flags(start int) (f Flags) {
@@ -381,82 +381,72 @@ func (c Command) Flags(start int) (f Flags) {
 	f.Count = ranges.HardLimit
 	f.Timeout = time.Second
 	f.MemberBF = math.NaN()
+	f.KeyFunc = func(in string) string { return in }
 	if start == -1 {
 		return
 	}
 	for i := start; i < c.ArgCount(); i++ {
-		if c.EqualFold(i, "COUNT") {
-			f.Count = s2pkg.MustParseInt(c.Get(i + 1))
+		switch c.StrRef(i) {
+		case "COUNT", "count":
+			f.Count = c.Int(i + 1)
 			if f.Count > ranges.HardLimit {
 				f.Count = ranges.HardLimit
 			}
 			i++
-		} else if c.EqualFold(i, "LIMIT") {
-			if c.Get(i+1) != "0" {
+		case "LIMIT", "limit":
+			if c.StrRef(i+1) != "0" {
 				panic("non-zero limit offset not supported")
 			}
-			f.Limit = s2pkg.MustParseInt(c.Get(i + 2))
+			f.Limit = c.Int(i + 2)
 			if f.Limit > ranges.HardLimit {
 				f.Limit = ranges.HardLimit
 			}
 			i += 2
-		} else if c.EqualFold(i, "MATCH") {
-			f.Match = c.Get(i + 1)
+		case "MATCH", "match":
+			f.Match = c.Str(i + 1)
 			i++
-		} else if c.EqualFold(i, "INTERSECT") {
-			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Get(i + 1)})
+		case "INTERSECT", "intersect":
+			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Str(i + 1)})
 			i++
-		} else if c.EqualFold(i, "NOTINTERSECT") {
-			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Get(i + 1), Not: true})
+		case "NOTINTERSECT", "notintersect":
+			f.Intersect = append(f.Intersect, intersectArgs{Key: c.Str(i + 1), Not: true})
 			i++
-		} else if c.EqualFold(i, "INTBFDATA") {
-			bf, err := bitmap.BloomFilterUnmarshalBinary(c.At(i + 1))
+		case "INTBFDATA", "intbfdata":
+			bf, err := bitmap.BloomFilterUnmarshalBinary(c.BytesRef(i + 1))
 			s2pkg.PanicErr(err)
 			f.Intersect = append(f.Intersect, intersectArgs{Bloom: bf})
 			i++
-		} else if c.EqualFold(i, "TWOHOPS") {
-			f.TwoHops.Member = c.Get(i + 1)
-			f.TwoHops.KeyFunc = func(in string) string { return in }
+		case "TWOHOPS", "twohops":
+			f.TwoHops = c.Str(i + 1)
 			i++
-			if c.EqualFold(i+1, "CONCATKEY") {
-				i++
-				f.TwoHops.KeyFunc = parseConcatKeyFunc(&i, &c)
+		case "CONCATKEY", "concatkey":
+			prefix := c.Str(i + 1)
+			if c.StrEqFold(i+2, "*") {
+				f.KeyFunc = func(in string) string { return prefix + in }
+				i += 2
+			} else {
+				start, end, suffix := c.Int(i+2), c.Int(i+3), c.Str(i+4)
+				f.KeyFunc = func(in string) string {
+					s := (start + len(in)) % len(in)
+					e := (end + len(in)) % len(in)
+					return prefix + in[s:e+1] + suffix
+				}
+				i += 4
 			}
-		} else if c.EqualFold(i, "FANOUTSCORE") {
-			f.FanoutScore.Enabled = true
-			f.FanoutScore.KeyFunc = parseConcatKeyFunc(&i, &c)
-			f.FanoutScore.Start, f.FanoutScore.End = ranges.Score(c.Get(i+1)), ranges.Score(c.Get(i+2))
-			i += 2
-		} else if c.EqualFold(i, "UNION") {
-			f.Union = append(f.Union, c.Get(i+1))
+		case "UNION", "union":
+			f.Union = append(f.Union, c.Str(i+1))
 			i++
-		} else if c.EqualFold(i, "TIMEOUT") {
-			f.Timeout, _ = time.ParseDuration(c.Get(i + 1))
+		case "TIMEOUT", "timeout":
+			f.Timeout, _ = time.ParseDuration(c.Str(i + 1))
 			i++
-		} else if c.EqualFold(i, "MEMBERBF") {
+		case "MEMBERBF", "memberbf":
 			f.MemberBF, f.WithData = c.Float64(i+1), true
 			i++
-		} else {
-			f.WithData = f.WithData || c.EqualFold(i, "WITHDATA")
-			f.WithScores = f.WithScores || c.EqualFold(i, "WITHSCORES")
+		case "WITHDATA", "withdata":
+			f.WithData = true
+		case "WITHSCORES", "withscores":
+			f.WithScores = true
 		}
 	}
 	return
-}
-
-func parseConcatKeyFunc(i *int, c *Command) func(string) string {
-	prefix := c.Get(*i + 1)
-	if c.EqualFold(*i+2, "~") {
-		*i += 2
-		return func(in string) string { return prefix + in }
-	}
-	start := int(c.Int64(*i + 2))
-	end := int(c.Int64(*i + 3))
-	suffix := c.Get(*i + 4)
-	*i += 4
-	return func(in string) string {
-		s := (start + len(in)) % len(in)
-		e := (end + len(in)) % len(in)
-		return prefix + in[s:e+1] + suffix
-	}
 }

@@ -70,7 +70,7 @@ func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) pr
 
 	var idx = 2
 	for ; ; idx++ {
-		switch strings.ToUpper(command.Get(idx)) {
+		switch strings.ToUpper(command.Str(idx)) {
 		case "XX":
 			flags.xx = true
 		case "NX":
@@ -121,11 +121,11 @@ MEMEBRS:
 	var pairs []s2pkg.Pair
 	if !flags.withData {
 		for i := idx; i < command.ArgCount(); i += 2 {
-			pairs = append(pairs, s2pkg.Pair{Member: command.Get(i + 1), Score: command.Float64(i)})
+			pairs = append(pairs, s2pkg.Pair{Member: command.Str(i + 1), Score: command.Float64(i)})
 		}
 	} else {
 		for i := idx; i < command.ArgCount(); i += 3 {
-			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Get(i + 1), Data: command.Bytes(i + 2)}
+			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Str(i + 1), Data: command.Bytes(i + 2)}
 			if flags.bm16Data {
 				s2pkg.MustParseFloatBytes(p.Data)
 			}
@@ -140,11 +140,11 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 	case "DEL":
 		// DEL key
 		// DEL start end
-		return s.prepareDel(key, command.Get(2), dd)
+		return s.prepareDel(key, command.Str(2), dd)
 	case "ZREM":
 		return prepareZRem(key, toStrings(command.Argv[2:]), dd)
 	}
-	start, end := command.Get(2), command.Get(3)
+	start, end := command.Str(2), command.Str(3)
 	switch cmd {
 	case "ZREMRANGEBYLEX":
 		return prepareZRemRangeByLex(key, start, end, dd)
@@ -161,9 +161,9 @@ func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte)
 	// ZINCRBY key score member [DF datafunc] [BM16 bit] [DATA data] [ADD source member2] [INCRTO]
 	var flags zincrbyFlag
 	for i := 4; i < command.ArgCount(); i++ {
-		switch strings.ToUpper(command.Get(i)) {
+		switch strings.ToUpper(command.Str(i)) {
 		case "DF":
-			flags.dataFunc = nj.MustRun(nj.LoadString(command.Get(i+1), nil))
+			flags.dataFunc = nj.MustRun(nj.LoadString(command.Str(i+1), nil))
 			i++
 		case "BM16":
 			flags.bm16Data, flags.bm16 = true, uint16(command.Int64(i+1))
@@ -174,7 +174,7 @@ func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte)
 		case "INCRTO":
 			flags.incrToScore = true
 		case "ADD":
-			source := command.Get(i + 1)
+			source := command.Str(i + 1)
 			if v, err := strconv.ParseFloat(source, 64); err == nil {
 				flags.add.score2, flags.add.retScale = v, math.NaN()
 			} else if strings.EqualFold(source, "result") {
@@ -184,11 +184,11 @@ func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte)
 			} else {
 				panic("ZINCRBY ADD invalid source: " + source)
 			}
-			flags.add.member = command.Get(i + 2)
+			flags.add.member = command.Str(i + 2)
 			i += 2
 		}
 	}
-	return prepareZIncrBy(key, command.Get(3), command.Float64(2), flags, dd)
+	return prepareZIncrBy(key, command.Str(3), command.Float64(2), flags, dd)
 }
 
 func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error {

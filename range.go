@@ -81,6 +81,27 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 	return c.Pairs, err
 }
 
+func (s *Server) ZRangeRangeByScore(rev bool, key string, start, end, start2, end2 string,
+	flags wire.Flags) ([]s2pkg.Pair, error) {
+	s2, e2 := ranges.Score(start2), ranges.Score(end2)
+	a, closer := s.makeFanoutScore(s2, e2, flags)
+	ro := ranges.Options{
+		Rev:         rev,
+		OffsetStart: 0,
+		OffsetEnd:   math.MaxInt64,
+		Match:       flags.Match,
+		WithData:    flags.WithData,
+		Limit:       flags.Limit,
+		ILimit:      flags.ILimit,
+		FanoutStart: s2,
+		FanoutEnd:   e2,
+		Append:      a,
+	}
+	defer closer()
+	c, err := s.runPreparedRangeTx(key, rangeScore(key, ranges.Score(start), ranges.Score(end), ro))
+	return c.Pairs, err
+}
+
 func (s *Server) createRangeOptions(ro ranges.Options, flags wire.Flags) (_ ranges.Options, closer func() error) {
 	if !math.IsNaN(flags.MemberBF) {
 		ro.Limit = flags.Limit
@@ -97,13 +118,10 @@ func (s *Server) createRangeOptions(ro ranges.Options, flags wire.Flags) (_ rang
 			}
 			return nil
 		}, func() error { return nil }
-	} else if flags.FanoutScore.Enabled {
-		ro.Limit = flags.Limit
-		ro.Append, closer = s.makeFanoutScore(flags)
 	} else if flags.Intersect != nil {
 		ro.Limit = math.MaxInt64
 		ro.Append, closer = s.makeIntersect(flags)
-	} else if flags.TwoHops.Member != "" {
+	} else if flags.TwoHops != "" {
 		ro.Limit = math.MaxInt64
 		ro.Append, closer = s.makeTwoHops(flags)
 	} else {
@@ -361,53 +379,76 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 	return
 }
 
-func (s *Server) makeFanoutScore(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
+func (s *Server) makeFanoutScore(start, end ranges.Limit, flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetScoreKeyValueFullRange)
-	ddl := time.Now().Add(flags.Timeout)
+	ddl := clock.Now().Add(flags.Timeout)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
-		_, bkScore, _ := ranges.GetZSetRangeKey(flags.FanoutScore.KeyFunc(p.Member))
-		startKey := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(flags.FanoutScore.Start.Float)...)
-		endKey := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(flags.FanoutScore.End.Float)...)
+		_, bkScore, _ := ranges.GetZSetRangeKey(flags.KeyFunc(p.Member))
+		startKey := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(start.Float)...)
+		endKey := append(s2pkg.Bytes(bkScore), s2pkg.FloatToBytes(end.Float)...)
+		rev := start.Float > end.Float
 
-		for iter.SeekGE(startKey); iter.Valid() && bytes.Compare(iter.Key(), endKey) <= 0; iter.Next() {
+		p.Children = new([]s2pkg.Pair)
+		r.Pairs = append(r.Pairs, p)
+		r.Count++
+
+		if rev {
+			iter.SeekLT(startKey)
+		} else {
+			iter.SeekGE(startKey)
+		}
+		for iter.Valid() {
+			if !rev && bytes.Compare(iter.Key(), endKey) >= 0 {
+				break
+			}
+			if rev && bytes.Compare(iter.Key(), endKey) < 0 {
+				break
+			}
 			if !bytes.HasPrefix(iter.Key(), bkScore) {
 				break
 			}
-			if time.Now().After(ddl) {
-				break
+			if clock.Now().After(ddl) || r.Count >= flags.Limit {
+				return ranges.ErrAppendSafeExit
 			}
 			key := iter.Key()[len(startKey):]
 			var data []byte
 			if flags.WithData {
 				data = s2pkg.Bytes(iter.Value())
 			}
-			r.Pairs = append(r.Pairs, s2pkg.Pair{
-				Member: p.Member + "\x00" + string(key),
+			*p.Children = append(*p.Children, s2pkg.Pair{
+				Member: string(key),
 				Score:  s2pkg.BytesToFloat(iter.Key()[len(bkScore):]),
 				Data:   data,
 			})
 			r.Count++
+
+			if rev {
+				iter.Prev()
+			} else {
+				iter.Next()
+			}
 		}
-		if r.Count < flags.Limit && time.Now().Before(ddl) {
-			return nil
+
+		if clock.Now().After(ddl) || r.Count >= flags.Limit {
+			return ranges.ErrAppendSafeExit
 		}
-		return ranges.ErrAppendSafeExit
+		return nil
 	}, iter.Close
 }
 
 func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
-	ddl := time.Now().Add(flags.Timeout)
-	endpoint := flags.TwoHops.Member
+	ddl := clock.Now().Add(flags.Timeout)
+	endpoint := flags.TwoHops
 	return func(r *ranges.Result, p s2pkg.Pair) error {
-		bkName, _, _ := ranges.GetZSetRangeKey(flags.TwoHops.KeyFunc(p.Member))
+		bkName, _, _ := ranges.GetZSetRangeKey(flags.KeyFunc(p.Member))
 		x := append(bkName, endpoint...)
 		iter.SeekGE(x)
 		if iter.Valid() && bytes.Equal(iter.Key(), x) {
 			r.Count++
 			r.Pairs = append(r.Pairs, p)
 		}
-		if r.Count < flags.Limit && time.Now().Before(ddl) {
+		if r.Count < flags.Limit && clock.Now().Before(ddl) {
 			return nil
 		}
 		return ranges.ErrAppendSafeExit
@@ -416,7 +457,7 @@ func (s *Server) makeTwoHops(flags wire.Flags) (func(*ranges.Result, s2pkg.Pair)
 
 func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetKeyScoreFullRange)
-	ddl := time.Now().Add(flags.Timeout)
+	ddl := clock.Now().Add(flags.Timeout)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
 		count, hits := 0, 0
 		for _, ia := range flags.Intersect {
@@ -444,7 +485,7 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 			r.Pairs = append(r.Pairs, p)
 		}
 	OUT:
-		if r.Count < flags.Limit && time.Now().Before(ddl) {
+		if r.Count < flags.Limit && clock.Now().Before(ddl) {
 			return nil
 		}
 		return ranges.ErrAppendSafeExit
@@ -471,7 +512,7 @@ func (s *Server) Foreach(cursor string, f func(string) bool) {
 }
 
 func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count, timedout, start := flags.Count+1, "", time.Now()
+	count, timedout, start := flags.Count+1, "", clock.Now()
 	s.Foreach(cursor, func(k string) bool {
 		if time.Since(start) > flags.Timeout {
 			timedout = k

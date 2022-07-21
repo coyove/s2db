@@ -271,7 +271,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 				writer.EnablePipelineMode()
 			}
 			if s.Password != "" && !auth {
-				if command.EqualFold(0, "AUTH") && command.Get(1) == s.Password {
+				if command.StrEqFold(0, "AUTH") && command.Str(1) == s.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
@@ -294,15 +294,15 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 
 func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.Command) error {
 	var (
-		cmd   = strings.ToUpper(command.Get(0))
+		cmd   = strings.ToUpper(command.Str(0))
 		isRev = strings.HasPrefix(cmd, "ZREV")
-		key   = command.Get(1)
+		key   = command.Str(1)
 		start = time.Now()
 	)
 
 	if s.Passthrough != "" && (isWriteCommand[cmd] || isReadCommand[cmd]) {
 		defer s2pkg.Recover(func() { w.WriteError("passthrough: failed to relay") })
-		v, err := s.getRedis(s.Passthrough).Do(context.Background(), command.Args()...).Result()
+		v, err := s.getRedis(s.Passthrough).Do(context.Background(), command.ArgsRef()...).Result()
 		s.Survey.Passthrough.Incr(int64(time.Since(start).Milliseconds()))
 		if err != nil && err != redis.Nil {
 			return w.WriteError(err.Error())
@@ -375,10 +375,10 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "CONFIG":
 		switch strings.ToUpper(key) {
 		case "GET":
-			v, _ := s.GetConfig(command.Get(2))
-			return w.WriteBulkStrings([]string{command.Get(2), v})
+			v, _ := s.GetConfig(command.Str(2))
+			return w.WriteBulkStrings([]string{command.Str(2), v})
 		case "SET":
-			found, err := s.UpdateConfig(command.Get(2), command.Get(3), false)
+			found, err := s.UpdateConfig(command.Str(2), command.Str(3), false)
 			if err != nil {
 				return w.WriteError(err.Error())
 			} else if found {
@@ -386,7 +386,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 			return w.WriteError("field not found")
 		case "COPY":
-			if err := s.CopyConfig(command.Get(2), command.Get(3)); err != nil {
+			if err := s.CopyConfig(command.Str(2), command.Str(3)); err != nil {
 				return w.WriteError(err.Error())
 			}
 			return w.WriteSimpleString("OK")
@@ -424,7 +424,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SSDISKSIZE":
-		end := command.Get(2)
+		end := command.Str(2)
 		if end == "" {
 			end = key + "\xff"
 		}
@@ -448,7 +448,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		shard := s2pkg.MustParseInt(key)
 		logs := &s2pkg.Logs{}
-		if err := logs.UnmarshalBytes(command.At(2)); err != nil {
+		if err := logs.UnmarshalBytes(command.BytesRef(2)); err != nil {
 			return w.WriteError(err.Error())
 		}
 		names, logtail, err := s.runLog(shard, logs)
@@ -530,7 +530,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		x, cached := s.getCache(cmdHash, weak).([][]byte)
 		if !cached {
 			if cmd == "ZDATABM16" {
-				x, err = s.ZDataBM16(key, command.Get(2), uint16(command.Int64(3)), uint16(command.Int64(4)))
+				x, err = s.ZDataBM16(key, command.Str(2), uint16(command.Int64(3)), uint16(command.Int64(4)))
 			} else {
 				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
 			}
@@ -550,7 +550,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
-		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Get(2), command.Get(3), command.Flags(4))
+		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Str(2), command.Str(3), command.Flags(4))
 		if err == nil {
 			s.addCache(key, cmdHash, count, mwm)
 		}
@@ -559,7 +559,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		c, cached := s.getCache(cmdHash, weak).(int)
 		if !cached {
 			// COMMAND name key COUNT X
-			c, err = s.ZRank(isRev, key, command.Get(2), command.Flags(3).Count)
+			c, err = s.ZRank(isRev, key, command.Str(2), command.Flags(3).Count)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -575,7 +575,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if v := s.getCache(cmdHash, weak); v != nil {
 			return w.WriteBulksSlice(redisPairs(v.([]s2pkg.Pair), flags))
 		}
-		start, end := command.Get(2), command.Get(3)
+		start, end := command.Str(2), command.Str(3)
 		if end == "" {
 			end = start
 		}
@@ -595,7 +595,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if v := s.getCache(cmdHash, weak); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
-			start, end := command.Get(2), command.Get(3)
+			start, end := command.Str(2), command.Str(3)
 			var wms []int64
 			if len(flags.Union) > 0 {
 				wms = s.Cache.GetWatermarks(flags.Union)
@@ -613,6 +613,17 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteBulksSlice(redisPairs(pf(p), flags))
+	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2
+		flags := command.Flags(6)
+		if v := s.getCache(cmdHash, weak); v != nil {
+			p = v.([]s2pkg.Pair)
+		} else {
+			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3), command.Str(4), command.Str(5), flags)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+		}
+		return w.WriteObjectsSlice(redisPairsNested(p, flags))
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)

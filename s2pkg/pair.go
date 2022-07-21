@@ -67,9 +67,10 @@ func (doc *BytesArray) UnmarshalBytes(buf []byte) error {
 func (*BytesArray) ProtoMessage() {}
 
 type Pair struct {
-	Member string  `protobuf:"bytes,1,opt,name=member"`
-	Score  float64 `protobuf:"fixed64,2,opt,name=score"`
-	Data   []byte  `protobuf:"bytes,3,opt,name=data"`
+	Member   string  `protobuf:"bytes,1,opt,name=member"`
+	Score    float64 `protobuf:"fixed64,2,opt,name=score"`
+	Data     []byte  `protobuf:"bytes,3,opt,name=data"`
+	Children *[]Pair
 }
 
 type PairHeap struct {

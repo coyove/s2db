@@ -257,8 +257,8 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 			return nil, 0, fmt.Errorf("invalid payload: %v", data)
 		}
 
-		cmd := strings.ToUpper(command.Get(0))
-		name := command.Get(1)
+		cmd := strings.ToUpper(command.Str(0))
+		name := command.Str(1)
 
 		*ltx.InLogtail = l.Id
 		switch cmd {

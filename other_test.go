@@ -34,7 +34,7 @@ func TestCommandJoinSplit(t *testing.T) {
 		}
 		cmd2, _ := splitRawMultiBytesNoHeader(x[5 : len(x)-4])
 		for i := 0; i < cmd2.ArgCount(); i++ {
-			if !bytes.Equal(cmd2.At(i), b[i]) {
+			if !bytes.Equal(cmd2.BytesRef(i), b[i]) {
 				t.FailNow()
 			}
 		}

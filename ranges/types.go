@@ -43,6 +43,8 @@ type Options struct {
 	Match       string   // BYLEX: match member name, BYSCORE: match member name and its data
 	DeleteLog   []byte   // if provided, returned pairs will be deleted first
 	Append      func(*Result, s2pkg.Pair) error
+	FanoutStart Limit
+	FanoutEnd   Limit
 }
 
 var ErrAppendSafeExit = fmt.Errorf("exit")

@@ -38,6 +38,7 @@ type Server struct {
 
 	LocalRedis *redis.Client
 	Slave      endpoint
+	PullMaster endpoint
 	Master     struct {
 		IP      string
 		LastAck time.Time
@@ -613,12 +614,13 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteBulksSlice(redisPairs(pf(p), flags))
-	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2
-		flags := command.Flags(6)
+	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
+		flags := command.Flags(7)
 		if v := s.getCache(cmdHash, weak); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
-			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3), command.Str(4), command.Str(5), flags)
+			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3),
+				command.Str(4), command.Str(5), command.Int(6), flags)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}

@@ -438,6 +438,9 @@ func (c Command) Flags(start int) (f Flags) {
 			i++
 		case "TIMEOUT", "timeout":
 			f.Timeout, _ = time.ParseDuration(c.Str(i + 1))
+			if f.Timeout <= 0 {
+				f.Timeout = time.Second
+			}
 			i++
 		case "MEMBERBF", "memberbf":
 			f.MemberBF, f.WithData = c.Float64(i+1), true

@@ -81,10 +81,9 @@ func (s *Server) ZRangeByScore(rev bool, key string, start, end string, flags wi
 	return c.Pairs, err
 }
 
-func (s *Server) ZRangeRangeByScore(rev bool, key string, start, end, start2, end2 string,
+func (s *Server) ZRangeRangeByScore(rev bool, key string, start, end, start2, end2 string, count int,
 	flags wire.Flags) ([]s2pkg.Pair, error) {
-	s2, e2 := ranges.Score(start2), ranges.Score(end2)
-	a, closer := s.makeFanoutScore(s2, e2, flags)
+	a, closer := s.makeFanoutScore(ranges.Score(start2), ranges.Score(end2), count, flags)
 	ro := ranges.Options{
 		Rev:         rev,
 		OffsetStart: 0,
@@ -93,8 +92,6 @@ func (s *Server) ZRangeRangeByScore(rev bool, key string, start, end, start2, en
 		WithData:    flags.WithData,
 		Limit:       flags.Limit,
 		ILimit:      flags.ILimit,
-		FanoutStart: s2,
-		FanoutEnd:   e2,
 		Append:      a,
 	}
 	defer closer()
@@ -379,7 +376,7 @@ func (s *Server) ZRank(rev bool, key, member string, maxMembers int) (rank int, 
 	return
 }
 
-func (s *Server) makeFanoutScore(start, end ranges.Limit, flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
+func (s *Server) makeFanoutScore(start, end ranges.Limit, count int, flags wire.Flags) (func(*ranges.Result, s2pkg.Pair) error, func() error) {
 	iter := s.DB.NewIter(ranges.ZSetScoreKeyValueFullRange)
 	ddl := clock.Now().Add(flags.Timeout)
 	return func(r *ranges.Result, p s2pkg.Pair) error {
@@ -397,7 +394,7 @@ func (s *Server) makeFanoutScore(start, end ranges.Limit, flags wire.Flags) (fun
 		} else {
 			iter.SeekGE(startKey)
 		}
-		for iter.Valid() {
+		for subCount := 0; iter.Valid() && subCount < count; subCount++ {
 			if !rev && bytes.Compare(iter.Key(), endKey) >= 0 {
 				break
 			}

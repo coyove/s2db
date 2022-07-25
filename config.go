@@ -25,6 +25,7 @@ import (
 type ServerConfig struct {
 	ServerName         string
 	Slave              string
+	PullMaster         string
 	Password           string
 	MarkMaster         int // 0|1
 	Passthrough        string
@@ -135,11 +136,13 @@ func (s *Server) saveConfig() error {
 	if changed, err := s.Slave.CreateRedis(s.ServerConfig.Slave); err != nil {
 		return err
 	} else if changed {
-		if s.ServerConfig.Slave != "" {
-			log.Info("slave redis created with: ", s.ServerConfig.Slave)
-		} else {
-			log.Info("slave redis removed")
-		}
+		log.Info("slave redis created/removed with: ", s.ServerConfig.Slave)
+	}
+
+	if changed, err := s.PullMaster.CreateRedis(s.ServerConfig.PullMaster); err != nil {
+		return err
+	} else if changed {
+		log.Info("pull-master redis created/removed with: ", s.ServerConfig.PullMaster)
 	}
 
 	return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {

@@ -200,6 +200,67 @@ func (s *Server) logPusher(shard int) {
 	s.shards[shard].pusherCloseSignal <- true
 }
 
+func (s *Server) logPullerAsync(shard int, baseWaitTime time.Duration) {
+	defer s2pkg.Recover(func() {
+		time.Sleep(time.Second)
+		go s.logPullerAsync(shard, baseWaitTime)
+	})
+	ctx := context.TODO()
+	log := log.WithField("shard", "#"+strconv.Itoa(shard))
+	s.compactLogs(shard, true)
+
+	for !s.Closed {
+		s.compactLogs(shard, false)
+
+		rdb := s.PullMaster.Redis()
+		if rdb == nil {
+			time.Sleep(baseWaitTime * 2)
+			continue
+		}
+
+		logtail := s.ShardLogtail(shard)
+		cmd := redis.NewStringCmd(ctx, "REQUESTLOGS", shard, logtail)
+		rdb.Process(ctx, cmd)
+		res, err := cmd.Bytes()
+		if err != nil {
+			if err != redis.ErrClosed {
+				if s2pkg.IsRemoteOfflineError(err) {
+					log.Error("[M] pull-master offline")
+				} else if err != redis.Nil {
+					log.Error("pull logs from pull-master: ", err)
+				}
+			}
+			time.Sleep(baseWaitTime * 2)
+			continue
+		}
+
+		var logs s2pkg.Logs
+		if err := logs.UnmarshalBytes(res); err != nil {
+			log.Error("REQUESTLOGS: failed to unmarshal bytes: ", err)
+			time.Sleep(baseWaitTime * 2)
+			continue
+		}
+		s.PullMaster.LastUpdate = clock.UnixNano()
+
+		if len(logs.Logs) <= 0 {
+			time.Sleep(baseWaitTime)
+			continue
+		}
+
+		names, logtail, err := s.runLog(shard, &logs)
+		if err != nil {
+			log.Error("REQUESTLOGS: failed to run logs: ", err)
+			time.Sleep(baseWaitTime)
+			continue
+		}
+		for n := range names {
+			s.removeCache(n)
+		}
+		s.PullMaster.Logtails[shard] = logtail
+		s.PullMaster.LogtailOK[shard] = true
+	}
+}
+
 func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, logtail uint64, err error) {
 	s.shards[shard].runLogLock.Lock(func() {
 		log.Errorf("slow runLog(%d), logs size: %d", shard, len(logs.Logs))

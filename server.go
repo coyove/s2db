@@ -39,12 +39,10 @@ type Server struct {
 	LocalRedis *redis.Client
 	Slave      endpoint
 	PullMaster endpoint
-	Master     struct {
-		IP      string
-		LastAck time.Time
-	}
-	DBPath    string
-	DBOptions *pebble.Options
+	Master     endpoint
+	Pullers    sync.Map
+	DBPath     string
+	DBOptions  *pebble.Options
 
 	ServerConfig
 	ReadOnly         bool
@@ -75,6 +73,7 @@ type Server struct {
 		BatchLatSv       s2pkg.Survey ``
 		DBBatchSize      s2pkg.Survey ``
 		SlowLogs         s2pkg.Survey ``
+		RequestLogs      s2pkg.Survey ``
 		Sync             s2pkg.Survey ``
 		Passthrough      s2pkg.Survey ``
 		FirstRunSleep    s2pkg.Survey ``
@@ -219,6 +218,7 @@ func (s *Server) Serve(addr string) (err error) {
 	for i := range s.shards {
 		go s.batchWorker(i)
 		go s.logPusher(i)
+		go s.logPullerAsync(i, time.Second)
 	}
 	go s.startCronjobs()
 	go s.webConsoleHandler()
@@ -344,6 +344,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 				x.(*s2pkg.Survey).Incr(diffMs)
 			}
+			if cmd == "REQUESTLOGS" {
+				s.Survey.RequestLogs.Incr(diffMs)
+			}
 		}
 	}(start)
 
@@ -462,8 +465,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
-		s.Master.IP = s2pkg.GetRemoteIP(remoteAddr).String()
-		s.Master.LastAck = start
+		s.Master.RemoteIP = s2pkg.GetRemoteIP(remoteAddr).String()
+		s.Master.LastUpdate = start.UnixNano()
 		if len(names) > 0 {
 			select {
 			case s.shards[shard].pusherTrigger <- true:
@@ -473,10 +476,16 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return w.WriteInt(int64(logtail))
 	case "REQUESTLOGS":
 		// REQUESTLOGS <Shard> <LogStart>
-		logs, err := s.respondLog(s2pkg.MustParseInt(key), uint64(command.Int64(2)))
+		shard, logtail := s2pkg.MustParseInt(key), uint64(command.Int64(2))
+		logs, err := s.respondLog(shard, logtail)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		ip := s2pkg.GetRemoteIP(remoteAddr).String()
+		x, _ := s.Pullers.LoadOrStore(ip, new(endpoint))
+		x.(*endpoint).RemoteIP = ip
+		x.(*endpoint).Logtails[shard] = logtail
+		x.(*endpoint).LastUpdate = start.UnixNano()
 		return w.WriteBulk(logs.MarshalBytes())
 	case "SWITCH":
 		s.switchMasterLock.Lock()

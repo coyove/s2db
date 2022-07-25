@@ -152,12 +152,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
 		if s.Slave.Redis() != nil {
-			diffs := [ShardLogNum]float64{}
-			var diffSum float64
-			for i := range s.shards {
-				diffs[i] = clock.IdDiff(s.ShardLogtail(i), s.Slave.Logtails[i])
-				diffSum += diffs[i]
-			}
+			diffs, diffSum := diffLogtails(tails, s.Slave.Logtails)
 			data = append(data,
 				fmt.Sprintf("slave_conn:%v", s.Slave.Config().Raw),
 				fmt.Sprintf("slave_ack:%v", s.Slave.IsAcked(s)),
@@ -167,12 +162,36 @@ func (s *Server) InfoCommand(section string) (data []string) {
 				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
 			)
 		}
-		if s.Master.IP != "" {
+		if s.PullMaster.Redis() != nil {
+			lags := [ShardLogNum]int64{}
+			now := clock.Unix()
+			for i := range s.shards {
+				lags[i] = now - clock.IdNano(s.PullMaster.Logtails[i])
+			}
 			data = append(data,
-				fmt.Sprintf("master_ip:%v", s.Master.IP),
-				fmt.Sprintf("master_ack_before:%v", time.Since(s.Master.LastAck)),
+				fmt.Sprintf("pullmaster_conn:%v", s.PullMaster.Config().Raw),
+				fmt.Sprintf("pullmaster_ack:%v", s.PullMaster.IsAcked(s)),
+				fmt.Sprintf("pullmaster_ack_before:%v", s.PullMaster.AckBefore()),
+				fmt.Sprintf("pullmaster_lag:%v", joinArray(lags)),
 			)
 		}
+		if s.Master.RemoteIP != "" {
+			data = append(data,
+				fmt.Sprintf("master_ip:%v", s.Master.RemoteIP),
+				fmt.Sprintf("master_ack_before:%v", s.Master.AckBefore()),
+			)
+		}
+		s.Pullers.Range(func(k, v interface{}) bool {
+			diffs, diffSum := diffLogtails(tails, v.(*endpoint).Logtails)
+			data = append(data,
+				fmt.Sprintf("puller_ip:%v", k),
+				fmt.Sprintf("puller_ack_before:%v", v.(*endpoint).AckBefore()),
+				fmt.Sprintf("puller_logtail:%v", joinArray(v.(*endpoint).Logtails)),
+				fmt.Sprintf("puller_logtail_diff_sum:%v", diffSum),
+				fmt.Sprintf("puller_logtail_diff:%v", joinArray(diffs)),
+			)
+			return true
+		})
 		data = append(data, "")
 	}
 	if section == "" || section == "sys_rw_stats" {
@@ -674,4 +693,12 @@ func (s *Server) checkWritable() error {
 		return wire.ErrServerReadonly
 	}
 	return nil
+}
+
+func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum float64) {
+	for i := range a {
+		diffs[i] = clock.IdDiff(a[i], b[i])
+		diffSum += diffs[i]
+	}
+	return
 }

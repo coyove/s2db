@@ -16,6 +16,10 @@ var (
 	MinScoreRange = Limit{Float: math.Inf(-1), Inclusive: true}
 	MaxScoreRange = Limit{Float: math.Inf(1), Inclusive: true}
 
+	SetFullRange = &pebble.IterOptions{
+		LowerBound: []byte("zpset___"),
+		UpperBound: []byte("zpset__\xff"),
+	}
 	ZSetKeyScoreFullRange = &pebble.IterOptions{
 		LowerBound: []byte("zsetks__"),
 		UpperBound: []byte("zsetks_\xff"),

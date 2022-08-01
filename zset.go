@@ -489,45 +489,13 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 	}, iter.Close
 }
 
-func (s *Server) SMIsMember(key string, members [][]byte) (res []int) {
-	if len(members) == 0 {
-		return nil
-	}
-	res = make([]int, len(members))
-
-	bkName, _ := ranges.GetSetRangeKey(key)
-	iter := ranges.NewPrefixIter(s.DB, bkName)
-	defer iter.Close()
-
-	for i, m := range members {
-		tmp := append(bkName, m...)
-		if iter.SeekGE(tmp) && bytes.Equal(tmp, iter.Key()) {
-			res[i] = 1
-		}
-	}
-	return
-}
-
-func (s *Server) SMembers(key string) (res [][]byte) {
-	bkName, _ := ranges.GetSetRangeKey(key)
-	iter := ranges.NewPrefixIter(s.DB, bkName)
-	defer iter.Close()
-	for iter.First(); iter.Valid() && len(res) < ranges.HardLimit; iter.Next() {
-		res = append(res, s2pkg.Bytes(iter.Key()[len(bkName):]))
-	}
-	return
-}
-
 func (s *Server) Foreach(cursor string, f func(string) bool) {
 	opts := &pebble.IterOptions{}
 	opts.LowerBound = []byte("zsetks__" + cursor)
 	opts.UpperBound = []byte("zsetks_\xff")
 	c := s.DB.NewIter(opts)
 	defer c.Close()
-	if !c.First() {
-		return
-	}
-	for c.Valid() {
+	for c.First(); c.Valid(); {
 		k := c.Key()[8:]
 		key := string(k[:bytes.IndexByte(k, 0)])
 		if !f(key) {
@@ -547,8 +515,7 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
 			return true
 		}
-		_, v, _, _ := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(k))
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(v)})
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k))})
 		return len(pairs) < count
 	})
 	if timedout != "" {

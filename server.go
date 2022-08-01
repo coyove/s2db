@@ -659,6 +659,14 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
+	case "SCANSET":
+		flags := command.Flags(2)
+		p, next := s.ScanSet(key, flags)
+		return w.WriteObjects(next, redisPairs(p, flags))
+	case "SSCAN":
+		flags := command.Flags(3)
+		p, next := s.SScan(key, command.Str(2), flags)
+		return w.WriteObjects(next, redisPairs(p, flags))
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())

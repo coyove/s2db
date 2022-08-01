@@ -512,6 +512,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)
 	case "ZINCRBY":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZIncrBy(cmd, key, command, dd(command)), w)
+	case "SADD", "SREM":
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseSAddRem(cmd, key, command, dd(command)), w)
 	}
 
 	cmdHash := s2pkg.HashMultiBytes(command.Argv)
@@ -553,6 +555,24 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteBulk(x[0])
 		}
 		return w.WriteBulks(x...)
+	case "SISMEMBER":
+		return w.WriteInt(int64(s.SMIsMember(key, [][]byte{command.BytesRef(2)})[0]))
+	case "SMISMEMBER":
+		res := s.SMIsMember(key, command.Argv[2:])
+		itfs := make([]interface{}, len(res))
+		for i := range itfs {
+			itfs[i] = res[i]
+		}
+		return w.WriteObjectsSlice(itfs)
+	case "SMEMBERS":
+		if v := s.getCache(cmdHash, weak); v != nil {
+			return w.WriteBulksSlice(v.([][]byte))
+		}
+		res := s.SMembers(key)
+		s.addCache(key, cmdHash, res, mwm)
+		return w.WriteBulksSlice(res)
+	case "SCARD":
+		return w.WriteInt(s.SCard(key))
 	case "ZCARD":
 		return w.WriteInt(s.ZCard(key))
 	case "ZCOUNT", "ZCOUNTBYLEX":

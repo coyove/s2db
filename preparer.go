@@ -207,7 +207,7 @@ func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 	return writeLog(tx, dd)
 }
 
-func (s *Server) deleteKey(tx extdb.Storage, key string, bkName, bkScore, bkCounter []byte) error {
+func (s *Server) deleteZSet(tx extdb.Storage, key string, bkName, bkScore, bkCounter []byte) error {
 	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
 		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
 	}
@@ -215,6 +215,16 @@ func (s *Server) deleteKey(tx extdb.Storage, key string, bkName, bkScore, bkCoun
 		return err
 	}
 	if err := tx.DeleteRange(bkScore, s2pkg.IncBytes(bkScore), pebble.Sync); err != nil {
+		return err
+	}
+	return tx.Delete(bkCounter, pebble.Sync)
+}
+
+func (s *Server) deleteSet(tx extdb.Storage, key string, bkName, bkCounter []byte) error {
+	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
+		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
+	}
+	if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
 		return err
 	}
 	return tx.Delete(bkCounter, pebble.Sync)
@@ -234,10 +244,22 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 			if err := tx.DeleteRange(bkStartCounter, s2pkg.IncBytes(bkEndCounter), pebble.Sync); err != nil {
 				return nil, err
 			}
+			bkStartName, bkStartCounter = ranges.GetSetRangeKey(startKey)
+			bkEndName, bkEndCounter = ranges.GetSetRangeKey(endKey)
+			if err := tx.DeleteRange(bkStartName, s2pkg.IncBytes(bkEndName), pebble.Sync); err != nil {
+				return nil, err
+			}
+			if err := tx.DeleteRange(bkStartCounter, s2pkg.IncBytes(bkEndCounter), pebble.Sync); err != nil {
+				return nil, err
+			}
 			return 1, writeLog(tx, dd)
 		}
 		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(startKey)
-		if err := s.deleteKey(tx, startKey, bkName, bkScore, bkCounter); err != nil {
+		if err := s.deleteZSet(tx, startKey, bkName, bkScore, bkCounter); err != nil {
+			return nil, err
+		}
+		bkName, bkCounter = ranges.GetSetRangeKey(startKey)
+		if err := s.deleteSet(tx, startKey, bkName, bkCounter); err != nil {
 			return nil, err
 		}
 		return 1, writeLog(tx, dd)
@@ -329,7 +351,7 @@ func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd 
 				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
 				if score < flags.delScoreLt {
 					// Special case: all members can be deleted
-					if err := s.deleteKey(tx, key, bkName, bkScore, bkCounter); err != nil {
+					if err := s.deleteZSet(tx, key, bkName, bkScore, bkCounter); err != nil {
 						logrus.Errorf("[DSLT] delete key: %s, dslt: %f, error: %v", key, flags.delScoreLt, err)
 					} else {
 						s.Survey.DSLTFull.Incr(1)
@@ -539,4 +561,57 @@ func checkScore(s float64) error {
 		return fmt.Errorf("score is NaN")
 	}
 	return nil
+}
+
+func (s *Server) parseSAddRem(cmd, key string, command *wire.Command, dd []byte) preparedTx {
+	var members [][]byte
+	for i := 2; i < command.ArgCount(); i++ {
+		members = append(members, command.Bytes(i))
+	}
+	return s.prepareSAddRem(key, cmd == "SREM", members, dd)
+}
+
+func (s *Server) prepareSAddRem(key string, rem bool, members [][]byte, dd []byte) preparedTx {
+	add := !rem
+	f := func(tx extdb.LogTx) (interface{}, error) {
+		bkName, bkCounter := ranges.GetSetRangeKey(key)
+		ctr := 0
+		for _, p := range members {
+			if len(p) == 0 {
+				return nil, fmt.Errorf("empty member name")
+			}
+
+			nameBuf := append(bkName, p...)
+			_, closer, err := tx.Get(nameBuf)
+			if err == pebble.ErrNotFound {
+				// Add new member
+				if add {
+					ctr++
+					if err := tx.Set(nameBuf, nil, pebble.Sync); err != nil {
+						return nil, err
+					}
+				}
+			} else if err != nil {
+				// Bad error
+				return nil, err
+			} else {
+				// Member exists
+				closer.Close()
+				if rem {
+					ctr--
+					if err := tx.Delete(nameBuf, pebble.Sync); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+
+		if ctr != 0 {
+			if _, err := extdb.IncrKey(tx, bkCounter, int64(ctr)); err != nil {
+				return nil, err
+			}
+		}
+		return int(math.Abs(float64(ctr))), writeLog(tx, dd)
+	}
+	return preparedTx{f: f}
 }

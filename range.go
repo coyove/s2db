@@ -489,6 +489,35 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 	}, iter.Close
 }
 
+func (s *Server) SMIsMember(key string, members [][]byte) (res []int) {
+	if len(members) == 0 {
+		return nil
+	}
+	res = make([]int, len(members))
+
+	bkName, _ := ranges.GetSetRangeKey(key)
+	iter := ranges.NewPrefixIter(s.DB, bkName)
+	defer iter.Close()
+
+	for i, m := range members {
+		tmp := append(bkName, m...)
+		if iter.SeekGE(tmp) && bytes.Equal(tmp, iter.Key()) {
+			res[i] = 1
+		}
+	}
+	return
+}
+
+func (s *Server) SMembers(key string) (res [][]byte) {
+	bkName, _ := ranges.GetSetRangeKey(key)
+	iter := ranges.NewPrefixIter(s.DB, bkName)
+	defer iter.Close()
+	for iter.First(); iter.Valid() && len(res) < ranges.HardLimit; iter.Next() {
+		res = append(res, s2pkg.Bytes(iter.Key()[len(bkName):]))
+	}
+	return
+}
+
 func (s *Server) Foreach(cursor string, f func(string) bool) {
 	opts := &pebble.IterOptions{}
 	opts.LowerBound = []byte("zsetks__" + cursor)

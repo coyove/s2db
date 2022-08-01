@@ -42,7 +42,7 @@ func main() {
 
 	start := time.Now()
 	switch *benchmark {
-	case "write_one":
+	case "zset_write_one":
 		wg := sync.WaitGroup{}
 		for i := 0; i < *benchmarkClients; i++ {
 			wg.Add(1)
@@ -56,7 +56,7 @@ func main() {
 			}(i)
 		}
 		wg.Wait()
-	case "write_multi":
+	case "zset_write_multi":
 		wg := sync.WaitGroup{}
 		for i := 0; i < *benchmarkClients; i++ {
 			wg.Add(1)
@@ -75,7 +75,34 @@ func main() {
 			}(i)
 		}
 		wg.Wait()
-	case "write_pipe":
+	case "set_write_multi_many", "zset_write_multi_many":
+		cmd := "ZADD"
+		if *benchmark == "set_write_multi_many" {
+			cmd = "SADD"
+		}
+		N := 100
+		wg := sync.WaitGroup{}
+		for i := 0; i < *benchmarkClients; i++ {
+			wg.Add(1)
+			go func(i int) {
+				fmt.Println("client #", i)
+				for c := 0; c < *benchmarkOp/N; c++ {
+					key := fmt.Sprintf("bench%d", rand.Intn(*multiKeysNum))
+					args := []interface{}{cmd, key, "--defer--"}
+					for ib := 0; ib < N; ib++ {
+						if cmd == "SADD" {
+							args = append(args, strconv.Itoa((c+i**benchmarkClients)*N+ib))
+						} else {
+							args = append(args, rand.Float64()*10-5, strconv.Itoa((c+i**benchmarkClients)*N+ib))
+						}
+					}
+					rdb.Do(ctx, args...)
+				}
+				wg.Done()
+			}(i)
+		}
+		wg.Wait()
+	case "zset_write_pipe":
 		wg := sync.WaitGroup{}
 		for i := 0; i < *benchmarkClients; i++ {
 			wg.Add(1)
@@ -93,7 +120,7 @@ func main() {
 			}(i)
 		}
 		wg.Wait()
-	case "seq_write_1":
+	case "zset_seq_write_1":
 		for i := 0; i < 1000; i += 1 {
 			args := []interface{}{"ZADD", "seqbench"}
 			for c := 0; c < 100; c++ {

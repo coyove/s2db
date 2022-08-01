@@ -39,12 +39,14 @@ var (
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
 		"ZRANGERANGEBYSCORE": true, "ZREVRANGERANGEBYSCORE": true,
-		"SCAN": true,
+		"SCAN":  true,
+		"SCARD": true, "SMEMBERS": true, "SISMEMBER": true, "SMISMEMBER": true,
 	}
 	isWriteCommand = map[string]bool{
 		"DEL":  true,
 		"ZREM": true, "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
 		"ZADD": true, "ZINCRBY": true,
+		"SADD": true, "SREM": true,
 	}
 )
 
@@ -493,6 +495,12 @@ func (s *Server) createDBListener() pebble.EventListener {
 		WriteStallBegin:  func(a pebble.WriteStallBeginInfo) { L("[WriteStallBegin] ", a); R("DBWriteStallBegin", a) },
 		WriteStallEnd:    func() { L("WriteStallEnd"); R("DBWriteStallEnd") },
 	}
+}
+
+func (s *Server) SCard(key string) (count int64) {
+	_, i, _, err := extdb.GetKeyNumber(s.DB, ranges.GetSetCounterKey(key))
+	s2pkg.PanicErr(err)
+	return int64(i)
 }
 
 func (s *Server) ZCard(key string) (count int64) {

@@ -11,12 +11,20 @@ func GetZSetRangeKey(key string) ([]byte, []byte, []byte) {
 	return GetZSetNameKey(key), []byte("zsetskv_" + key + "\x00"), GetZSetCounterKey(key)
 }
 
+func GetSetRangeKey(key string) ([]byte, []byte) {
+	return []byte("zpset___" + key + "\x00"), GetSetCounterKey(key)
+}
+
 func GetZSetNameKey(key string) []byte {
 	return []byte("zsetks__" + key + "\x00")
 }
 
 func GetZSetCounterKey(key string) []byte {
 	return []byte("zsetctr_" + key)
+}
+
+func GetSetCounterKey(key string) []byte {
+	return []byte("zpsetctr" + key)
 }
 
 func GetShardLogKey(shard int16) []byte {

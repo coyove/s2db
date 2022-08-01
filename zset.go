@@ -489,7 +489,7 @@ func (s *Server) makeIntersect(flags wire.Flags) (func(r *ranges.Result, p s2pkg
 	}, iter.Close
 }
 
-func (s *Server) Foreach(cursor string, f func(string) bool) {
+func (s *Server) ForeachZSet(cursor string, f func(string) bool) {
 	opts := &pebble.IterOptions{}
 	opts.LowerBound = []byte("zsetks__" + cursor)
 	opts.UpperBound = []byte("zsetks_\xff")
@@ -505,9 +505,9 @@ func (s *Server) Foreach(cursor string, f func(string) bool) {
 	}
 }
 
-func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
+func (s *Server) ScanZSet(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
 	count, timedout, start := flags.Count+1, "", clock.Now()
-	s.Foreach(cursor, func(k string) bool {
+	s.ForeachZSet(cursor, func(k string) bool {
 		if time.Since(start) > flags.Timeout {
 			timedout = k
 			return false

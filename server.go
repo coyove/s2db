@@ -568,7 +568,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if v := s.getCache(cmdHash, weak); v != nil {
 			return w.WriteBulksSlice(v.([][]byte))
 		}
-		res := s.SMembers(key)
+		res := s.SMembers(key, command.Flags(2))
 		s.addCache(key, cmdHash, res, mwm)
 		return w.WriteBulksSlice(res)
 	case "SCARD":
@@ -657,7 +657,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return w.WriteObjectsSlice(redisPairsNested(p, flags))
 	case "SCAN":
 		flags := command.Flags(2)
-		p, next := s.Scan(key, flags)
+		p, next := s.ScanZSet(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
 	case "SCANSET":
 		flags := command.Flags(2)

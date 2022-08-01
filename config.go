@@ -136,13 +136,13 @@ func (s *Server) saveConfig() error {
 	if changed, err := s.Slave.CreateRedis(s.ServerConfig.Slave); err != nil {
 		return err
 	} else if changed {
-		log.Info("slave redis created/removed with: ", s.ServerConfig.Slave)
+		log.Infof("slave redis created/removed with: %q", s.ServerConfig.Slave)
 	}
 
 	if changed, err := s.PullMaster.CreateRedis(s.ServerConfig.PullMaster); err != nil {
 		return err
 	} else if changed {
-		log.Info("pull-master redis created/removed with: ", s.ServerConfig.PullMaster)
+		log.Infof("pull-master redis created/removed with: %q", s.ServerConfig.PullMaster)
 	}
 
 	return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"math"
 	"time"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
@@ -37,12 +39,20 @@ func (s *Server) SMIsMember(key string, members [][]byte) (res []int) {
 	return
 }
 
-func (s *Server) SMembers(key string) (res [][]byte) {
+func (s *Server) SMembers(key string, flags wire.Flags) (res [][]byte) {
 	bkName, _ := ranges.GetSetRangeKey(key)
 	iter := ranges.NewPrefixIter(s.DB, bkName)
 	defer iter.Close()
-	for iter.First(); iter.Valid() && len(res) < ranges.HardLimit; iter.Next() {
-		res = append(res, s2pkg.Bytes(iter.Key()[len(bkName):]))
+	if !math.IsNaN(flags.MemberBF) {
+		m := bitmap.NewBloomFilter(int(s.SCard(key)), flags.MemberBF)
+		for iter.First(); iter.Valid() && len(res) < ranges.HardLimit; iter.Next() {
+			m.AddBinary(iter.Key()[len(bkName):])
+		}
+		res = [][]byte{m.MarshalBinary()}
+	} else {
+		for iter.First(); iter.Valid() && len(res) < ranges.HardLimit; iter.Next() {
+			res = append(res, s2pkg.Bytes(iter.Key()[len(bkName):]))
+		}
 	}
 	return
 }

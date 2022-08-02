@@ -100,6 +100,7 @@ func (w *Writer) WriteSimpleString(s string) error {
 
 func (w *Writer) WriteError(s string) error {
 	if !strings.Contains(s, "NOAUTH") &&
+		!strings.Contains(s, ErrBlacklistedIP.Error()) &&
 		s != pebble.ErrClosed.Error() &&
 		s != ErrUnknownCommand.Error() &&
 		s != ErrServerReadonly.Error() {

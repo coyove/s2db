@@ -323,6 +323,13 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 	}
 
+	for _, nw := range blacklistIPs {
+		ip := s2pkg.GetRemoteIP(remoteAddr)
+		if nw.Contains(ip) {
+			return w.WriteError(wire.ErrBlacklistedIP.Error() + ip.String())
+		}
+	}
+
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			if testFlag {
@@ -424,6 +431,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
 		}(start)
 		return w.WriteSimpleString("STARTED")
+	case "COMPACTDB":
+		go s.DB.Compact(nil, []byte{0xff}, true)
+		return w.WriteSimpleString("STARTED")
 	case "DUMPWIRE":
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
@@ -434,9 +444,12 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		startKey, startKey2, _ := ranges.GetZSetRangeKey(key)
 		endKey, endKey2, _ := ranges.GetZSetRangeKey(end)
+		startSetKey, _ := ranges.GetSetRangeKey(key)
+		endSetKey, _ := ranges.GetSetRangeKey(end)
 		keyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))
 		scoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))
-		return w.WriteObjects(keyScore, scoreKey)
+		set, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytes(endSetKey))
+		return w.WriteObjects(keyScore, scoreKey, set)
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
 	case "DB.LOG":

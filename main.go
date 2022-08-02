@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"math/rand"
+	"net"
 	_ "net/http/pprof"
 	"os"
 	"runtime"
@@ -46,10 +47,12 @@ var (
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
+	blacklistIPsFlag   = flag.String("ip.blacklist", "", "")
 
-	testFlag   = false
-	slowLogger *log.Logger
-	dbLogger   *log.Logger
+	testFlag     = false
+	slowLogger   *log.Logger
+	dbLogger     *log.Logger
+	blacklistIPs []*net.IPNet
 )
 
 //go:embed scripts/index.html
@@ -99,6 +102,16 @@ func main() {
 	if *dumpReceiverDir != "" {
 		dumpReceiver(*dumpReceiverDir)
 		return
+	}
+
+	for _, p := range strings.Split(*blacklistIPsFlag, ",") {
+		if p != "" {
+			_, nw, err := net.ParseCIDR(p)
+			if err != nil {
+				errorExit(err.Error())
+			}
+			blacklistIPs = append(blacklistIPs, nw)
+		}
 	}
 
 	slowLogger = log.New()

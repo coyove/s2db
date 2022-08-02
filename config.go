@@ -102,7 +102,9 @@ func (s *Server) loadConfig() error {
 
 func (s *Server) saveConfig() error {
 	ifZero(&s.CacheSize, 1024)
-	ifZero(&s.CacheObjMaxSize, 1024)
+	if s.CacheObjMaxSize == 0 {
+		s.CacheObjMaxSize = 1
+	}
 	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
 	ifZero(&s.ResponseLogSize, 16)

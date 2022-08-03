@@ -241,9 +241,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("cache_avg_size:%v", s.Survey.CacheSize.MeanString()),
 			fmt.Sprintf("cache_req_qps:%v", s.Survey.CacheReq),
 			fmt.Sprintf("cache_hit_qps:%v", s.Survey.CacheHit),
-			fmt.Sprintf("weak_cache_hit_qps:%v", s.Survey.WeakCacheHit),
 			fmt.Sprintf("cache_obj_count:%v/%v", s.Cache.Len(), s.Cache.Cap()),
-			fmt.Sprintf("weak_cache_obj_count:%v/%v", s.WeakCache.Len(), s.WeakCache.Cap()),
 			"")
 	}
 	return
@@ -395,28 +393,18 @@ func (s *Server) removeCache(key string) {
 	s.Cache.Delete(key)
 }
 
-func (s *Server) getCache(h string, ttl time.Duration) interface{} {
+func (s *Server) getCache(key string, h uint64) interface{} {
 	s.Survey.CacheReq.Incr(1)
-	v, ok := s.Cache.Get(h)
+	v, ok := s.Cache.Get(key, h)
 	if ok {
 		s.Survey.CacheHit.Incr(1)
 		return v
 	}
-	if ttl == 0 {
-		return nil
-	}
-	v, ok = s.WeakCache.Get(h)
-	if !ok {
-		return nil
-	}
-	if i := v.(*s2pkg.WeakCacheItem); time.Since(time.Unix(i.Time, 0)) <= ttl {
-		s.Survey.WeakCacheHit.Incr(1)
-		return i.Data
-	}
 	return nil
 }
 
-func (s *Server) checkCacheSize(data interface{}) (sz int) {
+func (s *Server) addCache(key string, h uint64, data interface{}, wm int64) {
+	sz := 0
 	switch data := data.(type) {
 	case []s2pkg.Pair:
 		sz = s2pkg.SizeOfPairs(data)
@@ -425,39 +413,13 @@ func (s *Server) checkCacheSize(data interface{}) (sz int) {
 	}
 	if sz > 0 {
 		if sz > s.CacheObjMaxSize*1024 {
-			return -1
+			return
 		}
 		s.Survey.CacheSize.Incr(int64(sz))
-	}
-	return sz
-}
-
-func (s *Server) addCache(key string, h string, data interface{}, wm int64) {
-	sz := s.checkCacheSize(data)
-	if sz == -1 {
-		// log.Infof("omit big key cache: %q->%q (%db)", key, h, sz)
-		return
 	}
 	if !s.Cache.Add(key, h, data, wm) {
 		s.Survey.CacheAddConflict.Incr(1)
 	}
-	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, 0)
-}
-
-func (s *Server) addCacheMultiKeys(keys []string, h string, data interface{}, wms []int64) {
-	sz := s.checkCacheSize(data)
-	if sz == -1 {
-		// log.Infof("omit big key cache: %v->%q (%db)", keys, h, sz)
-		return
-	}
-	for i, key := range keys {
-		if !s.Cache.Add(key, h, data, wms[i]) {
-			s.Survey.CacheAddConflict.Incr(1)
-			s.Cache.Delete(h)
-			return
-		}
-	}
-	s.WeakCache.Add("", h, &s2pkg.WeakCacheItem{Data: data, Time: time.Now().Unix()}, 0)
 }
 
 func makeHTMLStat(s string) template.HTML {

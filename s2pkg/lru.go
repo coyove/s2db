@@ -1,230 +1,145 @@
 package s2pkg
 
 import (
+	"math"
+	"reflect"
 	"sync"
+
+	"github.com/coyove/s2db/clock"
 )
 
-type WeakCacheItem struct {
-	Time int64
-	Data interface{}
+type LRUValue struct {
+	Time  int64
+	Hash  uint64
+	Value interface{}
 }
 
-type lruValue struct {
-	// If has slaves, then it's a master
-	slaves map[string]struct{}
-
-	// Otherwise it's a slave
-	master     string
-	slaveStore interface{}
-}
-
-type LRUKeyValue struct {
-	MasterKey string
-	SlaveKey  string
-	Value     interface{}
-}
-
-type MasterLRU struct {
+type LRUCache struct {
 	mu        sync.RWMutex
-	onEvict   func(LRUKeyValue)
-	lruCap    int64
-	lenMax    int64
-	hot, cold map[string]lruValue
-	mwm       [65536]int64
+	onEvict   func(string, LRUValue)
+	storeCap  int
+	store     map[string]LRUValue
+	storeIter *reflect.MapIter
+	watermark [65536]int64
 }
 
-func NewMasterLRU(cap int64, onEvict func(LRUKeyValue)) *MasterLRU {
-	if cap <= 0 {
-		cap = 1
+func NewLRUCache(cap int, onEvict func(string, LRUValue)) *LRUCache {
+	if cap < 2 {
+		cap = 2
 	}
 	if onEvict == nil {
-		onEvict = func(LRUKeyValue) {}
+		onEvict = func(string, LRUValue) {}
 	}
-	return &MasterLRU{
-		onEvict: onEvict,
-		lruCap:  cap,
-		hot:     map[string]lruValue{},
-		cold:    map[string]lruValue{},
+	c := &LRUCache{
+		onEvict:  onEvict,
+		storeCap: cap,
+		store:    map[string]LRUValue{},
 	}
+	c.storeIter = reflect.ValueOf(c.store).MapRange()
+	return c
 }
 
-func (m *MasterLRU) Len() int { return len(m.hot) + len(m.cold) }
-
-func (m *MasterLRU) Cap() int { return int(m.lenMax) }
-
-func (m *MasterLRU) SetNewCap(cap int64) {
-	m.mu.Lock()
-	m.lruCap = cap
-	m.mu.Unlock()
+func (m *LRUCache) Len() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.store)
 }
 
-func (m *MasterLRU) GetWatermark(key string) int64 {
-	return m.mwm[HashStr(key)%uint64(len(m.mwm))]
+func (m *LRUCache) Cap() int {
+	return m.storeCap
 }
 
-func (m *MasterLRU) GetWatermarks(keys []string) []int64 {
-	res := make([]int64, len(keys))
-	for i, k := range keys {
-		res[i] = m.GetWatermark(k)
-	}
-	return res
+func (m *LRUCache) GetWatermark(key string) int64 {
+	return m.watermark[HashStr(key)%uint64(len(m.watermark))]
 }
 
-func (m *MasterLRU) Add(masterKey, slaveKey string, value interface{}, masterWatermark int64) bool {
-	if slaveKey == "" {
-		panic("slave key can't be empty")
-	}
-	if masterKey == slaveKey {
-		panic("master and slave key can't be identical")
+func (m *LRUCache) AddSimple(key string, value interface{}) {
+	m.Add(key, 0, value, 0)
+}
+
+func (m *LRUCache) Add(key string, hash uint64, value interface{}, wm int64) bool {
+	if key == "" {
+		panic("key can't be empty")
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if masterWatermark != 0 && masterWatermark < m.GetWatermark(masterKey) {
+	if wm != 0 && wm < m.GetWatermark(key) {
 		return false
 	}
-	if masterKey == "" {
-		m.hot[slaveKey] = lruValue{slaveStore: value}
-		delete(m.cold, slaveKey)
-	} else {
-		master := m.getByKey(masterKey)
-		if master.slaves != nil {
-			master.slaves[slaveKey] = struct{}{}
-		} else {
-			master.slaves = map[string]struct{}{slaveKey: {}}
-		}
-		m.hot[masterKey] = master
-		m.hot[slaveKey] = lruValue{master: masterKey, slaveStore: value}
-		delete(m.cold, masterKey)
-		delete(m.cold, slaveKey)
+	m.store[key] = LRUValue{
+		Time:  clock.UnixNano(),
+		Hash:  hash,
+		Value: value,
 	}
 
-	sz := int64(m.Len())
-	if sz > m.lenMax {
-		m.lenMax = sz
-	}
-	if sz > m.lruCap && len(m.hot) > len(m.cold)*2/3 {
-		for k, v := range m.cold {
-			m.delete(k, v, true, true)
-			if int64(m.Len()) <= m.lruCap {
-				break
+	for len(m.store) > m.storeCap {
+		k0, v0 := "", LRUValue{Time: math.MaxInt64}
+		for i := 0; i < 2; i++ {
+			k, v := m.advance()
+			if v.Time < v0.Time {
+				k0, v0 = k, v
 			}
 		}
-		if len(m.cold) == 0 {
-			m.hot, m.cold = m.cold, m.hot
-		}
+		delete(m.store, k0)
+		m.onEvict(k0, v0)
 	}
 	return true
 }
 
-func (m *MasterLRU) Get(key string) (interface{}, bool) {
-	e, ok := m.find(key)
-	return e.slaveStore, ok
+func (m *LRUCache) advance() (string, LRUValue) {
+	if !m.storeIter.Next() {
+		m.storeIter = reflect.ValueOf(m.store).MapRange()
+		m.storeIter.Next()
+	}
+	k := m.storeIter.Key().Interface().(string)
+	v := m.storeIter.Value().Interface().(LRUValue)
+	return k, v
 }
 
-func (m *MasterLRU) find(k string) (lruValue, bool) {
-	m.mu.RLock()
-	v, ok := m.hot[k]
-	m.mu.RUnlock()
+func (m *LRUCache) GetSimple(k string) (interface{}, bool) {
+	v, ok := m.Get(k, 0)
+	return v, ok
+}
+
+func (m *LRUCache) Get(k string, hash uint64) (interface{}, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.store[k]
 	if ok {
-		return v, true
+		if v.Hash != hash {
+			return nil, false
+		}
+		v.Time = clock.UnixNano()
+		m.store[k] = v
 	}
+	return v.Value, ok
+}
 
+func (m *LRUCache) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.store = map[string]LRUValue{}
+}
 
-	v, ok = m.cold[k]
+func (m *LRUCache) Delete(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.watermark[HashStr(key)%uint64(len(m.watermark))]++
+	old, ok := m.store[key]
+	delete(m.store, key)
 	if ok {
-		m.hot[k] = v
-		delete(m.cold, k)
-		return v, true
+		m.onEvict(key, old)
 	}
-	return lruValue{}, false
 }
 
-func (m *MasterLRU) getByKey(key string) lruValue {
-	x, ok := m.hot[key]
-	if !ok {
-		x = m.cold[key]
-	}
-	return x
-}
-
-func (m *MasterLRU) Clear() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.hot = map[string]lruValue{}
-	m.cold = map[string]lruValue{}
-	m.lenMax = 0
-}
-
-func (m *MasterLRU) Delete(key string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.mwm[HashStr(key)%uint64(len(m.mwm))]++
-	return m.delete(key, lruValue{}, false, false)
-}
-
-func (m *MasterLRU) delete(key string, value lruValue, valueProvided, emit bool) int {
-	cnt := 0
-	if !valueProvided {
-		value = m.getByKey(key)
-	}
-	if value.slaves != nil {
-		// To delete a master key, delete all slaves of it
-		for slave := range value.slaves {
-			cnt++
-			if emit {
-				m.onEvict(LRUKeyValue{key, slave, m.getByKey(slave).slaveStore})
-			}
-			delete(m.hot, slave)
-			delete(m.cold, slave)
-		}
-	} else {
-		// To delete a slave key, remove it from its master's records
-		if value.master != "" {
-			master := m.getByKey(value.master)
-			if master.slaves == nil {
-				panic("missing master on deletion")
-			}
-			delete(master.slaves, key)
-		}
-		if emit {
-			m.onEvict(LRUKeyValue{value.master, key, value.slaveStore})
-		}
-	}
-	delete(m.hot, key)
-	delete(m.cold, key)
-	return 1 + cnt
-}
-
-func (m *MasterLRU) Range(f func(LRUKeyValue) bool) {
+func (m *LRUCache) Range(f func(string, LRUValue) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, m := range []map[string]lruValue{m.hot, m.cold} {
-		for k, v := range m {
-			if v.slaves != nil {
-				continue
-			}
-			if !f(LRUKeyValue{v.master, k, v.slaveStore}) {
-				return
-			}
-		}
-	}
-}
-
-func (m *MasterLRU) RangeMaster(f func(string, map[string]struct{}) bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, m := range []map[string]lruValue{m.hot, m.cold} {
-		for k, v := range m {
-			if v.slaves == nil {
-				continue
-			}
-			if !f(k, v.slaves) {
-				return
-			}
+	for k, v := range m.store {
+		if !f(k, v) {
+			return
 		}
 	}
 }

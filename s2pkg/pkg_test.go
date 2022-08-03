@@ -158,11 +158,11 @@ func TestDoubleMapLRU(t *testing.T) {
 	}
 	ops := []op{}
 
-	const N = 2048
-	m := NewMasterLRU(N, nil)
-	r := NewLRUCache(N)
+	const N = 1024
+	m := NewLRUCache(N, nil)
+	r := NewLRUCacheTest(N)
 
-	for i := 0; i < 1e5; i++ {
+	for i := 0; i < 1e6; i++ {
 		ops = append(ops, op{true, i})
 		if i > 10 && rand.Intn(2) == 0 {
 			cnt := rand.Intn(60) + 20
@@ -173,29 +173,42 @@ func TestDoubleMapLRU(t *testing.T) {
 		}
 	}
 
+	wg := sync.WaitGroup{}
 	start := time.Now()
-	for _, op := range ops {
-		if op.add {
-			m.Add("", strconv.Itoa(op.v), op.v, 0)
-		} else {
-			m.Get(strconv.Itoa(op.v))
+	for _, o := range ops {
+		wg.Add(1)
+		f := func(op op) {
+			if op.add {
+				m.Add(strconv.Itoa(op.v), 0, op.v, 0)
+			} else {
+				m.GetSimple(strconv.Itoa(op.v))
+			}
+			wg.Done()
 		}
+		f(o)
 	}
+	wg.Wait()
 	hcDiff := time.Since(start)
 
 	start = time.Now()
-	for _, op := range ops {
-		if op.add {
-			r.Add(strconv.Itoa(op.v), op.v)
-		} else {
-			r.Get(strconv.Itoa(op.v))
+	for _, o := range ops {
+		wg.Add(1)
+		f := func(op op) {
+			if op.add {
+				r.Add(strconv.Itoa(op.v), op.v)
+			} else {
+				r.Get(strconv.Itoa(op.v))
+			}
+			wg.Done()
 		}
+		f(o)
 	}
+	wg.Wait()
 	refDiff := time.Since(start)
 
 	miss := 0
 	r.Info(func(k LRUKey, v interface{}, a int64, b int64) {
-		_, ok := m.Get(k.(string))
+		_, ok := m.GetSimple(k.(string))
 		// fmt.Println("ref", k, tv)
 		if !ok {
 			miss++
@@ -203,36 +216,19 @@ func TestDoubleMapLRU(t *testing.T) {
 	})
 	fmt.Println(r.Len(), miss, m.Cap(), "diff:", hcDiff, refDiff)
 
-	const M = 1e4
-	for i := 0; i < 1e4; i++ {
-		start := time.Now()
-		const cap = 100
-		m = NewMasterLRU(cap, nil)
-		for i := 0; i < 1000; i++ {
-			m.Add("master", strconv.Itoa(i), i, 0)
-		}
-		cnt := m.Delete("master")
-		if i == M-1 {
-			fmt.Println("delete master: ", cnt, m.Cap(), time.Since(start)*M)
-		}
-		if m.Len() != 0 {
-			t.Fatal(m.Len())
-		}
-	}
-
-	m = NewMasterLRU(1, func(kv LRUKeyValue) {
-		fmt.Println(kv.SlaveKey)
+	m = NewLRUCache(1, func(k string, v LRUValue) {
+		fmt.Println("evict", k, v) // kv.SlaveKey)
 	})
 	for i := 0; i < 7; i++ {
-		m.Add("", strconv.Itoa(i), i, 0)
+		m.Add(strconv.Itoa(i), 0, i, 0)
 	}
-	m.Range(func(kv LRUKeyValue) bool {
-		fmt.Println(kv.SlaveKey, "=", kv.Value)
+	m.Range(func(k string, v LRUValue) bool {
+		fmt.Println(k, v)
 		return true
 	})
 }
 
-type LRUCache struct {
+type LRUCacheTest struct {
 	// OnEvicted is called when an entry is going to be purged from the cache.
 	OnEvicted func(key LRUKey, value interface{})
 
@@ -257,9 +253,9 @@ type lruEntry struct {
 
 var ErrWeightTooBig = fmt.Errorf("weight can't be held by the cache")
 
-// NewLRUCache creates a new Cache.
-func NewLRUCache(maxWeight int64) *LRUCache {
-	return &LRUCache{
+// NewLRUCacheTest creates a new Cache.
+func NewLRUCacheTest(maxWeight int64) *LRUCacheTest {
+	return &LRUCacheTest{
 		maxWeight: maxWeight,
 		ll:        list.New(),
 		cache:     make(map[interface{}]*list.Element),
@@ -267,7 +263,7 @@ func NewLRUCache(maxWeight int64) *LRUCache {
 }
 
 // Clear clears the cache
-func (c *LRUCache) Clear() {
+func (c *LRUCacheTest) Clear() {
 	c.Lock()
 	c.ll = list.New()
 	c.cache = make(map[interface{}]*list.Element)
@@ -275,7 +271,7 @@ func (c *LRUCache) Clear() {
 }
 
 // Info iterates the cache
-func (c *LRUCache) Info(callback func(LRUKey, interface{}, int64, int64)) {
+func (c *LRUCacheTest) Info(callback func(LRUKey, interface{}, int64, int64)) {
 	c.Lock()
 
 	for f := c.ll.Front(); f != nil; f = f.Next() {
@@ -287,12 +283,12 @@ func (c *LRUCache) Info(callback func(LRUKey, interface{}, int64, int64)) {
 }
 
 // Add adds a value to the cache with weight = 1.
-func (c *LRUCache) Add(key LRUKey, value interface{}) error {
+func (c *LRUCacheTest) Add(key LRUKey, value interface{}) error {
 	return c.AddWeight(key, value, 1)
 }
 
 // AddWeight adds a value to the cache with weight.
-func (c *LRUCache) AddWeight(key LRUKey, value interface{}, weight int64) error {
+func (c *LRUCacheTest) AddWeight(key LRUKey, value interface{}, weight int64) error {
 	if weight > c.maxWeight || weight < 1 {
 		return ErrWeightTooBig
 	}
@@ -341,7 +337,7 @@ func (c *LRUCache) AddWeight(key LRUKey, value interface{}, weight int64) error 
 }
 
 // Get gets a key
-func (c *LRUCache) Get(key LRUKey) (value interface{}, ok bool) {
+func (c *LRUCacheTest) Get(key LRUKey) (value interface{}, ok bool) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -356,7 +352,7 @@ func (c *LRUCache) Get(key LRUKey) (value interface{}, ok bool) {
 }
 
 // GetEx returns the extra info of the given key
-func (c *LRUCache) GetEx(key LRUKey) (hits int64, weight int64, ok bool) {
+func (c *LRUCacheTest) GetEx(key LRUKey) (hits int64, weight int64, ok bool) {
 	c.Lock()
 	defer c.Unlock()
 
@@ -368,21 +364,21 @@ func (c *LRUCache) GetEx(key LRUKey) (hits int64, weight int64, ok bool) {
 }
 
 // Remove removes the given key from the cache.
-func (c *LRUCache) Remove(key LRUKey) {
+func (c *LRUCacheTest) Remove(key LRUKey) {
 	c.Lock()
 	c.remove(key, true)
 	c.Unlock()
 }
 
 // RemoveSlient removes the given key without triggering OnEvicted
-func (c *LRUCache) RemoveSlient(key LRUKey) {
+func (c *LRUCacheTest) RemoveSlient(key LRUKey) {
 	c.Lock()
 	c.remove(key, false)
 	c.Unlock()
 }
 
 // Len returns the number of items in the cache.
-func (c *LRUCache) Len() (len int) {
+func (c *LRUCacheTest) Len() (len int) {
 	c.Lock()
 	len = c.ll.Len()
 	c.Unlock()
@@ -390,22 +386,22 @@ func (c *LRUCache) Len() (len int) {
 }
 
 // MaxWeight returns max weight
-func (c *LRUCache) MaxWeight() int64 {
+func (c *LRUCacheTest) MaxWeight() int64 {
 	return c.maxWeight
 }
 
 // Weight returns current weight
-func (c *LRUCache) Weight() int64 {
+func (c *LRUCacheTest) Weight() int64 {
 	return c.curWeight
 }
 
-func (c *LRUCache) remove(key LRUKey, doCallback bool) {
+func (c *LRUCacheTest) remove(key LRUKey, doCallback bool) {
 	if ele, hit := c.cache[key]; hit {
 		c.removeElement(ele, doCallback)
 	}
 }
 
-func (c *LRUCache) removeElement(e *list.Element, doCallback bool) {
+func (c *LRUCacheTest) removeElement(e *list.Element, doCallback bool) {
 	kv := e.Value.(*lruEntry)
 
 	if c.OnEvicted != nil && doCallback {

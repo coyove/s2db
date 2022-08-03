@@ -173,20 +173,16 @@ func HashStr32(s string) (h uint32) {
 	return crc32.ChecksumIEEE(b)
 }
 
-func HashMultiBytes(in [][]byte) string {
-	h := [2]uint64{0, 5381}
+func HashMultiBytes(in [][]byte) (h uint64) {
+	h = 14695981039346656037 // fnv64
 	for _, buf := range in {
 		for _, b := range buf {
-			old := h[1]
-			h[1] = h[1]*33 + uint64(b)
-			if h[1] < old {
-				h[0]++
-			}
+			h = h * 1099511628211
+			h = h ^ uint64(b)
 		}
-		h[1]++
+		h = h * 1099511628211
 	}
-	x := *(*[16]byte)(unsafe.Pointer(&h))
-	return string(x[:])
+	return
 }
 
 func Recover(f func()) {

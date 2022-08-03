@@ -31,7 +31,6 @@ type ServerConfig struct {
 	Passthrough        string
 	CacheSize          int
 	CacheObjMaxSize    int // kb
-	WeakCacheSize      int
 	SlowLimit          int // ms
 	PingTimeout        int // ms
 	ResponseLogSize    int // kb
@@ -72,7 +71,7 @@ func init() {
 		for i := range v {
 			v = append(v, bas.ToReadonlyBytes(e.Get(i)))
 		}
-		e.A = bas.Str(s2pkg.HashMultiBytes(v))
+		e.A = bas.Int64(int64(s2pkg.HashMultiBytes(v)))
 	})
 	bas.AddGlobalMethod("bfparse", func(e *bas.Env) {
 		bf, err := bitmap.BloomFilterUnmarshalBinary(bas.ToReadonlyBytes(e.Get(0)))
@@ -105,7 +104,6 @@ func (s *Server) saveConfig() error {
 	if s.CacheObjMaxSize == 0 {
 		s.CacheObjMaxSize = 1
 	}
-	ifZero(&s.WeakCacheSize, 1024)
 	ifZero(&s.SlowLimit, 500)
 	ifZero(&s.ResponseLogSize, 16)
 	ifZero(&s.BatchMaxRun, 50)
@@ -115,16 +113,7 @@ func (s *Server) saveConfig() error {
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
-	if s.Cache == nil {
-		s.Cache = s2pkg.NewMasterLRU(int64(s.CacheSize), nil)
-	} else {
-		s.Cache.SetNewCap(int64(s.CacheSize))
-	}
-	if s.WeakCache == nil {
-		s.WeakCache = s2pkg.NewMasterLRU(int64(s.WeakCacheSize), nil)
-	} else {
-		s.WeakCache.SetNewCap(int64(s.WeakCacheSize))
-	}
+	s.Cache = s2pkg.NewLRUCache(s.CacheSize, nil)
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -238,12 +227,11 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	}
 	cfg, err := wire.ParseConnString(addr)
 	s2pkg.PanicErr(err)
-	if cli, ok := s.rdbCache.Get(cfg.Raw); ok {
+	if cli, ok := s.rdbCache.GetSimple(cfg.Raw); ok {
 		return cli.(*redis.Client)
 	}
 	cli = redis.NewClient(cfg.Options)
-	s.rdbCache.Delete(cfg.Addr)
-	s.rdbCache.Add(cfg.Addr, cfg.Raw, cli, 0)
+	s.rdbCache.AddSimple(cfg.Raw, cli)
 	return
 }
 

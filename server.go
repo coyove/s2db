@@ -34,7 +34,7 @@ type Server struct {
 	ln           net.Listener
 	lnLocal      net.Listener
 	lnWebConsole *s2pkg.LocalListener
-	rdbCache     *s2pkg.MasterLRU
+	rdbCache     *s2pkg.LRUCache
 
 	LocalRedis *redis.Client
 	Slave      endpoint
@@ -48,8 +48,7 @@ type Server struct {
 	ReadOnly         bool
 	Closed           bool // server close flag
 	SelfManager      *bas.Program
-	Cache            *s2pkg.MasterLRU
-	WeakCache        *s2pkg.MasterLRU
+	Cache            *s2pkg.LRUCache
 	evalLock         sync.RWMutex
 	switchMasterLock sync.RWMutex
 	dieLock          sync.Mutex
@@ -66,7 +65,6 @@ type Server struct {
 		CacheReq         s2pkg.Survey `metrics:"qps"`
 		CacheSize        s2pkg.Survey `metrics:"mean"`
 		CacheHit         s2pkg.Survey `metrics:"qps"`
-		WeakCacheHit     s2pkg.Survey `metrics:"qps"`
 		BatchSize        s2pkg.Survey ``
 		BatchLat         s2pkg.Survey ``
 		BatchSizeSv      s2pkg.Survey `metrics:"mean"`
@@ -144,8 +142,8 @@ func Open(dbPath string) (x *Server, err error) {
 			return nil, err
 		}
 	}
-	x.rdbCache = s2pkg.NewMasterLRU(4, func(kv s2pkg.LRUKeyValue) {
-		log.Info("rdbCache(", kv.SlaveKey, ") close: ", kv.Value.(*redis.Client).Close())
+	x.rdbCache = s2pkg.NewLRUCache(4, func(k string, v s2pkg.LRUValue) {
+		log.Info("rdbCache(", k, ") close: ", v.Value.(*redis.Client).Close())
 	})
 	return x, b.Commit(pebble.Sync)
 }
@@ -170,7 +168,10 @@ func (s *Server) Close() (err error) {
 	errs <- s.lnWebConsole.Close()
 	errs <- s.Slave.Close()
 	errs <- s.LocalRedis.Close()
-	s.rdbCache.Range(func(kv s2pkg.LRUKeyValue) bool { errs <- kv.Value.(*redis.Client).Close(); return true })
+	s.rdbCache.Range(func(k string, v s2pkg.LRUValue) bool {
+		errs <- v.Value.(*redis.Client).Close()
+		return true
+	})
 
 	wg := sync.WaitGroup{}
 	for i := range s.shards {
@@ -446,10 +447,10 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		endKey, endKey2, _ := ranges.GetZSetRangeKey(end)
 		startSetKey, _ := ranges.GetSetRangeKey(key)
 		endSetKey, _ := ranges.GetSetRangeKey(end)
-		keyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))
-		scoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))
-		set, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytes(endSetKey))
-		return w.WriteObjects(keyScore, scoreKey, set)
+		zsetKeyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))
+		zsetScoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))
+		setAll, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytes(endSetKey))
+		return w.WriteObjects(zsetKeyScore, zsetScoreKey, setAll)
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
 	case "DB.LOG":
@@ -530,12 +531,12 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	}
 
 	cmdHash := s2pkg.HashMultiBytes(command.Argv)
-	weak := parseWeakFlag(command)
+	parseWeakFlag(command)
 	mwm := s.Cache.GetWatermark(key)
 	// Read commands
 	switch cmd {
 	case "ZSCORE", "ZMSCORE":
-		x, cached := s.getCache(cmdHash, weak).([]float64)
+		x, cached := s.getCache(key, cmdHash).([]float64)
 		if !cached {
 			x, err = s.ZMScore(key, toStrings(command.Argv[2:]))
 			if err != nil {
@@ -552,7 +553,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		return w.WriteBulks(data...)
 	case "ZDATA", "ZMDATA", "ZDATABM16":
-		x, cached := s.getCache(cmdHash, weak).([][]byte)
+		x, cached := s.getCache(key, cmdHash).([][]byte)
 		if !cached {
 			if cmd == "ZDATABM16" {
 				x, err = s.ZDataBM16(key, command.Str(2), uint16(command.Int64(3)), uint16(command.Int64(4)))
@@ -578,7 +579,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		return w.WriteObjectsSlice(itfs)
 	case "SMEMBERS":
-		if v := s.getCache(cmdHash, weak); v != nil {
+		if v := s.getCache(key, cmdHash); v != nil {
 			return w.WriteBulksSlice(v.([][]byte))
 		}
 		res := s.SMembers(key, command.Flags(2))
@@ -589,7 +590,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "ZCARD":
 		return w.WriteInt(s.ZCard(key))
 	case "ZCOUNT", "ZCOUNTBYLEX":
-		if v := s.getCache(cmdHash, weak); v != nil {
+		if v := s.getCache(key, cmdHash); v != nil {
 			return w.WriteInt(int64(v.(int)))
 		}
 		// ZCOUNT name start end [MATCH X]
@@ -599,7 +600,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		return w.WriteIntOrError(count, err)
 	case "ZRANK", "ZREVRANK":
-		c, cached := s.getCache(cmdHash, weak).(int)
+		c, cached := s.getCache(key, cmdHash).(int)
 		if !cached {
 			// COMMAND name key COUNT X
 			c, err = s.ZRank(isRev, key, command.Str(2), command.Flags(3).Count)
@@ -615,7 +616,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
-		if v := s.getCache(cmdHash, weak); v != nil {
+		if v := s.getCache(key, cmdHash); v != nil {
 			return w.WriteBulksSlice(redisPairs(v.([]s2pkg.Pair), flags))
 		}
 		start, end := command.Str(2), command.Str(3)
@@ -635,13 +636,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return w.WriteBulksSlice(redisPairs(p, flags))
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		pf, flags := parseNormFlag(isRev, command)
-		if v := s.getCache(cmdHash, weak); v != nil {
+		if v := s.getCache(key, cmdHash); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
 			start, end := command.Str(2), command.Str(3)
-			var wms []int64
 			if len(flags.Union) > 0 {
-				wms = s.Cache.GetWatermarks(flags.Union)
 				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
 				pf = defaultNorm
 			} else {
@@ -651,14 +650,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				return w.WriteError(err.Error())
 			}
 			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
-			if len(flags.Union) > 0 {
-				s.addCacheMultiKeys(flags.Union, cmdHash, p, wms)
-			}
 		}
 		return w.WriteBulksSlice(redisPairs(pf(p), flags))
 	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
 		flags := command.Flags(7)
-		if v := s.getCache(cmdHash, weak); v != nil {
+		if v := s.getCache(key, cmdHash); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
 			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3),

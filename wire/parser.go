@@ -374,7 +374,7 @@ type Flags struct {
 }
 
 func (f *Flags) IsSpecial() bool {
-	return f.TwoHops != "" || len(f.Intersect) > 0
+	return f.TwoHops != "" || len(f.Intersect) > 0 || len(f.Union) > 0
 }
 
 func (c Command) Flags(start int) (f Flags) {

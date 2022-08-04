@@ -16,6 +16,10 @@ var (
 	MinScoreRange = Limit{Float: math.Inf(-1), Inclusive: true}
 	MaxScoreRange = Limit{Float: math.Inf(1), Inclusive: true}
 
+	KVFullRange = &pebble.IterOptions{
+		LowerBound: []byte("zkv_____"),
+		UpperBound: []byte("zkv____\xff"),
+	}
 	SetFullRange = &pebble.IterOptions{
 		LowerBound: []byte("zpset___"),
 		UpperBound: []byte("zpset__\xff"),

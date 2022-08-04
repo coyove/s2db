@@ -32,6 +32,14 @@ func TestLogsMarshal(t *testing.T) {
 	fmt.Println(x)
 }
 
+func TestHashMB(t *testing.T) {
+	a := (HashMultiBytes([][]byte{nil, []byte("a"), []byte("bc")}))
+	b := (HashMultiBytes([][]byte{nil, []byte("ab"), []byte("c")}))
+	if a == b {
+		t.Fatal(a, b)
+	}
+}
+
 func TestMetrics(t *testing.T) {
 	rand.Seed(time.Now().Unix())
 

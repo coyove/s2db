@@ -447,10 +447,13 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		endKey, endKey2, _ := ranges.GetZSetRangeKey(end)
 		startSetKey, _ := ranges.GetSetRangeKey(key)
 		endSetKey, _ := ranges.GetSetRangeKey(end)
-		zsetKeyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(endKey))
-		zsetScoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytes(endKey2))
-		setAll, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytes(endSetKey))
-		return w.WriteObjects(zsetKeyScore, zsetScoreKey, setAll)
+		startKVKey := ranges.GetKVKey(key)
+		endKVKey := ranges.GetKVKey(end)
+		zsetKeyScore, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytesInplace(endKey))
+		zsetScoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytesInplace(endKey2))
+		setAll, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytesInplace(endSetKey))
+		kvAll, _ := s.DB.EstimateDiskUsage(startKVKey, s2pkg.IncBytesInplace(endKVKey))
+		return w.WriteObjects(zsetKeyScore, zsetScoreKey, setAll, kvAll)
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
 	case "DB.LOG":
@@ -528,6 +531,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZIncrBy(cmd, key, command, dd(command)), w)
 	case "SADD", "SREM":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseSAddRem(cmd, key, command, dd(command)), w)
+	case "SET", "SETNX":
+		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseSet(cmd, key, command, dd(command)), w)
 	}
 
 	cmdHash := s2pkg.HashMultiBytes(command.Argv)
@@ -535,6 +540,22 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	mwm := s.Cache.GetWatermark(key)
 	// Read commands
 	switch cmd {
+	case "GET":
+		x, cached := s.getCache(key, cmdHash).([]byte)
+		if !cached {
+			x, err = s.Get(key)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			s.addCache(key, cmdHash, x, mwm)
+		}
+		return w.WriteBulk(x)
+	case "MGET":
+		x, err := s.MGet(toStrings(command.Argv[1:]))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulksSlice(x)
 	case "ZSCORE", "ZMSCORE":
 		x, cached := s.getCache(key, cmdHash).([]float64)
 		if !cached {
@@ -671,6 +692,10 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "SCANSET":
 		flags := command.Flags(2)
 		p, next := s.ScanSet(key, flags)
+		return w.WriteObjects(next, redisPairs(p, flags))
+	case "SCANKV":
+		flags := command.Flags(2)
+		p, next := s.ScanKV(key, flags)
 		return w.WriteObjects(next, redisPairs(p, flags))
 	case "SSCAN":
 		flags := command.Flags(3)

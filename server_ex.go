@@ -39,14 +39,16 @@ var (
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
 		"ZRANGERANGEBYSCORE": true, "ZREVRANGERANGEBYSCORE": true,
-		"SCAN": true, "SCANSET": true, "SSCAN": true,
-		"SCARD": true, "SMEMBERS": true, "SISMEMBER": true, "SMISMEMBER": true,
+		"SCAN": true, "SCANSET": true, "SCANKV": true,
+		"SSCAN": true, "SCARD": true, "SMEMBERS": true, "SISMEMBER": true, "SMISMEMBER": true,
+		"GET": true, "MGET": true,
 	}
 	isWriteCommand = map[string]bool{
 		"DEL":  true,
 		"ZREM": true, "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
 		"ZADD": true, "ZINCRBY": true,
 		"SADD": true, "SREM": true,
+		"SET": true, "SETNX": true,
 	}
 )
 

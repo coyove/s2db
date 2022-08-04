@@ -252,6 +252,11 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 			if err := tx.DeleteRange(bkStartCounter, s2pkg.IncBytes(bkEndCounter), pebble.Sync); err != nil {
 				return nil, err
 			}
+			bkStartName = ranges.GetKVKey(startKey)
+			bkEndName = ranges.GetKVKey(endKey)
+			if err := tx.DeleteRange(bkStartName, s2pkg.IncBytes(bkEndName), pebble.Sync); err != nil {
+				return nil, err
+			}
 			return 1, writeLog(tx, dd)
 		}
 		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(startKey)
@@ -260,6 +265,10 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 		}
 		bkName, bkCounter = ranges.GetSetRangeKey(startKey)
 		if err := s.deleteSet(tx, startKey, bkName, bkCounter); err != nil {
+			return nil, err
+		}
+		bkName = ranges.GetKVKey(startKey)
+		if err := tx.Delete(bkName, pebble.Sync); err != nil {
 			return nil, err
 		}
 		return 1, writeLog(tx, dd)
@@ -568,11 +577,8 @@ func (s *Server) parseSAddRem(cmd, key string, command *wire.Command, dd []byte)
 	for i := 2; i < command.ArgCount(); i++ {
 		members = append(members, command.Bytes(i))
 	}
-	return s.prepareSAddRem(key, cmd == "SREM", members, dd)
-}
-
-func (s *Server) prepareSAddRem(key string, rem bool, members [][]byte, dd []byte) preparedTx {
-	add := !rem
+	rem := cmd == "SREM"
+	add := cmd == "SADD"
 	f := func(tx extdb.LogTx) (interface{}, error) {
 		bkName, bkCounter := ranges.GetSetRangeKey(key)
 		ctr := 0
@@ -612,6 +618,32 @@ func (s *Server) prepareSAddRem(key string, rem bool, members [][]byte, dd []byt
 			}
 		}
 		return int(math.Abs(float64(ctr))), writeLog(tx, dd)
+	}
+	return preparedTx{f: f}
+}
+
+func (s *Server) parseSet(cmd, key string, command *wire.Command, dd []byte) preparedTx {
+	value := command.Bytes(2)
+	nx := cmd == "SETNX"
+	f := func(tx extdb.LogTx) (interface{}, error) {
+		bkName := ranges.GetKVKey(key)
+		if nx {
+			_, closer, err := tx.Get(bkName)
+			if err == pebble.ErrNotFound {
+			} else if err != nil {
+				return nil, err
+			} else {
+				closer.Close()
+				return 0, writeLog(tx, dd)
+			}
+		}
+		if err := tx.Set(bkName, value, pebble.Sync); err != nil {
+			return nil, err
+		}
+		if nx {
+			return 1, writeLog(tx, dd)
+		}
+		return "OK", writeLog(tx, dd)
 	}
 	return preparedTx{f: f}
 }

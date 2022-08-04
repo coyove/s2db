@@ -102,6 +102,8 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx prepare
 		return w.WriteBulkString(s2pkg.FormatFloat(res))
 	case error:
 		return w.WriteError(res.Error())
+	case string:
+		return w.WriteSimpleString(res)
 	default:
 		panic(fmt.Sprintf("invalid result type: %T", out))
 	}

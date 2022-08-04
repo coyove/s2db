@@ -50,6 +50,12 @@ func (m *LRUCache) Cap() int {
 }
 
 func (m *LRUCache) GetWatermark(key string) int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.getWatermarkLocked(key)
+}
+
+func (m *LRUCache) getWatermarkLocked(key string) int64 {
 	return m.watermark[HashStr(key)%uint64(len(m.watermark))]
 }
 
@@ -65,7 +71,7 @@ func (m *LRUCache) Add(key string, hash uint64, value interface{}, wm int64) boo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if wm != 0 && wm < m.GetWatermark(key) {
+	if wm != 0 && wm < m.getWatermarkLocked(key) {
 		return false
 	}
 	m.store[key] = LRUValue{
@@ -126,12 +132,12 @@ func (m *LRUCache) Clear() {
 func (m *LRUCache) Delete(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.watermark[HashStr(key)%uint64(len(m.watermark))]++
 	old, ok := m.store[key]
 	delete(m.store, key)
 	if ok {
 		m.onEvict(key, old)
 	}
+	m.watermark[HashStr(key)%uint64(len(m.watermark))]++
 }
 
 func (m *LRUCache) Range(f func(string, LRUValue) bool) {

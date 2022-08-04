@@ -31,6 +31,10 @@ func GetShardLogKey(shard int16) []byte {
 	return []byte(fmt.Sprintf("log%04x_", shard))
 }
 
+func GetKVKey(key string) []byte {
+	return []byte("zkv_____" + key)
+}
+
 func NewPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 	return db.NewIter(&pebble.IterOptions{
 		LowerBound: key,

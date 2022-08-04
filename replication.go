@@ -331,6 +331,8 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 			_, err = s.parseZIncrBy(cmd, name, command, dd).f(ltx)
 		case "SADD", "SREM":
 			_, err = s.parseSAddRem(cmd, name, command, dd).f(ltx)
+		case "SET", "SETNX":
+			_, err = s.parseSet(cmd, name, command, dd).f(ltx)
 		default:
 			return nil, 0, fmt.Errorf("not a write command: %q", cmd)
 		}

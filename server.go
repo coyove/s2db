@@ -521,9 +521,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	// Write commands
 	deferred := parseRunFlag(command)
 	switch cmd {
-	case "DEL":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseDel(cmd, key, command, dd(command)), w)
-	case "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+	case "DEL", "ZREM":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseDel(cmd, key, command, dd(command)), w)
 	case "ZADD":
 		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)

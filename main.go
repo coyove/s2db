@@ -42,6 +42,7 @@ var (
 	pebbleMaxOpenFiles = flag.Int("pebble.maxopenfiles", 1024, "[pebble] max open files")
 	dsltMaxMembers     = flag.Int("db.dsltlimit", 1024, "[db] limit max members to delete during DSLT")
 	deleteKeyQPSLimit  = flag.Int("db.delkeylimit", 512, "[db] max QPS of deleting keys")
+	zsetMemberLimit    = flag.Int("db.zsetmemberlimit", 256, "[db] max members to manipulate in a single zset command")
 	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members single ZRANGE can return")
 	matchHardTimeout   = flag.Int("db.matchtimeout", 30, "[db] hard timeout (seconds) when using MATCH in ZRANGE")
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")

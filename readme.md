@@ -9,12 +9,12 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 - `ServerName (string)`: server's name
 - `Password (string)`: server's password
 - `Slave (string)`: slave's conn string, minimal form: `<SlaveIp>:<SlavePort>/?Name=<SlaveName>`:
+- `PullMaster (string)`: master's conn string, minimal form: `<MasterIp>:<MasterPort>/?Name=<MasterName>`:
 - `MarkMaster (int, 0|1)`: mark server as master, rejecting all PUSHLOGS requests
 - `Passthrough (string)`: relay all read-write commands to the destinated endpoint, minimal form: `<Ip>:<Port>/?Name=<Name>`:
-- `PingTimeout (int)`: ping timeout of slave, used by master
+- `PingTimeout (int, milliseconds)`: ping timeout of slave, used by master
 - `CacheSize (int)`: cache size (number of cached objects)
-- `WeakCacheSize (int)`: weak cache size (number of weakly cached objects)
-- `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object
+- `CacheObjMaxSize (int, kilobytes)`: max allowed size of a cached object, -1 means no object can be cached
 - `SlowLimit (int, milliseconds)`: threshold of recording slow commands into ./log/slow.log
 - `ResponseLogSize (int, bytes)`: max size of logs master can push to slave in PUSHLOGS
 - `BatchMaxRun (int)`: batch operations size
@@ -24,11 +24,6 @@ s2db is a sorted set database who speaks redis protocol and stores data on disk.
 
 # Commands
 Refer to COMMANDS.txt.
-
-# Weak Cache
-Read commands like `ZRANGE` or `ZSCORE` will store results in a weak cache.
-These cached values will not be returned to clients unless they append `WEAK sec` to commands,
-e.g.: `ZRANGE key start end WEAK 30` means returning cached results of this command if it was just cached in less than 30 seconds.
 
 # Web Console
 Web console can be accessed at the same address as flag `-l` identified, e.g.: `http://127.0.0.1:6379` and `http://127.0.0.1:6379/debug/pprof/`.

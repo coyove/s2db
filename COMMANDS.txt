@@ -46,9 +46,6 @@ ZINCRBY key [--DEFER--|--SYNC--] increment memebr [DF data_func] [DATA data] [BM
 ZREM key [--DEFER--|--SYNC--] member [member ...]
     Behaves exactly like redis.
 
-ZREMRANGEBY[LEX|SCORE|RANK] [--DEFER--|--SYNC--] key left right
-    Behaves exactly like redis.
-
 ZCARD key
     Behaves exactly like redis.
 

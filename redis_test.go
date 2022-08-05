@@ -257,64 +257,64 @@ func TestZSet(t *testing.T) {
 	assertEqual([]redis.Z{*z(1, "b"), *z(2, "c"), *z(3, "d")}, rdb.ZRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Min: "0", Max: "3"}).Val())
 	assertEqual([]redis.Z{*z(3, "d"), *z(2, "c"), *z(1, "b")}, rdb.ZRevRangeByScoreWithScores(ctx, "zset", &redis.ZRangeBy{Max: "3", Min: "0"}).Val())
 
-	remrangebyscore := func(min, max string) int64 {
-		rdb.Del(ctx, "zset")
-		rdb.ZAdd(ctx, "zset", z(1, "a"), z(2, "b"), z(3, "c"), z(4, "d"), z(5, "e"))
-		return rdb.ZRemRangeByScore(ctx, "zset", min, max).Val()
-	}
+	// remrangebyscore := func(min, max string) int64 {
+	// 	rdb.Del(ctx, "zset")
+	// 	rdb.ZAdd(ctx, "zset", z(1, "a"), z(2, "b"), z(3, "c"), z(4, "d"), z(5, "e"))
+	// 	return rdb.ZRemRangeByScore(ctx, "zset", min, max).Val()
+	// }
 
-	//             # inner range
-	assertEqual(3, remrangebyscore("2", "4"))
-	assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # start underflow
-	assertEqual(1, remrangebyscore("-10", "1"))
-	assertEqual([]string{"b", "c", "d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # end overflow
-	assertEqual(1, remrangebyscore("5", "10"))
-	assertEqual([]string{"a", "b", "c", "d"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # switch min and max
-	assertEqual(0, remrangebyscore("4", "2"))
-	assertEqual([]string{"a", "b", "c", "d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # -inf to mid
-	assertEqual(3, remrangebyscore("-inf", "3"))
-	assertEqual([]string{"d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # mid to +inf
-	assertEqual(3, remrangebyscore("3", "+inf"))
-	assertEqual([]string{"a", "b"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # -inf to +inf
-	assertEqual(5, remrangebyscore("-inf", "+inf"))
-	assertEqual([]string{}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # exclusive min
-	assertEqual(4, remrangebyscore("(1", "5"))
-	assertEqual([]string{"a"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	assertEqual(3, remrangebyscore("(2", "5"))
-	assertEqual([]string{"a", "b"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # exclusive max
-	assertEqual(4, remrangebyscore("1", "(5"))
-	assertEqual([]string{"e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	assertEqual(3, remrangebyscore("1", "(4"))
-	assertEqual([]string{"d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
-	//
-	//             # exclusive min and max
-	assertEqual(3, remrangebyscore("(1", "(5"))
-	assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //             # inner range
+	// assertEqual(3, remrangebyscore("2", "4"))
+	// assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # start underflow
+	// assertEqual(1, remrangebyscore("-10", "1"))
+	// assertEqual([]string{"b", "c", "d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # end overflow
+	// assertEqual(1, remrangebyscore("5", "10"))
+	// assertEqual([]string{"a", "b", "c", "d"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # switch min and max
+	// assertEqual(0, remrangebyscore("4", "2"))
+	// assertEqual([]string{"a", "b", "c", "d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # -inf to mid
+	// assertEqual(3, remrangebyscore("-inf", "3"))
+	// assertEqual([]string{"d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # mid to +inf
+	// assertEqual(3, remrangebyscore("3", "+inf"))
+	// assertEqual([]string{"a", "b"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # -inf to +inf
+	// assertEqual(5, remrangebyscore("-inf", "+inf"))
+	// assertEqual([]string{}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # exclusive min
+	// assertEqual(4, remrangebyscore("(1", "5"))
+	// assertEqual([]string{"a"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// assertEqual(3, remrangebyscore("(2", "5"))
+	// assertEqual([]string{"a", "b"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # exclusive max
+	// assertEqual(4, remrangebyscore("1", "(5"))
+	// assertEqual([]string{"e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// assertEqual(3, remrangebyscore("1", "(4"))
+	// assertEqual([]string{"d", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
+	// //
+	// //             # exclusive min and max
+	// assertEqual(3, remrangebyscore("(1", "(5"))
+	// assertEqual([]string{"a", "e"}, rdb.ZRange(ctx, "zset", 0, -1).Val())
 
-	pipe := rdb.Pipeline()
-	pipe.Del(ctx, "ztmp")
-	pipe.ZAdd(ctx, "ztmp", z(1, "a"), z(2, "b"), z(4, "d"))
-	pipe.ZAdd(ctx, "ztmp", z(2, "b"), z(3, "c"))
-	pipe.ZRemRangeByScore(ctx, "ztmp", "[4", "[4")
-	v := pipe.ZRange(ctx, "ztmp", 0, -1)
-	fmt.Println(pipe.Exec(ctx))
-	assertEqual([]string{"a", "b", "c"}, v.Val())
+	// pipe := rdb.Pipeline()
+	// pipe.Del(ctx, "ztmp")
+	// pipe.ZAdd(ctx, "ztmp", z(1, "a"), z(2, "b"), z(4, "d"))
+	// pipe.ZAdd(ctx, "ztmp", z(2, "b"), z(3, "c"))
+	// pipe.ZRemRangeByScore(ctx, "ztmp", "[4", "[4")
+	// v := pipe.ZRange(ctx, "ztmp", 0, -1)
+	// fmt.Println(pipe.Exec(ctx))
+	// assertEqual([]string{"a", "b", "c"}, v.Val())
 
 	rdb.Del(ctx, "zset")
 	rdb.ZAdd(ctx, "zset", z(0, "alpha"), z(0, "bar"), z(0, "cool"), z(0, "down"), z(0, "elephant"), z(0, "foo"), z(0, "great"), z(0, "hill"), z(0, "omega"))

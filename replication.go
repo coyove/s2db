@@ -323,7 +323,7 @@ func (s *Server) runLog(shard int, logs *s2pkg.Logs) (names map[string]bool, log
 
 		*ltx.InLogtail = l.Id
 		switch cmd {
-		case "DEL", "ZREM", "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
+		case "DEL", "ZREM": // , "ZREMRANGEBYLEX", "ZREMRANGEBYSCORE", "ZREMRANGEBYRANK":
 			_, err = s.parseDel(cmd, name, command, dd).f(ltx)
 		case "ZADD":
 			_, err = s.parseZAdd(cmd, name, command, dd).f(ltx)

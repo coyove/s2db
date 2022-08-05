@@ -132,6 +132,9 @@ MEMEBRS:
 			pairs = append(pairs, p)
 		}
 	}
+	if len(pairs) > *zsetMemberLimit {
+		panic("ZADD: too many members to add")
+	}
 	return s.prepareZAdd(key, pairs, flags, dd)
 }
 
@@ -142,19 +145,13 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 		// DEL start end
 		return s.prepareDel(key, command.Str(2), dd)
 	case "ZREM":
-		return prepareZRem(key, toStrings(command.Argv[2:]), dd)
+		tmp := command.Argv[2:]
+		if len(tmp) > *zsetMemberLimit {
+			panic("ZREM: too many members to remove")
+		}
+		return prepareZRem(key, toStrings(tmp), dd)
 	}
-	start, end := command.Str(2), command.Str(3)
-	switch cmd {
-	case "ZREMRANGEBYLEX":
-		return prepareZRemRangeByLex(key, start, end, dd)
-	case "ZREMRANGEBYSCORE":
-		return prepareZRemRangeByScore(key, start, end, dd)
-	case "ZREMRANGEBYRANK":
-		return prepareZRemRangeByRank(key, s2pkg.MustParseInt(start), s2pkg.MustParseInt(end), dd)
-	default:
-		panic("shouldn't happen")
-	}
+	panic("shouldn't happen")
 }
 
 func (s *Server) parseZIncrBy(cmd, key string, command *wire.Command, dd []byte) preparedTx {
@@ -522,48 +519,6 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 			}
 			return v, nil
 		}
-	}
-	return preparedTx{f: f}
-}
-
-func prepareZRemRangeByRank(key string, start, end int, dd []byte) preparedTx {
-	f := func(tx extdb.LogTx) (interface{}, error) {
-		c, err := rangeScore(key, ranges.MinScoreRange, ranges.MaxScoreRange, ranges.Options{
-			OffsetStart: start,
-			OffsetEnd:   end,
-			DeleteLog:   dd,
-			Limit:       ranges.HardLimit,
-			Append:      ranges.DefaultAppend,
-		})(tx)
-		return c.Count, err
-	}
-	return preparedTx{f: f}
-}
-
-func prepareZRemRangeByLex(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx extdb.LogTx) (interface{}, error) {
-		c, err := rangeLex(key, ranges.Lex(start), ranges.Lex(end), ranges.Options{
-			OffsetStart: 0,
-			OffsetEnd:   math.MaxInt64,
-			DeleteLog:   dd,
-			Limit:       ranges.HardLimit,
-			Append:      ranges.DefaultAppend,
-		})(tx)
-		return c.Count, err
-	}
-	return preparedTx{f: f}
-}
-
-func prepareZRemRangeByScore(key string, start, end string, dd []byte) preparedTx {
-	f := func(tx extdb.LogTx) (interface{}, error) {
-		c, err := rangeScore(key, ranges.Score(start), ranges.Score(end), ranges.Options{
-			OffsetStart: 0,
-			OffsetEnd:   math.MaxInt64,
-			DeleteLog:   dd,
-			Limit:       ranges.HardLimit,
-			Append:      ranges.DefaultAppend,
-		})(tx)
-		return c.Count, err
 	}
 	return preparedTx{f: f}
 }

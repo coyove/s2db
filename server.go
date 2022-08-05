@@ -638,7 +638,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		// COMMAND name start end FLAGS ...
 		flags := command.Flags(4)
 		if v := s.getCache(key, cmdHash); v != nil {
-			return w.WriteBulksSlice(redisPairs(v.([]s2pkg.Pair), flags))
+			return w.WriteBulksSlice(flags.ConvertPairs(v.([]s2pkg.Pair)))
 		}
 		start, end := command.Str(2), command.Str(3)
 		if end == "" {
@@ -654,7 +654,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteError(err.Error())
 		}
 		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
-		return w.WriteBulksSlice(redisPairs(p, flags))
+		return w.WriteBulksSlice(flags.ConvertPairs(p))
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		pf, flags := parseNormFlag(isRev, command)
 		if v := s.getCache(key, cmdHash); v != nil {
@@ -672,7 +672,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
 		}
-		return w.WriteBulksSlice(redisPairs(pf(p), flags))
+		return w.WriteBulksSlice(flags.ConvertPairs(pf(p)))
 	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
 		flags := command.Flags(7)
 		if v := s.getCache(key, cmdHash); v != nil {
@@ -684,23 +684,15 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				return w.WriteError(err.Error())
 			}
 		}
-		return w.WriteObjectsSlice(redisPairsNested(p, flags))
+		return w.WriteObjectsSlice(flags.ConvertNestedPairs(p))
 	case "SCAN":
 		flags := command.Flags(2)
-		p, next := s.ScanZSet(key, flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
-	case "SCANSET":
-		flags := command.Flags(2)
-		p, next := s.ScanSet(key, flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
-	case "SCANKV":
-		flags := command.Flags(2)
-		p, next := s.ScanKV(key, flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
+		p, next := s.Scan(key, flags)
+		return w.WriteObjects(next, flags.ConvertPairs(p))
 	case "SSCAN":
 		flags := command.Flags(3)
 		p, next := s.SScan(key, command.Str(2), flags)
-		return w.WriteObjects(next, redisPairs(p, flags))
+		return w.WriteObjects(next, flags.ConvertPairs(p))
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())

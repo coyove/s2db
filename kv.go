@@ -2,14 +2,11 @@ package main
 
 import (
 	"bytes"
-	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
-	"github.com/coyove/s2db/wire"
 )
 
 func (s *Server) Get(key string) (value []byte, err error) {
@@ -46,26 +43,4 @@ func (s *Server) ForeachKV(cursor string, f func(string, []byte) bool) {
 		}
 		c.SeekGE([]byte("zkv_____" + key + "\x01"))
 	}
-}
-
-func (s *Server) ScanKV(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count, timedout, start := flags.Count+1, "", clock.Now()
-	s.ForeachKV(cursor, func(k string, v []byte) bool {
-		if time.Since(start) > flags.Timeout {
-			timedout = k
-			return false
-		}
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v))})
-		return len(pairs) < count
-	})
-	if timedout != "" {
-		return pairs, timedout
-	}
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
-	}
-	return
 }

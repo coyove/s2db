@@ -39,7 +39,7 @@ var (
 		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
 		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
 		"ZRANGERANGEBYSCORE": true, "ZREVRANGERANGEBYSCORE": true,
-		"SCAN": true, "SCANSET": true, "SCANKV": true,
+		"SCAN":  true,
 		"SSCAN": true, "SCARD": true, "SMEMBERS": true, "SISMEMBER": true, "SMISMEMBER": true,
 		"GET": true, "MGET": true,
 	}
@@ -61,37 +61,6 @@ func toStrings(b [][]byte) (keys []string) {
 		keys = append(keys, string(b))
 	}
 	return keys
-}
-
-func redisPairs(in []s2pkg.Pair, flags wire.Flags) [][]byte {
-	data := make([][]byte, 0, len(in))
-	for _, p := range in {
-		data = append(data, []byte(p.Member))
-		if flags.WithScores || flags.WithData {
-			data = append(data, s2pkg.FormatFloatBulk(p.Score))
-		}
-		if flags.WithData {
-			data = append(data, p.Data)
-		}
-	}
-	return data
-}
-
-func redisPairsNested(in []s2pkg.Pair, flags wire.Flags) []interface{} {
-	data := make([]interface{}, 0, len(in))
-	for _, p := range in {
-		data = append(data, []byte(p.Member))
-		if flags.WithScores || flags.WithData {
-			data = append(data, s2pkg.FormatFloatBulk(p.Score))
-		}
-		if flags.WithData {
-			data = append(data, p.Data)
-		}
-		if p.Children != nil {
-			data = append(data, redisPairsNested(*p.Children, flags))
-		}
-	}
-	return data
 }
 
 func dd(cmd *wire.Command) []byte {
@@ -665,6 +634,62 @@ func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum
 	for i := range a {
 		diffs[i] = clock.IdDiff(a[i], b[i])
 		diffSum += diffs[i]
+	}
+	return
+}
+
+func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
+	count := flags.Count + 1
+	if len(cursor) > 0 {
+		switch cursor[0] {
+		case 'Z':
+			cursor = cursor[1:]
+		case 'S':
+			cursor = cursor[1:]
+			goto SCAN_SET
+		case 'K':
+			cursor = cursor[1:]
+			goto SCAN_KV
+		}
+	}
+
+	s.ForeachZSet(cursor, func(k string) bool {
+		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+			return true
+		}
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k))})
+		return len(pairs) < count
+	})
+	if len(pairs) >= count {
+		pairs, nextCursor = pairs[:count-1], "Z"+pairs[count-1].Member
+		return
+	}
+
+	cursor = ""
+SCAN_SET:
+	s.ForeachSet(cursor, func(k string) bool {
+		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+			return true
+		}
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k))})
+		return len(pairs) < count
+	})
+	if len(pairs) >= count {
+		pairs, nextCursor = pairs[:count-1], "S"+pairs[count-1].Member
+		return
+	}
+
+	cursor = ""
+SCAN_KV:
+	s.ForeachKV(cursor, func(k string, v []byte) bool {
+		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+			return true
+		}
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v))})
+		return len(pairs) < count
+	})
+	if len(pairs) >= count {
+		pairs, nextCursor = pairs[:count-1], "K"+pairs[count-1].Member
 	}
 	return
 }

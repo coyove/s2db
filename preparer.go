@@ -209,7 +209,7 @@ func deletePair(tx extdb.LogTx, key string, pairs []s2pkg.Pair, dd []byte) error
 
 func (s *Server) deleteZSet(tx extdb.Storage, key string, bkName, bkScore, bkCounter []byte) error {
 	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
-		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
+		return fmt.Errorf("delete zset key %q rate limit: %d", key, *deleteKeyQPSLimit)
 	}
 	if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
 		return err
@@ -222,7 +222,7 @@ func (s *Server) deleteZSet(tx extdb.Storage, key string, bkName, bkScore, bkCou
 
 func (s *Server) deleteSet(tx extdb.Storage, key string, bkName, bkCounter []byte) error {
 	if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
-		return fmt.Errorf("delete key (%s) qps limit reached: %d", key, *deleteKeyQPSLimit)
+		return fmt.Errorf("delete set key %q rate limit: %d", key, *deleteKeyQPSLimit)
 	}
 	if err := tx.DeleteRange(bkName, s2pkg.IncBytes(bkName), pebble.Sync); err != nil {
 		return err
@@ -233,6 +233,9 @@ func (s *Server) deleteSet(tx extdb.Storage, key string, bkName, bkCounter []byt
 func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
 		if endKey != "" {
+			if _, c := s.rangeDeleteWatcher.Incr(1); int(c) > *deleteKeyQPSLimit {
+				return nil, fmt.Errorf("delete range key %q-%q rate limit: %d", startKey, endKey, *deleteKeyQPSLimit)
+			}
 			bkStartName, bkStartScore, bkStartCounter := ranges.GetZSetRangeKey(startKey)
 			bkEndName, bkEndScore, bkEndCounter := ranges.GetZSetRangeKey(endKey)
 			if err := tx.DeleteRange(bkStartName, s2pkg.IncBytes(bkEndName), pebble.Sync); err != nil {

@@ -73,28 +73,6 @@ func (s *Server) ForeachSet(cursor string, f func(string) bool) {
 	}
 }
 
-func (s *Server) ScanSet(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count, timedout, start := flags.Count+1, "", clock.Now()
-	s.ForeachSet(cursor, func(k string) bool {
-		if time.Since(start) > flags.Timeout {
-			timedout = k
-			return false
-		}
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k))})
-		return len(pairs) < count
-	})
-	if timedout != "" {
-		return pairs, timedout
-	}
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], pairs[count-1].Member
-	}
-	return
-}
-
 func (s *Server) SScan(key, cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
 	count, start := flags.Count+1, clock.Now()
 	bkName, _ := ranges.GetSetRangeKey(key)

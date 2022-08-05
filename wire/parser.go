@@ -454,3 +454,34 @@ func (c Command) Flags(start int) (f Flags) {
 	}
 	return
 }
+
+func (flags Flags) ConvertNestedPairs(in []s2pkg.Pair) []interface{} {
+	data := make([]interface{}, 0, len(in))
+	for _, p := range in {
+		data = append(data, []byte(p.Member))
+		if flags.WithScores || flags.WithData {
+			data = append(data, s2pkg.FormatFloatBulk(p.Score))
+		}
+		if flags.WithData {
+			data = append(data, p.Data)
+		}
+		if p.Children != nil {
+			data = append(data, flags.ConvertNestedPairs(*p.Children))
+		}
+	}
+	return data
+}
+
+func (flags Flags) ConvertPairs(in []s2pkg.Pair) [][]byte {
+	data := make([][]byte, 0, len(in))
+	for _, p := range in {
+		data = append(data, []byte(p.Member))
+		if flags.WithScores || flags.WithData {
+			data = append(data, s2pkg.FormatFloatBulk(p.Score))
+		}
+		if flags.WithData {
+			data = append(data, p.Data)
+		}
+	}
+	return data
+}

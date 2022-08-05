@@ -1,6 +1,7 @@
 package clock
 
 import (
+	"math/bits"
 	"math/rand"
 	_ "runtime"
 	"sync"
@@ -82,11 +83,13 @@ func IdBeforeSeconds(id uint64, seconds int) uint64 {
 }
 
 func IdDiff(a, b uint64) float64 {
-	d := float64(IdNano(a) - IdNano(b))
+	d := IdNano(a) - IdNano(b)
 	if d != 0 {
-		return d
+		return float64(d)
 	}
-	return float64(a&counterMask-b&counterMask) / counterMask
+	a &= counterMask
+	b &= counterMask
+	return float64(64-bits.LeadingZeros64(a)-(64-bits.LeadingZeros64(b))+1) / 32
 }
 
 var randMu sync.Mutex

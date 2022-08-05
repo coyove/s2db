@@ -640,6 +640,8 @@ func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum
 
 func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
 	count := flags.Count + 1
+	startCursor := cursor
+	timedout, start := "", clock.Now()
 	if len(cursor) > 0 {
 		switch cursor[0] {
 		case 'Z':
@@ -654,10 +656,14 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 	}
 
 	s.ForeachZSet(cursor, func(k string) bool {
+		if time.Since(start) > flags.Timeout {
+			timedout = "Z" + k
+			return false
+		}
 		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
 			return true
 		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k))})
+		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k)), Data: []byte("zset")})
 		return len(pairs) < count
 	})
 	if len(pairs) >= count {
@@ -665,31 +671,47 @@ func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, next
 		return
 	}
 
-	cursor = ""
+	cursor = startCursor
 SCAN_SET:
-	s.ForeachSet(cursor, func(k string) bool {
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k))})
-		return len(pairs) < count
-	})
+	if timedout == "" {
+		s.ForeachSet(cursor, func(k string) bool {
+			if time.Since(start) > flags.Timeout {
+				timedout = "S" + k
+				return false
+			}
+			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+				return true
+			}
+			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k)), Data: []byte("set")})
+			return len(pairs) < count
+		})
+	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], "S"+pairs[count-1].Member
 		return
 	}
 
-	cursor = ""
+	cursor = startCursor
 SCAN_KV:
-	s.ForeachKV(cursor, func(k string, v []byte) bool {
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v))})
-		return len(pairs) < count
-	})
+	if timedout == "" {
+		s.ForeachKV(cursor, func(k string, v []byte) bool {
+			if time.Since(start) > flags.Timeout {
+				timedout = "K" + k
+				return false
+			}
+			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+				return true
+			}
+			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v)), Data: []byte("string")})
+			return len(pairs) < count
+		})
+	}
 	if len(pairs) >= count {
 		pairs, nextCursor = pairs[:count-1], "K"+pairs[count-1].Member
+	}
+
+	if timedout != "" {
+		return pairs, timedout
 	}
 	return
 }

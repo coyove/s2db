@@ -32,6 +32,21 @@ func TestLogsMarshal(t *testing.T) {
 	fmt.Println(x)
 }
 
+func TestHashStr(t *testing.T) {
+	test := func(a, b string) {
+		if ah, bh := HashStr(a), HashStr(b); ah != bh {
+			t.Fatal(a, ah, b, bh)
+		}
+	}
+	test("", "")
+	test("a", "a")
+	test("a", "{a}")
+	test("a", "b{a}")
+	test("a", "{a}b")
+	test("a", "b{a}c")
+	test("", "b{}c")
+}
+
 func TestHashMB(t *testing.T) {
 	a := (HashMultiBytes([][]byte{nil, []byte("a"), []byte("bc")}))
 	b := (HashMultiBytes([][]byte{nil, []byte("ab"), []byte("c")}))

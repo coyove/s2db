@@ -65,6 +65,7 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	}
 	return
 }
+
 func SplitCmdLine(line string) (args []interface{}) {
 	var s scanner.Scanner
 	s.Init(strings.NewReader(line))

@@ -1,6 +1,7 @@
 package extdb
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 
@@ -21,6 +22,13 @@ type LogTx struct {
 	InLogtail  *uint64
 	LogPrefix  []byte
 	Storage
+}
+
+func GetKeyCursor(c *pebble.Iterator, key []byte) ([]byte, bool) {
+	if c.SeekGE(key) && bytes.Equal(key, c.Key()) {
+		return c.Value(), true
+	}
+	return nil, false
 }
 
 func GetKey(db Storage, key []byte) ([]byte, error) {

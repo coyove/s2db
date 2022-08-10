@@ -683,6 +683,12 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteObjectsSlice(flags.ConvertNestedPairs(p))
+	case "ZRI": // count term1 ... termN
+		p, err := s.RI(command.Int(1), toStrings(command.Argv[2:]))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulksSlice((wire.Flags{WithScores: true}).ConvertPairs(p))
 	case "SCAN":
 		flags := command.Flags(2)
 		p, next := s.Scan(key, flags)

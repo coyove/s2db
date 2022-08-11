@@ -95,24 +95,25 @@ func (s *Survey) Metrics() (m metrics) {
 		}
 		ii := (idx - i + surveyCount) % surveyCount
 
-		if i < 60/surveyIntervalSec+1 {
-			if s.Max[ii] > m.Max[0] {
-				m.Max[0], m.Max[1], m.Max[2] = s.Max[ii], s.Max[ii], s.Max[ii]
-			}
-		} else if i < 300/surveyIntervalSec+1 {
-			if s.Max[ii] > m.Max[1] {
-				m.Max[1], m.Max[2] = s.Max[ii], s.Max[ii]
-			}
-		} else {
-			if s.Max[ii] > m.Max[2] {
-				m.Max[2] = s.Max[ii]
-			}
-		}
-
 		if ts-s.Ts[ii] <= surveyRangeSec {
+			if i < 60/surveyIntervalSec+1 {
+				if s.Max[ii] > m.Max[0] {
+					m.Max[0], m.Max[1], m.Max[2] = s.Max[ii], s.Max[ii], s.Max[ii]
+				}
+			} else if i < 300/surveyIntervalSec+1 {
+				if s.Max[ii] > m.Max[1] {
+					m.Max[1], m.Max[2] = s.Max[ii], s.Max[ii]
+				}
+			} else {
+				if s.Max[ii] > m.Max[2] {
+					m.Max[2] = s.Max[ii]
+				}
+			}
+
 			value += s.Value[ii]
 			count += int64(s.Count[ii])
 		}
+
 		if i == surveyCount-1 {
 			m.QPS[2] = float64(count) / surveyRangeSec
 			m.Mean[2] = float64(value) / float64(count)

@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"container/heap"
 	"fmt"
 	"math"
-	"sort"
+	"time"
 
+	"github.com/AndreasBriese/bbloom"
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
@@ -48,10 +51,20 @@ func (s *Server) ForeachKV(cursor string, f func(string, []byte) bool) {
 	}
 }
 
-func (s *Server) RI(count int, terms []string) (res []s2pkg.Pair, err error) {
+func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2pkg.Pair, err error) {
 	if len(terms) == 0 {
 		return nil, nil
 	}
+
+	if count > ranges.HardLimit {
+		count = ranges.HardLimit
+	}
+
+	if timeout <= 0 {
+		timeout = time.Second
+	}
+	deadline := clock.Now().Add(timeout)
+
 	c := s.DB.NewIter(&pebble.IterOptions{})
 	defer c.Close()
 
@@ -60,18 +73,27 @@ func (s *Server) RI(count int, terms []string) (res []s2pkg.Pair, err error) {
 
 	termKS := make([][]byte, len(terms))
 	termCard := make([]int64, len(terms))
-	termMinCard := int64(math.MaxInt64)
-	termMin := ""
+	termCardHeap := &s2pkg.PairHeap{}
+	must := map[string]byte{}
 	for i := range terms {
-		if terms[i] == "" {
-			return nil, fmt.Errorf("empty key name")
+		if len(terms[i]) <= 1 {
+			return nil, fmt.Errorf("invalid key name")
 		}
+
+		switch terms[i][0] {
+		case '+':
+			terms[i] = terms[i][1:]
+		case '-', '=':
+			must[terms[i][1:]] = terms[i][0]
+			terms[i] = terms[i][1:]
+		}
+
 		var card int64
 		if v, ok := extdb.GetKeyCursor(c, ranges.GetZSetCounterKey(terms[i])); ok {
 			card = int64(s2pkg.BytesToUint64(v))
 		}
-		if card <= termMinCard && card > 0 {
-			termMin, termMinCard = terms[i], card
+		if card > 0 {
+			heap.Push(termCardHeap, s2pkg.Pair{Member: terms[i], Score: float64(card)})
 		}
 		termKS[i] = ranges.GetZSetNameKey(terms[i])
 		termCard[i] = card
@@ -86,29 +108,65 @@ func (s *Server) RI(count int, terms []string) (res []s2pkg.Pair, err error) {
 		}
 	}
 
-	if termMin == "" {
-		return nil, nil
-	}
-
 	c2 := s.DB.NewIter(&pebble.IterOptions{})
 	defer c2.Close()
 
-	_, bkScore, _ := ranges.GetZSetRangeKey(termMin)
-	for c.SeekGE(bkScore); c.Valid() && len(res) < count; c.Next() {
-		if !bytes.HasPrefix(c.Key(), bkScore) {
-			break
+	h := &s2pkg.PairHeap{}
+	first := s2pkg.Pair{}
+	dedupMembers := bbloom.New(total, 0.01)
+
+	for clock.Now().Before(deadline) && termCardHeap.Len() > 0 {
+		termMin, _ := heap.Pop(termCardHeap).(s2pkg.Pair)
+		coeff := 1.0
+		if first.Score != 0 {
+			coeff = first.Score / termMin.Score
+		} else {
+			first = termMin
 		}
-		// score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
-		member := c.Key()[len(bkScore)+8:]
-		var total float64
-		for i, ks := range termKS {
-			if v, ok := extdb.GetKeyCursor(c2, append(ks, member...)); ok {
-				tf := s2pkg.BytesToFloat(v)
-				total += tf * idfs[i]
+
+		if must[termMin.Member] == '-' {
+			continue
+		}
+
+		_, bkScore, _ := ranges.GetZSetRangeKey(termMin.Member)
+	NEXT:
+		for c.SeekGE(bkScore); c.Valid() && clock.Now().Before(deadline); c.Next() {
+			if !bytes.HasPrefix(c.Key(), bkScore) {
+				break
 			}
+			// score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
+			member := c.Key()[len(bkScore)+8:]
+			if dedupMembers.Has(member) {
+				continue
+			}
+
+			var total float64
+			var allHits int
+			for i, ks := range termKS {
+				if v, ok := extdb.GetKeyCursor(c2, append(ks, member...)); ok {
+					if must[terms[i]] == '-' {
+						continue NEXT
+					}
+					tf := s2pkg.BytesToFloat(v)
+					total += tf * idfs[i]
+				} else {
+					if must[terms[i]] == '=' {
+						continue NEXT
+					}
+				}
+				allHits++
+			}
+			if allHits == len(terms) {
+				total *= 10
+			}
+			total *= coeff
+
+			heap.Push(h, s2pkg.Pair{Member: string(member), Score: total})
+			for h.Len() > count {
+				heap.Pop(h)
+			}
+			dedupMembers.Add(member)
 		}
-		res = append(res, s2pkg.Pair{Member: string(member), Score: total})
 	}
-	sort.Slice(res, func(i, j int) bool { return res[i].Score > res[j].Score })
-	return
+	return h.ToPairs(count, true), nil
 }

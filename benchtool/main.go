@@ -1,16 +1,23 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"math/rand"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-redis/redis/v8"
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -19,6 +26,8 @@ var (
 	benchmarkClients = flag.Int("clients", 100, "")
 	benchmarkOp      = flag.Int("op", 10000, "")
 	benchmarkDefer   = flag.Bool("defer", false, "")
+	corpus           = flag.String("corpus", "", "")
+	ftsQuery         = flag.String("query", "", "")
 	multiKeysNum     = flag.Int("keysnum", 10, "")
 )
 
@@ -132,6 +141,221 @@ func main() {
 				fmt.Println(i, cmd.Err())
 			}
 		}
+	case "fts_test":
+		res, _ := split(*corpus)
+		fmt.Println(res)
+	case "fts_index":
+		ch := make(chan [3]interface{})
+		for i := 0; i < 10; i++ {
+			go func() {
+				p := rdb.Pipeline()
+				c := 0
+				for kvid := range ch {
+					p.Do(ctx, "ZADD", "fts:"+kvid[0].(string), "--defer--", kvid[1].(float64), kvid[2].(int))
+					if c++; c == 100 {
+						if _, err := p.Exec(ctx); err != nil {
+							fmt.Println("error:", err)
+						}
+						p = rdb.Pipeline()
+						c = 0
+					}
+				}
+				if c > 0 {
+					if _, err := p.Exec(ctx); err != nil {
+						panic(err)
+					}
+				}
+			}()
+		}
+		f, err := os.Open(*corpus)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		rd := bufio.NewReader(f)
+		for ln := 0; ; ln++ {
+			line, _ := rd.ReadString('\n')
+			if len(line) == 0 {
+				break
+			}
+			if ln < 520919 {
+				continue
+			}
+			res, _ := split(line)
+			fmt.Println(ln, "count=", len(res))
+
+			for k, v := range res {
+				ch <- [3]interface{}{k, v, ln}
+			}
+		}
+	case "fts_query":
+		args := []interface{}{"ZRI", 1000, "1s"}
+		q := *ftsQuery
+
+	QUERY_EX:
+		switch q[0] {
+		case '=', '-':
+			idx := strings.IndexByte(q, ' ')
+			if idx == -1 {
+				idx = len(q)
+			}
+			res, _ := split(q[:idx][1:])
+			for k := range res {
+				args = append(args, string(q[0])+"fts:"+k)
+			}
+			q = strings.TrimSpace(q[idx:])
+			if len(q) > 0 {
+				goto QUERY_EX
+			}
+		}
+
+		ng, _ := split(q)
+		for k := range ng {
+			args = append(args, "+fts:"+k)
+		}
+
+		res, _ := rdb.Do(ctx, args...).Result()
+		for i, id := range res.([]interface{}) {
+			if i%2 == 0 {
+				ln, _ := strconv.Atoi(fmt.Sprint(id))
+				buf, _ := exec.Command("sed", "-n", strconv.Itoa(ln+1)+"p", *corpus).Output()
+				buf = bytes.TrimSpace(buf)
+				fmt.Println(id, res.([]interface{})[i+1], string(buf))
+			}
+		}
 	}
 	fmt.Println("finished in", time.Since(start).Seconds(), "s")
+}
+
+func split(text string) (res map[string]float64, err error) {
+	res = map[string]float64{}
+
+	tmpbuf := bytes.Buffer{}
+	total := 0
+	lastSplitText := ""
+
+	splitter := func(v string) {
+		if v == "" {
+			return
+		}
+
+		r, _ := utf8.DecodeRuneInString(v)
+		if lastSplitText != "" {
+			lastr, _ := utf8.DecodeLastRuneInString(lastSplitText)
+			if (lastr <= utf8.RuneSelf) != (r <= utf8.RuneSelf) {
+				tmpbuf.Reset()
+				tmpbuf.WriteRune(lastr)
+				tmpbuf.WriteRune(r)
+				res[strings.ToLower(tmpbuf.String())]++
+				total++
+			}
+		}
+		// fmt.Println(lastSplitText, v)
+		lastSplitText = v
+
+		if r < utf8.RuneSelf {
+			if len(v) == 1 {
+				return
+			}
+			res[strings.ToLower(v)]++
+			total++
+			return
+		}
+
+		lastr := utf8.RuneError
+		for len(v) > 0 {
+			r, sz := utf8.DecodeRuneInString(v)
+			v = v[sz:]
+
+			if lastr != utf8.RuneError {
+				tmpbuf.Reset()
+				tmpbuf.WriteRune(lastr)
+				tmpbuf.WriteRune(r)
+				res[tmpbuf.String()]++
+				total++
+			}
+
+			lastr = r
+		}
+	}
+
+	lasti, i, lastr := 0, 0, utf8.RuneError
+	for i < len(text) {
+		r, sz := utf8.DecodeRuneInString(text[i:])
+		if r == utf8.RuneError {
+			return nil, fmt.Errorf("grouping: invalid UTF-8 string: %q", text)
+		}
+
+		// fmt.Println(string(lastr), string(r), isdiff(lastr, r))
+		if lastr != utf8.RuneError {
+			isdiff := false
+			if ac, bc := Continue(lastr), Continue(r); ac != bc {
+				isdiff = true
+			}
+			if ac, bc := lastr <= utf8.RuneSelf, r <= utf8.RuneSelf; ac != bc {
+				isdiff = true
+			}
+			if isdiff {
+				splitter(text[lasti:i])
+				lasti = i
+			}
+		}
+		i += sz
+
+		if Continue(r) {
+			lastr = r
+		} else {
+			lastr = utf8.RuneError
+			lasti = i
+		}
+	}
+	splitter(text[lasti:])
+
+	for k, v := range res {
+		res[k] = v / float64(total)
+	}
+	return
+}
+
+type set func(rune) bool
+
+func (a set) add(rt *unicode.RangeTable) set {
+	b := in(rt)
+	return func(r rune) bool { return a(r) || b(r) }
+}
+
+func (a set) sub(rt *unicode.RangeTable) set {
+	b := in(rt)
+	return func(r rune) bool { return a(r) && !b(r) }
+}
+
+func in(rt *unicode.RangeTable) set {
+	return func(r rune) bool { return unicode.Is(rt, r) }
+}
+
+var id_continue = set(unicode.IsLetter).
+	add(unicode.Nl).
+	add(unicode.Other_ID_Start).
+	sub(unicode.Pattern_Syntax).
+	sub(unicode.Pattern_White_Space).
+	add(unicode.Mn).
+	add(unicode.Mc).
+	add(unicode.Nd).
+	add(unicode.Pc).
+	add(unicode.Other_ID_Continue).
+	sub(unicode.Pattern_Syntax).
+	sub(unicode.Pattern_White_Space)
+
+// Continue checks that the rune continues an identifier.
+func Continue(r rune) bool {
+	// id_continue(r) && NFKC(r) in "id_continue*"
+	if !id_continue(r) {
+		return false
+	}
+	for _, r := range norm.NFKC.String(string(r)) {
+		if !id_continue(r) {
+			return false
+		}
+	}
+	return true
 }

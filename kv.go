@@ -81,10 +81,10 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 		}
 
 		switch terms[i][0] {
-		case '+':
-			terms[i] = terms[i][1:]
-		case '-', '=':
+		case '+', '-':
 			must[terms[i][1:]] = terms[i][0]
+			terms[i] = terms[i][1:]
+		case '?':
 			terms[i] = terms[i][1:]
 		}
 
@@ -141,24 +141,23 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 			}
 
 			var total float64
-			var allHits int
+			var hits, allHits int = 0, len(terms)
 			for i, ks := range termKS {
 				if v, ok := extdb.GetKeyCursor(c2, append(ks, member...)); ok {
 					if must[terms[i]] == '-' {
+						allHits--
 						continue NEXT
 					}
 					tf := s2pkg.BytesToFloat(v)
 					total += tf * idfs[i]
+					hits++
 				} else {
-					if must[terms[i]] == '=' {
+					if must[terms[i]] == '+' {
 						continue NEXT
 					}
 				}
-				allHits++
 			}
-			if allHits == len(terms) {
-				total *= 10
-			}
+			total *= math.Pow(float64(hits)/float64(allHits), 2.5)
 			total *= coeff
 
 			heap.Push(h, s2pkg.Pair{Member: string(member), Score: total})

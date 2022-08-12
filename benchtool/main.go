@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
-	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +28,7 @@ var (
 	benchmarkDefer   = flag.Bool("defer", false, "")
 	corpus           = flag.String("corpus", "", "")
 	ftsQuery         = flag.String("query", "", "")
+	ftsQueryTimeout  = flag.String("query-timeout", "1s", "")
 	multiKeysNum     = flag.Int("keysnum", 10, "")
 )
 
@@ -189,42 +190,76 @@ func main() {
 			}
 		}
 	case "fts_query":
-		args := []interface{}{"ZRI", 1000, "1s"}
-		q := *ftsQuery
-
-	QUERY_EX:
-		switch q[0] {
-		case '=', '-':
-			idx := strings.IndexByte(q, ' ')
-			if idx == -1 {
-				idx = len(q)
+		args := []interface{}{"ZRI", 1000, *ftsQueryTimeout}
+		walk(*ftsQuery, func(m byte, q string) {
+			ng, _ := split(q)
+			for k := range ng {
+				args = append(args, string(m)+"fts:"+k)
 			}
-			res, _ := split(q[:idx][1:])
-			for k := range res {
-				args = append(args, string(q[0])+"fts:"+k)
-			}
-			q = strings.TrimSpace(q[idx:])
-			if len(q) > 0 {
-				goto QUERY_EX
-			}
-		}
-
-		ng, _ := split(q)
-		for k := range ng {
-			args = append(args, "+fts:"+k)
-		}
+		})
 
 		res, _ := rdb.Do(ctx, args...).Result()
+		fetchDiff := time.Since(start).Seconds()
+
+		h := [][]interface{}{}
 		for i, id := range res.([]interface{}) {
 			if i%2 == 0 {
 				ln, _ := strconv.Atoi(fmt.Sprint(id))
-				buf, _ := exec.Command("sed", "-n", strconv.Itoa(ln+1)+"p", *corpus).Output()
-				buf = bytes.TrimSpace(buf)
-				fmt.Println(id, res.([]interface{})[i+1], string(buf))
+				h = append(h, []interface{}{ln, i / 2, "", res.([]interface{})[i+1]})
 			}
 		}
+		sort.Slice(h, func(i, j int) bool {
+			return h[i][0].(int) < h[j][0].(int)
+		})
+
+		f, err := os.Open(*corpus)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		rd := bufio.NewReader(f)
+		for ln, h2 := 0, h; len(h2) > 0; ln++ {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				break
+			}
+			if ln == h2[0][0].(int) {
+				h2[0][2] = line
+				h2 = h2[1:]
+			}
+		}
+
+		sort.Slice(h, func(i, j int) bool {
+			return h[i][1].(int) < h[j][1].(int)
+		})
+		for _, row := range h {
+			fmt.Println(row[0], row[3], row[2])
+		}
+		fmt.Println("results fecthed in", fetchDiff, "s")
 	}
 	fmt.Println("finished in", time.Since(start).Seconds(), "s")
+}
+
+func walk(text string, f func(byte, string)) {
+	text = strings.TrimSpace(text)
+	for len(text) > 0 {
+		idx := strings.IndexByte(text, ' ')
+		var q string
+		if idx == -1 {
+			q, text = text, ""
+		} else {
+			q, text = text[:idx], text[idx+1:]
+		}
+		if len(q) == 0 {
+			continue
+		}
+		switch q[0] {
+		case '-', '+', '?':
+			f(q[0], q[1:])
+		default:
+			f('?', q)
+		}
+	}
 }
 
 func split(text string) (res map[string]float64, err error) {
@@ -263,6 +298,7 @@ func split(text string) (res map[string]float64, err error) {
 		}
 
 		lastr := utf8.RuneError
+		runeCount, old := 0, v
 		for len(v) > 0 {
 			r, sz := utf8.DecodeRuneInString(v)
 			v = v[sz:]
@@ -276,6 +312,11 @@ func split(text string) (res map[string]float64, err error) {
 			}
 
 			lastr = r
+			runeCount++
+		}
+
+		if runeCount <= 4 {
+			res[old]++
 		}
 	}
 

@@ -24,11 +24,18 @@ type LogTx struct {
 	Storage
 }
 
-func GetKeyCursor(c *pebble.Iterator, key []byte) ([]byte, bool) {
+func CursorGetKey(c *pebble.Iterator, key []byte) ([]byte, bool) {
 	if c.SeekGE(key) && bytes.Equal(key, c.Key()) {
 		return c.Value(), true
 	}
 	return nil, false
+}
+
+func CursorGetMaxKeyWithPrefix(c *pebble.Iterator, prefix []byte) ([]byte, []byte, bool) {
+	if c.SeekLT(s2pkg.IncBytes(prefix)) && bytes.HasPrefix(c.Key(), prefix) {
+		return c.Key(), c.Value(), true
+	}
+	return nil, nil, false
 }
 
 func GetKey(db Storage, key []byte) ([]byte, error) {

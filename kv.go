@@ -5,7 +5,6 @@ import (
 	"container/heap"
 	"fmt"
 	"math"
-	"time"
 
 	"github.com/AndreasBriese/bbloom"
 	"github.com/cockroachdb/pebble"
@@ -13,6 +12,7 @@ import (
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
 	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/wire"
 )
 
 func (s *Server) Get(key string) (value []byte, err error) {
@@ -51,19 +51,12 @@ func (s *Server) ForeachKV(cursor string, f func(string, []byte) bool) {
 	}
 }
 
-func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2pkg.Pair, err error) {
+func (s *Server) RI(terms []string, flags wire.Flags) (res []s2pkg.Pair, err error) {
 	if len(terms) == 0 {
 		return nil, nil
 	}
 
-	if count > ranges.HardLimit {
-		count = ranges.HardLimit
-	}
-
-	if timeout <= 0 {
-		timeout = time.Second
-	}
-	deadline := clock.Now().Add(timeout)
+	deadline := clock.Now().Add(flags.Timeout)
 
 	c := s.DB.NewIter(&pebble.IterOptions{})
 	defer c.Close()
@@ -89,7 +82,7 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 		}
 
 		var card int64
-		if v, ok := extdb.GetKeyCursor(c, ranges.GetZSetCounterKey(terms[i])); ok {
+		if v, ok := extdb.CursorGetKey(c, ranges.GetZSetCounterKey(terms[i])); ok {
 			card = int64(s2pkg.BytesToUint64(v))
 		}
 		if card > 0 {
@@ -111,9 +104,9 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 	c2 := s.DB.NewIter(&pebble.IterOptions{})
 	defer c2.Close()
 
-	h := &s2pkg.PairHeap{}
+	h := s2pkg.SortedPairArray{Limit: flags.Count + 1}
 	first := s2pkg.Pair{}
-	dedupMembers := bbloom.New(total, 0.01)
+	dedupMembers := bbloom.New(total, 0.001)
 
 	for clock.Now().Before(deadline) && termCardHeap.Len() > 0 {
 		termMin, _ := heap.Pop(termCardHeap).(s2pkg.Pair)
@@ -129,6 +122,7 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 		}
 
 		_, bkScore, _ := ranges.GetZSetRangeKey(termMin.Member)
+
 	NEXT:
 		for c.SeekGE(bkScore); c.Valid() && clock.Now().Before(deadline); c.Next() {
 			if !bytes.HasPrefix(c.Key(), bkScore) {
@@ -143,7 +137,7 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 			var total float64
 			var hits, allHits int = 0, len(terms)
 			for i, ks := range termKS {
-				if v, ok := extdb.GetKeyCursor(c2, append(ks, member...)); ok {
+				if v, ok := extdb.CursorGetKey(c2, append(ks, member...)); ok {
 					if must[terms[i]] == '-' {
 						allHits--
 						continue NEXT
@@ -160,12 +154,13 @@ func (s *Server) RI(count int, timeout time.Duration, terms []string) (res []s2p
 			total *= math.Pow(float64(hits)/float64(allHits), 2.5)
 			total *= coeff
 
-			heap.Push(h, s2pkg.Pair{Member: string(member), Score: total})
-			for h.Len() > count {
-				heap.Pop(h)
+			if termCardHeap.Len() == 0 && len(terms) > 1 && total < 0.001 {
+				break
 			}
+
+			h.Add(s2pkg.Pair{Member: string(member), Score: total})
 			dedupMembers.Add(member)
 		}
 	}
-	return h.ToPairs(count, true), nil
+	return h.ToPairs(flags.Count), nil
 }

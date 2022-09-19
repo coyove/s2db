@@ -190,13 +190,21 @@ func main() {
 			}
 		}
 	case "fts_query":
-		args := []interface{}{"ZRI", 1000, *ftsQueryTimeout}
+		args := []interface{}{"ZRI", 0}
+		dedup := map[string]bool{}
 		walk(*ftsQuery, func(m byte, q string) {
 			ng, _ := split(q)
 			for k := range ng {
+				if dedup[k] {
+					continue
+				}
 				args = append(args, string(m)+"fts:"+k)
+				dedup[k] = true
 			}
 		})
+		args[1] = len(args) - 2
+		args = append(args, "COUNT", 1000, "TIMEOUT", *ftsQueryTimeout)
+		fmt.Println(args)
 
 		res, _ := rdb.Do(ctx, args...).Result()
 		fetchDiff := time.Since(start).Seconds()

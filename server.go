@@ -683,10 +683,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 		}
 		return w.WriteObjectsSlice(flags.ConvertNestedPairs(p))
-	case "ZRI": // count timeout_ms term1 ... termN
-		to, err := time.ParseDuration(command.StrRef(2))
-		s2pkg.PanicErr(err)
-		p, err := s.RI(command.Int(1), to, toStrings(command.Argv[3:]))
+	case "ZRI": // N term1 ... termN options
+		N := command.Int(1)
+		p, err := s.RI(toStrings(command.Argv[2:2+N]), command.Flags(2+N))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

@@ -3,6 +3,8 @@ package s2pkg
 import (
 	"bytes"
 	"container/heap"
+	"math"
+	"sort"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/gogo/protobuf/proto"
@@ -140,4 +142,41 @@ func PairFromSKVCursor(c *pebble.Iterator) (key string, p Pair) {
 	p.Member = string(k[idx+9:])
 	p.Data = Bytes(c.Value())
 	return
+}
+
+type SortedPairArray struct {
+	Limit int
+	p     []Pair
+}
+
+func (spa *SortedPairArray) Add(p Pair) int {
+	idx := sort.Search(len(spa.p), func(i int) bool {
+		return (spa.p)[i].Score <= p.Score
+	})
+	spa.p = append(spa.p, Pair{})
+	copy(spa.p[idx+1:], spa.p[idx:])
+	spa.p[idx] = p
+
+	if len(spa.p) > spa.Limit {
+		spa.p = spa.p[:spa.Limit]
+	}
+	return idx
+}
+
+func (spa *SortedPairArray) ToPairs(count int) []Pair {
+	if len(spa.p) <= count {
+		return spa.p
+	}
+	return spa.p[:count]
+}
+
+func (spa *SortedPairArray) Len() int {
+	return len(spa.p)
+}
+
+func (spa *SortedPairArray) MinScore() float64 {
+	if len(spa.p) > 0 {
+		return spa.p[len(spa.p)-1].Score
+	}
+	return math.Inf(-1)
 }

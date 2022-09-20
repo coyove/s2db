@@ -99,7 +99,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("mark_master:%v", s.MarkMaster),
-			fmt.Sprintf("passthrough:%v", s.Passthrough),
+			fmt.Sprintf("reverseproxy:%v", s.ReverseProxy),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			"")
 	}
@@ -715,4 +715,22 @@ SCAN_KV:
 		return pairs, timedout
 	}
 	return
+}
+
+func (s *Server) getUpstreamShard(key string) int {
+	return int(s2pkg.HashStr32(key) % 1024)
+}
+
+func (s *Server) getUpstreamList() []s2pkg.Pair {
+	key := "_upstreams_"
+	mwm := s.Cache.GetWatermark(key)
+	if v := s.getCache(key, 0); v != nil {
+		return v.([]s2pkg.Pair)
+	}
+	p, err := s.ZRange(false, key, 0, -1, wire.Flags{Limit: math.MaxInt64, WithData: true})
+	if err != nil {
+		panic(err)
+	}
+	s.addCache(key, 0, p, mwm)
+	return p
 }

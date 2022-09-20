@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,13 +75,13 @@ type Server struct {
 		SlowLogs         s2pkg.Survey ``
 		RequestLogs      s2pkg.Survey ``
 		Sync             s2pkg.Survey ``
-		Passthrough      s2pkg.Survey ``
 		FirstRunSleep    s2pkg.Survey ``
 		LogCompaction    s2pkg.Survey `metrics:"qps"`
 		DSLT             s2pkg.Survey ``
 		DSLTFull         s2pkg.Survey `metrics:"qps"`
 		CacheAddConflict s2pkg.Survey `metrics:"qps"`
 		Command          sync.Map
+		ReverseProxy     sync.Map
 	}
 
 	DB *pebble.DB
@@ -143,7 +145,7 @@ func Open(dbPath string) (x *Server, err error) {
 		}
 	}
 	x.rdbCache = s2pkg.NewLRUCache(4, func(k string, v s2pkg.LRUValue) {
-		log.Info("rdbCache(", k, ") close: ", v.Value.(*redis.Client).Close())
+		log.Infof("redis client cache evicted: %s, close=%v", k, v.Value.(*redis.Client).Close())
 	})
 	return x, b.Commit(pebble.Sync)
 }
@@ -302,14 +304,43 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		start = time.Now()
 	)
 
-	if s.Passthrough != "" && (isWriteCommand[cmd] || isReadCommand[cmd]) {
-		defer s2pkg.Recover(func() { w.WriteError("passthrough: failed to relay") })
-		v, err := s.getRedis(s.Passthrough).Do(context.Background(), command.ArgsRef()...).Result()
-		s.Survey.Passthrough.Incr(int64(time.Since(start).Milliseconds()))
+	for _, nw := range blacklistIPs {
+		ip := s2pkg.GetRemoteIP(remoteAddr)
+		if nw.Contains(ip) {
+			return w.WriteError(wire.ErrBlacklistedIP.Error() + ip.String())
+		}
+	}
+
+	if s.ReverseProxy != 0 && (isWriteCommand[cmd] || isReadCommand[cmd]) {
+		defer s2pkg.Recover(func() { w.WriteError("reverseproxy: fatal log") })
+
+		list := s.getUpstreamList()
+		keyHash := s.getUpstreamShard(key)
+		idx := sort.Search(len(list), func(i int) bool { return int(list[i].Score) >= keyHash })
+		if idx >= len(list) {
+			return w.WriteError(fmt.Sprintf("reverseproxy: can't find upstream for %q (%d)", key, keyHash))
+		}
+		upip := strings.Split(string(list[idx].Data), ";")
+		if isReadCommand[cmd] {
+			upip[0] = upip[rand.Intn(len(upip))]
+		}
+
+		v, err := s.getRedis(upip[0]).Do(context.Background(), command.ArgsRef()...).Result()
+		elapsed := int64(time.Since(start).Milliseconds())
+
+		sv, _ := s.Survey.ReverseProxy.LoadOrStore("RP"+strconv.Itoa(idx)+"_"+cmd, new(s2pkg.Survey))
+		sv.(*s2pkg.Survey).Incr(elapsed)
+		sv, _ = s.Survey.ReverseProxy.LoadOrStore("RP"+cmd, new(s2pkg.Survey))
+		sv.(*s2pkg.Survey).Incr(elapsed)
+
 		if err != nil && err != redis.Nil {
-			return w.WriteError(err.Error())
+			return w.WriteError("reverseproxy: " + err.Error())
 		}
 		return w.WriteObject(v)
+	}
+
+	if strings.HasSuffix(cmd, "!") {
+		cmd = cmd[:len(cmd)-1]
 	}
 
 	if isWriteCommand[cmd] {
@@ -321,13 +352,6 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
-		}
-	}
-
-	for _, nw := range blacklistIPs {
-		ip := s2pkg.GetRemoteIP(remoteAddr)
-		if nw.Contains(ip) {
-			return w.WriteError(wire.ErrBlacklistedIP.Error() + ip.String())
 		}
 	}
 
@@ -414,7 +438,10 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			} else {
 				x, ok := s.Survey.Command.Load(key[8:])
 				if !ok {
-					return w.WriteError("invalid metrics key: " + key[8:])
+					x, ok = s.Survey.ReverseProxy.Load(key[8:])
+					if !ok {
+						return w.WriteError("invalid metrics key: " + key[8:])
+					}
 				}
 				sv = x.(*s2pkg.Survey)
 			}

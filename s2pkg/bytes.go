@@ -165,10 +165,13 @@ func HashStr(s string) (h uint64) {
 }
 
 func HashStr32(s string) (h uint32) {
-	var b []byte
-	*(*[2]int)(unsafe.Pointer(&b)) = *(*[2]int)(unsafe.Pointer(&s))
-	(*(*[3]int)(unsafe.Pointer(&b)))[2] = len(s)
-	return crc32.ChecksumIEEE(b)
+	if idx := strings.IndexByte(s, '{'); idx > -1 {
+		s2 := s[idx+1:]
+		if idx := strings.IndexByte(s2, '}'); idx > -1 {
+			return HashStr32(s2[:idx])
+		}
+	}
+	return crc32.ChecksumIEEE([]byte(s))
 }
 
 func HashMultiBytes(in [][]byte) (h uint64) {

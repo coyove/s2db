@@ -28,7 +28,7 @@ type ServerConfig struct {
 	PullMaster         string
 	Password           string
 	MarkMaster         int // 0|1
-	Passthrough        string
+	ReverseProxy       int // 0|1
 	CacheSize          int
 	CacheObjMaxSize    int // kb
 	SlowLimit          int // ms
@@ -225,11 +225,14 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	case "slave", "SLAVE":
 		return s.Slave.Redis()
 	}
-	cfg, err := wire.ParseConnString(addr)
-	s2pkg.PanicErr(err)
-	if cli, ok := s.rdbCache.GetSimple(cfg.Raw); ok {
+	if !strings.HasPrefix(addr, "redis://") {
+		addr = "redis://" + addr
+	}
+	if cli, ok := s.rdbCache.GetSimple(addr); ok {
 		return cli.(*redis.Client)
 	}
+	cfg, err := wire.ParseConnString(addr)
+	s2pkg.PanicErr(err)
 	cli = redis.NewClient(cfg.Options)
 	s.rdbCache.AddSimple(cfg.Raw, cli)
 	return

@@ -79,10 +79,18 @@ func (w *Writer) WriteBulk(val []byte) error {
 		_, err := w.Write(nilBulk)
 		return err
 	}
-	w.Write(dollar)
-	w.Write([]byte(intToString(int64(len(val)))))
-	w.Write(newLine)
-	w.Write(val)
+	if _, err := w.Write(dollar); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(intToString(int64(len(val))))); err != nil {
+		return err
+	}
+	if _, err := w.Write(newLine); err != nil {
+		return err
+	}
+	if _, err := w.Write(val); err != nil {
+		return err
+	}
 	_, err := w.Write(newLine)
 	return err
 }
@@ -218,10 +226,16 @@ func (w *Writer) WriteBulks(bulks ...[]byte) error {
 		return err
 	}
 
-	w.Write(star)
+	if _, err := w.Write(star); err != nil {
+		return err
+	}
 	numElement := len(bulks)
-	w.Write([]byte(intToString(int64(numElement))))
-	w.Write(newLine)
+	if _, err := w.Write([]byte(intToString(int64(numElement)))); err != nil {
+		return err
+	}
+	if _, err := w.Write(newLine); err != nil {
+		return err
+	}
 
 	for i := 0; i < numElement; i++ {
 		if err := w.WriteBulk(bulks[i]); err != nil {

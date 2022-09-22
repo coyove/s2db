@@ -80,6 +80,8 @@ type Server struct {
 		DSLT             s2pkg.Survey ``
 		DSLTFull         s2pkg.Survey `metrics:"qps"`
 		CacheAddConflict s2pkg.Survey `metrics:"qps"`
+		TCPWriteError    s2pkg.Survey `metrics:"qps"`
+		TCPWriteTimeout  s2pkg.Survey `metrics:"qps"`
 		Command          sync.Map
 		ReverseProxy     sync.Map
 	}
@@ -242,7 +244,7 @@ func (s *Server) acceptor(ln net.Listener) {
 			}
 		}
 		go func() {
-			c := s2pkg.NewBufioConn(conn, &s.Survey.Connections)
+			c := s2pkg.NewBufioConn(conn, time.Duration(s.TCPWriteTimeout)*time.Millisecond, &s.Survey.Connections)
 			switch buf, _ := c.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
 			case "GET ", "POST", "HEAD":
 				s.lnWebConsole.Feed(c)
@@ -291,6 +293,10 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 		}
 		if ew != nil {
 			log.Info("connection closed: ", ew)
+			if err, ok := ew.(net.Error); ok && err.Timeout() {
+				s.Survey.TCPWriteTimeout.Incr(1)
+			}
+			s.Survey.TCPWriteError.Incr(1)
 			break
 		}
 	}

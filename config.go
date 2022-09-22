@@ -36,6 +36,7 @@ type ServerConfig struct {
 	ResponseLogSize    int // kb
 	BatchMaxRun        int
 	BatchFirstRunSleep int // ms
+	TCPWriteTimeout    int // ms
 	CompactLogsTTL     int // sec
 	CompactLogsDice    int
 	PushLogsDice       int
@@ -113,7 +114,9 @@ func (s *Server) saveConfig() error {
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
-	s.Cache = s2pkg.NewLRUCache(s.CacheSize, nil)
+	if s.Cache == nil || s.Cache.Cap() != s.CacheSize {
+		s.Cache = s2pkg.NewLRUCache(s.CacheSize, nil)
+	}
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {

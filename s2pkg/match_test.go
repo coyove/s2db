@@ -1,6 +1,7 @@
 package s2pkg
 
 import (
+	"fmt"
 	"regexp"
 	"testing"
 
@@ -109,4 +110,13 @@ func BenchmarkOrMatchRegexp(b *testing.B) {
 			b.Fatal()
 		}
 	}
+}
+
+func TestP99(t *testing.T) {
+	var pm P99SurveyMinute
+	fmt.Println(pm.P99())
+	for i := 0; i < 1e5; i++ {
+		pm.Incr(int64(i))
+	}
+	fmt.Println(pm.P99())
 }

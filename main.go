@@ -48,6 +48,7 @@ var (
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
+	netTCPWbufSize     = flag.Int("tcp.wbufsiz", 0, "[tcp] TCP write buffer size")
 	blacklistIPsFlag   = flag.String("ip.blacklist", "", "")
 
 	testFlag     = false
@@ -78,6 +79,11 @@ func main() {
 
 	log.SetReportCaller(true)
 	s2pkg.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
+
+	if *netTCPWbufSize%4096 != 0 {
+		errorExit("invalid TCP write buffer size")
+		return
+	}
 
 	if *influxdb1MetricsEndpoint != "" {
 		cli, db, err := getInfluxDB1Client(*influxdb1MetricsEndpoint)

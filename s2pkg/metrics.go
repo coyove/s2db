@@ -2,8 +2,12 @@ package s2pkg
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/coyove/s2db/clock"
+	"github.com/influxdata/tdigest"
 )
 
 const (
@@ -126,4 +130,49 @@ type GroupedMetrics struct {
 	Name      string
 	Timestamp []int64 // seconds
 	Value     []float64
+}
+
+type P99SurveyMinute struct {
+	mu      sync.Mutex
+	tdigest *tdigest.TDigest
+	ts      int64
+	history [2]float64
+}
+
+func (psm *P99SurveyMinute) Incr(v int64) {
+	now := clock.Unix() / 60 * 60
+
+	psm.mu.Lock()
+	defer psm.mu.Unlock()
+
+	if psm.tdigest == nil {
+		psm.tdigest = tdigest.New()
+	}
+
+	if now != psm.ts {
+		if psm.ts > 0 {
+			psm.history = [2]float64{float64(psm.ts), psm.tdigest.Quantile(0.99)}
+		}
+		psm.ts = now
+		psm.tdigest.Reset()
+	}
+
+	psm.tdigest.Add(float64(v), 1)
+}
+
+func (psm *P99SurveyMinute) P99() float64 {
+	prev := clock.Unix()/60*60 - 60
+	if psm.history[0] == float64(prev) {
+		return psm.history[1]
+	}
+
+	psm.mu.Lock()
+	defer psm.mu.Unlock()
+	if psm.ts == prev {
+		if psm.tdigest != nil {
+			return psm.tdigest.Quantile(0.99)
+		}
+	}
+
+	return 0
 }

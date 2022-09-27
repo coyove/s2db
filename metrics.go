@@ -40,7 +40,10 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			m, n := sv.Metrics(), rt.Field(i)
 			t := n.Tag.Get("metrics")
 			if t == "mean" || t == "" {
-				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_Mean", Score: m.Mean[0]})
+				pairs = append(pairs,
+					s2pkg.Pair{Member: n.Name + "_Mean", Score: m.Mean[0]},
+					s2pkg.Pair{Member: n.Name + "_Max", Score: float64(m.Max[0])},
+				)
 			}
 			if t == "qps" || t == "" {
 				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_QPS", Score: m.QPS[0]})
@@ -59,6 +62,8 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		})
 	}
 	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
+	pairs = append(pairs, s2pkg.Pair{Member: "SysReadRawP99", Score: s.Survey.SysReadRawP99Micro.P99() / 1e3})
+	pairs = append(pairs, s2pkg.Pair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
 
 	lsmMetrics := s.DB.Metrics()
 	dbm := reflect.ValueOf(lsmMetrics).Elem()

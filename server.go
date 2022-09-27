@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
 
 const ShardLogNum = 32
@@ -59,31 +61,34 @@ type Server struct {
 	rangeDeleteWatcher s2pkg.Survey
 
 	Survey struct {
-		StartAt          time.Time
-		Connections      int64
-		SysRead          s2pkg.Survey ``
-		SysWrite         s2pkg.Survey ``
-		SysWriteDiscards s2pkg.Survey ``
-		CacheReq         s2pkg.Survey `metrics:"qps"`
-		CacheSize        s2pkg.Survey `metrics:"mean"`
-		CacheHit         s2pkg.Survey `metrics:"qps"`
-		BatchSize        s2pkg.Survey ``
-		BatchLat         s2pkg.Survey ``
-		BatchSizeSv      s2pkg.Survey `metrics:"mean"`
-		BatchLatSv       s2pkg.Survey ``
-		DBBatchSize      s2pkg.Survey ``
-		SlowLogs         s2pkg.Survey ``
-		RequestLogs      s2pkg.Survey ``
-		Sync             s2pkg.Survey ``
-		FirstRunSleep    s2pkg.Survey ``
-		LogCompaction    s2pkg.Survey `metrics:"qps"`
-		DSLT             s2pkg.Survey ``
-		DSLTFull         s2pkg.Survey `metrics:"qps"`
-		CacheAddConflict s2pkg.Survey `metrics:"qps"`
-		TCPWriteError    s2pkg.Survey `metrics:"qps"`
-		TCPWriteTimeout  s2pkg.Survey `metrics:"qps"`
-		Command          sync.Map
-		ReverseProxy     sync.Map
+		StartAt            time.Time
+		Connections        int64
+		SysRead            s2pkg.Survey          ``
+		SysReadP99Micro    s2pkg.P99SurveyMinute ``
+		SysReadRaw         s2pkg.Survey          ``
+		SysReadRawP99Micro s2pkg.P99SurveyMinute ``
+		SysWrite           s2pkg.Survey          ``
+		SysWriteDiscards   s2pkg.Survey          ``
+		CacheReq           s2pkg.Survey          `metrics:"qps"`
+		CacheSize          s2pkg.Survey          `metrics:"mean"`
+		CacheHit           s2pkg.Survey          `metrics:"qps"`
+		BatchSize          s2pkg.Survey          ``
+		BatchLat           s2pkg.Survey          ``
+		BatchSizeSv        s2pkg.Survey          `metrics:"mean"`
+		BatchLatSv         s2pkg.Survey          ``
+		DBBatchSize        s2pkg.Survey          ``
+		SlowLogs           s2pkg.Survey          ``
+		RequestLogs        s2pkg.Survey          ``
+		Sync               s2pkg.Survey          ``
+		FirstRunSleep      s2pkg.Survey          ``
+		LogCompaction      s2pkg.Survey          `metrics:"qps"`
+		DSLT               s2pkg.Survey          ``
+		DSLTFull           s2pkg.Survey          `metrics:"qps"`
+		CacheAddConflict   s2pkg.Survey          `metrics:"qps"`
+		TCPWriteError      s2pkg.Survey          `metrics:"qps"`
+		TCPWriteTimeout    s2pkg.Survey          `metrics:"qps"`
+		Command            sync.Map
+		ReverseProxy       sync.Map
 	}
 
 	DB *pebble.DB
@@ -205,7 +210,20 @@ func (s *Server) Close() (err error) {
 }
 
 func (s *Server) Serve(addr string) (err error) {
-	s.ln, err = net.Listen("tcp", addr)
+	lc := net.ListenConfig{
+		Control: func(network, address string, conn syscall.RawConn) error {
+			var operr error
+			if *netTCPWbufSize > 0 {
+				if err := conn.Control(func(fd uintptr) {
+					operr = syscall.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, *netTCPWbufSize)
+				}); err != nil {
+					return err
+				}
+			}
+			return operr
+		},
+	}
+	s.ln, err = lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -304,10 +322,10 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 
 func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.Command) error {
 	var (
-		cmd   = strings.ToUpper(command.Str(0))
-		isRev = strings.HasPrefix(cmd, "ZREV")
-		key   = command.Str(1)
-		start = time.Now()
+		cmd       = strings.ToUpper(command.Str(0))
+		isRev     = strings.HasPrefix(cmd, "ZREV")
+		key       = command.Str(1)
+		startTime = time.Now()
 	)
 
 	for _, nw := range blacklistIPs {
@@ -332,7 +350,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 
 		v, err := s.getRedis(upip[0]).Do(context.Background(), command.ArgsRef()...).Result()
-		elapsed := int64(time.Since(start).Milliseconds())
+		elapsed := int64(time.Since(startTime).Milliseconds())
 
 		sv, _ := s.Survey.ReverseProxy.LoadOrStore("RP"+strconv.Itoa(idx)+"_"+cmd, new(s2pkg.Survey))
 		sv.(*s2pkg.Survey).Incr(elapsed)
@@ -361,6 +379,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 	}
 
+	var rawCommandDiff time.Duration
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			if testFlag {
@@ -377,16 +396,20 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			}
 			if isReadCommand[cmd] {
 				if !strings.HasPrefix(cmd, "SCAN") {
-					s.Survey.SysRead.Incr(diffMs)
+					s.Survey.SysRead.Incr(diff.Milliseconds())
+					s.Survey.SysReadRaw.Incr(rawCommandDiff.Milliseconds())
+
+					s.Survey.SysReadP99Micro.Incr(rawCommandDiff.Microseconds())
+					s.Survey.SysReadRawP99Micro.Incr(rawCommandDiff.Microseconds())
 				}
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
-				x.(*s2pkg.Survey).Incr(diffMs)
+				x.(*s2pkg.Survey).Incr(diff.Milliseconds())
 			}
 			if cmd == "REQUESTLOGS" {
 				s.Survey.RequestLogs.Incr(diffMs)
 			}
 		}
-	}(start)
+	}(startTime)
 
 	var p []s2pkg.Pair
 	var err error
@@ -463,7 +486,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			log.Infof("start dumping to %s", key)
 			err := s.DB.Checkpoint(key, pebble.WithFlushedWAL())
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
-		}(start)
+		}(startTime)
 		return w.WriteSimpleString("STARTED")
 	case "COMPACTDB":
 		go s.DB.Compact(nil, []byte{0xff}, true)
@@ -512,11 +535,11 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		for n := range names {
 			s.removeCache(n)
 		}
-		s.Survey.BatchLatSv.Incr(time.Since(start).Milliseconds())
+		s.Survey.BatchLatSv.Incr(time.Since(startTime).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
 		s.Master.RemoteIP = s2pkg.GetRemoteIP(remoteAddr).String()
-		s.Master.LastUpdate = start.UnixNano()
+		s.Master.LastUpdate = startTime.UnixNano()
 		if len(names) > 0 {
 			select {
 			case s.shards[shard].pusherTrigger <- true:
@@ -535,7 +558,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		x, _ := s.Pullers.LoadOrStore(ip, new(endpoint))
 		x.(*endpoint).RemoteIP = ip
 		x.(*endpoint).Logtails[shard] = logtail
-		x.(*endpoint).LastUpdate = start.UnixNano()
+		x.(*endpoint).LastUpdate = startTime.UnixNano()
 		return w.WriteBulk(logs.MarshalBytes())
 	case "SWITCH":
 		s.switchMasterLock.Lock()
@@ -575,6 +598,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		x, cached := s.getCache(key, cmdHash).([]byte)
 		if !cached {
 			x, err = s.Get(key)
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -583,6 +607,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		return w.WriteBulk(x)
 	case "MGET":
 		x, err := s.MGet(toStrings(command.Argv[1:]))
+		rawCommandDiff = time.Since(startTime)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -591,6 +616,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		x, cached := s.getCache(key, cmdHash).([]float64)
 		if !cached {
 			x, err = s.ZMScore(key, toStrings(command.Argv[2:]))
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -612,6 +638,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			} else {
 				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
 			}
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -622,9 +649,12 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		return w.WriteBulks(x...)
 	case "SISMEMBER":
-		return w.WriteInt(int64(s.SMIsMember(key, [][]byte{command.BytesRef(2)})[0]))
+		x := s.SMIsMember(key, [][]byte{command.BytesRef(2)})[0]
+		rawCommandDiff = time.Since(startTime)
+		return w.WriteInt(int64(x))
 	case "SMISMEMBER":
 		res := s.SMIsMember(key, command.Argv[2:])
+		rawCommandDiff = time.Since(startTime)
 		itfs := make([]interface{}, len(res))
 		for i := range itfs {
 			itfs[i] = res[i]
@@ -635,6 +665,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			return w.WriteBulksSlice(v.([][]byte))
 		}
 		res := s.SMembers(key, command.Flags(2))
+		rawCommandDiff = time.Since(startTime)
 		s.addCache(key, cmdHash, res, mwm)
 		return w.WriteBulksSlice(res)
 	case "SCARD":
@@ -647,6 +678,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		}
 		// ZCOUNT name start end [MATCH X]
 		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Str(2), command.Str(3), command.Flags(4))
+		rawCommandDiff = time.Since(startTime)
 		if err == nil {
 			s.addCache(key, cmdHash, count, mwm)
 		}
@@ -656,6 +688,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		if !cached {
 			// COMMAND name key COUNT X
 			c, err = s.ZRank(isRev, key, command.Str(2), command.Flags(3).Count)
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -681,6 +714,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
 			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
 		}
+		rawCommandDiff = time.Since(startTime)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -698,6 +732,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			} else {
 				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
 			}
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -711,6 +746,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		} else {
 			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3),
 				command.Str(4), command.Str(5), command.Int(6), flags)
+			rawCommandDiff = time.Since(startTime)
 			if err != nil {
 				return w.WriteError(err.Error())
 			}
@@ -719,6 +755,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "ZRI": // N term1 ... termN options
 		N := command.Int(1)
 		p, err := s.RI(toStrings(command.Argv[2:2+N]), command.Flags(2+N))
+		rawCommandDiff = time.Since(startTime)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

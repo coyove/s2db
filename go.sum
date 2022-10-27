@@ -45,6 +45,8 @@ github.com/coreos/go-etcd v2.0.0+incompatible/go.mod h1:Jez6KQU2B/sWsbdaef3ED8Nz
 github.com/coreos/go-semver v0.2.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3EedlOD2RNk=
 github.com/coyove/nj v0.0.0-20220801075052-d3cea79e7e6c h1:ED6fq5du6wWVhJINC0e3Xan6vK6R/+YhFAxM9BXxkfk=
 github.com/coyove/nj v0.0.0-20220801075052-d3cea79e7e6c/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
+github.com/coyove/nj v0.0.0-20221027033947-b9c0a26c7c8e h1:LKI3ixZbJT8NcNLYswl67zBhCvEFSbiBuZyGfGE7QBI=
+github.com/coyove/nj v0.0.0-20221027033947-b9c0a26c7c8e/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

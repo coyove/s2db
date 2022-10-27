@@ -399,7 +399,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 					s.Survey.SysRead.Incr(diff.Milliseconds())
 					s.Survey.SysReadRaw.Incr(rawCommandDiff.Milliseconds())
 
-					s.Survey.SysReadP99Micro.Incr(rawCommandDiff.Microseconds())
+					s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
 					s.Survey.SysReadRawP99Micro.Incr(rawCommandDiff.Microseconds())
 				}
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))

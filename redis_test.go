@@ -197,7 +197,7 @@ func TestZSet(t *testing.T) {
 	assertEqual(-2, rdb.ZScore(ctx, "zset", "foo").Val())
 	assertEqual(6, rdb.ZScore(ctx, "zset", "bar").Val())
 
-	incrToRet := rdb.Do(ctx, "zincrby", "zset", 1, "bar", "df", "function(old, score, by) 'a-%d-%d'.format(score, by) end", "incrto").Val()
+	incrToRet := rdb.Do(ctx, "zincrby", "zset", 1, "bar", "df", "function(old, score, by) return 'a-%d-%d'.format(score, by) end", "incrto").Val()
 	assertEqual("a-6-1", rdb.Do(ctx, "zdata", "zset", "bar").Val())
 	assertEqual("-5", incrToRet)
 

@@ -10,7 +10,6 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
@@ -454,14 +453,17 @@ func prepareZIncrBy(key string, member string, by float64, flags zincrbyFlag, dd
 		}
 
 		if flags.dataFunc.IsObject() {
-			res, err := flags.dataFunc.Object().TryCall(nil, bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
-			if err != nil {
-				return 0, err
+			res := flags.dataFunc.Object().TryCall(nil, bas.UnsafeStr(dataBuf), bas.Float64(score), bas.Float64(by))
+			if res.IsError() {
+				return 0, res.Error()
 			}
-			if res.Type() != typ.String && !bas.IsBytes(res) {
+			if res.IsString() {
+				dataBuf = []byte(res.Str())
+			} else if res.IsBytes() {
+				dataBuf = res.Bytes()
+			} else {
 				return 0, fmt.Errorf("ZINCRBY datafunc: expects string or bytes")
 			}
-			dataBuf = bas.ToReadonlyBytes(res)
 		} else if flags.bm16Data {
 			dataBuf, _ = bitmap.Add(dataBuf, flags.bm16)
 		} else if flags.setData {

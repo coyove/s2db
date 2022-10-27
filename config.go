@@ -45,37 +45,37 @@ type ServerConfig struct {
 }
 
 func init() {
-	bas.AddGlobal("ctx", bas.ValueOf(context.TODO()))
-	bas.AddGlobalMethod("flags", func(env *bas.Env) {
+	bas.AddTopValue("ctx", bas.ValueOf(context.TODO()))
+	bas.AddTopFunc("flags", func(env *bas.Env) {
 		cmd := wire.Command{}
 		for _, v := range env.Stack() {
-			cmd.Argv = append(cmd.Argv, bas.ToReadonlyBytes(v))
+			cmd.Argv = append(cmd.Argv, toReadonlyBytes(v))
 		}
 		env.A = bas.ValueOf(cmd.Flags(0))
 	})
-	bas.AddGlobalMethod("log", func(env *bas.Env) {
+	bas.AddTopFunc("log", func(env *bas.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
 			x.WriteString(a.String() + " ")
 		}
 		log.Info("[logIO] ", x.String())
 	})
-	bas.AddGlobalMethod("shardOf", func(e *bas.Env) {
+	bas.AddTopFunc("shardOf", func(e *bas.Env) {
 		e.A = bas.Int(shardIndex(e.Str(0)))
 	})
-	bas.AddGlobalMethod("atof", func(e *bas.Env) {
+	bas.AddTopFunc("atof", func(e *bas.Env) {
 		v := s2pkg.MustParseFloat(e.Str(0))
 		e.A = bas.Float64(v)
 	})
-	bas.AddGlobalMethod("hashmb", func(e *bas.Env) {
+	bas.AddTopFunc("hashmb", func(e *bas.Env) {
 		v := make([][]byte, 0, e.Size())
 		for i := range v {
-			v = append(v, bas.ToReadonlyBytes(e.Get(i)))
+			v = append(v, toReadonlyBytes(e.Get(i)))
 		}
 		e.A = bas.Int64(int64(s2pkg.HashMultiBytes(v)))
 	})
-	bas.AddGlobalMethod("bfparse", func(e *bas.Env) {
-		bf, err := bitmap.BloomFilterUnmarshalBinary(bas.ToReadonlyBytes(e.Get(0)))
+	bas.AddTopFunc("bfparse", func(e *bas.Env) {
+		bf, err := bitmap.BloomFilterUnmarshalBinary(toReadonlyBytes(e.Get(0)))
 		s2pkg.PanicErr(err)
 		e.A = bas.ValueOf(bf)
 	})
@@ -121,8 +121,8 @@ func (s *Server) saveConfig() error {
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
 		return err
-	} else if _, err = p.Run(); err != nil {
-		return err
+	} else if out := p.Run(); out.IsError() {
+		return out.Error()
 	} else {
 		s.SelfManager = p
 	}
@@ -286,11 +286,12 @@ func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, err
 	for i := range in {
 		in[i] = bas.ValueOf(args[i])
 	}
-	res, err := f.Object().TryCall(nil, in...)
-	if err != nil {
-		log.Errorf("runScript(%s): %v", name, err)
+	res := f.Object().TryCall(nil, in...)
+	if res.IsError() {
+		log.Errorf("runScript(%s): %v", name, res)
+		return bas.Nil, res.Error()
 	}
-	return res, err
+	return res, nil
 }
 
 func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
@@ -298,7 +299,7 @@ func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
 		Globals: bas.NewObject(8).
 			SetProp("server", bas.ValueOf(s)).
 			SetProp("args", bas.ValueOf(args)).
-			SetMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
+			AddMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {
 					args = append(args, e.Interface(i))
@@ -312,7 +313,8 @@ func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
 					panic(err)
 				}
 				e.A = bas.ValueOf(v)
-			}),
+			}).
+			ToMap(),
 	}
 }
 
@@ -354,4 +356,14 @@ func ifInt(v bool, a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func toReadonlyBytes(v bas.Value) []byte {
+	if v.IsString() {
+		return []byte(v.Str())
+	}
+	if v.IsBytes() {
+		return v.Bytes()
+	}
+	panic("toReadOnlyBytes: invalid data")
 }

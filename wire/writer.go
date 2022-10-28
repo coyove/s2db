@@ -67,9 +67,9 @@ func (w *Writer) Flush() error {
 	return nil
 }
 
-func (w *Writer) WriteInt(val int64) error {
+func (w *Writer) WriteInt64(val int64) error {
 	w.Write(colon)
-	w.Write([]byte(intToString(val)))
+	w.Write(itob(val))
 	_, err := w.Write(newLine)
 	return err
 }
@@ -82,7 +82,7 @@ func (w *Writer) WriteBulk(val []byte) error {
 	if _, err := w.Write(dollar); err != nil {
 		return err
 	}
-	if _, err := w.Write([]byte(intToString(int64(len(val))))); err != nil {
+	if _, err := w.Write(itob(int64(len(val)))); err != nil {
 		return err
 	}
 	if _, err := w.Write(newLine); err != nil {
@@ -127,9 +127,9 @@ func (w *Writer) WriteIntOrError(v interface{}, err error) error {
 		return w.WriteError(err.Error())
 	}
 	if u, ok := v.(uint64); ok {
-		return w.WriteInt(int64(u))
+		return w.WriteInt64(int64(u))
 	}
-	return w.WriteInt(reflect.ValueOf(v).Int())
+	return w.WriteInt64(reflect.ValueOf(v).Int())
 }
 
 func (w *Writer) WriteObject(v interface{}) error {
@@ -141,9 +141,9 @@ func (w *Writer) WriteObject(v interface{}) error {
 	}
 	switch rv := reflect.ValueOf(v); rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return w.WriteInt(rv.Int())
+		return w.WriteInt64(rv.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return w.WriteInt(int64(rv.Uint()))
+		return w.WriteInt64(int64(rv.Uint()))
 	default:
 		return w.WriteBulkString(rv.String())
 	}
@@ -156,7 +156,7 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 	}
 
 	w.Write(star)
-	w.Write([]byte(intToString(int64(len(objs)))))
+	w.Write(itob(int64(len(objs))))
 	w.Write(newLine)
 
 	numArg := len(objs)
@@ -174,7 +174,7 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 				return err
 			}
 		case [][]byte:
-			if err := w.WriteBulksSlice(v); err != nil {
+			if err := w.WriteBulks(v); err != nil {
 				return err
 			}
 		case []byte:
@@ -186,19 +186,19 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 				return err
 			}
 		case int:
-			if err := w.WriteInt(int64(v)); err != nil {
+			if err := w.WriteInt64(int64(v)); err != nil {
 				return err
 			}
 		case int32:
-			if err := w.WriteInt(int64(v)); err != nil {
+			if err := w.WriteInt64(int64(v)); err != nil {
 				return err
 			}
 		case int64:
-			if err := w.WriteInt(int64(v)); err != nil {
+			if err := w.WriteInt64(int64(v)); err != nil {
 				return err
 			}
 		case uint64:
-			if err := w.WriteInt(int64(v)); err != nil {
+			if err := w.WriteInt64(int64(v)); err != nil {
 				return err
 			}
 		case float64:
@@ -220,7 +220,7 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 	return nil
 }
 
-func (w *Writer) WriteBulks(bulks ...[]byte) error {
+func (w *Writer) WriteBulks(bulks [][]byte) error {
 	if bulks == nil {
 		_, err := w.Write(nilArray)
 		return err
@@ -230,7 +230,7 @@ func (w *Writer) WriteBulks(bulks ...[]byte) error {
 		return err
 	}
 	numElement := len(bulks)
-	if _, err := w.Write([]byte(intToString(int64(numElement)))); err != nil {
+	if _, err := w.Write(itob(int64(numElement))); err != nil {
 		return err
 	}
 	if _, err := w.Write(newLine); err != nil {
@@ -251,11 +251,6 @@ func (w *Writer) WriteObjectsSlice(args []interface{}) error {
 	return w.WriteObjects(args...)
 }
 
-// WriteBulksSlice ...
-func (w *Writer) WriteBulksSlice(args [][]byte) error {
-	return w.WriteBulks(args...)
-}
-
 func (w *Writer) WriteBulkStrings(bulks []string) error {
 	if bulks == nil {
 		_, err := w.Write(nilArray)
@@ -264,7 +259,7 @@ func (w *Writer) WriteBulkStrings(bulks []string) error {
 
 	w.Write(star)
 	numElement := len(bulks)
-	w.Write([]byte(intToString(int64(numElement))))
+	w.Write(itob(int64(numElement)))
 	w.Write(newLine)
 
 	for i := 0; i < numElement; i++ {

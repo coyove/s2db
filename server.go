@@ -65,8 +65,8 @@ type Server struct {
 		Connections        int64
 		SysRead            s2pkg.Survey          ``
 		SysReadP99Micro    s2pkg.P99SurveyMinute ``
-		SysReadRaw         s2pkg.Survey          ``
-		SysReadRawP99Micro s2pkg.P99SurveyMinute ``
+		SysReadRTT         s2pkg.Survey          ``
+		SysReadRTTP99Micro s2pkg.P99SurveyMinute ``
 		SysWrite           s2pkg.Survey          ``
 		SysWriteDiscards   s2pkg.Survey          ``
 		CacheReq           s2pkg.Survey          `metrics:"qps"`
@@ -304,7 +304,14 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 				writer.Flush()
 				continue
 			}
-			ew = s.runCommand(writer, conn.RemoteAddr(), command)
+			startTime := time.Now()
+			cmd := strings.ToUpper(command.Str(0))
+			ew = s.runCommand(startTime, cmd, writer, s2pkg.GetRemoteIP(conn.RemoteAddr()), command)()
+			if isReadCommand[cmd] {
+				diff := time.Since(startTime)
+				s.Survey.SysReadRTT.Incr(diff.Milliseconds())
+				s.Survey.SysReadRTTP99Micro.Incr(diff.Microseconds())
+			}
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -320,18 +327,15 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 	}
 }
 
-func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.Command) error {
-	var (
-		cmd       = strings.ToUpper(command.Str(0))
-		isRev     = strings.HasPrefix(cmd, "ZREV")
-		key       = command.Str(1)
-		startTime = time.Now()
-	)
+func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src net.IP, K *wire.Command) (
+	out func() error,
+) {
+	isRev := strings.HasPrefix(cmd, "ZREV")
+	key := K.Str(1)
 
 	for _, nw := range blacklistIPs {
-		ip := s2pkg.GetRemoteIP(remoteAddr)
-		if nw.Contains(ip) {
-			return w.WriteError(wire.ErrBlacklistedIP.Error() + ip.String())
+		if nw.Contains(src) {
+			return func() error { return w.WriteError(wire.ErrBlacklistedIP.Error() + src.String()) }
 		}
 	}
 
@@ -342,14 +346,16 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		keyHash := s.getUpstreamShard(key)
 		idx := sort.Search(len(list), func(i int) bool { return int(list[i].Score) >= keyHash })
 		if idx >= len(list) {
-			return w.WriteError(fmt.Sprintf("reverseproxy: can't find upstream for %q (%d)", key, keyHash))
+			return func() error {
+				return w.WriteError(fmt.Sprintf("reverseproxy: can't find upstream for %q (%d)", key, keyHash))
+			}
 		}
 		upip := strings.Split(string(list[idx].Data), ";")
 		if isReadCommand[cmd] {
 			upip[0] = upip[rand.Intn(len(upip))]
 		}
 
-		v, err := s.getRedis(upip[0]).Do(context.Background(), command.ArgsRef()...).Result()
+		v, err := s.getRedis(upip[0]).Do(context.Background(), K.ArgsRef()...).Result()
 		elapsed := int64(time.Since(startTime).Milliseconds())
 
 		sv, _ := s.Survey.ReverseProxy.LoadOrStore("RP"+strconv.Itoa(idx)+"_"+cmd, new(s2pkg.Survey))
@@ -358,9 +364,9 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		sv.(*s2pkg.Survey).Incr(elapsed)
 
 		if err != nil && err != redis.Nil {
-			return w.WriteError("reverseproxy: " + err.Error())
+			return func() error { return w.WriteError("reverseproxy: " + err.Error()) }
 		}
-		return w.WriteObject(v)
+		return func() error { return w.WriteObject(v) }
 	}
 
 	if strings.HasSuffix(cmd, "!") {
@@ -369,44 +375,36 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 
 	if isWriteCommand[cmd] {
 		if key == "" {
-			return w.WriteError("invalid empty key name")
+			return func() error { return w.WriteError("invalid empty key name") }
 		}
 		if strings.Contains(key, "\x00") {
-			return w.WriteError("invalid key name, null bytes (0x00) found")
+			return func() error { return w.WriteError("invalid key name, null bytes (0x00) found") }
 		}
 		if err := s.checkWritable(); err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
 	}
 
-	var rawCommandDiff time.Duration
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
 			if testFlag {
 				fmt.Println(r, string(debug.Stack()))
 			}
-			w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r))
+			out = func() error { return w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r)) }
 		} else {
 			diff := time.Since(start)
-			diffMs := diff.Milliseconds()
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
-				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(),
-					s2pkg.GetRemoteIP(remoteAddr), command)
-				s.Survey.SlowLogs.Incr(diffMs)
+				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), src, K)
+				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
 			if isReadCommand[cmd] {
-				if !strings.HasPrefix(cmd, "SCAN") {
-					s.Survey.SysRead.Incr(diff.Milliseconds())
-					s.Survey.SysReadRaw.Incr(rawCommandDiff.Milliseconds())
-
-					s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
-					s.Survey.SysReadRawP99Micro.Incr(rawCommandDiff.Microseconds())
-				}
+				s.Survey.SysRead.Incr(diff.Milliseconds())
+				s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 				x.(*s2pkg.Survey).Incr(diff.Milliseconds())
 			}
 			if cmd == "REQUESTLOGS" {
-				s.Survey.RequestLogs.Incr(diffMs)
+				s.Survey.RequestLogs.Incr(diff.Milliseconds())
 			}
 		}
 	}(startTime)
@@ -419,9 +417,8 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 	case "DIE":
 		s.Close()
 		os.Exit(0)
-	case "AUTH":
-		// AUTH command is processed before runComamnd, always OK here
-		return w.WriteSimpleString("OK")
+	case "AUTH": // AUTH command is processed before runComamnd, so always return OK here
+		return func() error { return w.WriteSimpleString("OK") }
 	case "EVAL", "EVALRO":
 		if cmd == "EVALRO" {
 			s.evalLock.RLock()
@@ -430,33 +427,33 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			s.evalLock.Lock()
 			defer s.evalLock.Unlock()
 		}
-		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(command.Argv[2:]...)))
-		return w.WriteBulkString(v.String())
+		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(K.Argv[2:]...)))
+		return func() error { return w.WriteBulkString(v.String()) }
 	case "PING":
 		if key == "" {
-			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
+			return func() error { return w.WriteSimpleString("PONG " + s.ServerName + " " + Version) }
 		}
-		return w.WriteSimpleString(key)
+		return func() error { return w.WriteSimpleString(key) }
 	case "CONFIG":
 		switch strings.ToUpper(key) {
 		case "GET":
-			v, _ := s.GetConfig(command.Str(2))
-			return w.WriteBulkStrings([]string{command.Str(2), v})
+			v, _ := s.GetConfig(K.Str(2))
+			return func() error { return w.WriteBulkStrings([]string{K.Str(2), v}) }
 		case "SET":
-			found, err := s.UpdateConfig(command.Str(2), command.Str(3), false)
+			found, err := s.UpdateConfig(K.Str(2), K.Str(3), false)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			} else if found {
-				return w.WriteSimpleString("OK")
+				return func() error { return w.WriteSimpleString("OK") }
 			}
-			return w.WriteError("field not found")
+			return func() error { return w.WriteError("field not found") }
 		case "COPY":
-			if err := s.CopyConfig(command.Str(2), command.Str(3)); err != nil {
-				return w.WriteError(err.Error())
+			if err := s.CopyConfig(K.Str(2), K.Str(3)); err != nil {
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			return w.WriteSimpleString("OK")
+			return func() error { return w.WriteSimpleString("OK") }
 		default:
-			return w.WriteBulkStrings(s.listConfigCommand())
+			return func() error { return w.WriteBulkStrings(s.listConfigCommand()) }
 		}
 	case "INFO":
 		lkey := strings.ToLower(key)
@@ -469,33 +466,40 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 				if !ok {
 					x, ok = s.Survey.ReverseProxy.Load(key[8:])
 					if !ok {
-						return w.WriteError("invalid metrics key: " + key[8:])
+						return func() error { return w.WriteError("invalid metrics key: " + key[8:]) }
 					}
 				}
 				sv = x.(*s2pkg.Survey)
 			}
 			m := sv.Metrics()
-			return w.WriteObjects(m.QPS[0], m.QPS[1], m.QPS[2], m.Mean[0], m.Mean[1], m.Mean[2], m.Max[0], m.Max[1], m.Max[2])
+			return func() error {
+				return w.WriteObjects(m.QPS[0], m.QPS[1], m.QPS[2],
+					m.Mean[0], m.Mean[1], m.Mean[2],
+					m.Max[0], m.Max[1], m.Max[2])
+			}
 		}
 		if strings.HasPrefix(lkey, "log") {
-			return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(s2pkg.MustParseInt(key[3:])), "\r\n"))
+			index := s2pkg.MustParseInt(key[3:])
+			return func() error {
+				return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(index), "\r\n"))
+			}
 		}
-		return w.WriteBulkString(strings.Join(s.InfoCommand(lkey), "\r\n"))
+		return func() error { return w.WriteBulkString(strings.Join(s.InfoCommand(lkey), "\r\n")) }
 	case "DUMPDB":
 		go func(start time.Time) {
 			log.Infof("start dumping to %s", key)
 			err := s.DB.Checkpoint(key, pebble.WithFlushedWAL())
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
 		}(startTime)
-		return w.WriteSimpleString("STARTED")
+		return func() error { return w.WriteSimpleString("STARTED") }
 	case "COMPACTDB":
 		go s.DB.Compact(nil, []byte{0xff}, true)
-		return w.WriteSimpleString("STARTED")
+		return func() error { return w.WriteSimpleString("STARTED") }
 	case "DUMPWIRE":
 		go s.DumpWire(key)
-		return w.WriteSimpleString("STARTED")
+		return func() error { return w.WriteSimpleString("STARTED") }
 	case "SSDISKSIZE":
-		end := command.Str(2)
+		end := K.Str(2)
 		if end == "" {
 			end = key + "\xff"
 		}
@@ -509,28 +513,33 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		zsetScoreKey, _ := s.DB.EstimateDiskUsage(startKey2, s2pkg.IncBytesInplace(endKey2))
 		setAll, _ := s.DB.EstimateDiskUsage(startSetKey, s2pkg.IncBytesInplace(endSetKey))
 		kvAll, _ := s.DB.EstimateDiskUsage(startKVKey, s2pkg.IncBytesInplace(endKVKey))
-		return w.WriteObjects(zsetKeyScore, zsetScoreKey, setAll, kvAll)
+		return func() error { return w.WriteObjects(zsetKeyScore, zsetScoreKey, setAll, kvAll) }
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		return func() error {
+			return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		}
 	case "DB.LOG":
-		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		return func() error {
+			return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		}
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
-	case "PUSHLOGS":
-		// PUSHLOGS <Shard> <LogsBytes>
+		return func() error {
+			return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		}
+	case "PUSHLOGS": // <Shard> <LogsBytes>
 		s.switchMasterLock.RLock()
 		defer s.switchMasterLock.RUnlock()
 		if s.MarkMaster == 1 {
-			return w.WriteError(wire.ErrRejectedByMaster.Error())
+			return func() error { return w.WriteError(wire.ErrRejectedByMaster.Error()) }
 		}
 		shard := s2pkg.MustParseInt(key)
 		logs := &s2pkg.Logs{}
-		if err := logs.UnmarshalBytes(command.BytesRef(2)); err != nil {
-			return w.WriteError(err.Error())
+		if err := logs.UnmarshalBytes(K.BytesRef(2)); err != nil {
+			return func() error { return w.WriteError(err.Error()) }
 		}
 		names, logtail, err := s.runLog(shard, logs)
 		if err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
 		for n := range names {
 			s.removeCache(n)
@@ -538,7 +547,7 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 		s.Survey.BatchLatSv.Incr(time.Since(startTime).Milliseconds())
 		s.Survey.BatchSizeSv.Incr(int64(len(names)))
 		s.ReadOnly = true
-		s.Master.RemoteIP = s2pkg.GetRemoteIP(remoteAddr).String()
+		s.Master.RemoteIP = src.String()
 		s.Master.LastUpdate = startTime.UnixNano()
 		if len(names) > 0 {
 			select {
@@ -546,229 +555,218 @@ func (s *Server) runCommand(w *wire.Writer, remoteAddr net.Addr, command *wire.C
 			default:
 			}
 		}
-		return w.WriteInt(int64(logtail))
-	case "REQUESTLOGS":
-		// REQUESTLOGS <Shard> <LogStart>
-		shard, logtail := s2pkg.MustParseInt(key), uint64(command.Int64(2))
+		return func() error { return w.WriteInt64(int64(logtail)) }
+	case "REQUESTLOGS": // <Shard> <LogStart>
+		shard, logtail := s2pkg.MustParseInt(key), uint64(K.Int64(2))
 		logs, err := s.respondLog(shard, logtail)
 		if err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
-		ip := s2pkg.GetRemoteIP(remoteAddr).String()
+		ip := src.String()
 		x, _ := s.Pullers.LoadOrStore(ip, new(endpoint))
 		x.(*endpoint).RemoteIP = ip
 		x.(*endpoint).Logtails[shard] = logtail
 		x.(*endpoint).LastUpdate = startTime.UnixNano()
-		return w.WriteBulk(logs.MarshalBytes())
+		return func() error { return w.WriteBulk(logs.MarshalBytes()) }
 	case "SWITCH":
 		s.switchMasterLock.Lock()
 		defer s.switchMasterLock.Unlock()
 		if strings.EqualFold(key, "master") {
 			if _, err := s.UpdateConfig("markmaster", "1", false); err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
 			s.ReadOnly = false
 		} else {
 			s.ReadOnly = true
 		}
-		return w.WriteSimpleString("OK")
+		return func() error { return w.WriteSimpleString("OK") }
 	}
 
 	// Write commands
-	deferred := parseRunFlag(command)
+	deferred := parseRunFlag(K)
 	switch cmd {
 	case "DEL", "ZREM":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseDel(cmd, key, command, dd(command)), w)
+		return func() error {
+			return s.runPreparedTxWrite(cmd, key, deferred, s.parseDel(cmd, key, K, dd(K)), w)
+		}
 	case "ZADD":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZAdd(cmd, key, command, dd(command)), w)
+		return func() error {
+			return s.runPreparedTxWrite(cmd, key, deferred, s.parseZAdd(cmd, key, K, dd(K)), w)
+		}
 	case "ZINCRBY":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseZIncrBy(cmd, key, command, dd(command)), w)
+		return func() error {
+			return s.runPreparedTxWrite(cmd, key, deferred, s.parseZIncrBy(cmd, key, K, dd(K)), w)
+		}
 	case "SADD", "SREM":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseSAddRem(cmd, key, command, dd(command)), w)
+		return func() error {
+			return s.runPreparedTxWrite(cmd, key, deferred, s.parseSAddRem(cmd, key, K, dd(K)), w)
+		}
 	case "SET", "SETNX":
-		return s.runPreparedTxAndWrite(cmd, key, deferred, s.parseSet(cmd, key, command, dd(command)), w)
+		return func() error {
+			return s.runPreparedTxWrite(cmd, key, deferred, s.parseSet(cmd, key, K, dd(K)), w)
+		}
 	}
 
-	cmdHash := s2pkg.HashMultiBytes(command.Argv)
-	parseWeakFlag(command)
-	mwm := s.Cache.GetWatermark(key)
+	cmdHash := s2pkg.HashMultiBytes(K.Argv)
+	parseWeakFlag(K)
+	cachewm := s.Cache.GetWatermark(key)
 	// Read commands
 	switch cmd {
 	case "GET":
 		x, cached := s.getCache(key, cmdHash).([]byte)
 		if !cached {
 			x, err = s.Get(key)
-			rawCommandDiff = time.Since(startTime)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			s.addCache(key, cmdHash, x, mwm)
+			s.addCache(key, cmdHash, x, cachewm)
 		}
-		return w.WriteBulk(x)
+		return func() error { return w.WriteBulk(x) }
 	case "MGET":
-		x, err := s.MGet(toStrings(command.Argv[1:]))
-		rawCommandDiff = time.Since(startTime)
+		x, err := s.MGet(toStrings(K.Argv[1:]))
 		if err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
-		return w.WriteBulksSlice(x)
+		return func() error { return w.WriteBulks(x) }
 	case "ZSCORE", "ZMSCORE":
 		x, cached := s.getCache(key, cmdHash).([]float64)
 		if !cached {
-			x, err = s.ZMScore(key, toStrings(command.Argv[2:]))
-			rawCommandDiff = time.Since(startTime)
+			x, err = s.ZMScore(key, toStrings(K.Argv[2:]))
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			s.addCache(key, cmdHash, x, mwm)
+			s.addCache(key, cmdHash, x, cachewm)
 		}
 		if cmd == "ZSCORE" {
-			return w.WriteBulk(s2pkg.FormatFloatBulk(x[0]))
+			return func() error { return w.WriteBulk(s2pkg.FormatFloatBulk(x[0])) }
 		}
 		var data [][]byte
 		for _, s := range x {
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
-		return w.WriteBulks(data...)
+		return func() error { return w.WriteBulks(data) }
 	case "ZDATA", "ZMDATA", "ZDATABM16":
 		x, cached := s.getCache(key, cmdHash).([][]byte)
 		if !cached {
 			if cmd == "ZDATABM16" {
-				x, err = s.ZDataBM16(key, command.Str(2), uint16(command.Int64(3)), uint16(command.Int64(4)))
+				x, err = s.ZDataBM16(key, K.Str(2), uint16(K.Int64(3)), uint16(K.Int64(4)))
 			} else {
-				x, err = s.ZMData(key, toStrings(command.Argv[2:]))
+				x, err = s.ZMData(key, toStrings(K.Argv[2:]))
 			}
-			rawCommandDiff = time.Since(startTime)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			s.addCache(key, cmdHash, x, mwm)
+			s.addCache(key, cmdHash, x, cachewm)
 		}
 		if cmd == "ZDATA" {
-			return w.WriteBulk(x[0])
+			return func() error { return w.WriteBulk(x[0]) }
 		}
-		return w.WriteBulks(x...)
+		return func() error { return w.WriteBulks(x) }
 	case "SISMEMBER":
-		x := s.SMIsMember(key, [][]byte{command.BytesRef(2)})[0]
-		rawCommandDiff = time.Since(startTime)
-		return w.WriteInt(int64(x))
+		x := s.SMIsMember(key, [][]byte{K.BytesRef(2)})[0]
+		return func() error { return w.WriteInt64(int64(x)) }
 	case "SMISMEMBER":
-		res := s.SMIsMember(key, command.Argv[2:])
-		rawCommandDiff = time.Since(startTime)
+		res := s.SMIsMember(key, K.Argv[2:])
 		itfs := make([]interface{}, len(res))
 		for i := range itfs {
 			itfs[i] = res[i]
 		}
-		return w.WriteObjectsSlice(itfs)
+		return func() error { return w.WriteObjectsSlice(itfs) }
 	case "SMEMBERS":
 		if v := s.getCache(key, cmdHash); v != nil {
-			return w.WriteBulksSlice(v.([][]byte))
+			return func() error { return w.WriteBulks(v.([][]byte)) }
 		}
-		res := s.SMembers(key, command.Flags(2))
-		rawCommandDiff = time.Since(startTime)
-		s.addCache(key, cmdHash, res, mwm)
-		return w.WriteBulksSlice(res)
+		res := s.SMembers(key, K.Flags(2))
+		s.addCache(key, cmdHash, res, cachewm)
+		return func() error { return w.WriteBulks(res) }
 	case "SCARD":
-		return w.WriteInt(s.SCard(key))
+		return func() error { return w.WriteInt64(s.SCard(key)) }
 	case "ZCARD":
-		return w.WriteInt(s.ZCard(key))
-	case "ZCOUNT", "ZCOUNTBYLEX":
+		return func() error { return w.WriteInt64(s.ZCard(key)) }
+	case "ZCOUNT", "ZCOUNTBYLEX": // key start end [MATCH X]
 		if v := s.getCache(key, cmdHash); v != nil {
-			return w.WriteInt(int64(v.(int)))
+			return func() error { return w.WriteInt64(int64(v.(int))) }
 		}
-		// ZCOUNT name start end [MATCH X]
-		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, command.Str(2), command.Str(3), command.Flags(4))
-		rawCommandDiff = time.Since(startTime)
+		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, K.Str(2), K.Str(3), K.Flags(4))
 		if err == nil {
-			s.addCache(key, cmdHash, count, mwm)
+			s.addCache(key, cmdHash, count, cachewm)
 		}
-		return w.WriteIntOrError(count, err)
-	case "ZRANK", "ZREVRANK":
+		return func() error { return w.WriteIntOrError(count, err) }
+	case "ZRANK", "ZREVRANK": // key member [COUNT X]
 		c, cached := s.getCache(key, cmdHash).(int)
 		if !cached {
-			// COMMAND name key COUNT X
-			c, err = s.ZRank(isRev, key, command.Str(2), command.Flags(3).Count)
-			rawCommandDiff = time.Since(startTime)
+			c, err = s.ZRank(isRev, key, K.Str(2), K.Flags(3).Count)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			s.addCache(key, cmdHash, c, mwm)
+			s.addCache(key, cmdHash, c, cachewm)
 		}
 		if c == -1 {
-			return w.WriteBulk(nil)
+			return func() error { return w.WriteBulk(nil) }
 		}
-		return w.WriteInt(int64(c))
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-		// COMMAND name start end FLAGS ...
-		flags := command.Flags(4)
+		return func() error { return w.WriteInt64(int64(c)) }
+	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX": // key start end FLAGS ...
+		flags := K.Flags(4)
 		if v := s.getCache(key, cmdHash); v != nil {
-			return w.WriteBulksSlice(flags.ConvertPairs(v.([]s2pkg.Pair)))
-		}
-		start, end := command.Str(2), command.Str(3)
-		if end == "" {
-			end = start
+			return func() error { return w.WriteBulks(flags.ConvertPairs(v.([]s2pkg.Pair))) }
 		}
 		switch cmd {
 		case "ZRANGE", "ZREVRANGE":
-			p, err = s.ZRange(isRev, key, s2pkg.MustParseInt(start), s2pkg.MustParseInt(end), flags)
+			p, err = s.ZRange(isRev, key, K.Int(2), K.Int(3), flags)
 		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			p, err = s.ZRangeByLex(isRev, key, start, end, flags)
+			p, err = s.ZRangeByLex(isRev, key, K.Str(2), K.Str(3), flags)
 		}
-		rawCommandDiff = time.Since(startTime)
 		if err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
-		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
-		return w.WriteBulksSlice(flags.ConvertPairs(p))
+		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), cachewm, -1))
+		return func() error { return w.WriteBulks(flags.ConvertPairs(p)) }
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		pf, flags := parseNormFlag(isRev, command)
+		pf, flags := parseNormFlag(isRev, K)
 		if v := s.getCache(key, cmdHash); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
-			start, end := command.Str(2), command.Str(3)
+			start, end := K.Str(2), K.Str(3)
 			if len(flags.Union) > 0 {
 				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
 				pf = defaultNorm
 			} else {
 				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
 			}
-			rawCommandDiff = time.Since(startTime)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
-			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), mwm, -1))
+			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), cachewm, -1))
 		}
-		return w.WriteBulksSlice(flags.ConvertPairs(pf(p)))
+		return func() error { return w.WriteBulks(flags.ConvertPairs(pf(p))) }
 	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
-		flags := command.Flags(7)
+		flags := K.Flags(7)
 		if v := s.getCache(key, cmdHash); v != nil {
 			p = v.([]s2pkg.Pair)
 		} else {
-			p, err = s.ZRangeRangeByScore(isRev, key, command.Str(2), command.Str(3),
-				command.Str(4), command.Str(5), command.Int(6), flags)
-			rawCommandDiff = time.Since(startTime)
+			p, err = s.ZRangeRangeByScore(isRev, key, K.Str(2), K.Str(3), K.Str(4), K.Str(5),
+				K.Int(6), flags)
 			if err != nil {
-				return w.WriteError(err.Error())
+				return func() error { return w.WriteError(err.Error()) }
 			}
 		}
-		return w.WriteObjectsSlice(flags.ConvertNestedPairs(p))
+		return func() error { return w.WriteObjectsSlice(flags.ConvertNestedPairs(p)) }
 	case "ZRI": // N term1 ... termN options
-		N := command.Int(1)
-		p, err := s.RI(toStrings(command.Argv[2:2+N]), command.Flags(2+N))
-		rawCommandDiff = time.Since(startTime)
+		N := K.Int(1)
+		p, err := s.RI(toStrings(K.Argv[2:2+N]), K.Flags(2+N))
 		if err != nil {
-			return w.WriteError(err.Error())
+			return func() error { return w.WriteError(err.Error()) }
 		}
-		return w.WriteBulksSlice((wire.Flags{WithScores: true}).ConvertPairs(p))
+		return func() error { return w.WriteBulks((wire.Flags{WithScores: true}).ConvertPairs(p)) }
 	case "SCAN":
-		flags := command.Flags(2)
+		flags := K.Flags(2)
 		p, next := s.Scan(key, flags)
-		return w.WriteObjects(next, flags.ConvertPairs(p))
+		return func() error { return w.WriteObjects(next, flags.ConvertPairs(p)) }
 	case "SSCAN":
-		flags := command.Flags(3)
-		p, next := s.SScan(key, command.Str(2), flags)
-		return w.WriteObjects(next, flags.ConvertPairs(p))
+		flags := K.Flags(3)
+		p, next := s.SScan(key, K.Str(2), flags)
+		return func() error { return w.WriteObjects(next, flags.ConvertPairs(p)) }
 	}
 
-	return w.WriteError(wire.ErrUnknownCommand.Error())
+	return func() error { return w.WriteError(wire.ErrUnknownCommand.Error()) }
 }

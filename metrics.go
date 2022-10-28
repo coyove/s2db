@@ -62,7 +62,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		})
 	}
 	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
-	pairs = append(pairs, s2pkg.Pair{Member: "SysReadRawP99", Score: s.Survey.SysReadRawP99Micro.P99() / 1e3})
+	pairs = append(pairs, s2pkg.Pair{Member: "SysReadRTTP99", Score: s.Survey.SysReadRTTP99Micro.P99() / 1e3})
 	pairs = append(pairs, s2pkg.Pair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
 
 	lsmMetrics := s.DB.Metrics()

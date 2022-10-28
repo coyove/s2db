@@ -394,6 +394,22 @@ func (s *Server) addCache(key string, h uint64, data interface{}, wm int64) {
 	}
 }
 
+func (s *Server) readCache(K *wire.Command, f func() (interface{}, error)) (interface{}, error) {
+	key := K.StrRef(1)
+	cmdHash := s2pkg.HashMultiBytes(K.Argv)
+	cachewm := s.Cache.GetWatermark(key)
+	var err error
+	x := s.getCache(key, cmdHash)
+	if x == nil {
+		x, err = f()
+		if err != nil {
+			return nil, err
+		}
+		s.addCache(key, cmdHash, x, cachewm)
+	}
+	return x, nil
+}
+
 func makeHTMLStat(s string) template.HTML {
 	var a, b, c float64
 	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {

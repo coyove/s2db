@@ -10,6 +10,6 @@ var (
 	nilArray = []byte{'*', '-', '1', '\r', '\n'}
 )
 
-func intToString(val int64) string {
-	return strconv.FormatInt(val, 10)
+func itob(val int64) []byte {
+	return strconv.AppendInt(nil, val, 10)
 }

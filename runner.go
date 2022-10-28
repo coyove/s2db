@@ -85,7 +85,7 @@ func (s *Server) runPreparedTx(cmd, key string, runType int, ptx preparedTx) (in
 	return out, nil
 }
 
-func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx preparedTx, w *wire.Writer) error {
+func (s *Server) runPreparedTxWrite(cmd, key string, runType int, ptx preparedTx, w *wire.Writer) error {
 	out, err := s.runPreparedTx(cmd, key, runType, ptx)
 	if err != nil {
 		return w.WriteError(err.Error())
@@ -95,9 +95,9 @@ func (s *Server) runPreparedTxAndWrite(cmd, key string, runType int, ptx prepare
 	}
 	switch res := out.(type) {
 	case int:
-		return w.WriteInt(int64(res))
+		return w.WriteInt64(int64(res))
 	case int64:
-		return w.WriteInt(res)
+		return w.WriteInt64(res)
 	case float64:
 		return w.WriteBulkString(s2pkg.FormatFloat(res))
 	case error:

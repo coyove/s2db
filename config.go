@@ -114,8 +114,12 @@ func (s *Server) saveConfig() error {
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
-	if s.Cache == nil || s.Cache.Cap() != s.CacheSize {
-		s.Cache = s2pkg.NewLRUCache(s.CacheSize, nil)
+
+	ssz := s.CacheSize / len(s.shards)
+	if s.shards[0].Cache == nil || s.shards[0].Cache.Cap() != ssz {
+		for i := range s.shards {
+			s.shards[i].Cache = s2pkg.NewLRUCache(ssz, nil)
+		}
 	}
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())

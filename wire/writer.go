@@ -106,6 +106,10 @@ func (w *Writer) WriteSimpleString(s string) error {
 	return err
 }
 
+func (w *Writer) ReturnError(err error) func() error {
+	return func() error { return w.WriteError(err.Error()) }
+}
+
 func (w *Writer) WriteError(s string) error {
 	if !strings.Contains(s, "NOAUTH") &&
 		!strings.Contains(s, ErrBlacklistedIP.Error()) &&

@@ -449,3 +449,29 @@ func TestBitsMask(t *testing.T) {
 		}
 	}
 }
+
+func TestLRUPerf(t *testing.T) {
+	const N = 3000000
+	const C = 1e4
+	m := NewLRUCache(N, nil)
+	for i := 0; i < N+C; i++ {
+		m.AddSimple(strconv.Itoa(i), 0)
+	}
+
+	start := time.Now()
+	for i := 0; i < C; i++ {
+		m.AddSimple(strconv.Itoa(i), 0)
+	}
+	t.Log(time.Since(start))
+
+	m2 := NewLRUCacheTest(N)
+	for i := 0; i < N+C; i++ {
+		m2.Add(i, 0)
+	}
+
+	start = time.Now()
+	for i := 0; i < C; i++ {
+		m2.Add(i, 0)
+	}
+	t.Log(time.Since(start))
+}

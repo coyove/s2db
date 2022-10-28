@@ -19,7 +19,7 @@ func (s *Server) Get(key string) (value []byte, err error) {
 	return extdb.GetKey(s.DB, ranges.GetKVKey(key))
 }
 
-func (s *Server) MGet(keys []string) (values [][]byte, err error) {
+func (s *Server) MGet(keys ...string) (values [][]byte, err error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}

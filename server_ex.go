@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
@@ -60,6 +61,14 @@ func shardIndex(key string) int {
 func toStrings(b [][]byte) (keys []string) {
 	for _, b := range b {
 		keys = append(keys, string(b))
+	}
+	return keys
+}
+
+func ssRef(b [][]byte) (keys []string) {
+	for i, b := range b {
+		keys = append(keys, "")
+		*(*[2]uintptr)(unsafe.Pointer(&keys[i])) = *(*[2]uintptr)(unsafe.Pointer(&b))
 	}
 	return keys
 }
@@ -209,11 +218,15 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			"")
 	}
 	if section == "" || section == "cache" {
+		var ln, cp int
+		for i := range s.shards {
+			ln, cp = ln+s.shards[i].Cache.Len(), cp+s.shards[i].Cache.Cap()
+		}
 		data = append(data, "# cache",
 			fmt.Sprintf("cache_avg_size:%v", s.Survey.CacheSize.MeanString()),
 			fmt.Sprintf("cache_req_qps:%v", s.Survey.CacheReq),
 			fmt.Sprintf("cache_hit_qps:%v", s.Survey.CacheHit),
-			fmt.Sprintf("cache_obj_count:%v/%v", s.Cache.Len(), s.Cache.Cap()),
+			fmt.Sprintf("cache_obj_count:%v/%v", ln, cp),
 			"")
 	}
 	return
@@ -362,22 +375,32 @@ func joinArray(v interface{}) string {
 }
 
 func (s *Server) removeCache(key string) {
-	s.Cache.Delete(key)
+	s.shards[shardIndex(key)].Cache.Delete(key)
 }
 
-func (s *Server) getCache(key string, h uint64) interface{} {
+func (s *Server) readCache(K *wire.Command, f func() (interface{}, error)) (interface{}, error) {
+	key := K.Str(1)
+	c := s.shards[shardIndex(key)].Cache
+	cmdHash := s2pkg.HashMultiBytes(K.Argv)
+	cachewm := c.GetWatermark(key)
+
 	s.Survey.CacheReq.Incr(1)
-	v, ok := s.Cache.Get(key, h)
+	v, ok := c.Get(key, cmdHash)
 	if ok {
 		s.Survey.CacheHit.Incr(1)
-		return v
+		return v, nil
 	}
-	return nil
-}
 
-func (s *Server) addCache(key string, h uint64, data interface{}, wm int64) {
+	x, err := f()
+	if err != nil {
+		if err == os.ErrInvalid {
+			return x, nil
+		}
+		return nil, err
+	}
+
 	sz := 0
-	switch data := data.(type) {
+	switch data := x.(type) {
 	case []s2pkg.Pair:
 		sz = s2pkg.SizeOfPairs(data)
 	case [][]byte:
@@ -385,27 +408,12 @@ func (s *Server) addCache(key string, h uint64, data interface{}, wm int64) {
 	}
 	if sz > 0 {
 		if sz > s.CacheObjMaxSize*1024 {
-			return
+			return x, nil
 		}
 		s.Survey.CacheSize.Incr(int64(sz))
 	}
-	if !s.Cache.Add(key, h, data, wm) {
+	if !c.Add(key, cmdHash, x, cachewm) {
 		s.Survey.CacheAddConflict.Incr(1)
-	}
-}
-
-func (s *Server) readCache(K *wire.Command, f func() (interface{}, error)) (interface{}, error) {
-	key := K.StrRef(1)
-	cmdHash := s2pkg.HashMultiBytes(K.Argv)
-	cachewm := s.Cache.GetWatermark(key)
-	var err error
-	x := s.getCache(key, cmdHash)
-	if x == nil {
-		x, err = f()
-		if err != nil {
-			return nil, err
-		}
-		s.addCache(key, cmdHash, x, cachewm)
 	}
 	return x, nil
 }
@@ -453,15 +461,15 @@ func (s *Server) ZCard(key string) (count int64) {
 	return int64(i)
 }
 
-func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err error) {
-	if len(memebrs) == 0 {
+func (s *Server) ZMScore(key string, members ...string) (scores []float64, err error) {
+	if len(members) == 0 {
 		return nil, nil
 	}
-	for range memebrs {
+	for range members {
 		scores = append(scores, math.NaN())
 	}
 	bkName := ranges.GetZSetNameKey(key)
-	for i, m := range memebrs {
+	for i, m := range members {
 		score, _, found, _ := extdb.GetKeyNumber(s.DB, append(bkName, m...))
 		if found {
 			scores[i] = score
@@ -470,7 +478,7 @@ func (s *Server) ZMScore(key string, memebrs []string) (scores []float64, err er
 	return
 }
 
-func (s *Server) ZMData(key string, members []string) (data [][]byte, err error) {
+func (s *Server) ZMData(key string, members ...string) (data [][]byte, err error) {
 	if len(members) == 0 {
 		return nil, nil
 	}
@@ -738,15 +746,17 @@ func (s *Server) getUpstreamShard(key string) int {
 }
 
 func (s *Server) getUpstreamList() []s2pkg.Pair {
-	key := "_upstreams_"
-	mwm := s.Cache.GetWatermark(key)
-	if v := s.getCache(key, 0); v != nil {
-		return v.([]s2pkg.Pair)
-	}
-	p, err := s.ZRange(false, key, 0, -1, wire.Flags{Limit: math.MaxInt64, WithData: true})
-	if err != nil {
-		panic(err)
-	}
-	s.addCache(key, 0, p, mwm)
-	return p
+	return nil
+
+	// 	key := "_upstreams_"
+	// 	mwm := s.Cache.GetWatermark(key)
+	// 	if v := s.getCache(key, 0); v != nil {
+	// 		return v.([]s2pkg.Pair)
+	// 	}
+	// 	p, err := s.ZRange(false, key, 0, -1, wire.Flags{Limit: math.MaxInt64, WithData: true})
+	// 	if err != nil {
+	// 		panic(err)
+	// 	}
+	// 	s.addCache(key, 0, p, mwm)
+	// 	return p
 }

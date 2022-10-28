@@ -52,7 +52,6 @@ type Server struct {
 	ReadOnly         bool
 	Closed           bool // server close flag
 	SelfManager      *bas.Program
-	Cache            *s2pkg.LRUCache
 	evalLock         sync.RWMutex
 	switchMasterLock sync.RWMutex
 	dieLock          sync.Mutex
@@ -94,6 +93,7 @@ type Server struct {
 	DB *pebble.DB
 
 	shards [ShardLogNum]struct {
+		Cache             *s2pkg.LRUCache
 		runLogLock        s2pkg.Locker
 		syncWaiter        *s2pkg.BuoySignal
 		batchTx           chan *batchTask
@@ -330,6 +330,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src net.IP, K *wire.Command) (
 	out func() error,
 ) {
+	type any = interface{}
 	isRev := strings.HasPrefix(cmd, "ZREV")
 	key := K.Str(1)
 
@@ -607,155 +608,162 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 	}
 
-	cmdHash := s2pkg.HashMultiBytes(K.Argv)
 	parseWeakFlag(K)
-	cachewm := s.Cache.GetWatermark(key)
+
 	// Read commands
 	switch cmd {
 	case "GET":
-		x, cached := s.getCache(key, cmdHash).([]byte)
-		if !cached {
-			x, err = s.Get(key)
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
-			}
-			s.addCache(key, cmdHash, x, cachewm)
-		}
-		return func() error { return w.WriteBulk(x) }
-	case "MGET":
-		x, err := s.MGet(toStrings(K.Argv[1:]))
+		out, err := s.readCache(K, func() (any, error) { return s.Get(key) })
 		if err != nil {
-			return func() error { return w.WriteError(err.Error()) }
+			return w.ReturnError(err)
 		}
-		return func() error { return w.WriteBulks(x) }
-	case "ZSCORE", "ZMSCORE":
-		x, cached := s.getCache(key, cmdHash).([]float64)
-		if !cached {
-			x, err = s.ZMScore(key, toStrings(K.Argv[2:]))
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
-			}
-			s.addCache(key, cmdHash, x, cachewm)
+		return func() error { return w.WriteBulk(out.([]byte)) }
+	case "MGET":
+		out, err := s.readCache(K, func() (any, error) { return s.MGet(ssRef(K.Argv[1:])...) })
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		if cmd == "ZSCORE" {
-			return func() error { return w.WriteBulk(s2pkg.FormatFloatBulk(x[0])) }
+		return func() error { return w.WriteBulks(out.([][]byte)) }
+	case "ZSCORE":
+		out, err := s.readCache(K, func() (any, error) { return s.ZMScore(key, K.StrRef(2)) })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteBulk(s2pkg.FormatFloatBulk(out.([]float64)[0])) }
+	case "ZMSCORE":
+		out, err := s.readCache(K, func() (any, error) { return s.ZMScore(key, ssRef(K.Argv[2:])...) })
+		if err != nil {
+			return w.ReturnError(err)
 		}
 		var data [][]byte
-		for _, s := range x {
+		for _, s := range out.([]float64) {
 			data = append(data, s2pkg.FormatFloatBulk(s))
 		}
 		return func() error { return w.WriteBulks(data) }
-	case "ZDATA", "ZMDATA", "ZDATABM16":
-		x, cached := s.getCache(key, cmdHash).([][]byte)
-		if !cached {
-			if cmd == "ZDATABM16" {
-				x, err = s.ZDataBM16(key, K.Str(2), uint16(K.Int64(3)), uint16(K.Int64(4)))
-			} else {
-				x, err = s.ZMData(key, toStrings(K.Argv[2:]))
-			}
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
-			}
-			s.addCache(key, cmdHash, x, cachewm)
+	case "ZDATABM16":
+		out, err := s.readCache(K, func() (any, error) {
+			return s.ZDataBM16(key, K.Str(2), uint16(K.Int64(3)), uint16(K.Int64(4)))
+		})
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		if cmd == "ZDATA" {
-			return func() error { return w.WriteBulk(x[0]) }
+		return func() error { return w.WriteBulks(out.([][]byte)) }
+	case "ZDATA":
+		out, err := s.readCache(K, func() (any, error) { return s.ZMData(key, K.StrRef(2)) })
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		return func() error { return w.WriteBulks(x) }
+		return func() error { return w.WriteBulk(out.([][]byte)[0]) }
+	case "ZMDATA":
+		out, err := s.readCache(K, func() (any, error) { return s.ZMData(key, ssRef(K.Argv[2:])...) })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteBulks(out.([][]byte)) }
 	case "SISMEMBER":
-		x := s.SMIsMember(key, [][]byte{K.BytesRef(2)})[0]
-		return func() error { return w.WriteInt64(int64(x)) }
+		out, err := s.readCache(K, func() (any, error) { return s.SMIsMember(key, K.StrRef(2))[0], nil })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteInt64(int64(out.(int))) }
 	case "SMISMEMBER":
-		res := s.SMIsMember(key, K.Argv[2:])
-		itfs := make([]interface{}, len(res))
+		out, err := s.readCache(K, func() (any, error) { return s.SMIsMember(key, ssRef(K.Argv[2:])...), nil })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		itfs := make([]interface{}, len(out.([]int)))
 		for i := range itfs {
-			itfs[i] = res[i]
+			itfs[i] = out.([]int)[i]
 		}
 		return func() error { return w.WriteObjectsSlice(itfs) }
 	case "SMEMBERS":
-		if v := s.getCache(key, cmdHash); v != nil {
-			return func() error { return w.WriteBulks(v.([][]byte)) }
+		out, err := s.readCache(K, func() (any, error) { return s.SMembers(key, K.Flags(2)), nil })
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		res := s.SMembers(key, K.Flags(2))
-		s.addCache(key, cmdHash, res, cachewm)
-		return func() error { return w.WriteBulks(res) }
+		return func() error { return w.WriteBulks(out.([][]byte)) }
 	case "SCARD":
-		return func() error { return w.WriteInt64(s.SCard(key)) }
+		out, err := s.readCache(K, func() (any, error) { return s.SCard(key), nil })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteInt64(out.(int64)) }
 	case "ZCARD":
-		return func() error { return w.WriteInt64(s.ZCard(key)) }
+		out, err := s.readCache(K, func() (any, error) { return s.ZCard(key), nil })
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteInt64(out.(int64)) }
 	case "ZCOUNT", "ZCOUNTBYLEX": // key start end [MATCH X]
-		if v := s.getCache(key, cmdHash); v != nil {
-			return func() error { return w.WriteInt64(int64(v.(int))) }
+		out, err := s.readCache(K, func() (any, error) {
+			return s.ZCount(cmd == "ZCOUNTBYLEX", key, K.Str(2), K.Str(3), K.Flags(4))
+		})
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		count, err := s.ZCount(cmd == "ZCOUNTBYLEX", key, K.Str(2), K.Str(3), K.Flags(4))
-		if err == nil {
-			s.addCache(key, cmdHash, count, cachewm)
-		}
-		return func() error { return w.WriteIntOrError(count, err) }
+		return func() error { return w.WriteInt64(int64(out.(int))) }
 	case "ZRANK", "ZREVRANK": // key member [COUNT X]
-		c, cached := s.getCache(key, cmdHash).(int)
-		if !cached {
-			c, err = s.ZRank(isRev, key, K.Str(2), K.Flags(3).Count)
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
-			}
-			s.addCache(key, cmdHash, c, cachewm)
+		out, err := s.readCache(K, func() (any, error) {
+			return s.ZRank(cmd == "ZREVRANK", key, K.Str(2), K.Flags(3).Count)
+		})
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		if c == -1 {
+		if out.(int) == -1 {
 			return func() error { return w.WriteBulk(nil) }
 		}
-		return func() error { return w.WriteInt64(int64(c)) }
-	case "ZRANGE", "ZREVRANGE", "ZRANGEBYLEX", "ZREVRANGEBYLEX": // key start end FLAGS ...
+		return func() error { return w.WriteInt64(int64(out.(int))) }
+	case "ZRANGE", "ZREVRANGE": // key start end FLAGS ...
 		flags := K.Flags(4)
-		if v := s.getCache(key, cmdHash); v != nil {
-			return func() error { return w.WriteBulks(flags.ConvertPairs(v.([]s2pkg.Pair))) }
-		}
-		switch cmd {
-		case "ZRANGE", "ZREVRANGE":
-			p, err = s.ZRange(isRev, key, K.Int(2), K.Int(3), flags)
-		case "ZRANGEBYLEX", "ZREVRANGEBYLEX":
-			p, err = s.ZRangeByLex(isRev, key, K.Str(2), K.Str(3), flags)
-		}
+		out, err := s.readCache(K, func() (any, error) {
+			return s.ZRange(cmd == "ZREVRANGE", key, K.Int(2), K.Int(3), flags)
+		})
 		if err != nil {
-			return func() error { return w.WriteError(err.Error()) }
+			return w.ReturnError(err)
 		}
-		s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), cachewm, -1))
-		return func() error { return w.WriteBulks(flags.ConvertPairs(p)) }
+		return func() error { return w.WriteBulks(flags.ConvertPairs(out.([]s2pkg.Pair))) }
+	case "ZRANGEBYLEX", "ZREVRANGEBYLEX": // key start end FLAGS ...
+		flags := K.Flags(4)
+		out, err := s.readCache(K, func() (any, error) {
+			v, err := s.ZRangeByLex(cmd == "ZREVRANGEBYLEX", key, K.Str(2), K.Str(3), flags)
+			if err == nil && flags.IsSpecial() {
+				return v, os.ErrInvalid
+			}
+			return v, err
+		})
+		if err != nil {
+			return w.ReturnError(err)
+		}
+		return func() error { return w.WriteBulks(flags.ConvertPairs(out.([]s2pkg.Pair))) }
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
-		pf, flags := parseNormFlag(isRev, K)
-		if v := s.getCache(key, cmdHash); v != nil {
-			p = v.([]s2pkg.Pair)
-		} else {
-			start, end := K.Str(2), K.Str(3)
+		flags := K.Flags(4)
+		out, err := s.readCache(K, func() (p any, err error) {
 			if len(flags.Union) > 0 {
-				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), start, end, flags)
-				pf = defaultNorm
+				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), K.Str(2), K.Str(3), flags)
 			} else {
-				p, err = s.ZRangeByScore(isRev, key, start, end, flags)
+				p, err = s.ZRangeByScore(isRev, key, K.Str(2), K.Str(3), flags)
 			}
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
+			if err == nil && flags.IsSpecial() {
+				return p, os.ErrInvalid
 			}
-			s.addCache(key, cmdHash, p, ifInt(!flags.IsSpecial(), cachewm, -1))
+			return p, err
+		})
+		if err != nil {
+			return w.ReturnError(err)
 		}
-		return func() error { return w.WriteBulks(flags.ConvertPairs(pf(p))) }
+		return func() error { return w.WriteBulks(flags.ConvertPairs(out.([]s2pkg.Pair))) }
 	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
 		flags := K.Flags(7)
-		if v := s.getCache(key, cmdHash); v != nil {
-			p = v.([]s2pkg.Pair)
-		} else {
-			p, err = s.ZRangeRangeByScore(isRev, key, K.Str(2), K.Str(3), K.Str(4), K.Str(5),
-				K.Int(6), flags)
-			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
-			}
+		p, err = s.ZRangeRangeByScore(isRev, key, K.Str(2), K.Str(3), K.Str(4), K.Str(5), K.Int(6), flags)
+		if err != nil {
+			return w.ReturnError(err)
 		}
 		return func() error { return w.WriteObjectsSlice(flags.ConvertNestedPairs(p)) }
 	case "ZRI": // N term1 ... termN options
 		N := K.Int(1)
 		p, err := s.RI(toStrings(K.Argv[2:2+N]), K.Flags(2+N))
 		if err != nil {
-			return func() error { return w.WriteError(err.Error()) }
+			return w.ReturnError(err)
 		}
 		return func() error { return w.WriteBulks((wire.Flags{WithScores: true}).ConvertPairs(p)) }
 	case "SCAN":

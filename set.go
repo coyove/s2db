@@ -20,7 +20,7 @@ func (s *Server) SCard(key string) (count int64) {
 	return int64(i)
 }
 
-func (s *Server) SMIsMember(key string, members [][]byte) (res []int) {
+func (s *Server) SMIsMember(key string, members ...string) (res []int) {
 	if len(members) == 0 {
 		return nil
 	}

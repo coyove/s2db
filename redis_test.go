@@ -623,25 +623,25 @@ func TestZRangeNorm(t *testing.T) {
 		}
 	}
 
-	do := func(c string, args ...interface{}) interface{} {
-		args = append([]interface{}{c, "ztmp", "--norm--", 10}, args...)
-		return rdb.Do(ctx, args...).Val()
-	}
+	// do := func(c string, args ...interface{}) interface{} {
+	// 	args = append([]interface{}{c, "ztmp", "--norm--", 10}, args...)
+	// 	return rdb.Do(ctx, args...).Val()
+	// }
 
-	rdb.Do(ctx, "ZADD", "ztmp", 10.1, "10.1").Result()
-	assertEqual([]string{"0", "1", "2", "3", "4", "5"}, do("zrangebyscore", 0, 5))
-	assertEqual([]string{"0", "1", "2", "3", "4"}, do("zrangebyscore", 0, 4))
-	assertEqual([]string{"1", "2", "3", "4", "5", "6"}, do("zrangebyscore", 1, 6))
-	assertEqual([]string{"9", "8", "7", "6", "5"}, do("zrevrangebyscore", "(10", 5))
-	assertEqual([]string{"12", "11", "10.1"}, do("zrevrangebyscore", "12", 10.1))
-	assertEqual([]string{"12", "11"}, do("zrevrangebyscore", "12", "(10.1"))
-	assertEqual([]string{}, do("zrangebyscore", "10", "(10"))
-	assertEqual([]string{}, do("zrevrangebyscore", "(11", "(10.1"))
-	assertEqual([]string{"10.1"}, do("zrevrangebyscore", "(11", "10.1"))
-	assertEqual([]string{"18"}, do("zrangebyscore", "18", "18", "limit", 0, 2))
-	assertEqual([]string{"18"}, do("zrangebyscore", "18", "18", "limit", 0, 17))
-	assertEqual([]string{"12"}, do("zrevrangebyscore", "12", "12", "limit", 0, 15))
-	assertEqual([]string{"15", "14"}, do("zrevrangebyscore", "15", "12", "limit", 0, 2))
+	// rdb.Do(ctx, "ZADD", "ztmp", 10.1, "10.1").Result()
+	// assertEqual([]string{"0", "1", "2", "3", "4", "5"}, do("zrangebyscore", 0, 5))
+	// assertEqual([]string{"0", "1", "2", "3", "4"}, do("zrangebyscore", 0, 4))
+	// assertEqual([]string{"1", "2", "3", "4", "5", "6"}, do("zrangebyscore", 1, 6))
+	// assertEqual([]string{"9", "8", "7", "6", "5"}, do("zrevrangebyscore", "(10", 5))
+	// assertEqual([]string{"12", "11", "10.1"}, do("zrevrangebyscore", "12", 10.1))
+	// assertEqual([]string{"12", "11"}, do("zrevrangebyscore", "12", "(10.1"))
+	// assertEqual([]string{}, do("zrangebyscore", "10", "(10"))
+	// assertEqual([]string{}, do("zrevrangebyscore", "(11", "(10.1"))
+	// assertEqual([]string{"10.1"}, do("zrevrangebyscore", "(11", "10.1"))
+	// assertEqual([]string{"18"}, do("zrangebyscore", "18", "18", "limit", 0, 2))
+	// assertEqual([]string{"18"}, do("zrangebyscore", "18", "18", "limit", 0, 17))
+	// assertEqual([]string{"12"}, do("zrevrangebyscore", "12", "12", "limit", 0, 15))
+	// assertEqual([]string{"15", "14"}, do("zrevrangebyscore", "15", "12", "limit", 0, 2))
 
 	s.Close()
 }

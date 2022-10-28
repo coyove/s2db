@@ -20,7 +20,7 @@ type LRUCache struct {
 	storeCap  int
 	store     map[string]LRUValue
 	storeIter *reflect.MapIter
-	watermark [65536]int64
+	watermark [4096]int64
 }
 
 func NewLRUCache(cap int, onEvict func(string, LRUValue)) *LRUCache {
@@ -129,7 +129,7 @@ func (m *LRUCache) Clear() {
 	m.store = map[string]LRUValue{}
 }
 
-func (m *LRUCache) Delete(key string) {
+func (m *LRUCache) Delete(key string) interface{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	old, ok := m.store[key]
@@ -138,6 +138,7 @@ func (m *LRUCache) Delete(key string) {
 		m.onEvict(key, old)
 	}
 	m.watermark[HashStr(key)%uint64(len(m.watermark))]++
+	return old
 }
 
 func (m *LRUCache) Range(f func(string, LRUValue) bool) {

@@ -58,13 +58,6 @@ func shardIndex(key string) int {
 	return int(s2pkg.HashStr(key) % ShardLogNum)
 }
 
-func toStrings(b [][]byte) (keys []string) {
-	for _, b := range b {
-		keys = append(keys, string(b))
-	}
-	return keys
-}
-
 func ssRef(b [][]byte) (keys []string) {
 	for i, b := range b {
 		keys = append(keys, "")
@@ -330,7 +323,7 @@ func parseNormFlag(rev bool, in *wire.Command) (func([]s2pkg.Pair) []s2pkg.Pair,
 	}
 
 	if testFlag {
-		fmt.Println(toStrings(in.Argv), string(start.ToScore()), string(end.ToScore()))
+		fmt.Println(ssRef(in.Argv), string(start.ToScore()), string(end.ToScore()))
 	}
 
 	return func(data []s2pkg.Pair) []s2pkg.Pair {

@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -52,7 +51,6 @@ type Server struct {
 	ReadOnly         bool
 	Closed           bool // server close flag
 	SelfManager      *bas.Program
-	evalLock         sync.RWMutex
 	switchMasterLock sync.RWMutex
 	dieLock          sync.Mutex
 	dumpWireLock     s2pkg.Locker
@@ -331,7 +329,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	out func() error,
 ) {
 	type any = interface{}
-	isRev := strings.HasPrefix(cmd, "ZREV")
 	key := K.Str(1)
 
 	for _, nw := range blacklistIPs {
@@ -379,7 +376,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return func() error { return w.WriteError("invalid empty key name") }
 		}
 		if strings.Contains(key, "\x00") {
-			return func() error { return w.WriteError("invalid key name, null bytes (0x00) found") }
+			return func() error { return w.WriteError("invalid key name containing null bytes (0x00)") }
 		}
 		if err := s.checkWritable(); err != nil {
 			return func() error { return w.WriteError(err.Error()) }
@@ -410,9 +407,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 	}(startTime)
 
-	var p []s2pkg.Pair
-	var err error
-
 	// General commands
 	switch cmd {
 	case "DIE":
@@ -421,15 +415,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "AUTH": // AUTH command is processed before runComamnd, so always return OK here
 		return func() error { return w.WriteSimpleString("OK") }
 	case "EVAL", "EVALRO":
-		if cmd == "EVALRO" {
-			s.evalLock.RLock()
-			defer s.evalLock.RUnlock()
-		} else {
-			s.evalLock.Lock()
-			defer s.evalLock.Unlock()
-		}
 		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(K.Argv[2:]...)))
-		return func() error { return w.WriteBulkString(v.String()) }
+		return func() error { return w.WriteValue(v) }
 	case "PING":
 		if key == "" {
 			return func() error { return w.WriteSimpleString("PONG " + s.ServerName + " " + Version) }
@@ -443,49 +430,40 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		case "SET":
 			found, err := s.UpdateConfig(K.Str(2), K.Str(3), false)
 			if err != nil {
-				return func() error { return w.WriteError(err.Error()) }
+				return w.ReturnError(err)
 			} else if found {
 				return func() error { return w.WriteSimpleString("OK") }
 			}
 			return func() error { return w.WriteError("field not found") }
 		case "COPY":
 			if err := s.CopyConfig(K.Str(2), K.Str(3)); err != nil {
-				return func() error { return w.WriteError(err.Error()) }
+				return w.ReturnError(err)
 			}
 			return func() error { return w.WriteSimpleString("OK") }
 		default:
 			return func() error { return w.WriteBulkStrings(s.listConfigCommand()) }
 		}
+	case "INFOMETRICS":
+		switch v := s.MetricsCommand(key).(type) {
+		case *s2pkg.Survey:
+			m := v.Metrics()
+			return func() error {
+				return w.WriteObjects(
+					"qps1m", m.QPS[0], "qps5m", m.QPS[1], "qps", m.QPS[2],
+					"mean1m", m.Mean[0], "mean5m", m.Mean[1], "mean", m.Mean[2],
+					"max1m", m.Max[0], "max5m", m.Max[1], "max", m.Max[2],
+				)
+			}
+		case *s2pkg.P99SurveyMinute:
+			return func() error { return w.WriteObjects("p99", v.P99()) }
+		}
+		return func() error { return w.WriteError("invalid metrics key: " + key) }
+	case "INFOLOG":
+		info := s.ShardLogInfoCommand(K.Int(1))
+		return func() error { return w.WriteBulkString(strings.Join(info, "\r\n")) }
 	case "INFO":
-		lkey := strings.ToLower(key)
-		if strings.HasPrefix(lkey, "metrics.") {
-			var sv *s2pkg.Survey
-			if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key[8:]); rv.IsValid() {
-				sv = rv.Addr().Interface().(*s2pkg.Survey)
-			} else {
-				x, ok := s.Survey.Command.Load(key[8:])
-				if !ok {
-					x, ok = s.Survey.ReverseProxy.Load(key[8:])
-					if !ok {
-						return func() error { return w.WriteError("invalid metrics key: " + key[8:]) }
-					}
-				}
-				sv = x.(*s2pkg.Survey)
-			}
-			m := sv.Metrics()
-			return func() error {
-				return w.WriteObjects(m.QPS[0], m.QPS[1], m.QPS[2],
-					m.Mean[0], m.Mean[1], m.Mean[2],
-					m.Max[0], m.Max[1], m.Max[2])
-			}
-		}
-		if strings.HasPrefix(lkey, "log") {
-			index := s2pkg.MustParseInt(key[3:])
-			return func() error {
-				return w.WriteBulkString(strings.Join(s.ShardLogInfoCommand(index), "\r\n"))
-			}
-		}
-		return func() error { return w.WriteBulkString(strings.Join(s.InfoCommand(lkey), "\r\n")) }
+		info := s.InfoCommand(strings.ToLower(key))
+		return func() error { return w.WriteBulkString(strings.Join(info, "\r\n")) }
 	case "DUMPDB":
 		go func(start time.Time) {
 			log.Infof("start dumping to %s", key)
@@ -738,6 +716,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "ZRANGEBYSCORE", "ZREVRANGEBYSCORE":
 		flags := K.Flags(4)
 		out, err := s.readCache(K, func() (p any, err error) {
+			isRev := cmd == "ZREVRANGEBYSCORE"
 			if len(flags.Union) > 0 {
 				p, err = s.ZRangeByScore2D(isRev, append(flags.Union, key), K.Str(2), K.Str(3), flags)
 			} else {
@@ -753,15 +732,15 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return func() error { return w.WriteBulks(flags.ConvertPairs(out.([]s2pkg.Pair))) }
 	case "ZRANGERANGEBYSCORE", "ZREVRANGERANGEBYSCORE": // key start end start2 end2 count2
-		flags := K.Flags(7)
-		p, err = s.ZRangeRangeByScore(isRev, key, K.Str(2), K.Str(3), K.Str(4), K.Str(5), K.Int(6), flags)
+		flags, isRev := K.Flags(7), cmd == "ZREVRANGERANGEBYSCORE"
+		p, err := s.ZRangeRangeByScore(isRev, key, K.Str(2), K.Str(3), K.Str(4), K.Str(5), K.Int(6), flags)
 		if err != nil {
 			return w.ReturnError(err)
 		}
 		return func() error { return w.WriteObjectsSlice(flags.ConvertNestedPairs(p)) }
 	case "ZRI": // N term1 ... termN options
 		N := K.Int(1)
-		p, err := s.RI(toStrings(K.Argv[2:2+N]), K.Flags(2+N))
+		p, err := s.RI(ssRef(K.Argv[2:2+N]), K.Flags(2+N))
 		if err != nil {
 			return w.ReturnError(err)
 		}
@@ -776,5 +755,5 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		return func() error { return w.WriteObjects(next, flags.ConvertPairs(p)) }
 	}
 
-	return func() error { return w.WriteError(wire.ErrUnknownCommand.Error()) }
+	return w.ReturnError(wire.ErrUnknownCommand)
 }

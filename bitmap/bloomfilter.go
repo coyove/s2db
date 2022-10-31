@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"runtime"
 	"sort"
 	"sync"
 	"unsafe"
@@ -44,16 +43,11 @@ func NewBloomFilter(size int, fpr float64) *Bloom {
 	}
 }
 
-func (b *Bloom) AddBinary(m []byte) {
-	var d string
-	*(*[2]uintptr)(unsafe.Pointer(&d)) = *(*[2]uintptr)(unsafe.Pointer(&m))
-	b.Add(d)
+func (b *Bloom) Add(m string) {
+	b.AddBinary([]byte(m))
 }
 
-func (b *Bloom) Add(m string) {
-	var d []byte
-	*(*[2]uintptr)(unsafe.Pointer(&d)) = *(*[2]uintptr)(unsafe.Pointer(&m))
-	(*(*[3]int)(unsafe.Pointer(&d)))[2] = len(m)
+func (b *Bloom) AddBinary(d []byte) {
 	if !b.store.Has(d) {
 		b.count++
 	}
@@ -61,12 +55,11 @@ func (b *Bloom) Add(m string) {
 		if len(b.tiny32) == 0 {
 			b.tiny32 = append(b.tiny32, 0xffffffff)
 		}
-		b.tiny32 = append(b.tiny32, uint32(strhash(unsafe.Pointer(&m), 0)))
+		b.tiny32 = append(b.tiny32, uint32(strhash(unsafe.Pointer(&d), 0)))
 	} else {
 		b.tiny32 = nil
 	}
 	b.store.Add(d)
-	runtime.KeepAlive(m)
 }
 
 func (b *Bloom) Contains(m string) bool {

@@ -93,5 +93,5 @@ Z[REV]RANGE(BYLEX|BYSCORE) key left right [LIMIT 0 count] [WITHSCORES]
 SCAN cursor [MATCH pattern] [COUNT count]
     Scan keys starting at 'cursor'.
 
-EVAL[RO] code [arg0 [arg1 ...]]
+EVAL code [arg0 [arg1 ...]]
     Evaluate the code with provided arguments, which are stored in 'args' variable.

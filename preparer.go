@@ -148,7 +148,11 @@ func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) pre
 		if len(tmp) > *zsetMemberLimit {
 			panic("ZREM: too many members to remove")
 		}
-		return prepareZRem(key, toStrings(tmp), dd)
+		var keys []string
+		for _, b := range tmp {
+			keys = append(keys, string(b))
+		}
+		return prepareZRem(key, keys, dd)
 	}
 	panic("shouldn't happen")
 }

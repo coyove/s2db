@@ -299,25 +299,28 @@ func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, err
 }
 
 func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
+	a := bas.ValueOf(ssRef(args))
 	return &nj.LoadOptions{
 		Globals: bas.NewObject(8).
 			SetProp("server", bas.ValueOf(s)).
-			SetProp("args", bas.ValueOf(args)).
-			AddMethod("cmd", func(e *bas.Env) { //  func(addr string, args ...interface{}) interface{} {
+			SetProp("args", a).SetProp("ARGV", a).
+			SetProp("redis", bas.Func("redis", func(e *bas.Env) {
 				var args []interface{}
 				for i := 1; i < e.Size(); i++ {
 					args = append(args, e.Interface(i))
 				}
 				v, err := s.getRedis(e.Str(0)).Do(context.TODO(), args...).Result()
 				if err != nil {
-					if err == redis.Nil {
-						e.A = bas.Nil
-						return
-					}
-					panic(err)
+					_ = err == redis.Nil && e.SetA(bas.Nil) || e.SetError(err)
+					return
 				}
 				e.A = bas.ValueOf(v)
-			}).
+			}).Object().
+				AddMethod("get", func(e *bas.Env) { e.A = bas.ValueOf(s.getRedis(e.Str(0))) }).
+				AddMethod("call", func(e *bas.Env) {
+					e.A = e.This().Object().Call(e, append([]bas.Value{bas.NullStr}, e.Stack()...)...)
+				}).
+				ToValue()).
 			ToMap(),
 	}
 }
@@ -369,5 +372,5 @@ func toReadonlyBytes(v bas.Value) []byte {
 	if v.IsBytes() {
 		return v.Bytes()
 	}
-	panic("toReadOnlyBytes: invalid data")
+	panic("toReadonlyBytes: invalid data")
 }

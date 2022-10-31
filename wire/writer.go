@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/nj/bas"
+	"github.com/coyove/nj/typ"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/sirupsen/logrus"
 )
@@ -153,6 +155,26 @@ func (w *Writer) WriteObject(v interface{}) error {
 	}
 }
 
+func (w *Writer) WriteValue(v bas.Value) error {
+	if v.IsNumber() {
+		if v.IsInt64() {
+			return w.WriteInt64(v.Int64())
+		}
+		return w.WriteBulk(s2pkg.FormatFloatBulk(v.Float64()))
+	}
+	if v.IsArray() {
+		var args []interface{}
+		for i := 0; i < v.Native().Len(); i++ {
+			args = append(args, v.Native().Get(i).Interface())
+		}
+		return w.WriteObjects(args)
+	}
+	if v.Type() == typ.Bool {
+		return w.WriteSimpleString(v.String())
+	}
+	return w.WriteBulkString(v.String())
+}
+
 func (w *Writer) WriteObjects(objs ...interface{}) error {
 	if objs == nil {
 		_, err := w.Write(nilArray)
@@ -215,6 +237,10 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 			}
 		case error:
 			if err := w.WriteError(fmt.Sprint(v)); err != nil {
+				return err
+			}
+		case bas.Value:
+			if err := w.WriteValue(v); err != nil {
 				return err
 			}
 		default:

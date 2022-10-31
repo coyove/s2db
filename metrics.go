@@ -219,6 +219,26 @@ func (s *Server) DeleteMetrics(name string) error {
 	return s.DB.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
 }
 
+func (s *Server) MetricsCommand(key string) interface{} {
+	var sv *s2pkg.Survey
+	if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key); rv.IsValid() {
+		switch v := rv.Addr().Interface().(type) {
+		case *s2pkg.Survey:
+			sv = v
+		case *s2pkg.P99SurveyMinute:
+			return v
+		}
+	}
+	if sv == nil {
+		x, ok := s.Survey.Command.Load(key)
+		if !ok {
+			return nil
+		}
+		sv = x.(*s2pkg.Survey)
+	}
+	return sv
+}
+
 func rvToFloat64(v reflect.Value) float64 {
 	if v.Kind() >= reflect.Int && v.Kind() <= reflect.Int64 {
 		return float64(v.Int())

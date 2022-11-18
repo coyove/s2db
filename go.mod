@@ -8,7 +8,7 @@ require (
 	github.com/bits-and-blooms/bitset v1.2.2 // indirect
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
-	github.com/coyove/nj v0.0.0-20221027033947-b9c0a26c7c8e
+	github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/snappy v0.0.3

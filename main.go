@@ -18,6 +18,7 @@ import (
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -28,6 +29,7 @@ var (
 	listenAddr   = flag.String("l", ":6379", "listen address")
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
+	channel      = flag.Int64("ch", -1, "channel 0-"+strconv.Itoa(int(future.Channels)))
 	showVersion  = flag.Bool("v", false, "print s2db version then exit")
 	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	configSet    = func() (f [6]*string) {
@@ -79,6 +81,11 @@ func main() {
 
 	log.SetReportCaller(true)
 	s2pkg.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
+
+	if *channel < 0 || *channel >= future.Channels {
+		errorExit("invalid channel")
+		return
+	}
 
 	if *netTCPWbufSize%4096 != 0 {
 		errorExit("invalid TCP write buffer size")

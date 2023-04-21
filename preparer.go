@@ -1,7 +1,8 @@
 package main
 
 import (
-	"bytes"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"math"
 	"strconv"
@@ -13,9 +14,9 @@ import (
 	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/ranges"
-	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
-	"github.com/sirupsen/logrus"
+	"github.com/coyove/sdss/future"
 )
 
 type zaddFlag struct {
@@ -63,78 +64,20 @@ func parseMergeScoreBitRange(command *wire.Command, idx int, rangeOnly bool) (in
 	return s2pkg.BitsMask(hi, lo), 1 << at
 }
 
-func (s *Server) parseZAdd(cmd, key string, command *wire.Command, dd []byte) preparedTx {
-	flags := zaddFlag{delScoreLt: math.NaN()}
-	flags.mergeScore.f = defaultMergeScore
-
+func (s *Server) parseAppend(cmd, key string, command *wire.Command, id future.Future) preparedTx {
+	var data [][]byte
+	var maxCount int64
 	var idx = 2
-	for ; ; idx++ {
-		switch strings.ToUpper(command.Str(idx)) {
-		case "XX":
-			flags.xx = true
-		case "NX":
-			flags.nx = true
-		case "CH":
-			flags.ch = true
-		case "PD":
-			flags.preserveOldData = true
-		case "DATA":
-			flags.withData = true
-		case "BM16":
-			flags.bm16Data, flags.withData = true, true
-		case "DSLT":
-			idx++
-			flags.delScoreLt = command.Float64(idx)
-		case "MSSUM":
-			flags.mergeScore.f = func(old, new float64) float64 { return old + new }
-			flags.mergeScore.custom = true
-		case "MSAVG":
-			flags.mergeScore.f = func(old, new float64) float64 { return (old + new) / 2 }
-			flags.mergeScore.custom = true
-		case "MSBIT": // hi lo
-			mask, _ := parseMergeScoreBitRange(command, idx, true)
-			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) | int64(n)) }
-			flags.mergeScore.custom = true
-			idx += 2
-		case "MSBITSET": // hi lo at
-			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) | at | int64(n)) }
-			flags.mergeScore.custom = true
-			idx += 3
-		case "MSBITCLR": // hi lo at
-			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o)&mask)&^at | int64(n)) }
-			flags.mergeScore.custom = true
-			idx += 3
-		case "MSBITINV": // hi lo at
-			mask, at := parseMergeScoreBitRange(command, idx, false)
-			flags.mergeScore.f = func(o, n float64) float64 { return float64((int64(o) & mask) ^ at | int64(n)) }
-			flags.mergeScore.custom = true
-			idx += 3
-		default:
-			goto MEMEBRS
-		}
+	switch command.StrRef(idx) {
+	case "MAX", "max":
+		maxCount = command.Int64(idx + 1)
+		idx += 2
 	}
 
-MEMEBRS:
-	var pairs []s2pkg.Pair
-	if !flags.withData {
-		for i := idx; i < command.ArgCount(); i += 2 {
-			pairs = append(pairs, s2pkg.Pair{Member: command.Str(i + 1), Score: command.Float64(i)})
-		}
-	} else {
-		for i := idx; i < command.ArgCount(); i += 3 {
-			p := s2pkg.Pair{Score: command.Float64(i), Member: command.Str(i + 1), Data: command.Bytes(i + 2)}
-			if flags.bm16Data {
-				s2pkg.MustParseFloatBytes(p.Data)
-			}
-			pairs = append(pairs, p)
-		}
+	for i := idx; i < command.ArgCount(); i++ {
+		data = append(data, command.Bytes(i))
 	}
-	if len(pairs) > *zsetMemberLimit {
-		panic("ZADD: too many members to add")
-	}
-	return s.prepareZAdd(key, pairs, flags, dd)
+	return s.prepareAppend(key, data, maxCount, id)
 }
 
 func (s *Server) parseDel(cmd, key string, command *wire.Command, dd []byte) preparedTx {
@@ -279,134 +222,50 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func (s *Server) prepareZAdd(key string, pairs []s2pkg.Pair, flags zaddFlag, dd []byte) preparedTx {
+func (s *Server) prepareAppend(key string, data [][]byte, max int64, id future.Future) preparedTx {
 	f := func(tx extdb.LogTx) (interface{}, error) {
-		if !math.IsNaN(flags.delScoreLt) && !flags.mergeScore.custom {
-			// Filter out all DSLT in advance, if no custom mergeScore function is provided
-			for i := len(pairs) - 1; i >= 0; i-- {
-				if pairs[i].Score < flags.delScoreLt {
-					pairs = append(pairs[:i], pairs[i+1:]...)
-				}
-			}
-		}
+		bkPrefix, bkCounter, _ := ranges.GetKey(key)
 
-		bkName, bkScore, bkCounter := ranges.GetZSetRangeKey(key)
-		added, updated := 0, 0
-		for _, p := range pairs {
-			if err := checkScore(p.Score); err != nil {
-				return nil, err
-			}
-			if p.Member == "" {
-				return nil, fmt.Errorf("empty member name")
-			}
-			scoreBuf, scoreBufCloser, err := tx.Get(append(bkName, p.Member...))
-			if err == pebble.ErrNotFound {
-				// Add new key
-				if flags.xx {
-					continue
-				}
-				if flags.bm16Data {
-					p.Data, _ = bitmap.Add(nil, uint16(s2pkg.MustParseFloatBytes(p.Data)))
-				}
-				p.Score = flags.mergeScore.f(0, p.Score)
-				added++
-			} else if err != nil {
-				// Bad error
-				return nil, err
-			} else {
-				// Old key exists
-				scoreKey := append(append(bkScore, scoreBuf...), p.Member...)
-				scoreBufCloser.Close()
-				if flags.nx {
-					continue
-				}
-				if flags.bm16Data {
-					mb, err := extdb.GetKey(tx, scoreKey)
-					if err != nil {
-						return nil, err
-					}
-					p.Data, _ = bitmap.Add(mb, uint16(s2pkg.MustParseFloatBytes(p.Data)))
-				}
-				if flags.preserveOldData && len(p.Data) == 0 {
-					p.Data, err = extdb.GetKey(tx, scoreKey)
-					if err != nil {
-						return nil, err
-					}
-				}
-				if err := tx.Delete(scoreKey, pebble.Sync); err != nil {
-					return nil, err
-				}
-				oldScore := s2pkg.BytesToFloat(scoreBuf)
-				p.Score = flags.mergeScore.f(oldScore, p.Score)
-				if p.Score != oldScore {
-					updated++
-				}
-			}
-			scoreBuf = s2pkg.FloatToBytes(p.Score)
-			if err := tx.Set(append(bkName, p.Member...), scoreBuf, pebble.Sync); err != nil {
-				return nil, err
-			}
-			if err := tx.Set(append(append(bkScore, scoreBuf...), p.Member...), p.Data, pebble.Sync); err != nil {
+		idx := make([]byte, 16)
+		binary.BigEndian.PutUint64(idx[:], uint64(id))
+		rand.Read(idx[8:12])
+
+		for i, p := range data {
+			binary.BigEndian.PutUint32(idx[12:], uint32(i))
+			k := append(bkPrefix, idx...)
+			if err := tx.Set(k, p, pebble.Sync); err != nil {
 				return nil, err
 			}
 		}
 
-		// Delete members whose scores are smaller than DSLT
-		if !math.IsNaN(flags.delScoreLt) && *dsltMaxMembers > 0 {
+		ctr, err := extdb.IncrKey(tx, bkCounter, int64(len(data)))
+		if err != nil {
+			return nil, err
+		}
+
+		if max > 0 && ctr > max {
 			c := tx.NewIter(&pebble.IterOptions{
-				LowerBound: bkScore,
-				UpperBound: s2pkg.IncBytes(bkScore),
+				LowerBound: bkPrefix,
+				UpperBound: s2pkg.IncBytes(bkPrefix),
 			})
 			defer c.Close()
 
-			if c.Last(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore) {
-				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
-				if score < flags.delScoreLt {
-					// Special case: all members can be deleted
-					if err := s.deleteZSet(tx, key, bkName, bkScore, bkCounter); err != nil {
-						logrus.Errorf("[DSLT] delete key: %s, dslt: %f, error: %v", key, flags.delScoreLt, err)
-					} else {
-						s.Survey.DSLTFull.Incr(1)
-					}
-					return math.MinInt64, writeLog(tx, dd)
-				}
-			}
-
-			x := 0
-			dsltThreshold := int(math.Max(float64(len(pairs))*2, float64(*dsltMaxMembers)))
-			for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), bkScore); c.Next() {
-				score := s2pkg.BytesToFloat(c.Key()[len(bkScore):])
-				if score >= flags.delScoreLt {
+			for c.First(); c.Valid(); c.Next() {
+				if ctr <= max {
 					break
 				}
 				if err := tx.Delete(c.Key(), pebble.Sync); err != nil {
 					return nil, err
 				}
-				if err := tx.Delete(append(s2pkg.Bytes(bkName), c.Key()[len(bkScore)+8:]...), pebble.Sync); err != nil {
-					return nil, err
-				}
-				added--
-				if x++; x > dsltThreshold {
-					logrus.Infof("[DSLT] reach hard limit on key: %s, current score: %f, dslt: %f, batch limit: %d",
-						key, score, flags.delScoreLt, dsltThreshold)
-					break
-				}
+				ctr--
 			}
 
-			if x > 0 {
-				s.Survey.DSLT.Incr(int64(x))
-			}
-		}
-
-		if added != 0 {
-			if _, err := extdb.IncrKey(tx, bkCounter, int64(added)); err != nil {
+			if err := tx.Set(bkCounter, s2pkg.Uint64ToBytes(uint64(ctr)), pebble.Sync); err != nil {
 				return nil, err
 			}
 		}
-		if flags.ch {
-			return added + updated, writeLog(tx, dd)
-		}
-		return added, writeLog(tx, dd)
+
+		return int64(len(data)), nil
 	}
 	return preparedTx{f: f}
 }

@@ -15,11 +15,6 @@ type Logs struct {
 	PrevSig uint32 `protobuf:"varint,2,opt,name=prevsig"`
 }
 
-type Log struct {
-	Id   uint64 `protobuf:"fixed64,1,opt,name=id"`
-	Data []byte `protobuf:"bytes,2,opt,name=data"`
-}
-
 func (doc *Logs) Reset() {
 	*doc = Logs{}
 }
@@ -40,33 +35,32 @@ func (doc *Logs) UnmarshalBytes(buf []byte) error {
 
 func (*Logs) ProtoMessage() {}
 
-type BytesArray struct {
-	Data [][]byte `protobuf:"bytes,1,rep,name=data"`
+type Log struct {
+	Cmd    int64    `protobuf:"varint,3,opt,name=cmd"`
+	Keys   [][]byte `protobuf:"bytes,2,rep,name=k"`
+	Values [][]byte `protobuf:"bytes,1,rep,name=v"`
 }
 
-func (doc *BytesArray) Reset() {
-	*doc = BytesArray{}
+func (doc *Log) Reset() {
+	*doc = Log{}
 }
 
-func (doc *BytesArray) String() string {
+func (doc *Log) String() string {
 	return proto.CompactTextString(doc)
 }
 
-func (doc *BytesArray) MarshalAppend(buf []byte) []byte {
+func (doc *Log) MarshalAppend(buf []byte) []byte {
 	var info proto.InternalMessageInfo
 	buf, err := info.Marshal(buf, doc, false)
 	PanicErr(err)
 	return buf
-	// x, err := proto.Marshal(doc)
-	// PanicErr(err)
-	// return append(buf, x...)
 }
 
-func (doc *BytesArray) UnmarshalBytes(buf []byte) error {
+func (doc *Log) UnmarshalBytes(buf []byte) error {
 	return proto.Unmarshal(buf, doc)
 }
 
-func (*BytesArray) ProtoMessage() {}
+func (*Log) ProtoMessage() {}
 
 type Pair struct {
 	Member   string  `protobuf:"bytes,1,opt,name=member"`

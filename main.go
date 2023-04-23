@@ -87,6 +87,10 @@ func main() {
 		return
 	}
 
+	go future.StartWatcher(func(err error) {
+		log.Errorf("future NTP watcher: %v", err)
+	})
+
 	if *netTCPWbufSize%4096 != 0 {
 		errorExit("invalid TCP write buffer size")
 		return
@@ -167,6 +171,7 @@ func main() {
 	}
 
 	s.ReadOnly = *readOnly
+	s.Channel = *channel
 	log.Error(s.Serve(*listenAddr))
 	time.Sleep(time.Second)
 }

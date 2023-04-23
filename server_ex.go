@@ -1,10 +1,8 @@
 package main
 
 import (
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"hash/crc32"
 	"html/template"
 	"io/ioutil"
 	"math"
@@ -12,9 +10,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"unsafe"
 
@@ -26,7 +22,6 @@ import (
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
-	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -46,11 +41,7 @@ var (
 		"GET": true, "MGET": true,
 	}
 	isWriteCommand = map[string]bool{
-		"DEL":  true,
-		"ZREM": true, // "ZREMRANGEBYLEX": true, "ZREMRANGEBYSCORE": true, "ZREMRANGEBYRANK": true,
-		"ZADD": true, "ZINCRBY": true,
-		"SADD": true, "SREM": true,
-		"SET": true, "SETNX": true,
+		"APPEND": true,
 	}
 )
 
@@ -66,31 +57,6 @@ func ssRef(b [][]byte) (keys []string) {
 	return keys
 }
 
-func dd(cmd *wire.Command) []byte {
-	return joinMultiBytes(cmd.Argv)
-}
-
-func splitRawMultiBytesNoHeader(buf []byte) (*wire.Command, error) {
-	tmp := &s2pkg.BytesArray{}
-	if err := tmp.UnmarshalBytes(buf); err != nil {
-		return nil, err
-	}
-	return &wire.Command{Argv: tmp.Data}, nil
-}
-
-func joinMultiBytesEmptyNoSig() []byte {
-	return crc32.NewIEEE().Sum([]byte{0x95, 0, 0, 0, 0})
-}
-
-func joinMultiBytes(cmd [][]byte) []byte {
-	buf := []byte{0x95, 0, 0, 0, 0} // version: 0x95 + signature: 4b
-	rand.Reader.Read(buf[1:])
-	buf = (&s2pkg.BytesArray{Data: cmd}).MarshalAppend(buf)
-	h := crc32.NewIEEE()
-	h.Write(buf[5:])
-	return h.Sum(buf) // crc32: 4b
-}
-
 func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || section == "server" {
 		data = append(data, "# server",
@@ -100,8 +66,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
-			fmt.Sprintf("mark_master:%v", s.MarkMaster),
-			fmt.Sprintf("reverseproxy:%v", s.ReverseProxy),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			"")
 	}
@@ -119,56 +83,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("data_size:%d", dataSize),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			"")
-	}
-	if section == "" || section == "replication" {
-		data = append(data, "# replication")
-		tails := [ShardLogNum]uint64{}
-		for i := range s.shards {
-			tails[i] = s.ShardLogtail(i)
-		}
-		data = append(data, fmt.Sprintf("logtail:%v", joinArray(tails)))
-		if s.Slave.Redis() != nil {
-			diffs, diffSum := diffLogtails(tails, s.Slave.Logtails)
-			data = append(data,
-				fmt.Sprintf("slave_conn:%v", s.Slave.Config().Raw),
-				fmt.Sprintf("slave_ack:%v", s.Slave.IsAcked(s)),
-				fmt.Sprintf("slave_ack_before:%v", s.Slave.AckBefore()),
-				fmt.Sprintf("slave_logtail:%v", joinArray(s.Slave.Logtails)),
-				fmt.Sprintf("slave_logtail_diff_sum:%v", diffSum),
-				fmt.Sprintf("slave_logtail_diff:%v", joinArray(diffs)),
-			)
-		}
-		if s.PullMaster.Redis() != nil {
-			lags := [ShardLogNum]int64{}
-			now := clock.Unix()
-			for i := range s.shards {
-				lags[i] = now - clock.IdNano(s.PullMaster.Logtails[i])
-			}
-			data = append(data,
-				fmt.Sprintf("pullmaster_conn:%v", s.PullMaster.Config().Raw),
-				fmt.Sprintf("pullmaster_ack:%v", s.PullMaster.IsAcked(s)),
-				fmt.Sprintf("pullmaster_ack_before:%v", s.PullMaster.AckBefore()),
-				fmt.Sprintf("pullmaster_lag:%v", joinArray(lags)),
-			)
-		}
-		if s.Master.RemoteIP != "" {
-			data = append(data,
-				fmt.Sprintf("master_ip:%v", s.Master.RemoteIP),
-				fmt.Sprintf("master_ack_before:%v", s.Master.AckBefore()),
-			)
-		}
-		s.Pullers.Range(func(k, v interface{}) bool {
-			diffs, diffSum := diffLogtails(tails, v.(*endpoint).Logtails)
-			data = append(data,
-				fmt.Sprintf("puller_ip:%v", k),
-				fmt.Sprintf("puller_ack_before:%v", v.(*endpoint).AckBefore()),
-				fmt.Sprintf("puller_logtail:%v", joinArray(v.(*endpoint).Logtails)),
-				fmt.Sprintf("puller_logtail_diff_sum:%v", diffSum),
-				fmt.Sprintf("puller_logtail_diff:%v", joinArray(diffs)),
-			)
-			return true
-		})
-		data = append(data, "")
 	}
 	if section == "" || section == "sys_rw_stats" {
 		data = append(data, "# sys_rw_stats",
@@ -212,9 +126,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	}
 	if section == "" || section == "cache" {
 		var ln, cp int
-		for i := range s.shards {
-			ln, cp = ln+s.shards[i].Cache.Len(), cp+s.shards[i].Cache.Cap()
-		}
 		data = append(data, "# cache",
 			fmt.Sprintf("cache_avg_size:%v", s.Survey.CacheSize.MeanString()),
 			fmt.Sprintf("cache_req_qps:%v", s.Survey.CacheReq),
@@ -223,48 +134,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			"")
 	}
 	return
-}
-
-func (s *Server) ShardLogInfoCommand(shard int) []string {
-	x := &s.shards[shard]
-	logtail, logSpan, compacted := s.ShardLogInfo(shard)
-	tmp := []string{
-		fmt.Sprintf("# log%d", shard),
-		fmt.Sprintf("logtail:%d", logtail),
-		fmt.Sprintf("batch_queue:%v", len(x.batchTx)),
-		fmt.Sprintf("sync_waiter:%v", x.syncWaiter),
-		fmt.Sprintf("timespan:%d", logSpan),
-	}
-	if !compacted {
-		tmp = append(tmp, fmt.Sprintf("compacted:%v", compacted))
-	}
-	if s.Slave.Redis() != nil {
-		tail := s.Slave.Logtails[shard]
-		tmp = append(tmp, fmt.Sprintf("slave_logtail:%d", tail))
-		tmp = append(tmp, fmt.Sprintf("slave_logtail_diff:%v", clock.IdDiff(logtail, tail)))
-	}
-	tmp = append(tmp, "")
-	return tmp //strings.Join(tmp, "\r\n") + "\r\n"
-}
-
-func (s *Server) waitSlave() {
-	if !s.Slave.IsAcked(s) {
-		log.Info("wait: no acknowledged slave found")
-		return
-	}
-	s.ReadOnly = true
-	for start := time.Now(); time.Since(start).Seconds() < 0.5; {
-		var ok int
-		for i := 0; i < ShardLogNum; i++ {
-			if s.ShardLogtail(i) == s.Slave.Logtails[i] {
-				ok++
-			}
-		}
-		if ok == ShardLogNum {
-			return
-		}
-	}
-	log.Errorf("wait %s: timeout", s.Slave.RemoteIP)
 }
 
 func parseWeakFlag(in *wire.Command) time.Duration {
@@ -365,50 +234,6 @@ func joinArray(v interface{}) string {
 		p = append(p, fmt.Sprint(rv.Index(i).Interface()))
 	}
 	return strings.Join(p, " ")
-}
-
-func (s *Server) removeCache(key string) {
-	s.shards[shardIndex(key)].Cache.Delete(key)
-}
-
-func (s *Server) readCache(K *wire.Command, f func() (interface{}, error)) (interface{}, error) {
-	key := K.Str(1)
-	c := s.shards[shardIndex(key)].Cache
-	cmdHash := s2pkg.HashMultiBytes(K.Argv)
-	cachewm := c.GetWatermark(key)
-
-	s.Survey.CacheReq.Incr(1)
-	v, ok := c.Get(key, cmdHash)
-	if ok {
-		s.Survey.CacheHit.Incr(1)
-		return v, nil
-	}
-
-	x, err := f()
-	if err != nil {
-		if err == os.ErrInvalid {
-			return x, nil
-		}
-		return nil, err
-	}
-
-	sz := 0
-	switch data := x.(type) {
-	case []s2pkg.Pair:
-		sz = s2pkg.SizeOfPairs(data)
-	case [][]byte:
-		sz = s2pkg.SizeOfBytes(data)
-	}
-	if sz > 0 {
-		if sz > s.CacheObjMaxSize*1024 {
-			return x, nil
-		}
-		s.Survey.CacheSize.Incr(int64(sz))
-	}
-	if !c.Add(key, cmdHash, x, cachewm) {
-		s.Survey.CacheAddConflict.Incr(1)
-	}
-	return x, nil
 }
 
 func makeHTMLStat(s string) template.HTML {
@@ -529,15 +354,6 @@ func (s *Server) webConsoleHandler() {
 			return
 		}
 
-		shardInfos, wg := [ShardLogNum][]string{}, sync.WaitGroup{}
-		if q.Get("noshard") != "1" {
-			for i := 0; i < ShardLogNum; i++ {
-				wg.Add(1)
-				go func(i int) { shardInfos[i] = s.ShardLogInfoCommand(i); wg.Done() }(i)
-			}
-			wg.Wait()
-		}
-
 		sp := []string{s.DBPath}
 		// sp = append(sp, filepath.Dir(s.db.
 		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
@@ -551,26 +367,14 @@ func (s *Server) webConsoleHandler() {
 				if idx := strings.Index(s, ":"); idx > 0 {
 					r.Key, r.Value = template.HTML(s[:idx]), template.HTML(s[idx+1:])
 				}
-				if strings.Count(string(r.Value), " ") == ShardLogNum-1 {
-					parts := strings.Split(string(r.Value)+"   ", " ")
-					for i, p := range parts {
-						if p == "" {
-							parts[i] = "<div class=box>" + p + "</div>"
-						} else {
-							parts[i] = "<div class=box><span class=mark>" + strconv.Itoa(i) + "</span>" + p + "</div>"
-						}
-					}
-					r.Value = template.HTML("<div class=section-box>" + strings.Join(parts, "") + "</div>")
-				} else {
-					r.Value = makeHTMLStat(string(r.Value))
-				}
+				r.Value = makeHTMLStat(string(r.Value))
 				return template.HTML(fmt.Sprintf("<div class=s-key>%v</div><div class=s-value>%v</div>", r.Key, r.Value))
 			},
 			"stat":      makeHTMLStat,
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
-			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "ShardInfo": shardInfos, "MetricsNames": s.ListMetricsNames(),
+			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "MetricsNames": s.ListMetricsNames(),
 			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
 		})
 	})
@@ -597,41 +401,37 @@ func (s *Server) webConsoleHandler() {
 	http.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
 		defer s2pkg.HTTPRecover(w, r)
 
-		q := r.URL.Query()
+		// q := r.URL.Query()
 
-		if s.Password != "" && s.Password != q.Get("p") {
-			w.WriteHeader(400)
-			w.Write([]byte("s2db: password required"))
-			return
-		}
+		// if s.Password != "" && s.Password != q.Get("p") {
+		// 	w.WriteHeader(400)
+		// 	w.Write([]byte("s2db: password required"))
+		// 	return
+		// }
 
-		sk, ek := q.Get("from"), q.Get("to")
-		if sk == "" {
-			w.WriteHeader(400)
-			w.Write([]byte("s2db: ssd start key required"))
-			return
-		}
+		// sk, ek := q.Get("from"), q.Get("to")
+		// if sk == "" {
+		// 	w.WriteHeader(400)
+		// 	w.Write([]byte("s2db: ssd start key required"))
+		// 	return
+		// }
 
-		if ek == "" {
-			ek = sk
-		}
+		// if ek == "" {
+		// 	ek = sk
+		// }
 
-		start, end := math.Inf(-1), math.Inf(1)
-		if sv := q.Get("start"); sv != "" {
-			start = s2pkg.MustParseFloat(sv)
-		}
-		if sv := q.Get("end"); sv != "" {
-			end = s2pkg.MustParseFloat(sv)
-		}
+		// start, end := math.Inf(-1), math.Inf(1)
+		// if sv := q.Get("start"); sv != "" {
+		// 	start = s2pkg.MustParseFloat(sv)
+		// }
+		// if sv := q.Get("end"); sv != "" {
+		// 	end = s2pkg.MustParseFloat(sv)
+		// }
 
-		w.Header().Add("Content-Type", "application/octet-stream")
-		w.Header().Add("Content-Encoding", "gzip")
-		w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"ssd_%d.csv\"", clock.UnixNano()))
-		fmt.Println(q.Get("match"))
-		s.ScanScoreDump(w, sk, ek, start, end, wire.Flags{
-			WithData: q.Get("data") == "1",
-			Match:    q.Get("match"),
-		})
+		// w.Header().Add("Content-Type", "application/octet-stream")
+		// w.Header().Add("Content-Encoding", "gzip")
+		// w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"ssd_%d.csv\"", clock.UnixNano()))
+		// fmt.Println(q.Get("match"))
 	})
 	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
 		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
@@ -656,100 +456,93 @@ func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum
 	return
 }
 
-func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-	count := flags.Count + 1
-	startCursor := cursor
-	timedout, start := "", clock.Now()
-	if len(cursor) > 0 {
-		switch cursor[0] {
-		case 'Z':
-			cursor = cursor[1:]
-		case 'S':
-			cursor = cursor[1:]
-			goto SCAN_SET
-		case 'K':
-			cursor = cursor[1:]
-			goto SCAN_KV
-		}
-	}
-
-	s.ForeachZSet(cursor, func(k string) bool {
-		if time.Since(start) > flags.Timeout {
-			timedout = "Z" + k
-			return false
-		}
-		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-			return true
-		}
-		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k)), Data: []byte("zset")})
-		return len(pairs) < count
-	})
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], "Z"+pairs[count-1].Member
-		return
-	}
-
-	cursor = startCursor
-SCAN_SET:
-	if timedout == "" {
-		s.ForeachSet(cursor, func(k string) bool {
-			if time.Since(start) > flags.Timeout {
-				timedout = "S" + k
-				return false
-			}
-			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-				return true
-			}
-			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k)), Data: []byte("set")})
-			return len(pairs) < count
-		})
-	}
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], "S"+pairs[count-1].Member
-		return
-	}
-
-	cursor = startCursor
-SCAN_KV:
-	if timedout == "" {
-		s.ForeachKV(cursor, func(k string, v []byte) bool {
-			if time.Since(start) > flags.Timeout {
-				timedout = "K" + k
-				return false
-			}
-			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-				return true
-			}
-			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v)), Data: []byte("string")})
-			return len(pairs) < count
-		})
-	}
-	if len(pairs) >= count {
-		pairs, nextCursor = pairs[:count-1], "K"+pairs[count-1].Member
-	}
-
-	if timedout != "" {
-		return pairs, timedout
-	}
-	return
-}
+// func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
+// 	count := flags.Count + 1
+// 	startCursor := cursor
+// 	timedout, start := "", clock.Now()
+// 	if len(cursor) > 0 {
+// 		switch cursor[0] {
+// 		case 'Z':
+// 			cursor = cursor[1:]
+// 		case 'S':
+// 			cursor = cursor[1:]
+// 			goto SCAN_SET
+// 		case 'K':
+// 			cursor = cursor[1:]
+// 			goto SCAN_KV
+// 		}
+// 	}
+//
+// 	s.ForeachZSet(cursor, func(k string) bool {
+// 		if time.Since(start) > flags.Timeout {
+// 			timedout = "Z" + k
+// 			return false
+// 		}
+// 		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+// 			return true
+// 		}
+// 		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k)), Data: []byte("zset")})
+// 		return len(pairs) < count
+// 	})
+// 	if len(pairs) >= count {
+// 		pairs, nextCursor = pairs[:count-1], "Z"+pairs[count-1].Member
+// 		return
+// 	}
+//
+// 	cursor = startCursor
+// SCAN_SET:
+// 	if timedout == "" {
+// 		s.ForeachSet(cursor, func(k string) bool {
+// 			if time.Since(start) > flags.Timeout {
+// 				timedout = "S" + k
+// 				return false
+// 			}
+// 			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+// 				return true
+// 			}
+// 			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k)), Data: []byte("set")})
+// 			return len(pairs) < count
+// 		})
+// 	}
+// 	if len(pairs) >= count {
+// 		pairs, nextCursor = pairs[:count-1], "S"+pairs[count-1].Member
+// 		return
+// 	}
+//
+// 	cursor = startCursor
+// SCAN_KV:
+// 	if timedout == "" {
+// 		s.ForeachKV(cursor, func(k string, v []byte) bool {
+// 			if time.Since(start) > flags.Timeout {
+// 				timedout = "K" + k
+// 				return false
+// 			}
+// 			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
+// 				return true
+// 			}
+// 			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v)), Data: []byte("string")})
+// 			return len(pairs) < count
+// 		})
+// 	}
+// 	if len(pairs) >= count {
+// 		pairs, nextCursor = pairs[:count-1], "K"+pairs[count-1].Member
+// 	}
+//
+// 	if timedout != "" {
+// 		return pairs, timedout
+// 	}
+// 	return
+// }
 
 func (s *Server) getUpstreamShard(key string) int {
 	return int(s2pkg.HashStr32(key) % 1024)
 }
 
-func (s *Server) getUpstreamList() []s2pkg.Pair {
-	return nil
-
-	// 	key := "_upstreams_"
-	// 	mwm := s.Cache.GetWatermark(key)
-	// 	if v := s.getCache(key, 0); v != nil {
-	// 		return v.([]s2pkg.Pair)
-	// 	}
-	// 	p, err := s.ZRange(false, key, 0, -1, wire.Flags{Limit: math.MaxInt64, WithData: true})
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-	// 	s.addCache(key, 0, p, mwm)
-	// 	return p
+func (s *Server) PeerCount() (c int) {
+	for i, p := range s.Peers {
+		if p.Redis() != nil && s.Channel != int64(i) {
+			c++
+		}
+	}
+	return
 }

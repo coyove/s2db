@@ -1,5 +1,5 @@
 demo*
-test
+test*
 *.log
 *.log.gz
 redis

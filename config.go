@@ -23,25 +23,23 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName         string
-	Slave              string
-	PullMaster         string
-	Password           string
-	MarkMaster         int // 0|1
-	ReverseProxy       int // 0|1
-	CacheSize          int
-	CacheObjMaxSize    int // kb
-	SlowLimit          int // ms
-	PingTimeout        int // ms
-	ResponseLogSize    int // kb
-	BatchMaxRun        int
-	BatchFirstRunSleep int // ms
-	TCPWriteTimeout    int // ms
-	CompactLogsTTL     int // sec
-	CompactLogsDice    int
-	PushLogsDice       int
-	MetricsEndpoint    string
-	InspectorSource    string
+	ServerName                 string
+	Password                   string
+	Peer0, Peer1, Peer2, Peer3 string
+	Peer4, Peer5, Peer6, Peer7 string
+	CacheSize                  int
+	CacheObjMaxSize            int // kb
+	SlowLimit                  int // ms
+	PingTimeout                int // ms
+	ResponseLogSize            int // kb
+	BatchMaxRun                int
+	BatchFirstRunSleep         int // ms
+	TCPWriteTimeout            int // ms
+	CompactLogsTTL             int // sec
+	CompactLogsDice            int
+	PushLogsDice               int
+	MetricsEndpoint            string
+	InspectorSource            string
 }
 
 func init() {
@@ -115,13 +113,6 @@ func (s *Server) saveConfig() error {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
 
-	ssz := s.CacheSize / len(s.shards)
-	if s.shards[0].Cache == nil || s.shards[0].Cache.Cap() != ssz {
-		for i := range s.shards {
-			s.shards[i].Cache = s2pkg.NewLRUCache(ssz, nil)
-		}
-	}
-
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
 		return err
@@ -131,16 +122,13 @@ func (s *Server) saveConfig() error {
 		s.SelfManager = p
 	}
 
-	if changed, err := s.Slave.CreateRedis(s.ServerConfig.Slave); err != nil {
-		return err
-	} else if changed {
-		log.Infof("slave redis created/removed with: %q", s.ServerConfig.Slave)
-	}
-
-	if changed, err := s.PullMaster.CreateRedis(s.ServerConfig.PullMaster); err != nil {
-		return err
-	} else if changed {
-		log.Infof("pull-master redis created/removed with: %q", s.ServerConfig.PullMaster)
+	for i := range s.Peers {
+		x := reflect.ValueOf(s.ServerConfig).FieldByName("Peer" + strconv.Itoa(i)).String()
+		if changed, err := s.Peers[i].CreateRedis(x); err != nil {
+			return err
+		} else if changed {
+			log.Infof("peer redis created/removed with: %q", x)
+		}
 	}
 
 	return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
@@ -229,8 +217,6 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	switch addr {
 	case "", "local", "LOCAL":
 		return s.LocalRedis
-	case "slave", "SLAVE":
-		return s.Slave.Redis()
 	}
 	if !strings.HasPrefix(addr, "redis://") {
 		addr = "redis://" + addr

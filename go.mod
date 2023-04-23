@@ -8,13 +8,13 @@ require (
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
 	github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db
-	github.com/coyove/sdss v0.0.0-20230421073315-94775e9034ce
+	github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/snappy v0.0.3
 	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
 	github.com/influxdata/tdigest v0.0.1
-	github.com/sirupsen/logrus v1.8.1
+	github.com/sirupsen/logrus v1.9.0
 	github.com/tidwall/gjson v1.14.1
 	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f
 	golang.org/x/text v0.4.0

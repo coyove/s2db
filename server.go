@@ -5,7 +5,9 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash/crc32"
 	"io"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,7 +16,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -41,6 +42,7 @@ type Server struct {
 	lnLocal      net.Listener
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.LRUCache
+	fillCache    *s2pkg.LRUCache
 
 	ServerConfig
 	LocalRedis  *redis.Client
@@ -56,32 +58,17 @@ type Server struct {
 	dumpWireLock s2pkg.Locker
 
 	Survey struct {
-		StartAt            time.Time
-		Connections        int64
-		SysRead            s2pkg.Survey          ``
-		SysReadP99Micro    s2pkg.P99SurveyMinute ``
-		SysReadRTT         s2pkg.Survey          ``
-		SysReadRTTP99Micro s2pkg.P99SurveyMinute ``
-		SysWrite           s2pkg.Survey          ``
-		SysWriteDiscards   s2pkg.Survey          ``
-		CacheReq           s2pkg.Survey          `metrics:"qps"`
-		CacheSize          s2pkg.Survey          `metrics:"mean"`
-		CacheHit           s2pkg.Survey          `metrics:"qps"`
-		BatchSize          s2pkg.Survey          ``
-		BatchLat           s2pkg.Survey          ``
-		BatchSizeSv        s2pkg.Survey          `metrics:"mean"`
-		BatchLatSv         s2pkg.Survey          ``
-		DBBatchSize        s2pkg.Survey          ``
-		SlowLogs           s2pkg.Survey          ``
-		RequestLogs        s2pkg.Survey          ``
-		Sync               s2pkg.Survey          ``
-		FirstRunSleep      s2pkg.Survey          ``
-		LogCompaction      s2pkg.Survey          `metrics:"qps"`
-		CacheAddConflict   s2pkg.Survey          `metrics:"qps"`
-		TCPWriteError      s2pkg.Survey          `metrics:"qps"`
-		TCPWriteTimeout    s2pkg.Survey          `metrics:"qps"`
-		Command            sync.Map
-		ReverseProxy       sync.Map
+		StartAt         time.Time
+		Connections     int64
+		SysRead         s2pkg.Survey          ``
+		SysReadP99Micro s2pkg.P99SurveyMinute ``
+		SysWrite        s2pkg.Survey          ``
+		SlowLogs        s2pkg.Survey          ``
+		PeerOnMissing   s2pkg.Survey
+		PeerOnOK        s2pkg.Survey
+		IAppend         s2pkg.Survey
+		PeerLatency     sync.Map
+		Command         sync.Map
 	}
 
 	DB *pebble.DB
@@ -121,7 +108,7 @@ func Open(dbPath string) (x *Server, err error) {
 	}
 	log.Infof("open data: %s in %v", dbPath, time.Since(start))
 
-	x.rdbCache = s2pkg.NewLRUCache(4, func(k string, v s2pkg.LRUValue) {
+	x.rdbCache = s2pkg.NewLRUCache(8, func(k string, v s2pkg.LRUValue) {
 		log.Infof("redis client cache evicted: %s, close=%v", k, v.Value.(*redis.Client).Close())
 	})
 	return x, nil
@@ -258,21 +245,12 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 			startTime := time.Now()
 			cmd := strings.ToUpper(command.Str(0))
 			ew = s.runCommand(startTime, cmd, writer, s2pkg.GetRemoteIP(conn.RemoteAddr()), command)
-			if isReadCommand[cmd] {
-				diff := time.Since(startTime)
-				s.Survey.SysReadRTT.Incr(diff.Milliseconds())
-				s.Survey.SysReadRTTP99Micro.Incr(diff.Microseconds())
-			}
 		}
 		if command.IsLast() {
 			writer.Flush()
 		}
 		if ew != nil {
 			log.Info("connection closed: ", ew)
-			if err, ok := ew.(net.Error); ok && err.Timeout() {
-				s.Survey.TCPWriteTimeout.Incr(1)
-			}
-			s.Survey.TCPWriteError.Incr(1)
 			break
 		}
 	}
@@ -295,9 +273,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if strings.Contains(key, "\x00") {
 			return w.WriteError("invalid key name containing null bytes (0x00)")
 		}
-		if err := s.checkWritable(); err != nil {
-			return w.WriteError(err.Error())
-		}
 	}
 
 	defer func(start time.Time) {
@@ -305,11 +280,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			if testFlag {
 				fmt.Println(r, string(debug.Stack()))
 			}
-			outErr = w.WriteError(fmt.Sprintf("fatal error (%d): %v", shardIndex(key), r))
+			outErr = w.WriteError(fmt.Sprintf("fatal error (%s): %v", key, r))
 		} else {
 			diff := time.Since(start)
 			if diff > time.Duration(s.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
-				slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", shardIndex(key), diff.Seconds(), src, K)
+				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
 				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
 			if isReadCommand[cmd] {
@@ -404,7 +379,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND":
+	case "APPEND": // APPEND key DATA_0 DATA_1 ...
 		var data [][]byte
 		for i := 2; i < K.ArgCount(); i++ {
 			data = append(data, K.Bytes(i))
@@ -413,14 +388,52 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(ids)
+		hexIds := make([][]byte, len(ids))
+		for i := range hexIds {
+			hexIds[i] = hexEncode(ids[i])
+		}
+		if len(hexIds) > 0 && s.PeerCount() > 0 {
+			var args = []any{"IAPPEND", key, 0}
+			h := crc32.NewIEEE()
+			for i := range hexIds {
+				h.Write(hexIds[i])
+				h.Write(data[i])
+				args = append(args, hexIds[i], data[i])
+			}
+			args[2] = h.Sum32()
+
+			go func(start time.Time) {
+				for _, p := range s.Peers {
+					if cli := p.Redis(); cli != nil {
+						cli.Do(context.TODO(), args...)
+					}
+				}
+				s.Survey.IAppend.Incr(time.Since(start).Milliseconds())
+			}(time.Now())
+		}
+		return w.WriteBulks(hexIds)
+	case "IAPPEND": // IAPPEND key HASH ID_0 DATA_0 ID_1 DATA_1 ...
+		var data [][2]string
+		h := crc32.NewIEEE()
+		for i := 3; i < K.ArgCount(); i += 2 {
+			h.Write(K.BytesRef(i))
+			h.Write(K.BytesRef(i + 1))
+			data = append(data, [2]string{K.StrRef(i), K.StrRef(i + 1)})
+		}
+		if h.Sum32() != uint32(K.Int64(2)) {
+			return w.WriteError("IAPPEND: invalid hash")
+		}
+		if err := s.rawSetStringsHexKey(key, data); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteSimpleString("OK")
 	case "RANGE": // RANGE key start count [NOREC] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
 		switch s := K.StrRef(2); s {
-		case "+":
+		case "+", "+inf", "+INF", "+Inf":
 			start = []byte("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe")
-		case "-":
+		case "0":
 			start = make([]byte, 16)
 		default:
 			if strings.HasPrefix(s, "@") {
@@ -435,7 +448,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 		}
 
-		data, err := s.ScanList(key, start, n)
+		data, err := s.Range(key, start, n)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -443,39 +456,49 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulks(data)
 		}
 
-		out := make(chan *redis.StringSliceCmd, 10)
-		var recv atomic.Int64
+		out := make(chan *commandIn, 10)
+		var recv int
 		for _, p := range s.Peers {
 			cli := p.Redis()
 			if cli == nil {
 				continue
 			}
-			go func(ctx context.Context) {
-				recv.Add(1)
-				cmd := redis.NewStringSliceCmd(ctx, "RANGE", key, K.StrRef(2), n, "NOREC")
-				cli.Process(ctx, cmd)
-				out <- cmd
-			}(context.TODO())
+			cmd := redis.NewStringSliceCmd(context.TODO(), "RANGE", key, K.StrRef(2), n, "NOREC")
+			select {
+			case p.jobq <- &commandIn{e: p, Cmder: cmd, wait: out}:
+				recv++
+			}
 		}
 
+		if recv == 0 {
+			return w.WriteBulks(data)
+		}
+
+		pstart := time.Now()
 		orig := ssRef(data)
 		merged := orig
 	MORE:
 		select {
 		case res := <-out:
-			if v, err := res.Result(); err != nil {
+			x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
+			x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
+			if v, err := res.Cmder.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to access peer: %v", res)
 			} else {
 				merged = append(merged, v...)
 			}
-			if recv.Add(-1) > 0 {
+			if recv--; recv > 0 {
 				goto MORE
 			}
-		case <-time.After(time.Second):
+		case <-time.After(time.Duration(s.ServerConfig.PingTimeout) * time.Millisecond):
+			logrus.Errorf("failed to access peer, timed out, remains: %v", recv)
 		}
 
 		merged, sub := sortAndSubtract(merged, orig, n < 0)
-		fmt.Println(sub)
+		s.setMissing(key, sub)
+		if n := int(math.Abs(float64(n))); len(merged) > n {
+			merged = merged[:n]
+		}
 		err = w.WriteBulkStrings(merged)
 		runtime.KeepAlive(data)
 		return err

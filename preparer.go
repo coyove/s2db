@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble"
@@ -16,6 +17,7 @@ import (
 	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/sdss/future"
+	"github.com/sirupsen/logrus"
 )
 
 func (s *Server) Append(key string, data [][]byte) ([][]byte, error) {
@@ -62,7 +64,7 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 	var kk [][]byte
 	for i, p := range data {
 		binary.BigEndian.PutUint16(idx[14:], uint16(i))
-		kk = append(kk, hexEncode(idx))
+		kk = append(kk, s2pkg.Bytes(idx))
 
 		if err := tx.Set(append(bkPrefix, idx...), p, pebble.Sync); err != nil {
 			return nil, err
@@ -76,7 +78,52 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 	return kk, tx.Commit(pebble.Sync)
 }
 
-func (s *Server) ScanList(key string, start []byte, n int) (data [][]byte, err error) {
+func (s *Server) setMissing(key string, kvs [][2]string) {
+	if len(kvs) == 0 {
+		s.Survey.PeerOnOK.Incr(1)
+		return
+	}
+	go func(start time.Time) {
+		mu := &s.locks[s2pkg.HashStr(key)&0xffff]
+		mu.Lock()
+		defer mu.Unlock()
+		if err := s.rawSetStringsHexKey(key, kvs); err != nil {
+			logrus.Errorf("setMissing: %v", err)
+		}
+		s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
+	}(time.Now())
+}
+
+func (s *Server) rawSetStringsHexKey(key string, kvs [][2]string) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	tx := s.DB.NewBatch()
+	defer tx.Close()
+
+	bkPrefix, _ := ranges.GetKey(key)
+
+	var k, v []byte
+	c := 0
+	for _, kv := range kvs {
+		if _, ok := s.fillCache.GetSimple(kv[0]); ok {
+			continue
+		}
+		k = append(append(k[:0], bkPrefix...), hexDecode([]byte(kv[0]))...)
+		v = append(v[:0], kv[1]...)
+		if err := tx.Set(k, v, pebble.Sync); err != nil {
+			return err
+		}
+		c++
+		s.fillCache.AddSimple(kv[0], 1)
+	}
+	if c == 0 {
+		return nil
+	}
+	return tx.Commit(pebble.Sync)
+}
+
+func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err error) {
 	desc := false
 	if n < 0 {
 		desc, n = true, -n
@@ -129,7 +176,7 @@ func hexDecode(k []byte) []byte {
 	return k0
 }
 
-func sortAndSubtract(merged []string, orig []string, desc bool) (sorted, subtracted []string) {
+func sortAndSubtract(merged []string, orig []string, desc bool) (sorted []string, subtracted [][2]string) {
 	type foo struct{ id, ts, data string }
 	convert := func(in []string) (out []foo) {
 		sout := (*reflect.SliceHeader)(unsafe.Pointer(&out))
@@ -157,7 +204,7 @@ func sortAndSubtract(merged []string, orig []string, desc bool) (sorted, subtrac
 		if len(orig0) > 0 && head == orig0[0] {
 			orig0 = orig0[1:]
 		} else {
-			subtracted = append(subtracted, head.id, head.ts, head.data)
+			subtracted = append(subtracted, [2]string{head.id, head.data})
 		}
 	}
 

@@ -1,4 +1,4 @@
-SRC='main.go server.go server_ex.go replication.go preparer.go runner.go compact.go config.go metrics.go set.go kv.go'
+SRC='main.go server.go server_ex.go replication.go preparer.go compact.go config.go metrics.go'
 
 MONTH=$(date -u +%m)
 if [[ "$MONTH" == "10" ]]; then
@@ -12,9 +12,8 @@ else
 fi
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
-LOGSHARD=$(grep 'const ShardLogNum = ' server.go | cut -c21-100)
 VERSION=$(($(date -u +%y)-20))
-VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}-${LOGSHARD}
+VERSION=${VERSION}.${MONTH}$(date -u +%d).$(($(date +%s) % 86400 / 100 + 100))${COMMIT}
 echo 'building' $VERSION
 
 if [[ "$1" == "linux" ]]; then

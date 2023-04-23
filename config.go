@@ -23,23 +23,17 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName                 string
-	Password                   string
-	Peer0, Peer1, Peer2, Peer3 string
-	Peer4, Peer5, Peer6, Peer7 string
-	CacheSize                  int
-	CacheObjMaxSize            int // kb
-	SlowLimit                  int // ms
-	PingTimeout                int // ms
-	ResponseLogSize            int // kb
-	BatchMaxRun                int
-	BatchFirstRunSleep         int // ms
-	TCPWriteTimeout            int // ms
-	CompactLogsTTL             int // sec
-	CompactLogsDice            int
-	PushLogsDice               int
-	MetricsEndpoint            string
-	InspectorSource            string
+	ServerName      string
+	Password        string
+	Peer0, Peer1    string
+	Peer2, Peer3    string
+	Peer4, Peer5    string
+	Peer6, Peer7    string
+	CacheSize       int
+	SlowLimit       int // ms
+	PingTimeout     int // ms
+	MetricsEndpoint string
+	InspectorSource string
 }
 
 func init() {
@@ -99,19 +93,14 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig() error {
-	ifZero(&s.CacheSize, 1024)
-	if s.CacheObjMaxSize == 0 {
-		s.CacheObjMaxSize = 1
-	}
+	ifZero(&s.CacheSize, 100000)
 	ifZero(&s.SlowLimit, 500)
-	ifZero(&s.ResponseLogSize, 16)
-	ifZero(&s.BatchMaxRun, 50)
-	ifZero(&s.CompactLogsTTL, 86400)
-	ifZero(&s.CompactLogsDice, 10000)
-	ifZero(&s.PingTimeout, 5000)
+	ifZero(&s.PingTimeout, 1000)
 	if s.ServerName == "" {
 		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
+
+	s.fillCache = s2pkg.NewLRUCache(s.CacheSize, nil)
 
 	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {

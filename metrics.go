@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cockroachdb/pebble"
@@ -50,19 +49,14 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			}
 		}
 	}
-	for _, m := range []*sync.Map{&s.Survey.Command, &s.Survey.ReverseProxy} {
-		m.Range(func(k, v interface{}) bool {
-			m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
-			pairs = append(pairs,
-				s2pkg.Pair{Member: n + "_Mean", Score: m.Mean[0]},
-				s2pkg.Pair{Member: n + "_QPS", Score: m.QPS[0]},
-				s2pkg.Pair{Member: n + "_Max", Score: float64(m.Max[0])},
-			)
-			return true
-		})
-	}
+	s.Survey.PeerLatency.Range(func(k, v any) bool {
+		s := v.(*s2pkg.Survey).Metrics()
+		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_Mean", Score: float64(s.Mean[0])})
+		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_Max", Score: float64(s.Max[0])})
+		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_QPS", Score: float64(s.QPS[0])})
+		return true
+	})
 	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
-	pairs = append(pairs, s2pkg.Pair{Member: "SysReadRTTP99", Score: s.Survey.SysReadRTTP99Micro.P99() / 1e3})
 	pairs = append(pairs, s2pkg.Pair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
 
 	lsmMetrics := s.DB.Metrics()

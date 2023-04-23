@@ -139,12 +139,6 @@
             <div class=s-content>
                 <div class=s-key>golang_pprof</div><div class=s-value><a href='/debug/pprof/'>open</a></div>
             </div>
-            {{if .s.Slave.Redis}}
-            <div class=s-content>
-                <div class=s-key>slave</div>
-                <div class=s-value><a href="http://{{.s.Slave.Config.Addr}}" target="_blank">{{.s.Slave.Config.Addr}}</a></div>
-            </div>
-            {{end}}
         </div>
        
         <div class=section id=s_host_disk>
@@ -200,17 +194,6 @@
                     </script>
                 </div>
                 <div id=chart style="width: 100%; padding: 0 0.5em"></div>
-            </div>
-        </div>
-
-        <div class=section id=s_shards fold=fold>
-            <div class=s-title>shards</div>
-            <div class=s-content style="display: flex; flex-wrap: wrap;">
-            {{range $shard, $info := .ShardInfo}}
-                <div class=s-content2>
-                {{range $i, $v := $info}}<div class='s-content shard-row shard-row-{{$shard}}'>{{kv $v}}</div>{{end}}
-                </div>
-            {{end}}
             </div>
         </div>
     </div>

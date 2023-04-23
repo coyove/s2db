@@ -15,7 +15,6 @@ import (
 type RedisConfig struct {
 	Raw  string
 	Name string
-	Role string
 	*redis.Options
 }
 
@@ -47,8 +46,6 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 		}
 		if k == "Name" {
 			cfg.Name = vs[0]
-		} else if k == "Role" {
-			cfg.Role = vs[0]
 		} else if f := rv.FieldByName(k); f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
 			v, _ := strconv.ParseFloat(vs[0], 64)
 			f.SetInt(int64(v))

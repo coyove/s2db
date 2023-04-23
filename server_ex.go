@@ -26,22 +26,11 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"ZCARD":  true,
-		"ZSCORE": true, "ZMSCORE": true,
-		"ZDATA": true, "ZMDATA": true, "ZDATABM16": true,
-		"ZCOUNT": true, "ZCOUNTBYLEX": true,
-		"ZRANK": true, "ZREVRANK": true,
-		"ZRANGE": true, "ZREVRANGE": true,
-		"ZRANGEBYLEX": true, "ZREVRANGEBYLEX": true,
-		"ZRANGEBYSCORE": true, "ZREVRANGEBYSCORE": true,
-		"ZRANGERANGEBYSCORE": true, "ZREVRANGERANGEBYSCORE": true,
-		"ZRI":   true,
-		"SCAN":  true,
-		"SSCAN": true, "SCARD": true, "SMEMBERS": true, "SISMEMBER": true, "SMISMEMBER": true,
-		"GET": true, "MGET": true,
+		"RANGE": true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND": true,
+		"APPEND":  true,
+		"IAPPEND": true,
 	}
 )
 
@@ -90,10 +79,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysRead.MeanString()),
 			fmt.Sprintf("sys_write_qps:%v", s.Survey.SysWrite.String()),
 			fmt.Sprintf("sys_write_avg_lat:%v", s.Survey.SysWrite.MeanString()),
-			fmt.Sprintf("sys_write_discards:%v", s.Survey.SysWriteDiscards.MeanString()),
 			fmt.Sprintf("slow_logs_qps:%v", s.Survey.SlowLogs.QPSString()),
 			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
-			fmt.Sprintf("sync_avg_lat:%v", s.Survey.Sync.MeanString()),
 			"")
 	}
 	if section == "" || section == "command_qps" || section == "command_avg_lat" {
@@ -116,23 +103,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			data = append(data, add(func(s *s2pkg.Survey) string { return s.QPSString() })...)
 		}
 	}
-	if section == "" || section == "batch" {
-		data = append(data, "# batch",
-			fmt.Sprintf("batch_size:%v", s.Survey.BatchSize.MeanString()),
-			fmt.Sprintf("batch_lat:%v", s.Survey.BatchLat.MeanString()),
-			fmt.Sprintf("batch_size_slave:%v", s.Survey.BatchSizeSv.MeanString()),
-			fmt.Sprintf("batch_lat_slave:%v", s.Survey.BatchLatSv.MeanString()),
-			"")
-	}
-	if section == "" || section == "cache" {
-		var ln, cp int
-		data = append(data, "# cache",
-			fmt.Sprintf("cache_avg_size:%v", s.Survey.CacheSize.MeanString()),
-			fmt.Sprintf("cache_req_qps:%v", s.Survey.CacheReq),
-			fmt.Sprintf("cache_hit_qps:%v", s.Survey.CacheHit),
-			fmt.Sprintf("cache_obj_count:%v/%v", ln, cp),
-			"")
-	}
+
 	return
 }
 
@@ -375,7 +346,7 @@ func (s *Server) webConsoleHandler() {
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{"server", "server_misc", "replication", "sys_rw_stats", "batch", "command_qps", "command_avg_lat", "cache"},
+			"Sections": []string{"server", "server_misc", "sys_rw_stats", "command_qps", "command_avg_lat"},
 		})
 	})
 	http.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {

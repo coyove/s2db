@@ -260,6 +260,21 @@ func IncBytesInplace(b []byte) []byte {
 	return b
 }
 
+func AddBytesInplace(a, b []byte) []byte {
+	_, _ = b[len(a)-1], a[len(b)-1]
+	var carry byte
+	for i := len(a) - 1; i >= 0; i-- {
+		v := int(a[i]) + int(b[i]) + int(carry)
+		if v > 255 {
+			carry = 1
+		} else {
+			carry = 0
+		}
+		a[i] = byte(v)
+	}
+	return a
+}
+
 func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err error) {
 	var last []byte
 	h, p := crc32.NewIEEE(), make([]byte, 32*1024)

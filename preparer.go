@@ -222,52 +222,41 @@ func (s *Server) prepareDel(startKey, endKey string, dd []byte) preparedTx {
 	return preparedTx{f: f}
 }
 
-func (s *Server) prepareAppend(key string, data [][]byte, max int64, id future.Future) preparedTx {
-	f := func(tx extdb.LogTx) (interface{}, error) {
-		bkPrefix, bkCounter, _ := ranges.GetKey(key)
-
-		idx := make([]byte, 16)
-		binary.BigEndian.PutUint64(idx[:], uint64(id))
-		rand.Read(idx[8:12])
-
-		for i, p := range data {
-			binary.BigEndian.PutUint32(idx[12:], uint32(i))
-			k := append(bkPrefix, idx...)
-			if err := tx.Set(k, p, pebble.Sync); err != nil {
-				return nil, err
-			}
-		}
-
-		ctr, err := extdb.IncrKey(tx, bkCounter, int64(len(data)))
-		if err != nil {
-			return nil, err
-		}
-
-		if max > 0 && ctr > max {
-			c := tx.NewIter(&pebble.IterOptions{
-				LowerBound: bkPrefix,
-				UpperBound: s2pkg.IncBytes(bkPrefix),
-			})
-			defer c.Close()
-
-			for c.First(); c.Valid(); c.Next() {
-				if ctr <= max {
-					break
-				}
-				if err := tx.Delete(c.Key(), pebble.Sync); err != nil {
-					return nil, err
-				}
-				ctr--
-			}
-
-			if err := tx.Set(bkCounter, s2pkg.Uint64ToBytes(uint64(ctr)), pebble.Sync); err != nil {
-				return nil, err
-			}
-		}
-
-		return int64(len(data)), nil
+func (s *Server) runAppend(tx extdb.LogTx, id future.Future, key string, data [][]byte) error {
+	if len(data) >= 65536 {
+		return fmt.Errorf("too many elements to append")
 	}
-	return preparedTx{f: f}
+
+	bkPrefix, bkHash := ranges.GetKey(key)
+
+	idx := make([]byte, 16) // id(8b) + random(4b) + cmd(2b) + index(2b)
+	binary.BigEndian.PutUint64(idx[:], uint64(id))
+	rand.Read(idx[8:12])
+	idx[12] = 1 // 'append' comamnd code
+
+	hash, err := extdb.GetKey(tx, bkHash)
+	if err != nil {
+		return err
+	}
+	switch len(hash) {
+	case 0:
+		hash = make([]byte, 16)
+	case 16:
+		// ok
+	default:
+		return fmt.Errorf("fatal: invalid hash length: %d", len(hash))
+	}
+
+	for i, p := range data {
+		binary.BigEndian.PutUint16(idx[14:], uint16(i))
+		k := append(bkPrefix, idx...)
+		if err := tx.Set(k, p, pebble.Sync); err != nil {
+			return err
+		}
+		hash = s2pkg.AddBytesInplace(hash, idx)
+	}
+
+	return tx.Set(bkHash, hash, pebble.Sync)
 }
 
 func prepareZRem(key string, members []string, dd []byte) preparedTx {

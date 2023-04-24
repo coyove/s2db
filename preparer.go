@@ -14,7 +14,6 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
@@ -34,7 +33,7 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 		return nil, fmt.Errorf("too many elements to append")
 	}
 
-	bkPrefix, bkTombstone := ranges.GetKey(key)
+	bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
 
 	_, tombstone, err := extdb.GetKeyNumber(s.DB, bkTombstone)
 	if err != nil {
@@ -60,6 +59,10 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 		if err := tx.Set(append(bkPrefix, idx...), p, pebble.Sync); err != nil {
 			return nil, err
 		}
+
+		if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
+			return nil, err
+		}
 	}
 
 	return kk, tx.Commit(pebble.Sync)
@@ -67,7 +70,7 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 
 func (s *Server) ExpireBefore(key string, unixSec int64) error {
 	_, err, _ := s.expireGroup.Do(key, func() (any, error) {
-		bkPrefix, bkTombstone := ranges.GetKey(key)
+		bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
 
 		if err := extdb.SetKeyNumber(s.DB, bkTombstone, nil, unixSec); err != nil {
 			return nil, err
@@ -81,7 +84,7 @@ func (s *Server) ExpireBefore(key string, unixSec int64) error {
 }
 
 func (s *Server) GetTombstone(key string) int64 {
-	_, bkTombstone := ranges.GetKey(key)
+	_, bkTombstone := extdb.GetKeyPrefix(key)
 	_, localTombstone, _ := extdb.GetKeyNumber(s.DB, bkTombstone)
 	return localTombstone
 }
@@ -110,7 +113,7 @@ func (s *Server) rawSetStringsHexKey(key string, kvs [][2]string) error {
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	bkPrefix, _ := ranges.GetKey(key)
+	bkPrefix, _ := extdb.GetKeyPrefix(key)
 
 	var k, v []byte
 	c := 0
@@ -118,9 +121,13 @@ func (s *Server) rawSetStringsHexKey(key string, kvs [][2]string) error {
 		if _, ok := s.fillCache.GetSimple(kv[0]); ok {
 			continue
 		}
-		k = append(append(k[:0], bkPrefix...), hexDecode([]byte(kv[0]))...)
+		idx := hexDecode([]byte(kv[0]))
+		k = append(append(k[:0], bkPrefix...), idx...)
 		v = append(v[:0], kv[1]...)
 		if err := tx.Set(k, v, pebble.Sync); err != nil {
+			return err
+		}
+		if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
 			return err
 		}
 		c++
@@ -132,13 +139,39 @@ func (s *Server) rawSetStringsHexKey(key string, kvs [][2]string) error {
 	return tx.Commit(pebble.Sync)
 }
 
+func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	var k []byte
+	for _, id := range ids {
+		k = append(append(k[:0], 'i'), id...)
+		key, err := extdb.GetKey(s.DB, k)
+		if err != nil {
+			return nil, err
+		}
+		if len(key) == 0 {
+			data = append(data, nil)
+		} else {
+			bkPrefix, _ := extdb.GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
+			v, err := extdb.GetKey(s.DB, append(bkPrefix, id...))
+			if err != nil {
+				return nil, err
+			}
+			data = append(data, v)
+		}
+	}
+	return
+}
+
 func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err error) {
 	desc := false
 	if n < 0 {
 		desc, n = true, -n
 	}
 
-	bkPrefix, _ := ranges.GetKey(key)
+	bkPrefix, _ := extdb.GetKeyPrefix(key)
 
 	c := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: bkPrefix,

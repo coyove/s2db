@@ -3,7 +3,7 @@
 <head>
     <meta name='viewport' content='width=device-width, initial-scale=1'>
     <meta charset='utf-8'>
-    <title>[{{.s.ServerName}}] - s2db console</title>
+    <title>[{{.s.ServerConfig.ServerName}}] - s2db console</title>
     <style>
         * {
             box-sizing: border-box;
@@ -117,8 +117,8 @@
 <body>
     <div class=section-container>
         <div class=section>
-            <div class='s-title mono' style='text-align:center' onclick='location.href="/?p={{.s.Password}}"'>
-                :: {{.s.ServerName}} ::
+            <div class='s-title mono' style='text-align:center' onclick='location.href="/?p={{.s.ServerConfig.Password}}"'>
+                :: {{.s.ServerConfig.ServerName}} ::
             </div>
             <div class=s-content>
                 <div class=s-key>start_at</div><div class=s-value>{{.s.Survey.StartAt.Format "2006-01-02 15:04:05"}}</div>

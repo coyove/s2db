@@ -37,13 +37,6 @@ type ServerConfig struct {
 
 func init() {
 	bas.AddTopValue("ctx", bas.ValueOf(context.TODO()))
-	bas.AddTopFunc("flags", func(env *bas.Env) {
-		cmd := wire.Command{}
-		for _, v := range env.Stack() {
-			cmd.Argv = append(cmd.Argv, toReadonlyBytes(v))
-		}
-		env.A = bas.ValueOf(cmd.Flags(0))
-	})
 	bas.AddTopFunc("log", func(env *bas.Env) {
 		x := bytes.Buffer{}
 		for _, a := range env.Stack() {
@@ -100,7 +93,7 @@ func (s *Server) saveConfig() error {
 		if changed, err := s.Peers[i].CreateRedis(x); err != nil {
 			return err
 		} else if changed {
-			log.Infof("peer redis created/removed with: %q", x)
+			log.Infof("peer #%d created/removed with: %q", i, x)
 		}
 	}
 

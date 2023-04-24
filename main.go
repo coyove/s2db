@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
@@ -42,11 +41,7 @@ var (
 	pebbleMemtableSize = flag.Int("pebble.memtablesize", 128, "[pebble] memtable size in megabytes")
 	pebbleCacheSize    = flag.Int("pebble.cachesize", 1024, "[pebble] cache size in megabytes")
 	pebbleMaxOpenFiles = flag.Int("pebble.maxopenfiles", 1024, "[pebble] max open files")
-	dsltMaxMembers     = flag.Int("db.dsltlimit", 1024, "[db] limit max members to delete during DSLT")
-	deleteKeyQPSLimit  = flag.Int("db.delkeylimit", 512, "[db] max QPS of deleting keys")
-	zsetMemberLimit    = flag.Int("db.zsetmemberlimit", 256, "[db] max members to manipulate in a single zset command")
-	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members single ZRANGE can return")
-	matchHardTimeout   = flag.Int("db.matchtimeout", 30, "[db] hard timeout (seconds) when using MATCH in ZRANGE")
+	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members single RANGE can return")
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
@@ -70,9 +65,6 @@ func init() {
 func main() {
 	flag.Parse()
 	go s2pkg.OSWatcher()
-
-	ranges.HardLimit = *rangeHardLimit
-	ranges.HardMatchTimeout = time.Duration(*matchHardTimeout) * time.Second
 
 	if *showVersion {
 		fmt.Println("s2db", Version)

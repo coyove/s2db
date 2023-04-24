@@ -24,6 +24,19 @@ type LogTx struct {
 	Storage
 }
 
+func GetKeyPrefix(key string) (prefix, tombstone []byte) {
+	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
+	tombstone = append(append(make([]byte, 64)[:0], 'T'), key...)
+	return
+}
+
+func NewPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
+	return db.NewIter(&pebble.IterOptions{
+		LowerBound: key,
+		UpperBound: s2pkg.IncBytes(key),
+	})
+}
+
 func CursorGetKey(c *pebble.Iterator, key []byte) ([]byte, bool) {
 	if c.SeekGE(key) && bytes.Equal(key, c.Key()) {
 		return c.Value(), true

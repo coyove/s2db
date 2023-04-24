@@ -8,7 +8,7 @@ require (
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
 	github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db
-	github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c
+	github.com/coyove/sdss v0.0.0-20230424072844-5b526244a41e
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/gogo/protobuf v1.3.1
 	github.com/golang/snappy v0.0.3

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -15,15 +16,21 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
+	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
+	"github.com/sirupsen/logrus"
 )
 
 var (
 	isReadCommand = map[string]bool{
 		"RANGE":  true,
 		"IRANGE": true,
+		"GET":    true,
+		"MGET":   true,
+		"IMGET":  true,
+		"SCAN":   true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND":        true,
@@ -259,83 +266,37 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-// func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
-// 	count := flags.Count + 1
-// 	startCursor := cursor
-// 	timedout, start := "", clock.Now()
-// 	if len(cursor) > 0 {
-// 		switch cursor[0] {
-// 		case 'Z':
-// 			cursor = cursor[1:]
-// 		case 'S':
-// 			cursor = cursor[1:]
-// 			goto SCAN_SET
-// 		case 'K':
-// 			cursor = cursor[1:]
-// 			goto SCAN_KV
-// 		}
-// 	}
-//
-// 	s.ForeachZSet(cursor, func(k string) bool {
-// 		if time.Since(start) > flags.Timeout {
-// 			timedout = "Z" + k
-// 			return false
-// 		}
-// 		if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-// 			return true
-// 		}
-// 		pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.ZCard(k)), Data: []byte("zset")})
-// 		return len(pairs) < count
-// 	})
-// 	if len(pairs) >= count {
-// 		pairs, nextCursor = pairs[:count-1], "Z"+pairs[count-1].Member
-// 		return
-// 	}
-//
-// 	cursor = startCursor
-// SCAN_SET:
-// 	if timedout == "" {
-// 		s.ForeachSet(cursor, func(k string) bool {
-// 			if time.Since(start) > flags.Timeout {
-// 				timedout = "S" + k
-// 				return false
-// 			}
-// 			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-// 				return true
-// 			}
-// 			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(s.SCard(k)), Data: []byte("set")})
-// 			return len(pairs) < count
-// 		})
-// 	}
-// 	if len(pairs) >= count {
-// 		pairs, nextCursor = pairs[:count-1], "S"+pairs[count-1].Member
-// 		return
-// 	}
-//
-// 	cursor = startCursor
-// SCAN_KV:
-// 	if timedout == "" {
-// 		s.ForeachKV(cursor, func(k string, v []byte) bool {
-// 			if time.Since(start) > flags.Timeout {
-// 				timedout = "K" + k
-// 				return false
-// 			}
-// 			if flags.Match != "" && !s2pkg.Match(flags.Match, k) {
-// 				return true
-// 			}
-// 			pairs = append(pairs, s2pkg.Pair{Member: k, Score: float64(len(v)), Data: []byte("string")})
-// 			return len(pairs) < count
-// 		})
-// 	}
-// 	if len(pairs) >= count {
-// 		pairs, nextCursor = pairs[:count-1], "K"+pairs[count-1].Member
-// 	}
-//
-// 	if timedout != "" {
-// 		return pairs, timedout
-// 	}
-// 	return
-// }
+func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor string) {
+	iter := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("l"),
+		UpperBound: []byte("m"),
+	})
+	defer iter.Close()
+
+	if count > *rangeHardLimit {
+		count = *rangeHardLimit
+	}
+
+	cPrefix, _ := extdb.GetKeyPrefix(cursor)
+	var tmp []byte
+	for iter.SeekGE(cPrefix); iter.Valid(); {
+		k := iter.Key()
+		k = k[:bytes.IndexByte(k, 0)]
+		keys = append(keys, string(k[1:]))
+
+		tmp = append(append(tmp[:0], k...), 1)
+		iter.SeekGE(tmp)
+
+		if len(keys) == count {
+			if iter.Next() {
+				x := iter.Key()
+				nextCursor = string(x[:bytes.IndexByte(x, 0)][1:])
+			}
+			break
+		}
+	}
+	return
+}
 
 func (s *Server) HasPeers() bool {
 	for i, p := range s.Peers {
@@ -351,5 +312,34 @@ func (s *Server) ForeachPeer(f func(p *endpoint, c *redis.Client)) {
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
 			f(p, cli)
 		}
+	}
+}
+
+func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandIn) {
+	recv := 0
+	out := make(chan *commandIn, 10)
+	s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+		if p.send(f(), out) {
+			recv++
+		} else {
+			logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
+		}
+	})
+	return recv, out
+}
+
+func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(redis.Cmder)) {
+	pstart := time.Now()
+MORE:
+	select {
+	case res := <-out:
+		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
+		x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
+		f(res.Cmder)
+		if recv--; recv > 0 {
+			goto MORE
+		}
+	case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
+		logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
 	}
 }

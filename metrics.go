@@ -14,7 +14,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/ranges"
+	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	client "github.com/influxdata/influxdb1-client"
 	log "github.com/sirupsen/logrus"
@@ -140,7 +140,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 
 func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
-	c := ranges.NewPrefixIter(s.DB, key)
+	c := extdb.NewPrefixIter(s.DB, key)
 	defer c.Close()
 	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
 		k := c.Key()[8:]
@@ -158,7 +158,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	res := map[string]s2pkg.GroupedMetrics{}
 	getter := func(f string) {
 		key := []byte("metrics_" + f + "\x00")
-		c := ranges.NewPrefixIter(s.DB, key)
+		c := extdb.NewPrefixIter(s.DB, key)
 		defer c.Close()
 
 		for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {

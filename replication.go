@@ -59,6 +59,15 @@ func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
 	return
 }
 
+func (e *endpoint) send(cmd redis.Cmder, out chan *commandIn) bool {
+	select {
+	case e.jobq <- &commandIn{e: e, Cmder: cmd, wait: out}:
+		return true
+	case <-time.After(time.Duration(e.server.ServerConfig.PeerTimeout) * time.Millisecond):
+		return false
+	}
+}
+
 func (e *endpoint) work() {
 	ctx := context.TODO()
 	for {

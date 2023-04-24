@@ -26,7 +26,6 @@ import (
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
@@ -376,8 +375,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if end == "" {
 			end = key + "\xff"
 		}
-		startKey, _ := ranges.GetKey(key)
-		endKey, _ := ranges.GetKey(end)
+		startKey, _ := extdb.GetKeyPrefix(key)
+		endKey, _ := extdb.GetKeyPrefix(end)
 		list, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytesInplace(endKey))
 		return w.WriteInt64(int64(list))
 	case "SLOW.LOG":
@@ -457,7 +456,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
-	case "IRANGE": // IRANGE KEY HEX_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
+	case "IRANGE": // IRANGE KEY RAW_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
 		tombstone := K.Int64(4)
 		if tombstone > 0 {
 			localTombstone := s.GetTombstone(key)
@@ -469,11 +468,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				tombstone = localTombstone
 			}
 		}
-		data, err := s.Range(key, hexDecode(K.BytesRef(2)), K.Int(3))
+		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(append(data, []byte(strconv.FormatInt(tombstone, 10))))
+		return w.WriteBulks(append(data, strconv.AppendInt(nil, tombstone, 10)))
 	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
@@ -499,39 +498,25 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if s.HasPeers() || K.StrEqFold(4, "local") {
+		if !s.HasPeers() || K.StrEqFold(4, "local") {
 			return w.WriteBulks(data)
 		}
 
 		tombstone := s.GetTombstone(key)
-		out := make(chan *commandIn, 10)
-		recv := 0
-
-		s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
-			cmd := redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, hexEncode(start), n, tombstone)
-			select {
-			case p.jobq <- &commandIn{e: p, Cmder: cmd, wait: out}:
-				recv++
-			case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
-				logrus.Errorf("failed to send peer job, timed out")
-			}
+		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, tombstone)
 		})
-
 		if recv == 0 {
 			return w.WriteBulks(data)
 		}
 
-		pstart := time.Now()
 		orig := ssRef(data)
 		merged := orig
 		oldTombstone := tombstone
-	MORE:
-		select {
-		case res := <-out:
-			x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
-			x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
-			if v, err := res.Cmder.(*redis.StringSliceCmd).Result(); err != nil {
-				logrus.Errorf("failed to request peer: %v", res)
+
+		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) {
+			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
+				logrus.Errorf("failed to request peer: %v", err)
 			} else {
 				remoteTombstone, _ := strconv.ParseInt(string(v[len(v)-1]), 10, 64)
 				if remoteTombstone > tombstone {
@@ -539,12 +524,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				}
 				merged = append(merged, v[:len(v)-1]...)
 			}
-			if recv--; recv > 0 {
-				goto MORE
-			}
-		case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
-			logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
-		}
+		})
 
 		if oldTombstone != tombstone {
 			if err := s.ExpireBefore(key, tombstone); err != nil {
@@ -560,6 +540,73 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		err = w.WriteBulkStrings(merged)
 		runtime.KeepAlive(data)
 		return err
+	case "IMGET":
+		ids := K.Argv[1:]
+		data, err := s.MGet(ids)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		resp := make([][]byte, len(data)*2)
+		for i := range data {
+			resp[2*i] = hexEncode(ids[i])
+			resp[2*i+1] = data[i]
+		}
+		return w.WriteBulks(resp)
+	case "MGET", "GET":
+		var ids [][]byte
+		for i := 1; i < K.ArgCount(); i++ {
+			ids = append(ids, hexDecode(K.BytesRef(i)))
+		}
+		data, err := s.MGet(ids)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+
+		var missings []any
+		for i, d := range data {
+			if d == nil {
+				missings = append(missings, ids[i])
+			}
+		}
+		if len(missings) == 0 || !s.HasPeers() {
+			return w.WriteBulkOrBulks(cmd == "GET", data)
+		}
+
+		missings = append([]any{"IMGET"}, missings...)
+		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+			return redis.NewStringStringMapCmd(context.TODO(), missings...)
+		})
+		if recv == 0 {
+			return w.WriteBulkOrBulks(cmd == "GET", data)
+		}
+
+		m := map[string]string{}
+		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) {
+			if m0, err := cmd.(*redis.StringStringMapCmd).Result(); err != nil {
+				logrus.Errorf("failed to request peer: %v", err)
+			} else {
+				for k, v := range m0 {
+					m[k] = v
+				}
+			}
+		})
+		var kvs [][2]string
+		for i, d := range data {
+			if d != nil {
+				continue
+			}
+			k := string(hexEncode(ids[i]))
+			v, ok := m[k]
+			if ok {
+				data[i] = []byte(v)
+				kvs = append(kvs, [2]string{k, v})
+			}
+		}
+		s.setMissing(key, kvs)
+		return w.WriteBulkOrBulks(cmd == "GET", data)
+	case "SCAN": // SCAN CURSOR COUNT
+		data, nextCursor := s.Scan(K.StrRef(1), K.Int(2))
+		return w.WriteObjects(nextCursor, data)
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())

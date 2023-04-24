@@ -107,7 +107,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 				continue
 			}
 			pairs = append(pairs, s2pkg.Pair{Member: "Heartbeat", Score: 1})
-			tags := map[string]string{"ServerName": s.ServerName}
+			tags := map[string]string{"ServerName": s.ServerConfig.ServerName}
 			points := make([]client.Point, 0, len(pairs))
 			for _, p := range pairs {
 				points = append(points, client.Point{
@@ -131,7 +131,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 
-	if diff := time.Since(start); diff.Milliseconds() > int64(s.SlowLimit) {
+	if diff := time.Since(start); diff.Milliseconds() > int64(s.ServerConfig.SlowLimit) {
 		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, diff.Seconds(), "127.0.0.1", "metrics")
 	}
 

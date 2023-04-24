@@ -32,6 +32,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
 
@@ -42,17 +43,16 @@ type Server struct {
 	lnLocal      net.Listener
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.LRUCache
-	fillCache    *s2pkg.LRUCache
 
-	ServerConfig
-	LocalRedis  *redis.Client
-	Peers       [8]*endpoint
-	DBPath      string
-	DBOptions   *pebble.Options
-	Channel     int64
-	ReadOnly    bool
-	Closed      bool // server close flag
-	SelfManager *bas.Program
+	ServerConfig ServerConfig
+	LocalRedis   *redis.Client
+	Peers        [8]*endpoint
+	DBPath       string
+	DBOptions    *pebble.Options
+	Channel      int64
+	ReadOnly     bool
+	Closed       bool // server close flag
+	SelfManager  *bas.Program
 
 	dieLock      sync.Mutex
 	dumpWireLock s2pkg.Locker
@@ -64,16 +64,20 @@ type Server struct {
 		SysReadP99Micro s2pkg.P99SurveyMinute ``
 		SysWrite        s2pkg.Survey          ``
 		SlowLogs        s2pkg.Survey          ``
-		PeerOnMissing   s2pkg.Survey
-		PeerOnOK        s2pkg.Survey
+		PeerOnMissingN  s2pkg.Survey          `metrics:"mean"`
+		PeerOnMissing   s2pkg.Survey          ``
+		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
 		IAppend         s2pkg.Survey
+		IExpireBefore   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
 	}
 
 	DB *pebble.DB
 
-	locks [0x10000]sync.Mutex
+	fillLocks   [0x10000]sync.Mutex
+	fillCache   *s2pkg.LRUCache
+	expireGroup singleflight.Group
 }
 
 func Open(dbPath string) (x *Server, err error) {
@@ -176,7 +180,10 @@ func (s *Server) Serve(addr string) (err error) {
 		return err
 	}
 	s.lnWebConsole = s2pkg.NewLocalListener()
-	s.LocalRedis = redis.NewClient(&redis.Options{Network: "unix", Addr: s.lnLocal.Addr().String(), Password: s.Password})
+	s.LocalRedis = redis.NewClient(&redis.Options{
+		Network:  "unix",
+		Addr:     s.lnLocal.Addr().String(),
+		Password: s.ServerConfig.Password})
 	s.Survey.StartAt = time.Now()
 
 	log.Infof("listening on: redis=%v, local=%v", s.ln.Addr(), s.lnLocal.Addr())
@@ -200,7 +207,7 @@ func (s *Server) acceptor(ln net.Listener) {
 			}
 		}
 		go func() {
-			c := s2pkg.NewBufioConn(conn, time.Duration(s.TCPWriteTimeout)*time.Millisecond, &s.Survey.Connections)
+			c := s2pkg.NewBufioConn(conn, &s.Survey.Connections)
 			switch buf, _ := c.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
 			case "GET ", "POST", "HEAD":
 				s.lnWebConsole.Feed(c)
@@ -232,8 +239,8 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 			if !command.IsLast() {
 				writer.EnablePipelineMode()
 			}
-			if s.Password != "" && !auth {
-				if command.StrEqFold(0, "AUTH") && command.Str(1) == s.Password {
+			if s.ServerConfig.Password != "" && !auth {
+				if command.StrEqFold(0, "AUTH") && command.Str(1) == s.ServerConfig.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
@@ -273,6 +280,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if strings.Contains(key, "\x00") {
 			return w.WriteError("invalid key name containing null bytes (0x00)")
 		}
+		if err := s.checkWritable(); err != nil {
+			return w.WriteError(err.Error())
+		}
 	}
 
 	defer func(start time.Time) {
@@ -283,7 +293,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			outErr = w.WriteError(fmt.Sprintf("fatal error (%s): %v", key, r))
 		} else {
 			diff := time.Since(start)
-			if diff > time.Duration(s.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
+			if diff > time.Duration(s.ServerConfig.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
 				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
 				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
@@ -308,7 +318,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		return w.WriteValue(v)
 	case "PING":
 		if key == "" {
-			return w.WriteSimpleString("PONG " + s.ServerName + " " + Version)
+			return w.WriteSimpleString("PONG " + s.ServerConfig.ServerName + " " + Version)
 		}
 		return w.WriteSimpleString(key)
 	case "CONFIG":
@@ -379,7 +389,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND": // APPEND key DATA_0 DATA_1 ...
+	case "APPEND": // APPEND KEY DATA_0 DATA_1 ...
 		var data [][]byte
 		for i := 2; i < K.ArgCount(); i++ {
 			data = append(data, K.Bytes(i))
@@ -392,7 +402,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		for i := range hexIds {
 			hexIds[i] = hexEncode(ids[i])
 		}
-		if len(hexIds) > 0 && s.PeerCount() > 0 {
+		if len(hexIds) > 0 && s.HasPeers() {
 			var args = []any{"IAPPEND", key, 0}
 			h := crc32.NewIEEE()
 			for i := range hexIds {
@@ -403,16 +413,36 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			args[2] = h.Sum32()
 
 			go func(start time.Time) {
-				for _, p := range s.Peers {
-					if cli := p.Redis(); cli != nil {
-						cli.Do(context.TODO(), args...)
-					}
-				}
+				s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+					cli.Do(context.TODO(), args...)
+				})
 				s.Survey.IAppend.Incr(time.Since(start).Milliseconds())
 			}(time.Now())
 		}
 		return w.WriteBulks(hexIds)
-	case "IAPPEND": // IAPPEND key HASH ID_0 DATA_0 ID_1 DATA_1 ...
+	case "IEXPIREBEFORE":
+		if err := s.ExpireBefore(key, K.Int64(2)); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteSimpleString("OK")
+	case "EXPIREBEFORE":
+		if K.StrEqFold(2, "get") {
+			return w.WriteInt64(s.GetTombstone(key))
+		}
+		t := K.Int64(2)
+		if err := s.ExpireBefore(key, t); err != nil {
+			return w.WriteError(err.Error())
+		}
+		if s.HasPeers() {
+			go func(start time.Time) {
+				s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+					cli.Do(context.TODO(), "IEXPIREBEFORE", key, t)
+				})
+				s.Survey.IExpireBefore.Incr(time.Since(start).Milliseconds())
+			}(time.Now())
+		}
+		return w.WriteInt64(t)
+	case "IAPPEND": // IAPPEND KEY HASH ID_0 DATA_0 ID_1 DATA_1 ...
 		var data [][2]string
 		h := crc32.NewIEEE()
 		for i := 3; i < K.ArgCount(); i += 2 {
@@ -427,7 +457,24 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteSimpleString("OK")
-	case "RANGE": // RANGE key start count [NOREC] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+	case "IRANGE": // IRANGE KEY HEX_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
+		tombstone := K.Int64(4)
+		if tombstone > 0 {
+			localTombstone := s.GetTombstone(key)
+			if tombstone > localTombstone {
+				if err := s.ExpireBefore(key, tombstone); err != nil {
+					logrus.Errorf("IRANGE: failed to ExpireBefore using remote tombstone: %v", err)
+				}
+			} else {
+				tombstone = localTombstone
+			}
+		}
+		data, err := s.Range(key, hexDecode(K.BytesRef(2)), K.Int(3))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulks(append(data, []byte(strconv.FormatInt(tombstone, 10))))
+	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
 		switch s := K.StrRef(2); s {
@@ -452,23 +499,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if s.PeerCount() == 0 || K.StrRef(4) == "NOREC" || K.StrRef(4) == "norec" {
+		if s.HasPeers() || K.StrEqFold(4, "local") {
 			return w.WriteBulks(data)
 		}
 
+		tombstone := s.GetTombstone(key)
 		out := make(chan *commandIn, 10)
-		var recv int
-		for _, p := range s.Peers {
-			cli := p.Redis()
-			if cli == nil {
-				continue
-			}
-			cmd := redis.NewStringSliceCmd(context.TODO(), "RANGE", key, K.StrRef(2), n, "NOREC")
+		recv := 0
+
+		s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+			cmd := redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, hexEncode(start), n, tombstone)
 			select {
 			case p.jobq <- &commandIn{e: p, Cmder: cmd, wait: out}:
 				recv++
+			case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
+				logrus.Errorf("failed to send peer job, timed out")
 			}
-		}
+		})
 
 		if recv == 0 {
 			return w.WriteBulks(data)
@@ -477,21 +524,32 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		pstart := time.Now()
 		orig := ssRef(data)
 		merged := orig
+		oldTombstone := tombstone
 	MORE:
 		select {
 		case res := <-out:
 			x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
 			x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
 			if v, err := res.Cmder.(*redis.StringSliceCmd).Result(); err != nil {
-				logrus.Errorf("failed to access peer: %v", res)
+				logrus.Errorf("failed to request peer: %v", res)
 			} else {
-				merged = append(merged, v...)
+				remoteTombstone, _ := strconv.ParseInt(string(v[len(v)-1]), 10, 64)
+				if remoteTombstone > tombstone {
+					tombstone = remoteTombstone
+				}
+				merged = append(merged, v[:len(v)-1]...)
 			}
 			if recv--; recv > 0 {
 				goto MORE
 			}
-		case <-time.After(time.Duration(s.ServerConfig.PingTimeout) * time.Millisecond):
-			logrus.Errorf("failed to access peer, timed out, remains: %v", recv)
+		case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
+			logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
+		}
+
+		if oldTombstone != tombstone {
+			if err := s.ExpireBefore(key, tombstone); err != nil {
+				logrus.Errorf("RANGE: failed to ExpireBefore using remote tombstone: %v", err)
+			}
 		}
 
 		merged, sub := sortAndSubtract(merged, orig, n < 0)

@@ -35,9 +35,9 @@ func GetKVKey(key string) []byte {
 	return []byte("zkv_____" + key)
 }
 
-func GetKey(key string) (prefix, counter []byte) {
+func GetKey(key string) (prefix, tombstone []byte) {
 	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
-	counter = append(append(make([]byte, 64)[:0], 'c'), key...)
+	tombstone = append(append(make([]byte, 64)[:0], 'T'), key...)
 	return
 }
 

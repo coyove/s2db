@@ -34,23 +34,14 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 		return nil, fmt.Errorf("too many elements to append")
 	}
 
-	bkPrefix, bkHash := ranges.GetKey(key)
+	bkPrefix, bkTombstone := ranges.GetKey(key)
 
-	mu := &s.locks[s2pkg.HashStr(key)&0xffff]
-	mu.Lock()
-	defer mu.Unlock()
-
-	hash, err := extdb.GetKey(s.DB, bkHash)
+	_, tombstone, err := extdb.GetKeyNumber(s.DB, bkTombstone)
 	if err != nil {
 		return nil, err
 	}
-	switch len(hash) {
-	case 0:
-		hash = make([]byte, 16)
-	case 16:
-		// ok
-	default:
-		return nil, fmt.Errorf("fatal: invalid hash length: %d", len(hash))
+	if tombstone > int64(id) {
+		return nil, nil
 	}
 
 	tx := s.DB.NewBatch()
@@ -59,7 +50,7 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 	idx := make([]byte, 16) // id(8b) + random(4b) + cmd(2b) + index(2b)
 	binary.BigEndian.PutUint64(idx[:], uint64(id))
 	rand.Read(idx[8:12])
-	idx[12] = 1 // 'append' comamnd code
+	idx[12] = 1 // 'append' command code
 
 	var kk [][]byte
 	for i, p := range data {
@@ -69,13 +60,30 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 		if err := tx.Set(append(bkPrefix, idx...), p, pebble.Sync); err != nil {
 			return nil, err
 		}
-		hash = s2pkg.AddBytesInplace(hash, idx)
 	}
 
-	if err := tx.Set(bkHash, hash, pebble.Sync); err != nil {
-		return nil, err
-	}
 	return kk, tx.Commit(pebble.Sync)
+}
+
+func (s *Server) ExpireBefore(key string, unixSec int64) error {
+	_, err, _ := s.expireGroup.Do(key, func() (any, error) {
+		bkPrefix, bkTombstone := ranges.GetKey(key)
+
+		if err := extdb.SetKeyNumber(s.DB, bkTombstone, nil, unixSec); err != nil {
+			return nil, err
+		}
+
+		idx := make([]byte, 16) // id(8b) + random(4b) + cmd(2b) + index(2b)
+		binary.BigEndian.PutUint64(idx[:], uint64(unixSec*1e9))
+		return nil, s.DB.DeleteRange(bkPrefix, append(bkPrefix, idx...), pebble.Sync)
+	})
+	return err
+}
+
+func (s *Server) GetTombstone(key string) int64 {
+	_, bkTombstone := ranges.GetKey(key)
+	_, localTombstone, _ := extdb.GetKeyNumber(s.DB, bkTombstone)
+	return localTombstone
 }
 
 func (s *Server) setMissing(key string, kvs [][2]string) {
@@ -84,13 +92,14 @@ func (s *Server) setMissing(key string, kvs [][2]string) {
 		return
 	}
 	go func(start time.Time) {
-		mu := &s.locks[s2pkg.HashStr(key)&0xffff]
+		mu := &s.fillLocks[s2pkg.HashStr(key)&0xffff]
 		mu.Lock()
 		defer mu.Unlock()
 		if err := s.rawSetStringsHexKey(key, kvs); err != nil {
 			logrus.Errorf("setMissing: %v", err)
 		}
 		s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
+		s.Survey.PeerOnMissingN.Incr(int64(len(kvs)))
 	}(time.Now())
 }
 

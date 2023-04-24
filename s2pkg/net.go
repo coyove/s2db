@@ -6,19 +6,17 @@ import (
 	"net"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 type BufioConn struct {
 	net.Conn
 	*bufio.Reader
-	ctr     *int64
-	timeout time.Duration
+	ctr *int64
 }
 
-func NewBufioConn(conn net.Conn, writeTimeout time.Duration, ctr *int64) BufioConn {
+func NewBufioConn(conn net.Conn, ctr *int64) BufioConn {
 	atomic.AddInt64(ctr, 1)
-	return BufioConn{conn, bufio.NewReader(conn), ctr, writeTimeout}
+	return BufioConn{conn, bufio.NewReader(conn), ctr}
 }
 
 func (bc BufioConn) Read(p []byte) (int, error) {
@@ -26,9 +24,6 @@ func (bc BufioConn) Read(p []byte) (int, error) {
 }
 
 func (bc BufioConn) Write(p []byte) (int, error) {
-	if bc.timeout > 0 {
-		bc.Conn.SetWriteDeadline(time.Now().Add(bc.timeout))
-	}
 	return bc.Conn.Write(p)
 }
 

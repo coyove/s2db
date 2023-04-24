@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
-	"math"
 	"net/http"
 	"os"
 	"reflect"
@@ -16,27 +15,23 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/bitmap"
-	"github.com/coyove/s2db/clock"
-	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/ranges"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	"github.com/go-redis/redis/v8"
 )
 
 var (
 	isReadCommand = map[string]bool{
-		"RANGE": true,
+		"RANGE":  true,
+		"IRANGE": true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND":  true,
-		"IAPPEND": true,
+		"APPEND":        true,
+		"IAPPEND":       true,
+		"EXPIREBEFORE":  true,
+		"IEXPIREBEFORE": true,
 	}
 )
-
-func shardIndex(key string) int {
-	return int(s2pkg.HashStr(key) % ShardLogNum)
-}
 
 func ssRef(b [][]byte) (keys []string) {
 	for i, b := range b {
@@ -50,7 +45,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || section == "server" {
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
-			fmt.Sprintf("servername:%v", s.ServerName),
+			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
@@ -107,97 +102,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	return
 }
 
-func parseWeakFlag(in *wire.Command) time.Duration {
-	i := in.ArgCount() - 2
-	if i >= 2 && in.StrEqFold(i, "WEAK") {
-		x := s2pkg.MustParseFloatBytes(in.Argv[i+1])
-		in.Argv = in.Argv[:i]
-		return time.Duration(int64(x*1e6) * 1e3)
-	}
-	return 0
-}
-
-func defaultNorm(in []s2pkg.Pair) []s2pkg.Pair {
-	return in
-}
-
-func parseNormFlag(rev bool, in *wire.Command) (func([]s2pkg.Pair) []s2pkg.Pair, wire.Flags) {
-	if !in.StrEqFold(2, "--NORM--") {
-		return defaultNorm, in.Flags(4)
-	}
-
-	normValue := in.Int64(3)
-	if normValue <= 0 {
-		panic("invalid normalization value")
-	}
-
-	in.Argv = append(in.Argv[:2], in.Argv[4:]...)
-	flags := in.Flags(4)
-	start, end := ranges.Score(in.Str(2)), ranges.Score(in.Str(3))
-
-	normStart := start
-	if !math.IsInf(start.Float, 0) {
-		x := int64(start.Float) / normValue
-		if rev {
-			x++
-		}
-		normStart.Float = float64(x * normValue)
-		in.Argv[2] = normStart.ToScore()
-
-		flags.ILimit = new(float64)
-		*flags.ILimit = start.Float
-		if !start.Inclusive {
-			x := s2pkg.FloatToOrderedUint64(start.Float) + uint64(ifInt(rev, -1, 1))
-			*flags.ILimit = s2pkg.OrderedUint64ToFloat(x)
-		}
-	}
-
-	normEnd := end
-	if !math.IsInf(end.Float, 0) {
-		x := int64(end.Float) / normValue
-		if !rev {
-			x++
-		}
-		normEnd.Float = float64(x * normValue)
-		in.Argv[3] = normEnd.ToScore()
-	}
-
-	if testFlag {
-		fmt.Println(ssRef(in.Argv), string(start.ToScore()), string(end.ToScore()))
-	}
-
-	return func(data []s2pkg.Pair) []s2pkg.Pair {
-		if rev {
-			for i, d := range data {
-				if (d.Score <= start.Float && start.Inclusive) || (d.Score < start.Float && !start.Inclusive) {
-					data = data[i:]
-					for i := len(data) - 1; i >= 0; i-- {
-						if d := data[i]; (d.Score >= end.Float && end.Inclusive) || (d.Score > end.Float && !end.Inclusive) {
-							data = data[:i+1]
-							return data
-						}
-					}
-					break
-				}
-			}
-		} else {
-			for i, d := range data {
-				if (d.Score >= start.Float && start.Inclusive) || (d.Score > start.Float && !start.Inclusive) {
-					data = data[i:]
-					for i := len(data) - 1; i >= 0; i-- {
-						if d := data[i]; (d.Score <= end.Float && end.Inclusive) || (d.Score < end.Float && !end.Inclusive) {
-							data = data[:i+1]
-							return data
-						}
-					}
-					break
-				}
-			}
-		}
-		return data[:0]
-	}, flags
-}
-
 func joinArray(v interface{}) string {
 	rv := reflect.ValueOf(v)
 	p := make([]string, 0, rv.Len())
@@ -244,70 +148,6 @@ func (s *Server) createDBListener() pebble.EventListener {
 	}
 }
 
-func (s *Server) ZCard(key string) (count int64) {
-	_, i, _, err := extdb.GetKeyNumber(s.DB, ranges.GetZSetCounterKey(key))
-	s2pkg.PanicErr(err)
-	return int64(i)
-}
-
-func (s *Server) ZMScore(key string, members ...string) (scores []float64, err error) {
-	if len(members) == 0 {
-		return nil, nil
-	}
-	for range members {
-		scores = append(scores, math.NaN())
-	}
-	bkName := ranges.GetZSetNameKey(key)
-	for i, m := range members {
-		score, _, found, _ := extdb.GetKeyNumber(s.DB, append(bkName, m...))
-		if found {
-			scores[i] = score
-		}
-	}
-	return
-}
-
-func (s *Server) ZMData(key string, members ...string) (data [][]byte, err error) {
-	if len(members) == 0 {
-		return nil, nil
-	}
-	data = make([][]byte, len(members))
-	bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
-	for i, m := range members {
-		scoreBuf, _ := extdb.GetKey(s.DB, append(bkName, m...))
-		if len(scoreBuf) != 0 {
-			d, err := extdb.GetKey(s.DB, append(bkScore, append(scoreBuf, m...)...))
-			if err != nil {
-				return nil, err
-			}
-			data[i] = d
-		}
-	}
-	return
-}
-
-func (s *Server) ZDataBM16(key string, member string, start, end uint16) (bits [][]byte, err error) {
-	bkName, bkScore, _ := ranges.GetZSetRangeKey(key)
-	bkName = append(bkName, member...)
-	err = extdb.GetKeyFunc(s.DB, bkName, func(scoreBuf []byte) error {
-		bkScore = append(bkScore, append(scoreBuf, member...)...)
-		return extdb.GetKeyFunc(s.DB, bkScore, func(d []byte) error {
-			bitmap.Iterate(d, func(v uint16) bool {
-				if start != 0 && v < start {
-					return true
-				}
-				if end != 0 && v > end {
-					return false
-				}
-				bits = append(bits, s2pkg.FormatFloatBulk(float64(v)))
-				return true
-			})
-			return nil
-		})
-	})
-	return
-}
-
 func (s *Server) webConsoleHandler() {
 	if testFlag {
 		return
@@ -319,7 +159,7 @@ func (s *Server) webConsoleHandler() {
 		q := r.URL.Query()
 		start := time.Now()
 
-		if s.Password != "" && s.Password != q.Get("p") {
+		if s.ServerConfig.Password != "" && s.ServerConfig.Password != q.Get("p") {
 			w.WriteHeader(400)
 			w.Write([]byte("s2db: password required"))
 			return
@@ -405,7 +245,7 @@ func (s *Server) webConsoleHandler() {
 		// fmt.Println(q.Get("match"))
 	})
 	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
-		nj.PlaygroundHandler(s.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
+		nj.PlaygroundHandler(s.ServerConfig.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
 			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
 			"println(ok, err)", s.getScriptEnviron())(w, r)
 	})
@@ -417,14 +257,6 @@ func (s *Server) checkWritable() error {
 		return wire.ErrServerReadonly
 	}
 	return nil
-}
-
-func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum float64) {
-	for i := range a {
-		diffs[i] = clock.IdDiff(a[i], b[i])
-		diffSum += diffs[i]
-	}
-	return
 }
 
 // func (s *Server) Scan(cursor string, flags wire.Flags) (pairs []s2pkg.Pair, nextCursor string) {
@@ -505,15 +337,19 @@ func diffLogtails(a, b [ShardLogNum]uint64) (diffs [ShardLogNum]float64, diffSum
 // 	return
 // }
 
-func (s *Server) getUpstreamShard(key string) int {
-	return int(s2pkg.HashStr32(key) % 1024)
-}
-
-func (s *Server) PeerCount() (c int) {
+func (s *Server) HasPeers() bool {
 	for i, p := range s.Peers {
 		if p.Redis() != nil && s.Channel != int64(i) {
-			c++
+			return true
 		}
 	}
-	return
+	return false
+}
+
+func (s *Server) ForeachPeer(f func(p *endpoint, c *redis.Client)) {
+	for i, p := range s.Peers {
+		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
+			f(p, cli)
+		}
+	}
 }

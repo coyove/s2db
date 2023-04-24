@@ -13,10 +13,9 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/bitmap"
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
-	s2pkg "github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -29,9 +28,9 @@ type ServerConfig struct {
 	Peer2, Peer3    string
 	Peer4, Peer5    string
 	Peer6, Peer7    string
-	CacheSize       int
+	FillCacheSize   int
 	SlowLimit       int // ms
-	PingTimeout     int // ms
+	PeerTimeout     int // ms
 	MetricsEndpoint string
 	InspectorSource string
 }
@@ -52,24 +51,9 @@ func init() {
 		}
 		log.Info("[logIO] ", x.String())
 	})
-	bas.AddTopFunc("shardOf", func(e *bas.Env) {
-		e.A = bas.Int(shardIndex(e.Str(0)))
-	})
 	bas.AddTopFunc("atof", func(e *bas.Env) {
 		v := s2pkg.MustParseFloat(e.Str(0))
 		e.A = bas.Float64(v)
-	})
-	bas.AddTopFunc("hashmb", func(e *bas.Env) {
-		v := make([][]byte, 0, e.Size())
-		for i := range v {
-			v = append(v, toReadonlyBytes(e.Get(i)))
-		}
-		e.A = bas.Int64(int64(s2pkg.HashMultiBytes(v)))
-	})
-	bas.AddTopFunc("bfparse", func(e *bas.Env) {
-		bf, err := bitmap.BloomFilterUnmarshalBinary(toReadonlyBytes(e.Get(0)))
-		s2pkg.PanicErr(err)
-		e.A = bas.ValueOf(bf)
 	})
 }
 
@@ -93,16 +77,16 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig() error {
-	ifZero(&s.CacheSize, 100000)
-	ifZero(&s.SlowLimit, 500)
-	ifZero(&s.PingTimeout, 1000)
-	if s.ServerName == "" {
-		s.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
+	ifZero(&s.ServerConfig.FillCacheSize, 100000)
+	ifZero(&s.ServerConfig.SlowLimit, 500)
+	ifZero(&s.ServerConfig.PeerTimeout, 500)
+	if s.ServerConfig.ServerName == "" {
+		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
 
-	s.fillCache = s2pkg.NewLRUCache(s.CacheSize, nil)
+	s.fillCache = s2pkg.NewLRUCache(s.ServerConfig.FillCacheSize, nil)
 
-	p, err := nj.LoadString(strings.Replace(s.InspectorSource, "\r", "", -1), s.getScriptEnviron())
+	p, err := nj.LoadString(strings.Replace(s.ServerConfig.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
 		return err
 	} else if out := p.Run(); out.IsError() {
@@ -175,7 +159,7 @@ func (s *Server) GetConfig(key string) (v string, ok bool) {
 		return fmt.Sprint(fast.Interface()), true
 	}
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		if strings.ToLower(f.Name) == key {
+		if strings.EqualFold(f.Name, key) {
 			v, ok = fmt.Sprint(fv.Interface()), true
 		}
 		return nil

@@ -19,9 +19,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (s *Server) Append(key string, data [][]byte) ([][]byte, error) {
+func (s *Server) Append(key string, data [][]byte, wait bool) ([][]byte, error) {
 	id := future.Get(s.Channel)
-	defer id.Wait()
+	if wait {
+		defer id.Wait()
+	}
 	return s.runAppend(id, key, data)
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
@@ -28,6 +29,7 @@ import (
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
@@ -296,9 +298,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
 				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
+			if isWriteCommand[cmd] {
+				s.Survey.SysWrite.Incr(diff.Milliseconds())
+			}
 			if isReadCommand[cmd] {
 				s.Survey.SysRead.Incr(diff.Milliseconds())
 				s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
+			}
+			if isWriteCommand[cmd] || isReadCommand[cmd] {
 				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
 				x.(*s2pkg.Survey).Incr(diff.Milliseconds())
 			}
@@ -385,15 +392,24 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
 	case "RUNTIME.LOG":
 		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+	case "WAIT":
+		x := K.BytesRef(1)
+		for i := 2; i < K.ArgCount(); i++ {
+			if bytes.Compare(K.BytesRef(i), x) > 0 {
+				x = K.BytesRef(i)
+			}
+		}
+		future.Future(binary.BigEndian.Uint64(hexDecode(x))).Wait()
+		return w.WriteSimpleString("OK")
 	}
 
 	switch cmd {
-	case "APPEND": // APPEND KEY DATA_0 DATA_1 ...
+	case "APPEND", "APPENDWAIT": // APPEND.NOWAIT KEY DATA_0 DATA_1 ...
 		var data [][]byte
 		for i := 2; i < K.ArgCount(); i++ {
 			data = append(data, K.Bytes(i))
 		}
-		ids, err := s.Append(key, data)
+		ids, err := s.Append(key, data, cmd == "APPENDWAIT")
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

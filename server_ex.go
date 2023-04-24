@@ -34,6 +34,7 @@ var (
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND":        true,
+		"APPENDWAIT":    true,
 		"IAPPEND":       true,
 		"EXPIREBEFORE":  true,
 		"IEXPIREBEFORE": true,

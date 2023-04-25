@@ -22,17 +22,18 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName      string
-	Password        string
-	Peer0, Peer1    string
-	Peer2, Peer3    string
-	Peer4, Peer5    string
-	Peer6, Peer7    string
-	FillCacheSize   int
-	SlowLimit       int // ms
-	PeerTimeout     int // ms
-	MetricsEndpoint string
-	InspectorSource string
+	ServerName       string
+	Password         string
+	Peer0, Peer1     string
+	Peer2, Peer3     string
+	Peer4, Peer5     string
+	Peer6, Peer7     string
+	FillCacheSize    int
+	SlowLimit        int // ms
+	PeerTimeout      int // ms
+	DisablePeerWrite int
+	MetricsEndpoint  string
+	InspectorSource  string
 }
 
 func init() {
@@ -52,7 +53,7 @@ func init() {
 
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := extdb.GetKey(s.DB, []byte("config__"+strings.ToLower(f.Name)))
+		buf, err := extdb.Get(s.DB, []byte("config__"+strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
@@ -284,7 +285,7 @@ func (s *Server) LocalStorage() *LocalStorage {
 }
 
 func (s *LocalStorage) Get(k string) (string, error) {
-	v, err := extdb.GetKey(s.db, []byte("local___"+k))
+	v, err := extdb.Get(s.db, []byte("local___"+k))
 	return string(v), err
 }
 

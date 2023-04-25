@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"hash/crc32"
 	"io"
 	"math"
 	"net"
@@ -68,7 +67,6 @@ type Server struct {
 		PeerOnMissingN  s2pkg.Survey          `metrics:"mean"`
 		PeerOnMissing   s2pkg.Survey          ``
 		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
-		IAppend         s2pkg.Survey
 		IExpireBefore   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
@@ -404,7 +402,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND", "APPENDWAIT": // APPEND.NOWAIT KEY DATA_0 DATA_1 ...
+	case "APPEND", "APPENDWAIT": // APPEND[WAIT] KEY DATA_0 DATA_1 ...
 		var data [][]byte
 		for i := 2; i < K.ArgCount(); i++ {
 			data = append(data, K.Bytes(i))
@@ -417,23 +415,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		for i := range hexIds {
 			hexIds[i] = hexEncode(ids[i])
 		}
-		if len(hexIds) > 0 && s.HasPeers() {
-			var args = []any{"IAPPEND", key, 0}
-			h := crc32.NewIEEE()
-			for i := range hexIds {
-				h.Write(hexIds[i])
-				h.Write(data[i])
-				args = append(args, hexIds[i], data[i])
-			}
-			args[2] = h.Sum32()
+		// if len(hexIds) > 0 && s.HasPeers() && s.ServerConfig.DisablePeerWrite == 0 {
+		// 	args := []any{"IAPPEND", key, 0}
+		// 	h := crc32.NewIEEE()
+		// 	for i := range hexIds {
+		// 		h.Write(hexIds[i])
+		// 		h.Write(data[i])
+		// 		args = append(args, hexIds[i], data[i])
+		// 	}
+		// 	args[2] = h.Sum32()
 
-			go func(start time.Time) {
-				s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
-					cli.Do(context.TODO(), args...)
-				})
-				s.Survey.IAppend.Incr(time.Since(start).Milliseconds())
-			}(time.Now())
-		}
+		// 	go func(start time.Time) {
+		// 		s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+		// 			cli.Do(context.TODO(), args...)
+		// 		})
+		// 		s.Survey.IAppend.Incr(time.Since(start).Milliseconds())
+		// 	}(time.Now())
+		// }
 		return w.WriteBulks(hexIds)
 	case "IEXPIREBEFORE":
 		if err := s.ExpireBefore(key, K.Int64(2)); err != nil {
@@ -441,7 +439,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteSimpleString("OK")
 	case "EXPIREBEFORE":
-		if K.StrEqFold(2, "get") {
+		if K.StrEqFold(3, "get") {
 			return w.WriteInt64(s.GetTombstone(key))
 		}
 		t := K.Int64(2)
@@ -457,21 +455,21 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}(time.Now())
 		}
 		return w.WriteInt64(t)
-	case "IAPPEND": // IAPPEND KEY HASH ID_0 DATA_0 ID_1 DATA_1 ...
-		var data [][2]string
-		h := crc32.NewIEEE()
-		for i := 3; i < K.ArgCount(); i += 2 {
-			h.Write(K.BytesRef(i))
-			h.Write(K.BytesRef(i + 1))
-			data = append(data, [2]string{K.StrRef(i), K.StrRef(i + 1)})
-		}
-		if h.Sum32() != uint32(K.Int64(2)) {
-			return w.WriteError("IAPPEND: invalid hash")
-		}
-		if err := s.rawSetStringsHexKey(key, data); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
+	// case "IAPPEND": // IAPPEND KEY HASH ID_0 DATA_0 ID_1 DATA_1 ...
+	// 	var data [][2]string
+	// 	h := crc32.NewIEEE()
+	// 	for i := 3; i < K.ArgCount(); i += 2 {
+	// 		h.Write(K.BytesRef(i))
+	// 		h.Write(K.BytesRef(i + 1))
+	// 		data = append(data, [2]string{K.StrRef(i), K.StrRef(i + 1)})
+	// 	}
+	// 	if h.Sum32() != uint32(K.Int64(2)) {
+	// 		return w.WriteError("IAPPEND: invalid hash")
+	// 	}
+	// 	if err := s.rawSetStringsHexKey(key, data); err != nil {
+	// 		return w.WriteError(err.Error())
+	// 	}
+	// 	return w.WriteSimpleString("OK")
 	case "IRANGE": // IRANGE KEY RAW_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
 		tombstone := K.Int64(4)
 		if tombstone > 0 {
@@ -530,15 +528,17 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		merged := orig
 		oldTombstone := tombstone
 
-		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) {
+		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
+				return false
 			} else {
 				remoteTombstone, _ := strconv.ParseInt(string(v[len(v)-1]), 10, 64)
 				if remoteTombstone > tombstone {
 					tombstone = remoteTombstone
 				}
 				merged = append(merged, v[:len(v)-1]...)
+				return true
 			}
 		})
 
@@ -550,8 +550,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		merged, sub := sortAndSubtract(merged, orig, n < 0)
 		s.setMissing(key, sub)
-		if n := int(math.Abs(float64(n))); len(merged) > n {
-			merged = merged[:n]
+		if n := int(math.Abs(float64(n))); len(merged) > n*3 {
+			merged = merged[:n*3]
 		}
 		err = w.WriteBulkStrings(merged)
 		runtime.KeepAlive(data)
@@ -597,13 +597,15 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 
 		m := map[string]string{}
-		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) {
+		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			if m0, err := cmd.(*redis.StringStringMapCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
+				return false
 			} else {
 				for k, v := range m0 {
 					m[k] = v
 				}
+				return true
 			}
 		})
 		var kvs [][2]string
@@ -611,7 +613,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			if d != nil {
 				continue
 			}
-			k := string(hexEncode(ids[i]))
+			k := hex.EncodeToString(ids[i])
 			v, ok := m[k]
 			if ok {
 				data[i] = []byte(v)

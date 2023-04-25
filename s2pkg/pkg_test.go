@@ -12,24 +12,30 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/gogo/protobuf/proto"
 )
 
-func TestLogsMarshal(t *testing.T) {
-	data := []byte("zzz")
-	l := &Logs{PrevSig: 2, Logs: []*Log{{9, data}}}
-	t.Log(proto.Marshal(l))
+func TestFixedRange(t *testing.T) {
+	var a FixedRange
+	a.Append([]byte("0000000000000001"), []byte("0000000000000001"))
+	var b FixedRange
+	b.Append([]byte("0000000000000002"), []byte("0000000000000003"))
+	a.Merge(b)
+	fmt.Println(a.String())
+	a.Merge(b)
+	fmt.Println(a.String())
 
-	ba := &BytesArray{Data: [][]byte{data}}
-	t.Log(proto.Marshal(ba))
+	a.Merge(NewFixedRange([]byte("0000000000000001"), []byte("0000000000000003")))
+	fmt.Println(a.String())
 
-	x := [32]int{}
-	for i := 0; i < 256; i++ {
-		k := fmt.Sprintf("%02x", i)
-		x[HashStr(k)%32]++
-	}
-	fmt.Println(x)
+	a.Merge(NewFixedRange(make([]byte, 16), make([]byte, 16)))
+	fmt.Println(a.String())
+
+	one := IncBytesInplace(make([]byte, 16))
+	a.Merge(NewFixedRange(make([]byte, 16), one))
+	fmt.Println(a.String())
+
+	fmt.Println(a.Contains(NewFixedRange(one, one)))
+	fmt.Println(a.Contains(NewFixedRange(one, IncBytes(one))))
 }
 
 func TestHashStr(t *testing.T) {

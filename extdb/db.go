@@ -1,28 +1,11 @@
 package extdb
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2pkg"
 )
-
-type Storage interface {
-	Get([]byte) ([]byte, io.Closer, error)
-	Set(key, value []byte, opts *pebble.WriteOptions) error
-	Delete(key []byte, _ *pebble.WriteOptions) error
-	DeleteRange(start, end []byte, _ *pebble.WriteOptions) error
-	NewIter(*pebble.IterOptions) *pebble.Iterator
-}
-
-type LogTx struct {
-	OutLogtail *uint64
-	InLogtail  *uint64
-	LogPrefix  []byte
-	Storage
-}
 
 func GetKeyPrefix(key string) (prefix, tombstone []byte) {
 	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
@@ -37,21 +20,7 @@ func NewPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 	})
 }
 
-func CursorGetKey(c *pebble.Iterator, key []byte) ([]byte, bool) {
-	if c.SeekGE(key) && bytes.Equal(key, c.Key()) {
-		return c.Value(), true
-	}
-	return nil, false
-}
-
-func CursorGetMaxKeyWithPrefix(c *pebble.Iterator, prefix []byte) ([]byte, []byte, bool) {
-	if c.SeekLT(s2pkg.IncBytes(prefix)) && bytes.HasPrefix(c.Key(), prefix) {
-		return c.Key(), c.Value(), true
-	}
-	return nil, nil, false
-}
-
-func GetKey(db Storage, key []byte) ([]byte, error) {
+func Get(db *pebble.DB, key []byte) ([]byte, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -63,36 +32,21 @@ func GetKey(db Storage, key []byte) ([]byte, error) {
 	return s2pkg.Bytes(buf), nil
 }
 
-func GetKeyFunc(db Storage, key []byte, f func([]byte) error) error {
+func GetInt64(db *pebble.DB, key []byte) (int64, error) {
 	buf, rd, err := db.Get(key)
 	if err != nil {
 		if err == pebble.ErrNotFound {
-			return nil
+			return 0, nil
 		}
-		return err
-	}
-	defer rd.Close()
-	return f(buf)
-}
-
-func GetKeyNumber(db Storage, key []byte) (float64, int64, error) {
-	buf, rd, err := db.Get(key)
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return 0, 0, nil
-		}
-		return 0, 0, err
+		return 0, err
 	}
 	defer rd.Close()
 	if len(buf) != 8 {
-		return 0, 0, fmt.Errorf("invalid number bytes (8)")
+		return 0, fmt.Errorf("invalid number bytes (8)")
 	}
-	return s2pkg.BytesToFloat(buf), int64(s2pkg.BytesToUint64(buf)), nil
+	return int64(s2pkg.BytesToUint64(buf)), nil
 }
 
-func SetKeyNumber(db Storage, key []byte, vf *float64, vi int64) error {
-	if vf != nil {
-		return db.Set(key, s2pkg.FloatToBytes(*vf), pebble.Sync)
-	}
+func SetInt64(db *pebble.DB, key []byte, vi int64) error {
 	return db.Set(key, s2pkg.Uint64ToBytes(uint64(vi)), pebble.Sync)
 }

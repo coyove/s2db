@@ -329,18 +329,21 @@ func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandI
 	return recv, out
 }
 
-func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(redis.Cmder)) {
+func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(redis.Cmder) bool) (success int) {
 	pstart := time.Now()
 MORE:
 	select {
 	case res := <-out:
 		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
 		x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
-		f(res.Cmder)
+		if f(res.Cmder) {
+			success++
+		}
 		if recv--; recv > 0 {
 			goto MORE
 		}
 	case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
 		logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
 	}
+	return
 }

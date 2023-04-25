@@ -37,7 +37,7 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 
 	bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
 
-	_, tombstone, err := extdb.GetKeyNumber(s.DB, bkTombstone)
+	tombstone, err := extdb.GetInt64(s.DB, bkTombstone)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (s *Server) ExpireBefore(key string, unixSec int64) error {
 	_, err, _ := s.expireGroup.Do(key, func() (any, error) {
 		bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
 
-		if err := extdb.SetKeyNumber(s.DB, bkTombstone, nil, unixSec); err != nil {
+		if err := extdb.SetInt64(s.DB, bkTombstone, unixSec); err != nil {
 			return nil, err
 		}
 
@@ -87,7 +87,7 @@ func (s *Server) ExpireBefore(key string, unixSec int64) error {
 
 func (s *Server) GetTombstone(key string) int64 {
 	_, bkTombstone := extdb.GetKeyPrefix(key)
-	_, localTombstone, _ := extdb.GetKeyNumber(s.DB, bkTombstone)
+	localTombstone, _ := extdb.GetInt64(s.DB, bkTombstone)
 	return localTombstone
 }
 
@@ -100,45 +100,42 @@ func (s *Server) setMissing(key string, kvs [][2]string) {
 		mu := &s.fillLocks[s2pkg.HashStr(key)&0xffff]
 		mu.Lock()
 		defer mu.Unlock()
-		if err := s.rawSetStringsHexKey(key, kvs); err != nil {
+
+		if err := func() error {
+			tx := s.DB.NewBatch()
+			defer tx.Close()
+
+			bkPrefix, _ := extdb.GetKeyPrefix(key)
+
+			var k, v []byte
+			c := 0
+			for _, kv := range kvs {
+				if _, ok := s.fillCache.GetSimple(kv[0]); ok {
+					continue
+				}
+				idx := hexDecode([]byte(kv[0]))
+				k = append(append(k[:0], bkPrefix...), idx...)
+				v = append(v[:0], kv[1]...)
+				if err := tx.Set(k, v, pebble.Sync); err != nil {
+					return err
+				}
+				if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
+					return err
+				}
+				c++
+				s.fillCache.AddSimple(kv[0], 1)
+			}
+			if c == 0 {
+				return nil
+			}
+			return tx.Commit(pebble.Sync)
+		}(); err != nil {
 			logrus.Errorf("setMissing: %v", err)
 		}
+
 		s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
 		s.Survey.PeerOnMissingN.Incr(int64(len(kvs)))
 	}(time.Now())
-}
-
-func (s *Server) rawSetStringsHexKey(key string, kvs [][2]string) error {
-	if len(kvs) == 0 {
-		return nil
-	}
-	tx := s.DB.NewBatch()
-	defer tx.Close()
-
-	bkPrefix, _ := extdb.GetKeyPrefix(key)
-
-	var k, v []byte
-	c := 0
-	for _, kv := range kvs {
-		if _, ok := s.fillCache.GetSimple(kv[0]); ok {
-			continue
-		}
-		idx := hexDecode([]byte(kv[0]))
-		k = append(append(k[:0], bkPrefix...), idx...)
-		v = append(v[:0], kv[1]...)
-		if err := tx.Set(k, v, pebble.Sync); err != nil {
-			return err
-		}
-		if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
-			return err
-		}
-		c++
-		s.fillCache.AddSimple(kv[0], 1)
-	}
-	if c == 0 {
-		return nil
-	}
-	return tx.Commit(pebble.Sync)
 }
 
 func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
@@ -149,7 +146,7 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
 	var k []byte
 	for _, id := range ids {
 		k = append(append(k[:0], 'i'), id...)
-		key, err := extdb.GetKey(s.DB, k)
+		key, err := extdb.Get(s.DB, k)
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +154,7 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
 			data = append(data, nil)
 		} else {
 			bkPrefix, _ := extdb.GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
-			v, err := extdb.GetKey(s.DB, append(bkPrefix, id...))
+			v, err := extdb.Get(s.DB, append(bkPrefix, id...))
 			if err != nil {
 				return nil, err
 			}
@@ -191,6 +188,7 @@ func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err erro
 	} else {
 		c.SeekGE(start)
 	}
+
 	for c.Valid() && len(data) < n*3 {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 
@@ -205,6 +203,7 @@ func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err erro
 			c.Next()
 		}
 	}
+
 	return
 }
 

@@ -3,6 +3,7 @@ package s2pkg
 import (
 	"bytes"
 	"container/heap"
+	"fmt"
 	"math"
 	"sort"
 
@@ -173,4 +174,92 @@ func (spa *SortedPairArray) MinScore() float64 {
 		return spa.p[len(spa.p)-1].Score
 	}
 	return math.Inf(-1)
+}
+
+type FixedRange [][2][16]byte
+
+func NewFixedRange(lower, upper []byte) (a FixedRange) {
+	a.Append(lower, upper)
+	return
+}
+
+func (f *FixedRange) Append(lower, upper []byte) {
+	_, _ = lower[16-1], upper[16-1]
+	if bytes.Compare(upper, lower) < 0 {
+		lower, upper = upper, lower
+	}
+	var p [2][16]byte
+	copy(p[0][:], lower)
+	copy(p[1][:], upper)
+	*f = append(*f, p)
+}
+
+func (f *FixedRange) Sort() {
+	if len(*f) > 1 {
+		sort.Slice(*f, func(i, j int) bool {
+			return bytes.Compare((*f)[i][0][:], (*f)[j][0][:]) < 0
+		})
+	}
+	for len(*f) > 0 {
+		if (*f)[0][0] == [16]byte{} && (*f)[0][1] == [16]byte{} {
+			*f = (*f)[1:]
+		} else {
+			break
+		}
+	}
+	for i := len(*f) - 1; i > 0; i-- {
+		cur := (*f)[i]
+		prev := &(*f)[i-1]
+		if bytes.Compare(cur[0][:], prev[1][:]) <= 0 {
+			prev[1] = cur[1]
+			*f = append((*f)[:i], (*f)[i+1:]...)
+		}
+	}
+}
+
+func (f *FixedRange) Merge(f2 FixedRange) {
+	*f = append(*f, f2...)
+	f.Sort()
+	if len(*f) > 4 {
+		*f = append((*f)[:2], (*f)[len(*f)-2:]...)
+	}
+}
+
+func (f FixedRange) containsTuple(lower, upper [16]byte) bool {
+	for _, p := range f {
+		if bytes.Compare(p[0][:], lower[:]) <= 0 &&
+			bytes.Compare(lower[:], p[1][:]) <= 0 &&
+			bytes.Compare(p[0][:], upper[:]) <= 0 &&
+			bytes.Compare(upper[:], p[1][:]) <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (f FixedRange) Contains(f2 FixedRange) bool {
+	for _, p := range f2 {
+		if !f.containsTuple(p[0], p[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (f FixedRange) String() string {
+	buf := bytes.NewBufferString("(FixedRange")
+	for _, p := range f {
+		fmt.Fprintf(buf, " %032x-%032x", p[0], p[1])
+	}
+	buf.WriteString(")")
+	return buf.String()
+}
+
+func (f FixedRange) Bytes() []byte {
+	buf := bytes.Buffer{}
+	for _, p := range f {
+		buf.Write(p[0][:])
+		buf.Write(p[1][:])
+	}
+	return buf.Bytes()
 }

@@ -119,17 +119,34 @@ func (s *Server) setMissing(key string, kvs []s2pkg.Pair, consolidate bool) {
 				if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
 					return err
 				}
-				c++
+				c += 2
 				s.fillCache.AddSimple(cacheKey, nil)
 			}
 
 			if consolidate {
+				kvs := s2pkg.TrimPairs(kvs)
+
+				var cm [][16]byte
 				var idx [16]byte
-				for _, kv := range s2pkg.TrimPairs(kvs) {
-					cid := kv.Future().ToCookie(consolidatedMark)
+				for i := 0; i < len(kvs); i++ {
+					cid := kvs[i].Future().ToCookie(consolidatedMark)
 					binary.BigEndian.PutUint64(idx[:], uint64(cid))
-					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-						return err
+					if len(cm) == 0 || cm[len(cm)-1] != idx {
+						cm = append(cm, idx)
+					}
+				}
+				for i := 0; i < len(cm); i++ {
+					key := append(bkPrefix, cm[i][:]...)
+					if i == 0 {
+						if old, _ := extdb.Get(s.DB, key); old == nil {
+							if err := tx.Set(key, make([]byte, 16), pebble.Sync); err != nil {
+								return err
+							}
+						}
+					} else {
+						if err := tx.Set(key, cm[i-1][:], pebble.Sync); err != nil {
+							return err
+						}
 					}
 					c++
 				}
@@ -208,7 +225,8 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		c.SeekGE(start)
 	}
 
-	m := map[future.Future]bool{}
+	m := map[future.Future]future.Future{}
+	var maxFuture future.Future
 
 	for c.Valid() && len(data) < n {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
@@ -217,7 +235,10 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 			Data: s2pkg.Bytes(c.Value()),
 		}
 		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
-			m[p.Future()] = true
+			m[p.Future()] = future.Future(binary.BigEndian.Uint64(p.Data))
+			if p.Future() > maxFuture {
+				maxFuture = p.Future()
+			}
 		} else {
 			data = append(data, p)
 		}
@@ -231,14 +252,29 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 	idx := make([]byte, 16)
 	for i, p := range data {
 		cid := p.Future().ToCookie(consolidatedMark)
-		if m[cid] {
+		if _, ok := m[cid]; ok {
 			data[i].C = true
 			continue
 		}
 		binary.BigEndian.PutUint64(idx, uint64(cid))
 		k := append(bkPrefix, idx...)
 		if c.SeekGE(k); bytes.Equal(c.Key(), k) {
+			m[cid] = future.Future(binary.BigEndian.Uint64(c.Value()))
 			data[i].C = true
+			if cid > maxFuture {
+				maxFuture = cid
+			}
+		}
+	}
+
+	for c, ok := maxFuture, false; ; {
+		if c, ok = m[c]; c == 0 {
+			if !ok {
+				for i := range data {
+					data[i].C = false
+				}
+			}
+			break
 		}
 	}
 	return

@@ -562,7 +562,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		missings = append([]any{"IMGET"}, missings...)
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringStringMapCmd(context.TODO(), missings...)
+			return redis.NewStringSliceCmd(context.TODO(), missings...)
 		})
 		if recv == 0 {
 			return w.WriteBulkOrBulks(cmd == "GET", data)
@@ -570,12 +570,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		m := map[string]string{}
 		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-			if m0, err := cmd.(*redis.StringStringMapCmd).Result(); err != nil {
+			if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
 				return false
 			} else {
-				for k, v := range m0 {
-					m[k] = v
+				for i := 0; i < len(m0); i += 2 {
+					m[m0[i]] = m0[i+1]
 				}
 				return true
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/coyove/sdss/future"
@@ -87,6 +88,8 @@ func TrimPairs(p []Pair) (t []Pair) {
 			t = append(t, p)
 		}
 	}
+
+	sort.Slice(t, func(i, j int) bool { return t[i].Less(t[j]) })
 	return t
 }
 

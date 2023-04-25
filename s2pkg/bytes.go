@@ -213,14 +213,6 @@ func SizeOfBytes(in [][]byte) int {
 	return sz
 }
 
-func SizeOfPairs(in []Pair) int {
-	sz := 1
-	for _, p := range in {
-		sz += len(p.Member) + 8 + len(p.Data)
-	}
-	return sz
-}
-
 type Locker struct {
 	mu sync.Mutex
 }

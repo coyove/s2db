@@ -19,6 +19,7 @@ import (
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 )
@@ -58,8 +59,14 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
-			fmt.Sprintf("connections:%v", s.Survey.Connections),
-			"")
+			fmt.Sprintf("connections:%v", s.Survey.Connections))
+		if ntp := future.Chrony.Load(); ntp != nil {
+			data = append(data,
+				fmt.Sprintf("ntp_stats:%v/%v",
+					time.Duration(ntp.EstimatedOffset*1e9),
+					time.Duration(ntp.EstimatedOffsetErr*1e9)))
+		}
+		data = append(data, "")
 	}
 	if section == "" || section == "server_misc" {
 		dataSize := 0
@@ -294,6 +301,15 @@ func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor strin
 				nextCursor = string(x[:bytes.IndexByte(x, 0)][1:])
 			}
 			break
+		}
+	}
+	return
+}
+
+func (s *Server) PeerCount() (c int) {
+	for i, p := range s.Peers {
+		if p.Redis() != nil && s.Channel != int64(i) {
+			c++
 		}
 	}
 	return

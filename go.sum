@@ -49,6 +49,12 @@ github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c h1:1lalnsMVWL1btKGZacj
 github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/coyove/sdss v0.0.0-20230424072844-5b526244a41e h1:HWWV1INZzOZHgIJDYjupNZKDs5CdDgZVl7zMcIrw7Tw=
 github.com/coyove/sdss v0.0.0-20230424072844-5b526244a41e/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
+github.com/coyove/sdss v0.0.0-20230425062523-d396f3ad9560 h1:5psNXgDlkGdiolS1CRRTmbkqEOHWZ9yS5JtcfmrQl2o=
+github.com/coyove/sdss v0.0.0-20230425062523-d396f3ad9560/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
+github.com/coyove/sdss v0.0.0-20230425072957-450a1f1f0c3c h1:6hCrEYriJdazMmuWNwKu5sQjtbUSRdr85Xo4blolbbI=
+github.com/coyove/sdss v0.0.0-20230425072957-450a1f1f0c3c/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
+github.com/coyove/sdss v0.0.0-20230425082228-f6661bc969b0 h1:5fHlOeC8nOUz+bwU7zEDOt6nuhqDC1TvhLGXNt4pqMI=
+github.com/coyove/sdss v0.0.0-20230425082228-f6661bc969b0/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=

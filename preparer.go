@@ -6,9 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"reflect"
 	"sort"
-	"strconv"
 	"time"
 	"unsafe"
 
@@ -18,6 +16,8 @@ import (
 	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
 )
+
+const consolidatedMark = 1
 
 func (s *Server) Append(key string, data [][]byte, wait bool) ([][]byte, error) {
 	id := future.Get(s.Channel)
@@ -91,7 +91,7 @@ func (s *Server) GetTombstone(key string) int64 {
 	return localTombstone
 }
 
-func (s *Server) setMissing(key string, kvs [][2]string) {
+func (s *Server) setMissing(key string, kvs []s2pkg.Pair, consolidate bool) {
 	if len(kvs) == 0 {
 		s.Survey.PeerOnOK.Incr(1)
 		return
@@ -107,48 +107,60 @@ func (s *Server) setMissing(key string, kvs [][2]string) {
 
 			bkPrefix, _ := extdb.GetKeyPrefix(key)
 
-			var k, v []byte
 			c := 0
 			for _, kv := range kvs {
-				if _, ok := s.fillCache.GetSimple(kv[0]); ok {
+				cacheKey := string(kv.ID)
+				if _, ok := s.fillCache.GetSimple(cacheKey); ok {
 					continue
 				}
-				idx := hexDecode([]byte(kv[0]))
-				k = append(append(k[:0], bkPrefix...), idx...)
-				v = append(v[:0], kv[1]...)
-				if err := tx.Set(k, v, pebble.Sync); err != nil {
+				if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
 					return err
 				}
-				if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
+				if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
 					return err
 				}
 				c++
-				s.fillCache.AddSimple(kv[0], 1)
+				s.fillCache.AddSimple(cacheKey, nil)
 			}
+
+			if consolidate {
+				var idx [16]byte
+				for _, kv := range s2pkg.TrimPairs(kvs) {
+					cid := kv.Future().ToCookie(consolidatedMark)
+					binary.BigEndian.PutUint64(idx[:], uint64(cid))
+					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+						return err
+					}
+					c++
+				}
+			}
+
 			if c == 0 {
 				return nil
 			}
+			s.Survey.PeerOnMissingN.Incr(int64(c))
 			return tx.Commit(pebble.Sync)
 		}(); err != nil {
 			logrus.Errorf("setMissing: %v", err)
 		}
 
 		s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
-		s.Survey.PeerOnMissingN.Incr(int64(len(kvs)))
 	}(time.Now())
 }
 
-func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
+func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error) {
 	if len(ids) == 0 {
-		return nil, nil
+		return nil, true, nil
 	}
 
 	var k []byte
+	idx := make([]byte, 16)
+	score := 0
 	for _, id := range ids {
 		k = append(append(k[:0], 'i'), id...)
 		key, err := extdb.Get(s.DB, k)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(key) == 0 {
 			data = append(data, nil)
@@ -156,15 +168,22 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, err error) {
 			bkPrefix, _ := extdb.GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
 			v, err := extdb.Get(s.DB, append(bkPrefix, id...))
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 			data = append(data, v)
+
+			mark := future.Future(binary.BigEndian.Uint64(id)).ToCookie(consolidatedMark)
+			binary.BigEndian.PutUint64(idx, uint64(mark))
+			if con, _ := extdb.Get(s.DB, append(bkPrefix, idx...)); con != nil {
+				score++
+			}
 		}
 	}
+	consolidated = score == len(ids)
 	return
 }
 
-func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err error) {
+func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err error) {
 	desc := false
 	if n < 0 {
 		desc, n = true, -n
@@ -189,14 +208,19 @@ func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err erro
 		c.SeekGE(start)
 	}
 
-	for c.Valid() && len(data) < n*3 {
+	m := map[future.Future]bool{}
+
+	for c.Valid() && len(data) < n {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
-
-		ns := binary.BigEndian.Uint64(k)
-		ts := float64(ns/1e8) / 10
-		tsbuf := []byte(strconv.FormatFloat(ts, 'f', -1, 64))
-
-		data = append(data, hexEncode(k), tsbuf, s2pkg.Bytes(c.Value()))
+		p := s2pkg.Pair{
+			ID:   s2pkg.Bytes(k),
+			Data: s2pkg.Bytes(c.Value()),
+		}
+		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
+			m[p.Future()] = true
+		} else {
+			data = append(data, p)
+		}
 		if desc {
 			c.Prev()
 		} else {
@@ -204,6 +228,19 @@ func (s *Server) Range(key string, start []byte, n int) (data [][]byte, err erro
 		}
 	}
 
+	idx := make([]byte, 16)
+	for i, p := range data {
+		cid := p.Future().ToCookie(consolidatedMark)
+		if m[cid] {
+			data[i].C = true
+			continue
+		}
+		binary.BigEndian.PutUint64(idx, uint64(cid))
+		k := append(bkPrefix, idx...)
+		if c.SeekGE(k); bytes.Equal(c.Key(), k) {
+			data[i].C = true
+		}
+	}
 	return
 }
 
@@ -219,37 +256,15 @@ func hexDecode(k []byte) []byte {
 	return k0
 }
 
-func sortAndSubtract(merged []string, orig []string, desc bool) (sorted []string, subtracted [][2]string) {
-	type foo struct{ id, ts, data string }
-	convert := func(in []string) (out []foo) {
-		sout := (*reflect.SliceHeader)(unsafe.Pointer(&out))
-		sin := (*reflect.SliceHeader)(unsafe.Pointer(&in))
-		sout.Data = sin.Data
-		sout.Len = sin.Len / 3
-		sout.Cap = sin.Cap / 3
-		return
-	}
-
-	m0 := convert(merged)
-	orig0 := convert(orig)
-
-	sort.Slice(m0, func(i, j int) bool {
-		return m0[i].id > m0[j].id == desc
+func sortPairs(p []s2pkg.Pair, asc bool) []s2pkg.Pair {
+	sort.Slice(p, func(i, j int) bool {
+		return p[i].Less(p[j]) == asc
 	})
-	for i := len(m0) - 1; i > 0; i-- {
-		if m0[i] == m0[i-1] {
-			m0 = append(m0[:i], m0[i+1:]...)
+
+	for i := len(p) - 1; i > 0; i-- {
+		if p[i].Equal(p[i-1]) {
+			p = append(p[:i], p[i+1:]...)
 		}
 	}
-
-	for foo := m0; len(foo) > 0; foo = foo[1:] {
-		head := foo[0]
-		if len(orig0) > 0 && head == orig0[0] {
-			orig0 = orig0[1:]
-		} else {
-			subtracted = append(subtracted, [2]string{head.id, head.data})
-		}
-	}
-
-	return merged[:len(m0)*3], subtracted
+	return p
 }

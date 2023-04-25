@@ -28,6 +28,8 @@ type ServerConfig struct {
 	Peer2, Peer3     string
 	Peer4, Peer5     string
 	Peer6, Peer7     string
+	Peer8, Peer9     string
+	Peer10, Peer11   string
 	FillCacheSize    int
 	SlowLimit        int // ms
 	PeerTimeout      int // ms

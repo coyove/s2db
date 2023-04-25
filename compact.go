@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,17 +35,6 @@ func (s *Server) startCronjobs() {
 	run(time.Second*60, false)
 	run(time.Second*60, true)
 	run(time.Second*300, false)
-}
-
-func getTTLByName(ttls []s2pkg.Pair, name string) int {
-	idx := sort.Search(len(ttls), func(i int) bool { return ttls[i].Member >= name })
-	if idx < len(ttls) && name == ttls[idx].Member {
-		return int(ttls[idx].Score)
-	}
-	if idx > 0 && idx <= len(ttls) && strings.HasPrefix(name, ttls[idx-1].Member) {
-		return int(ttls[idx-1].Score)
-	}
-	return -1
 }
 
 func (s *Server) DumpWire(dest string) {

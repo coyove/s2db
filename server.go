@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -46,7 +45,7 @@ type Server struct {
 
 	ServerConfig ServerConfig
 	LocalRedis   *redis.Client
-	Peers        [8]*endpoint
+	Peers        [future.Channels]*endpoint
 	DBPath       string
 	DBOptions    *pebble.Options
 	Channel      int64
@@ -67,6 +66,7 @@ type Server struct {
 		PeerOnMissingN  s2pkg.Survey          `metrics:"mean"`
 		PeerOnMissing   s2pkg.Survey          ``
 		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
+		Consolidated    s2pkg.Survey          `metrics:"qps"`
 		IExpireBefore   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
@@ -415,23 +415,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		for i := range hexIds {
 			hexIds[i] = hexEncode(ids[i])
 		}
-		// if len(hexIds) > 0 && s.HasPeers() && s.ServerConfig.DisablePeerWrite == 0 {
-		// 	args := []any{"IAPPEND", key, 0}
-		// 	h := crc32.NewIEEE()
-		// 	for i := range hexIds {
-		// 		h.Write(hexIds[i])
-		// 		h.Write(data[i])
-		// 		args = append(args, hexIds[i], data[i])
-		// 	}
-		// 	args[2] = h.Sum32()
-
-		// 	go func(start time.Time) {
-		// 		s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
-		// 			cli.Do(context.TODO(), args...)
-		// 		})
-		// 		s.Survey.IAppend.Incr(time.Since(start).Milliseconds())
-		// 	}(time.Now())
-		// }
 		return w.WriteBulks(hexIds)
 	case "IEXPIREBEFORE":
 		if err := s.ExpireBefore(key, K.Int64(2)); err != nil {
@@ -455,21 +438,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}(time.Now())
 		}
 		return w.WriteInt64(t)
-	// case "IAPPEND": // IAPPEND KEY HASH ID_0 DATA_0 ID_1 DATA_1 ...
-	// 	var data [][2]string
-	// 	h := crc32.NewIEEE()
-	// 	for i := 3; i < K.ArgCount(); i += 2 {
-	// 		h.Write(K.BytesRef(i))
-	// 		h.Write(K.BytesRef(i + 1))
-	// 		data = append(data, [2]string{K.StrRef(i), K.StrRef(i + 1)})
-	// 	}
-	// 	if h.Sum32() != uint32(K.Int64(2)) {
-	// 		return w.WriteError("IAPPEND: invalid hash")
-	// 	}
-	// 	if err := s.rawSetStringsHexKey(key, data); err != nil {
-	// 		return w.WriteError(err.Error())
-	// 	}
-	// 	return w.WriteSimpleString("OK")
 	case "IRANGE": // IRANGE KEY RAW_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
 		tombstone := K.Int64(4)
 		if tombstone > 0 {
@@ -486,7 +454,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(append(data, strconv.AppendInt(nil, tombstone, 10)))
+		return w.WriteBulks(append(s2pkg.ConvertPairsToBulks(data),
+			strconv.AppendInt(nil, tombstone, 10)))
 	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
@@ -513,7 +482,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if !s.HasPeers() || K.StrEqFold(4, "local") {
-			return w.WriteBulks(data)
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
+		}
+		if s2pkg.AllPairsConsolidated(data) {
+			s.Survey.Consolidated.Incr(1)
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 		}
 
 		tombstone := s.GetTombstone(key)
@@ -521,14 +494,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, tombstone)
 		})
 		if recv == 0 {
-			return w.WriteBulks(data)
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 		}
 
-		orig := ssRef(data)
-		merged := orig
 		oldTombstone := tombstone
 
-		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
 				return false
@@ -537,7 +508,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				if remoteTombstone > tombstone {
 					tombstone = remoteTombstone
 				}
-				merged = append(merged, v[:len(v)-1]...)
+				data = append(data, s2pkg.ConvertBulksToPairs(v[:len(v)-1])...)
 				return true
 			}
 		})
@@ -548,17 +519,15 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 		}
 
-		merged, sub := sortAndSubtract(merged, orig, n < 0)
-		s.setMissing(key, sub)
-		if n := int(math.Abs(float64(n))); len(merged) > n*3 {
-			merged = merged[:n*3]
+		data = sortPairs(data, n >= 0)
+		if n := int(math.Abs(float64(n))); len(data) > n {
+			data = data[:n]
 		}
-		err = w.WriteBulkStrings(merged)
-		runtime.KeepAlive(data)
-		return err
+		s.setMissing(key, data, success == s.PeerCount())
+		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 	case "IMGET":
 		ids := K.Argv[1:]
-		data, err := s.MGet(ids)
+		data, _, err := s.MGet(ids)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -573,11 +542,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		for i := 1; i < K.ArgCount(); i++ {
 			ids = append(ids, hexDecode(K.BytesRef(i)))
 		}
-		data, err := s.MGet(ids)
+		data, consolidated, err := s.MGet(ids)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-
+		if consolidated {
+			s.Survey.Consolidated.Incr(1)
+			return w.WriteBulkOrBulks(cmd == "GET", data)
+		}
 		var missings []any
 		for i, d := range data {
 			if d == nil {
@@ -608,19 +580,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				return true
 			}
 		})
-		var kvs [][2]string
 		for i, d := range data {
 			if d != nil {
 				continue
 			}
-			k := hex.EncodeToString(ids[i])
-			v, ok := m[k]
-			if ok {
+			if v, ok := m[hex.EncodeToString(ids[i])]; ok {
 				data[i] = []byte(v)
-				kvs = append(kvs, [2]string{k, v})
 			}
 		}
-		s.setMissing(key, kvs)
 		return w.WriteBulkOrBulks(cmd == "GET", data)
 	case "SCAN": // SCAN CURSOR COUNT
 		data, nextCursor := s.Scan(K.StrRef(1), K.Int(2))

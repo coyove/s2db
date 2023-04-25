@@ -28,11 +28,16 @@ var (
 	}
 )
 
+type metricsPair struct {
+	Member string
+	Score  float64
+}
+
 func (s *Server) appendMetricsPairs(ttl time.Duration) error {
-	var pairs []s2pkg.Pair
+	var pairs []metricsPair
 	start := clock.Now()
 	now := start.UnixNano() - int64(60*time.Second)
-	pairs = append(pairs, s2pkg.Pair{Member: "Connections", Score: float64(s.Survey.Connections)})
+	pairs = append(pairs, metricsPair{Member: "Connections", Score: float64(s.Survey.Connections)})
 	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
 	for i := 0; i < rv.NumField(); i++ {
 		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
@@ -40,24 +45,24 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			t := n.Tag.Get("metrics")
 			if t == "mean" || t == "" {
 				pairs = append(pairs,
-					s2pkg.Pair{Member: n.Name + "_Mean", Score: m.Mean[0]},
-					s2pkg.Pair{Member: n.Name + "_Max", Score: float64(m.Max[0])},
+					metricsPair{Member: n.Name + "_Mean", Score: m.Mean[0]},
+					metricsPair{Member: n.Name + "_Max", Score: float64(m.Max[0])},
 				)
 			}
 			if t == "qps" || t == "" {
-				pairs = append(pairs, s2pkg.Pair{Member: n.Name + "_QPS", Score: m.QPS[0]})
+				pairs = append(pairs, metricsPair{Member: n.Name + "_QPS", Score: m.QPS[0]})
 			}
 		}
 	}
 	s.Survey.PeerLatency.Range(func(k, v any) bool {
 		s := v.(*s2pkg.Survey).Metrics()
-		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_Mean", Score: float64(s.Mean[0])})
-		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_Max", Score: float64(s.Max[0])})
-		pairs = append(pairs, s2pkg.Pair{Member: "Peer_" + k.(string) + "_QPS", Score: float64(s.QPS[0])})
+		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_Mean", Score: float64(s.Mean[0])})
+		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_Max", Score: float64(s.Max[0])})
+		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_QPS", Score: float64(s.QPS[0])})
 		return true
 	})
-	pairs = append(pairs, s2pkg.Pair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
-	pairs = append(pairs, s2pkg.Pair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
+	pairs = append(pairs, metricsPair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
+	pairs = append(pairs, metricsPair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
 
 	lsmMetrics := s.DB.Metrics()
 	dbm := reflect.ValueOf(lsmMetrics).Elem()
@@ -67,17 +72,17 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		case reflect.Struct:
 			rft := f.Type()
 			for ii := 0; ii < f.NumField(); ii++ {
-				pairs = append(pairs, s2pkg.Pair{Member: "DB_" + rt.Field(i).Name + "_" + rft.Field(ii).Name, Score: rvToFloat64(f.Field(ii))})
+				pairs = append(pairs, metricsPair{Member: "DB_" + rt.Field(i).Name + "_" + rft.Field(ii).Name, Score: rvToFloat64(f.Field(ii))})
 			}
 		case reflect.Array:
 		default:
-			pairs = append(pairs, s2pkg.Pair{Member: "DB_" + rt.Field(i).Name, Score: rvToFloat64(f)})
+			pairs = append(pairs, metricsPair{Member: "DB_" + rt.Field(i).Name, Score: rvToFloat64(f)})
 		}
 	}
 	for lv, lvm := range lsmMetrics.Levels {
 		rv := reflect.ValueOf(lvm)
 		for i := 0; i < rv.NumField(); i++ {
-			pairs = append(pairs, s2pkg.Pair{Member: "DB_Level" + strconv.Itoa(lv) + "_" + rv.Type().Field(i).Name,
+			pairs = append(pairs, metricsPair{Member: "DB_Level" + strconv.Itoa(lv) + "_" + rv.Type().Field(i).Name,
 				Score: rvToFloat64(rv.Field(i))})
 		}
 	}
@@ -106,7 +111,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			if influxdb1Client.Client == nil {
 				continue
 			}
-			pairs = append(pairs, s2pkg.Pair{Member: "Heartbeat", Score: 1})
+			pairs = append(pairs, metricsPair{Member: "Heartbeat", Score: 1})
 			tags := map[string]string{"ServerName": s.ServerConfig.ServerName}
 			points := make([]client.Point, 0, len(pairs))
 			for _, p := range pairs {

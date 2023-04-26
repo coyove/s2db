@@ -95,6 +95,11 @@ func (e *endpoint) work() {
 		default:
 		}
 
+		cli = e.Redis()
+		if cli == nil {
+			time.Sleep(time.Second)
+			continue
+		}
 		p := cli.Pipeline()
 		for _, cmd := range commands {
 			p.Process(ctx, cmd.Cmder)

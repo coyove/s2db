@@ -35,8 +35,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const ShardLogNum = 32
-
 type Server struct {
 	ln           net.Listener
 	lnLocal      net.Listener
@@ -174,7 +172,7 @@ func (s *Server) Serve(addr string) (err error) {
 		return err
 	}
 	s.lnLocal, err = net.Listen("unix", filepath.Join(os.TempDir(),
-		fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().Unix())))
+		fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().UnixNano())))
 	if err != nil {
 		return err
 	}
@@ -399,6 +397,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		future.Future(binary.BigEndian.Uint64(hexDecode(x))).Wait()
 		return w.WriteSimpleString("OK")
+	case "CNFLAG":
+		if _, consolidated, _ := s.MGet(K.Argv[1:]); consolidated {
+			return w.WriteInt64(1)
+		}
+		return w.WriteInt64(0)
 	}
 
 	switch cmd {
@@ -454,8 +457,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(append(s2pkg.ConvertPairsToBulks(data),
-			strconv.AppendInt(nil, tombstone, 10)))
+		b := s2pkg.ConvertPairsToBulksNoTimestamp(data)
+		return w.WriteBulks(append(b, strconv.AppendInt(nil, tombstone, 10)))
 	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte

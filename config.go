@@ -113,17 +113,13 @@ func (s *Server) saveConfig() error {
 }
 
 func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
-	key = strings.ToLower(key)
-	if key == "servername" && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
+	if strings.EqualFold(key, "servername") && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
 		return false, fmt.Errorf("invalid char in server name")
-	}
-	if key == "slave" && !strings.HasPrefix(value, "redis://") && value != "" {
-		value = "redis://" + value
 	}
 	found := false
 	old := s.ServerConfig
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		if strings.ToLower(f.Name) != key {
+		if !strings.EqualFold(f.Name, key) {
 			return nil
 		}
 		old := fmt.Sprint(fv.Interface())

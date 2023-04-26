@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 
@@ -64,11 +65,22 @@ func ConvertPairsToBulks(p []Pair) (a [][]byte) {
 	return
 }
 
+func ConvertPairsToBulksNoTimestamp(p []Pair) (a [][]byte) {
+	x := []byte("0")
+	for _, p := range p {
+		i := p.IDHex()
+		a = append(a, i, x, p.Data)
+	}
+	return
+}
+
 func ConvertBulksToPairs(a []string) (p []Pair) {
 	for i := 0; i < len(a); i += 3 {
 		var x Pair
 		x.ID, _ = hex.DecodeString(a[i])
 		x.Data = []byte(a[i+2])
+		ts100 := int64(math.Round(MustParseFloat(a[i+1]) * 100))
+		x.C = ts100%2 == 1
 		p = append(p, x)
 	}
 	return

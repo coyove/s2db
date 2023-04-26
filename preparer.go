@@ -225,7 +225,7 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		c.SeekGE(start)
 	}
 
-	m := map[future.Future]future.Future{}
+	chain := map[future.Future]future.Future{}
 	var maxFuture future.Future
 
 	for c.Valid() && len(data) < n {
@@ -235,11 +235,23 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 			Data: s2pkg.Bytes(c.Value()),
 		}
 		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
-			m[p.Future()] = future.Future(binary.BigEndian.Uint64(p.Data))
+			chain[p.Future()] = future.Future(binary.BigEndian.Uint64(p.Data))
 			if p.Future() > maxFuture {
 				maxFuture = p.Future()
 			}
 		} else {
+			if len(data) == 0 || len(data) == n-1 {
+				var idx [16]byte
+				cid := p.Future().ToCookie(consolidatedMark)
+				binary.BigEndian.PutUint64(idx[:], uint64(cid))
+				v, _ := extdb.Get(s.DB, append(bkPrefix, idx[:]...))
+				if v != nil {
+					chain[cid] = future.Future(binary.BigEndian.Uint64(v))
+					if cid > maxFuture {
+						maxFuture = cid
+					}
+				}
+			}
 			data = append(data, p)
 		}
 		if desc {
@@ -249,32 +261,23 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		}
 	}
 
-	idx := make([]byte, 16)
-	for i, p := range data {
-		cid := p.Future().ToCookie(consolidatedMark)
-		if _, ok := m[cid]; ok {
-			data[i].C = true
-			continue
-		}
-		binary.BigEndian.PutUint64(idx, uint64(cid))
-		k := append(bkPrefix, idx...)
-		if c.SeekGE(k); bytes.Equal(c.Key(), k) {
-			m[cid] = future.Future(binary.BigEndian.Uint64(c.Value()))
-			data[i].C = true
-			if cid > maxFuture {
-				maxFuture = cid
+	//fmt.Println(s.ln.Addr(), data, chain)
+
+	// Verify that all 'futures' in 'chain' form a linked list, where newer 'futures'
+	// point to older 'futures'. The oldest 'future' may point to null.
+	for c, ok := maxFuture, false; ; {
+		if c, ok = chain[c]; c == 0 {
+			if !ok {
+				return
 			}
+			break
 		}
 	}
 
-	for c, ok := maxFuture, false; ; {
-		if c, ok = m[c]; c == 0 {
-			if !ok {
-				for i := range data {
-					data[i].C = false
-				}
-			}
-			break
+	for i, p := range data {
+		cid := p.Future().ToCookie(consolidatedMark)
+		if _, ok := chain[cid]; ok {
+			data[i].C = true
 		}
 	}
 	return

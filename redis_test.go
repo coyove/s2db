@@ -134,7 +134,7 @@ func TestConsolidation(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 20, 21, 22).Err())
 
-	s2.test.DoFail = true
+	s2.test.Fail = true
 
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
@@ -146,7 +146,7 @@ func TestConsolidation(t *testing.T) {
 			t.Fatal(data)
 		}
 	}
-	s2.test.DoFail = false
+	s2.test.Fail = false
 
 	data = doRange(rdb1, "a", "+inf", -20)
 	time.Sleep(time.Second)
@@ -176,7 +176,7 @@ func TestConsolidation(t *testing.T) {
 
 	id3 := string(data[2].IDHex())
 
-	s1.test.DoFail = true
+	s1.test.Fail = true
 	s2.test.MustAllPeers = true
 	if x := doRange(rdb2, "a", id3, 1); !x[0].Equal(data[2]) {
 		t.Fatal(x)
@@ -185,14 +185,14 @@ func TestConsolidation(t *testing.T) {
 		t.Fatal("should fail")
 	}
 	s2.test.MustAllPeers = false
-	s1.test.DoFail = false
+	s1.test.Fail = false
 
 	doRange(rdb2, "a", id3, 5) // returns [[3]], 4, 10, 11, 12
 	time.Sleep(time.Second)
 
-	s1.test.DoFail = true
+	s1.test.Fail = true
 	data = doRange(rdb2, "a", id3, 3) // returns [[3]], [[4]], [[10]]
-	s1.test.DoFail = false
+	s1.test.Fail = false
 
 	if !s2pkg.AllPairsConsolidated(data) {
 		t.Fatal(data)

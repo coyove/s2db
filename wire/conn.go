@@ -13,13 +13,14 @@ import (
 )
 
 type RedisConfig struct {
-	Raw  string
-	Name string
-	*redis.Options
+	Raw    string
+	Name   string
+	Prefix string
+	redis.Options
 }
 
 func (rc RedisConfig) GetClient() *redis.Client {
-	return redis.NewClient(rc.Options)
+	return redis.NewClient(&rc.Options)
 }
 
 func ParseConnString(addr string) (cfg RedisConfig, err error) {
@@ -27,25 +28,28 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 		addr = "redis://" + addr
 	}
 	cfg.Raw = addr
-
-	q := addr[strings.Index(addr, "?")+1:]
-	if q == addr {
-		q = ""
-	}
-
-	cfg.Options, err = redis.ParseURL(addr[:len(addr)-len(q)])
+	u, err := url.Parse(addr)
 	if err != nil {
-		return
+		return cfg, err
 	}
 
-	uq, _ := url.ParseQuery(q)
-	rv := reflect.ValueOf(cfg.Options).Elem()
-	for k, vs := range uq {
+	cfg.Addr = u.Host
+	if !strings.Contains(cfg.Addr, ":") {
+		cfg.Addr += ":6379"
+	}
+	if u.User != nil {
+		cfg.Password = u.User.Username()
+	}
+
+	rv := reflect.ValueOf(cfg.Options)
+	for k, vs := range u.Query() {
 		if len(vs) == 0 {
 			continue
 		}
 		if k == "Name" {
 			cfg.Name = vs[0]
+		} else if k == "Prefix" {
+			cfg.Prefix = vs[0]
 		} else if f := rv.FieldByName(k); f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
 			v, _ := strconv.ParseFloat(vs[0], 64)
 			f.SetInt(int64(v))
@@ -53,9 +57,6 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 			err = fmt.Errorf("invalid option field: %q", k)
 			return
 		}
-	}
-	if cfg.Options.Username != "" {
-		cfg.Options.Username, cfg.Options.Password = "", cfg.Options.Username
 	}
 	if cfg.Options.DialTimeout == 0 {
 		cfg.Options.DialTimeout = time.Second

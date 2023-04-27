@@ -78,7 +78,7 @@ type Server struct {
 	expireGroup singleflight.Group
 
 	test struct {
-		DoFail       bool
+		Fail         bool
 		MustAllPeers bool
 	}
 }
@@ -254,7 +254,7 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 				writer.Flush()
 				continue
 			}
-			if s.test.DoFail {
+			if s.test.Fail {
 				ew = writer.WriteError("test: failed on purpose")
 			} else {
 				startTime := time.Now()

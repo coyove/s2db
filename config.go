@@ -191,7 +191,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	}
 	cfg, err := wire.ParseConnString(addr)
 	s2pkg.PanicErr(err)
-	cli = redis.NewClient(cfg.Options)
+	cli = cfg.GetClient()
 	s.rdbCache.AddSimple(cfg.Raw, cli)
 	return
 }

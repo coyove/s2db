@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"sort"
 	"time"
 	"unsafe"
@@ -21,6 +22,12 @@ const consolidatedMark = 1
 
 func (s *Server) Append(key string, data [][]byte, wait bool) ([][]byte, error) {
 	id := future.Get(s.Channel)
+	if testFlag {
+		x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
+		if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
+			panic("fatal: duplicated id")
+		}
+	}
 	if wait {
 		defer id.Wait()
 	}
@@ -284,14 +291,21 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 }
 
 func hexEncode(k []byte) []byte {
-	k0 := make([]byte, len(k)*2)
+	_ = k[15]
+	k0 := make([]byte, 32)
 	hex.Encode(k0, k)
 	return k0
 }
 
 func hexDecode(k []byte) []byte {
-	k0 := make([]byte, len(k)/2)
-	hex.Decode(k0, k)
+	_ = k[31]
+	k0 := make([]byte, 16)
+	if len(k) == 33 && k[16] == '_' {
+		hex.Decode(k0[:8], k[:16])
+		hex.Decode(k0[8:], k[17:])
+	} else {
+		hex.Decode(k0, k)
+	}
 	return k0
 }
 
@@ -306,4 +320,11 @@ func sortPairs(p []s2pkg.Pair, asc bool) []s2pkg.Pair {
 		}
 	}
 	return p
+}
+
+func iabs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

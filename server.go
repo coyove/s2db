@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -64,8 +64,9 @@ type Server struct {
 		PeerOnMissingN  s2pkg.Survey          `metrics:"mean"`
 		PeerOnMissing   s2pkg.Survey          ``
 		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
-		Consolidated    s2pkg.Survey          `metrics:"qps"`
+		AllConsolidated s2pkg.Survey          `metrics:"qps"`
 		IExpireBefore   s2pkg.Survey
+		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
 	}
@@ -75,6 +76,11 @@ type Server struct {
 	fillLocks   [0x10000]sync.Mutex
 	fillCache   *s2pkg.LRUCache
 	expireGroup singleflight.Group
+
+	test struct {
+		DoFail       bool
+		MustAllPeers bool
+	}
 }
 
 func Open(dbPath string) (x *Server, err error) {
@@ -95,7 +101,9 @@ func Open(dbPath string) (x *Server, err error) {
 		FS:       x.DBOptions.FS,
 		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatUint(clock.Id(), 16)),
 	}
-	x.DBOptions.EventListener = x.createDBListener()
+	if !testFlag {
+		x.DBOptions.EventListener = x.createDBListener()
+	}
 	start := time.Now()
 	x.DB, err = pebble.Open(dbPath, x.DBOptions)
 	if err != nil {
@@ -246,9 +254,13 @@ func (s *Server) handleConnection(conn s2pkg.BufioConn) {
 				writer.Flush()
 				continue
 			}
-			startTime := time.Now()
-			cmd := strings.ToUpper(command.Str(0))
-			ew = s.runCommand(startTime, cmd, writer, s2pkg.GetRemoteIP(conn.RemoteAddr()), command)
+			if s.test.DoFail {
+				ew = writer.WriteError("test: failed on purpose")
+			} else {
+				startTime := time.Now()
+				cmd := strings.ToUpper(command.Str(0))
+				ew = s.runCommand(startTime, cmd, writer, s2pkg.GetRemoteIP(conn.RemoteAddr()), command)
+			}
 		}
 		if command.IsLast() {
 			writer.Flush()
@@ -476,10 +488,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 					binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s[1:])*1e9))
 				}
 			} else {
-				start, _ = hex.DecodeString(s)
+				start = hexDecode(K.BytesRef(2))
 			}
 		}
 
+		trueN := n
+		if !testFlag {
+			n = int(float64(n) * (1 + rand.Float64())) // caller wants N elements, we actually fetch more than that
+		}
 		data, err := s.Range(key, start, n)
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -488,7 +504,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 		}
 		if s2pkg.AllPairsConsolidated(data) {
-			s.Survey.Consolidated.Incr(1)
+			s.Survey.AllConsolidated.Incr(1)
 			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 		}
 
@@ -505,6 +521,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
+				if s.test.MustAllPeers {
+					panic("not all peers respond")
+				}
 				return false
 			} else {
 				remoteTombstone, _ := strconv.ParseInt(string(v[len(v)-1]), 10, 64)
@@ -523,10 +542,13 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 
 		data = sortPairs(data, n >= 0)
-		if n := int(math.Abs(float64(n))); len(data) > n {
-			data = data[:n]
+		if len(data) > iabs(n) {
+			data = data[:iabs(n)]
 		}
 		s.setMissing(key, data, success == s.PeerCount())
+		if len(data) > iabs(trueN) {
+			data = data[:iabs(trueN)]
+		}
 		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
 	case "IMGET":
 		ids := K.Argv[1:]
@@ -550,7 +572,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if consolidated {
-			s.Survey.Consolidated.Incr(1)
+			s.Survey.AllConsolidated.Incr(1)
 			return w.WriteBulkOrBulks(cmd == "GET", data)
 		}
 		var missings []any

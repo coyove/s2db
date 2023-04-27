@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,14 @@ func init() {
 	rand.Seed(clock.UnixNano())
 }
 
+func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
+	m := map[string]s2pkg.Pair{}
+	for _, p := range p {
+		m[string(p.ID)] = p
+	}
+	return m
+}
+
 func doRange(r *redis.Client, key string, start string, n int) []s2pkg.Pair {
 	cmd := redis.NewStringSliceCmd(context.TODO(), "RANGE", key, start, n)
 	r.Process(context.TODO(), cmd)
@@ -29,7 +38,18 @@ func doRange(r *redis.Client, key string, start string, n int) []s2pkg.Pair {
 	return s2pkg.ConvertBulksToPairs(cmd.Val())
 }
 
-func TestAppend(t *testing.T) {
+func catchPanic(f func()) (err error) {
+	defer func() {
+		r := recover()
+		if r != nil {
+			err = fmt.Errorf("catchPanic: %v", r)
+		}
+	}()
+	f()
+	return
+}
+
+func prepareServers() (*redis.Client, *redis.Client, *Server, *Server) {
 	os.RemoveAll("test/6666")
 	os.RemoveAll("test/7777")
 
@@ -52,6 +72,15 @@ func TestAppend(t *testing.T) {
 	s2pkg.PanicErr(rdb1.ConfigSet(ctx, "Peer2", "127.0.0.1:7777/?Name=1").Err())
 	s2pkg.PanicErr(rdb2.ConfigSet(ctx, "Peer1", "127.0.0.1:6666/?Name=2").Err())
 
+	return rdb1, rdb2, s1, s2
+}
+
+func TestAppend(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
 		r := rdb1
@@ -75,12 +104,97 @@ func TestAppend(t *testing.T) {
 	}
 
 	data = s2pkg.TrimPairs(data)
-	{
-		ts := string(data[0].IDHex())
-		data = doRange(rdb2, "a", ts, N)
-		fmt.Println(data, len(data))
-		time.Sleep(time.Second / 2)
-		data = doRange(rdb2, "a", ts, N)
-		fmt.Println(data)
+	ts := string(data[0].IDHex())
+	data = doRange(rdb2, "a", ts, N)
+	fmt.Println(data, len(data))
+	fmt.Println(strings.Repeat("-", 10))
+
+	time.Sleep(time.Second / 2)
+	data = doRange(rdb2, "a", ts, N)
+	fmt.Println(data)
+}
+
+func TestConsolidation(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 1, 2).Err())
+	time.Sleep(200 * time.Millisecond)
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 3).Err())
+	time.Sleep(200 * time.Millisecond)
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 4).Err())
+
+	for i := 10; i <= 15; i += 2 {
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPENDWAIT", "a", i, i+1).Err())
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 20, 21, 22).Err())
+
+	s2.test.DoFail = true
+
+	data := doRange(rdb1, "a", "+inf", -10)
+	fmt.Println(data)
+	time.Sleep(time.Second)
+
+	data = doRange(rdb1, "a", "+inf", -10)
+	for _, d := range data {
+		if d.C {
+			t.Fatal(data)
+		}
+	}
+	s2.test.DoFail = false
+
+	data = doRange(rdb1, "a", "+inf", -20)
+	time.Sleep(time.Second)
+
+	data = s2pkg.TrimPairs(data)
+	trimmed := pairsMap(data)
+	if len(trimmed) == 0 {
+		t.Fatal(data)
+	}
+	fmt.Println("trimmed", data)
+
+	data = doRange(rdb1, "a", "+inf", -20)
+	for _, p := range data {
+		if p.C {
+			if _, ok := trimmed[string(p.ID)]; !ok {
+				t.Fatal(data)
+			}
+		}
+	}
+
+	data = doRange(rdb2, "a", "0", 4)
+	time.Sleep(time.Second)
+	data = doRange(rdb2, "a", "0", 4) // returns 1, 2, [[3]], 4
+	if data[0].C || data[1].C || !data[2].C || data[3].C {
+		t.Fatal(data)
+	}
+
+	id3 := string(data[2].IDHex())
+
+	s1.test.DoFail = true
+	s2.test.MustAllPeers = true
+	if x := doRange(rdb2, "a", id3, 1); !x[0].Equal(data[2]) {
+		t.Fatal(x)
+	}
+	if x := catchPanic(func() { doRange(rdb2, "a", id3, 2) }); x == nil {
+		t.Fatal("should fail")
+	}
+	s2.test.MustAllPeers = false
+	s1.test.DoFail = false
+
+	doRange(rdb2, "a", id3, 5) // returns [[3]], 4, 10, 11, 12
+	time.Sleep(time.Second)
+
+	s1.test.DoFail = true
+	data = doRange(rdb2, "a", id3, 3) // returns [[3]], [[4]], [[10]]
+	s1.test.DoFail = false
+
+	if !s2pkg.AllPairsConsolidated(data) {
+		t.Fatal(data)
 	}
 }

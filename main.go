@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coyove/s2db/clock"
@@ -48,7 +49,8 @@ var (
 	netTCPWbufSize     = flag.Int("tcp.wbufsiz", 0, "[tcp] TCP write buffer size")
 	blacklistIPsFlag   = flag.String("ip.blacklist", "", "")
 
-	testFlag     = false
+	testFlag     bool
+	testDedup    sync.Map
 	slowLogger   *log.Logger
 	dbLogger     *log.Logger
 	blacklistIPs []*net.IPNet

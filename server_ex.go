@@ -334,11 +334,12 @@ func (s *Server) ForeachPeer(f func(p *endpoint, c *redis.Client)) {
 
 func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandIn) {
 	recv := 0
-	out := make(chan *commandIn, 10)
+	out := make(chan *commandIn, len(s.Peers))
 	s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
-		if p.send(f(), out) {
+		select {
+		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out}:
 			recv++
-		} else {
+		case <-time.After(time.Duration(s.ServerConfig.PeerTimeout) * time.Millisecond):
 			logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
 		}
 	})

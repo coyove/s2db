@@ -51,10 +51,11 @@ func (p Pair) Equal(p2 Pair) bool {
 }
 
 func (p Pair) String() string {
+	id := fmt.Sprintf("%016x_%016x", p.ID[:8], p.ID[8:16])
 	if p.C {
-		return fmt.Sprintf("[[%s:%q]]", p.IDHex(), p.Data)
+		return fmt.Sprintf("[[%s:%q]]", id, p.Data)
 	}
-	return fmt.Sprintf("<%s:%q>", p.IDHex(), p.Data)
+	return fmt.Sprintf("<%s:%q>", id, p.Data)
 }
 
 func ConvertPairsToBulks(p []Pair) (a [][]byte) {
@@ -91,11 +92,11 @@ func TrimPairs(p []Pair) (t []Pair) {
 		return nil
 	}
 
-	head := p[0].UnixNano() / 1e9
-	tail := p[len(p)-1].UnixNano() / 1e9
+	head := p[0].UnixNano() / future.Block
+	tail := p[len(p)-1].UnixNano() / future.Block
 
 	for _, p := range p {
-		sec := p.UnixNano() / 1e9
+		sec := p.UnixNano() / future.Block
 		if sec != head && sec != tail {
 			t = append(t, p)
 		}

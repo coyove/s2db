@@ -22,20 +22,19 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName       string
-	Password         string
-	Peer0, Peer1     string
-	Peer2, Peer3     string
-	Peer4, Peer5     string
-	Peer6, Peer7     string
-	Peer8, Peer9     string
-	Peer10, Peer11   string
-	FillCacheSize    int
-	SlowLimit        int // ms
-	PeerTimeout      int // ms
-	DisablePeerWrite int
-	MetricsEndpoint  string
-	InspectorSource  string
+	ServerName      string
+	Password        string
+	Peer0, Peer1    string
+	Peer2, Peer3    string
+	Peer4, Peer5    string
+	Peer6, Peer7    string
+	Peer8, Peer9    string
+	Peer10, Peer11  string
+	FillCacheSize   int
+	SlowLimit       int // ms
+	TimeoutPeer     int // ms
+	MetricsEndpoint string
+	InspectorSource string
 }
 
 func init() {
@@ -75,7 +74,7 @@ func (s *Server) loadConfig() error {
 func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.FillCacheSize, 100000)
 	ifZero(&s.ServerConfig.SlowLimit, 500)
-	ifZero(&s.ServerConfig.PeerTimeout, 500)
+	ifZero(&s.ServerConfig.TimeoutPeer, 500)
 	if s.ServerConfig.ServerName == "" {
 		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
@@ -161,7 +160,13 @@ func (s *Server) GetConfig(key string) (v string, ok bool) {
 
 func (s *Server) listConfigCommand() (list []string) {
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
+		if strings.HasPrefix(f.Name, "Peer") {
+			if fv.String() != "" {
+				list = append(list, strings.ToLower(f.Name), fv.String())
+			}
+		} else {
+			list = append(list, strings.ToLower(f.Name), fmt.Sprint(fv.Interface()))
+		}
 		return nil
 	})
 	return list

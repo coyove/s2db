@@ -516,11 +516,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if !s.HasPeers() || K.StrEqFold(4, "local") {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
 		}
 		if s2pkg.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
 		}
 
 		tombstone := s.GetTombstone(key)
@@ -528,7 +528,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, tombstone)
 		})
 		if recv == 0 {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
 		}
 
 		oldTombstone := tombstone
@@ -561,10 +561,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			data = data[:iabs(n)]
 		}
 		s.setMissing(key, data, success == s.PeerCount())
-		if len(data) > iabs(trueN) {
-			data = data[:iabs(trueN)]
-		}
-		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data))
+		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
 	case "IMGET":
 		ids := K.Argv[1:]
 		data, _, err := s.MGet(ids)

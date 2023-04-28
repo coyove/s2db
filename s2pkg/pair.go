@@ -58,7 +58,10 @@ func (p Pair) String() string {
 	return fmt.Sprintf("<%s:%q>", id, p.Data)
 }
 
-func ConvertPairsToBulks(p []Pair) (a [][]byte) {
+func ConvertPairsToBulks(p []Pair, max int) (a [][]byte) {
+	if len(p) > max {
+		p = p[:max]
+	}
 	for _, p := range p {
 		i := p.IDHex()
 		a = append(a, i, []byte(strconv.FormatFloat(p.UnixSec(), 'f', -1, 64)), p.Data)

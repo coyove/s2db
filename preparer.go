@@ -51,7 +51,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	var kk [][]byte
 	for i := 0; i < len(data); i++ {
 		binary.BigEndian.PutUint16(idx[12:], uint16(i))
-		idx[15] = 1
+		idx[15] = byte(s.Channel)<<4 | 1
 
 		kk = append(kk, s2pkg.Bytes(idx))
 
@@ -65,28 +65,31 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	}
 
 	if ttlSec > 0 {
-		idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
-		iter := s.DB.NewIter(&pebble.IterOptions{
-			LowerBound: bkPrefix,
-			UpperBound: append(bkPrefix, idx[:]...),
-		})
-		defer iter.Close()
+		s.expireGroup.Do(key, func() (any, error) {
+			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
+			iter := s.DB.NewIter(&pebble.IterOptions{
+				LowerBound: bkPrefix,
+				UpperBound: append(bkPrefix, idx[:]...),
+			})
+			defer iter.Close()
 
-		count := 0
-		for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
-			count++
-			if err := tx.Delete(iter.Key(), pebble.Sync); err != nil {
-				return nil, err
+			count := 0
+			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+				count++
+				if err := tx.Delete(iter.Key(), pebble.Sync); err != nil {
+					return nil, err
+				}
+				idx := bytes.TrimPrefix(iter.Key(), bkPrefix)
+				if v, _ := s2pkg.Convert16BToFuture(idx).Cookie(); v == consolidatedMark {
+					continue
+				}
+				if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
+					return nil, err
+				}
 			}
-			idx := bytes.TrimPrefix(iter.Key(), bkPrefix)
-			if v, _ := s2pkg.Convert16BToFuture(idx).Cookie(); v == consolidatedMark {
-				continue
-			}
-			if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
-				return nil, err
-			}
-		}
-		s.Survey.AppendExpire.Incr(1)
+			s.Survey.AppendExpire.Incr(1)
+			return nil, nil
+		})
 	}
 
 	if err := tx.Commit(pebble.Sync); err != nil {

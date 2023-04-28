@@ -35,7 +35,6 @@ var (
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND":        true,
-		"APPENDWAIT":    true,
 		"IAPPEND":       true,
 		"EXPIREBEFORE":  true,
 		"IEXPIREBEFORE": true,
@@ -281,8 +280,8 @@ func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor strin
 	})
 	defer iter.Close()
 
-	if count > *rangeHardLimit {
-		count = *rangeHardLimit
+	if count > 65536 {
+		count = 65536
 	}
 
 	cPrefix, _ := extdb.GetKeyPrefix(cursor)

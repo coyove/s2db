@@ -42,7 +42,7 @@ var (
 	pebbleMemtableSize = flag.Int("pebble.memtablesize", 128, "[pebble] memtable size in megabytes")
 	pebbleCacheSize    = flag.Int("pebble.cachesize", 1024, "[pebble] cache size in megabytes")
 	pebbleMaxOpenFiles = flag.Int("pebble.maxopenfiles", 1024, "[pebble] max open files")
-	rangeHardLimit     = flag.Int("db.rangelimit", 65535, "[db] hard limit: max members single RANGE can return")
+	ttlEvictLimit      = flag.Int("db.ttlevictlimit", 256, "[db] TTL eviction hard limit: max elements a single APPEND can expire")
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")

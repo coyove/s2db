@@ -10,7 +10,6 @@ require (
 	github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db
 	github.com/coyove/sdss v0.0.0-20230426055844-665368fa2b52
 	github.com/go-redis/redis/v8 v8.11.0
-	github.com/gogo/protobuf v1.3.1
 	github.com/golang/snappy v0.0.3
 	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
 	github.com/influxdata/tdigest v0.0.1
@@ -31,6 +30,7 @@ require (
 	github.com/cockroachdb/sentry-go v0.6.1-cockroachdb.2 // indirect
 	github.com/codahale/hdrhistogram v0.0.0-20161010025455-3a0bb77429bd // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
+	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/klauspost/compress v1.11.7 // indirect
 	github.com/kr/pretty v0.1.0 // indirect
 	github.com/kr/text v0.1.0 // indirect

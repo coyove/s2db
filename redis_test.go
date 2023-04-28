@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"os"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -87,7 +90,7 @@ func TestAppend(t *testing.T) {
 		if rand.Intn(2) == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPENDWAIT", "a", count).Err())
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", count).Err())
 	}
 
 	fmt.Println("count:", count)
@@ -120,19 +123,19 @@ func TestConsolidation(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 1, 2).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 1, 2).Err())
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 3).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 3).Err())
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 4).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 4).Err())
 
 	for i := 10; i <= 15; i += 2 {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPENDWAIT", "a", i, i+1).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i, i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPENDWAIT", "a", 20, 21, 22).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 20, 21, 22).Err())
 
 	s2.test.Fail = true
 
@@ -196,5 +199,45 @@ func TestConsolidation(t *testing.T) {
 
 	if !s2pkg.AllPairsConsolidated(data) {
 		t.Fatal(data)
+	}
+}
+
+func TestTTL(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	var ids []string
+	for i := 0; i <= 20; i++ {
+		id := rdb2.Do(ctx, "APPEND", "TTL", 1, "a", i).Val().([]any)[0].(string)
+		ids = append(ids, id)
+		time.Sleep(time.Duration(rand.Intn(100)+200) * time.Millisecond)
+	}
+
+	var expired []string
+	for i := range ids {
+		buf, _ := hex.DecodeString(ids[i])
+		sec := int64(binary.BigEndian.Uint64(buf) / 1e9)
+		if sec >= future.UnixNano()/1e9-1 {
+			expired = ids[:i]
+			ids = ids[i:]
+			break
+		}
+	}
+
+	data := doRange(rdb1, "a", "0", 100)
+
+	for i := 0; i < len(data) && i < len(ids); i++ {
+		if string(data[len(data)-1-i].IDHex()) != ids[len(ids)-1-i] {
+			t.Fatal(data, ids)
+		}
+	}
+
+	for _, ex := range expired {
+		v := (rdb1.Get(ctx, ex).Val())
+		if v != "" {
+			t.Fatal(v, ex)
+		}
 	}
 }

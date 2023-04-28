@@ -45,16 +45,6 @@ github.com/coreos/go-etcd v2.0.0+incompatible/go.mod h1:Jez6KQU2B/sWsbdaef3ED8Nz
 github.com/coreos/go-semver v0.2.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3EedlOD2RNk=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db h1:eQaGKwwenv6kAnPH7LcC543XdWuJ6rT0XqlamVh/3zw=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
-github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c h1:1lalnsMVWL1btKGZacj+b+HTviNGl64HYFkcRrZN7bU=
-github.com/coyove/sdss v0.0.0-20230423031045-f30478cb615c/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
-github.com/coyove/sdss v0.0.0-20230424072844-5b526244a41e h1:HWWV1INZzOZHgIJDYjupNZKDs5CdDgZVl7zMcIrw7Tw=
-github.com/coyove/sdss v0.0.0-20230424072844-5b526244a41e/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
-github.com/coyove/sdss v0.0.0-20230425062523-d396f3ad9560 h1:5psNXgDlkGdiolS1CRRTmbkqEOHWZ9yS5JtcfmrQl2o=
-github.com/coyove/sdss v0.0.0-20230425062523-d396f3ad9560/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
-github.com/coyove/sdss v0.0.0-20230425072957-450a1f1f0c3c h1:6hCrEYriJdazMmuWNwKu5sQjtbUSRdr85Xo4blolbbI=
-github.com/coyove/sdss v0.0.0-20230425072957-450a1f1f0c3c/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
-github.com/coyove/sdss v0.0.0-20230425082228-f6661bc969b0 h1:5fHlOeC8nOUz+bwU7zEDOt6nuhqDC1TvhLGXNt4pqMI=
-github.com/coyove/sdss v0.0.0-20230425082228-f6661bc969b0/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/coyove/sdss v0.0.0-20230426055844-665368fa2b52 h1:GbXKrgsHpn9lNTnqoVU5T/NtHwMM62rbzjhVC0b9z/4=
 github.com/coyove/sdss v0.0.0-20230426055844-665368fa2b52/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=

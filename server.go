@@ -65,6 +65,7 @@ type Server struct {
 		PeerOnMissing   s2pkg.Survey          ``
 		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
 		AllConsolidated s2pkg.Survey          `metrics:"qps"`
+		AppendExpire    s2pkg.Survey          `metrics:"qps"`
 		IExpireBefore   s2pkg.Survey
 		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
@@ -417,12 +418,26 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND", "APPENDWAIT": // APPEND[WAIT] KEY DATA_0 DATA_1 ...
+	case "APPEND": // APPEND [DEFER] [TTL SECONDS] KEY DATA_0 DATA_1 ...
 		var data [][]byte
-		for i := 2; i < K.ArgCount(); i++ {
-			data = append(data, K.Bytes(i))
+		var ttl int64
+		var wait = true
+		key = ""
+		for i := 1; i < K.ArgCount(); i++ {
+			if K.StrEqFold(i, "ttl") {
+				ttl = K.Int64(i + 1)
+				i++
+			} else if K.StrEqFold(i, "defer") {
+				wait = false
+			} else {
+				key = K.StrRef(i)
+				for i++; i < K.ArgCount(); i++ {
+					data = append(data, K.Bytes(i))
+				}
+				break
+			}
 		}
-		ids, err := s.Append(key, data, cmd == "APPENDWAIT")
+		ids, err := s.Append(key, data, ttl, wait)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

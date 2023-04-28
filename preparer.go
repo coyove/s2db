@@ -20,7 +20,14 @@ import (
 
 const consolidatedMark = 1
 
-func (s *Server) Append(key string, data [][]byte, wait bool) ([][]byte, error) {
+func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
+	if len(data) >= 65536 {
+		return nil, fmt.Errorf("too many elements to append")
+	}
+	if key == "" {
+		return nil, fmt.Errorf("append to null key")
+	}
+
 	id := future.Get(s.Channel)
 	if testFlag {
 		x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
@@ -31,41 +38,24 @@ func (s *Server) Append(key string, data [][]byte, wait bool) ([][]byte, error) 
 	if wait {
 		defer id.Wait()
 	}
-	return s.runAppend(id, key, data)
-}
 
-func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byte, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	if len(data) >= 65536 {
-		return nil, fmt.Errorf("too many elements to append")
-	}
-
-	bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
-
-	tombstone, err := extdb.GetInt64(s.DB, bkTombstone)
-	if err != nil {
-		return nil, err
-	}
-	if tombstone > int64(id) {
-		return nil, nil
-	}
+	bkPrefix, _ := extdb.GetKeyPrefix(key)
 
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	idx := make([]byte, 16) // id(8b) + random(4b) + cmd(2b) + index(2b)
+	idx := make([]byte, 16) // id(8b) + random(4b) + index(2b) + cmd(2b)
 	binary.BigEndian.PutUint64(idx[:], uint64(id))
 	rand.Read(idx[8:12])
-	idx[12] = 1 // 'append' command code
 
 	var kk [][]byte
-	for i, p := range data {
-		binary.BigEndian.PutUint16(idx[14:], uint16(i))
+	for i := 0; i < len(data); i++ {
+		binary.BigEndian.PutUint16(idx[12:], uint16(i))
+		idx[15] = 1
+
 		kk = append(kk, s2pkg.Bytes(idx))
 
-		if err := tx.Set(append(bkPrefix, idx...), p, pebble.Sync); err != nil {
+		if err := tx.Set(append(bkPrefix, idx...), data[i], pebble.Sync); err != nil {
 			return nil, err
 		}
 
@@ -74,7 +64,35 @@ func (s *Server) runAppend(id future.Future, key string, data [][]byte) ([][]byt
 		}
 	}
 
-	return kk, tx.Commit(pebble.Sync)
+	if ttlSec > 0 {
+		idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
+		iter := s.DB.NewIter(&pebble.IterOptions{
+			LowerBound: bkPrefix,
+			UpperBound: append(bkPrefix, idx[:]...),
+		})
+		defer iter.Close()
+
+		count := 0
+		for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+			count++
+			if err := tx.Delete(iter.Key(), pebble.Sync); err != nil {
+				return nil, err
+			}
+			idx := bytes.TrimPrefix(iter.Key(), bkPrefix)
+			if v, _ := s2pkg.Convert16BToFuture(idx).Cookie(); v == consolidatedMark {
+				continue
+			}
+			if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
+				return nil, err
+			}
+		}
+		s.Survey.AppendExpire.Incr(1)
+	}
+
+	if err := tx.Commit(pebble.Sync); err != nil {
+		return nil, err
+	}
+	return kk, nil
 }
 
 func (s *Server) ExpireBefore(key string, unixSec int64) error {
@@ -134,10 +152,9 @@ func (s *Server) setMissing(key string, kvs []s2pkg.Pair, consolidate bool) {
 				kvs := s2pkg.TrimPairs(kvs)
 
 				var cm [][16]byte
-				var idx [16]byte
 				for i := 0; i < len(kvs); i++ {
 					cid := kvs[i].Future().ToCookie(consolidatedMark)
-					binary.BigEndian.PutUint64(idx[:], uint64(cid))
+					idx := s2pkg.ConvertFutureTo16B(cid)
 					if len(cm) == 0 || cm[len(cm)-1] != idx {
 						cm = append(cm, idx)
 					}
@@ -178,7 +195,6 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 	}
 
 	var k []byte
-	idx := make([]byte, 16)
 	score := 0
 	for _, id := range ids {
 		k = append(append(k[:0], 'i'), id...)
@@ -194,11 +210,14 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 			if err != nil {
 				return nil, false, err
 			}
+			if v == nil {
+				return nil, false, fmt.Errorf("get %q.%s: not found", key, hexEncode(id))
+			}
 			data = append(data, v)
 
-			mark := future.Future(binary.BigEndian.Uint64(id)).ToCookie(consolidatedMark)
-			binary.BigEndian.PutUint64(idx, uint64(mark))
-			if con, _ := extdb.Get(s.DB, append(bkPrefix, idx...)); con != nil {
+			mark := s2pkg.Convert16BToFuture(id).ToCookie(consolidatedMark)
+			idx := s2pkg.ConvertFutureTo16B(mark)
+			if con, _ := extdb.Get(s.DB, append(bkPrefix, idx[:]...)); con != nil {
 				score++
 			}
 		}
@@ -248,9 +267,8 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 			}
 		} else {
 			if len(data) == 0 || len(data) == n-1 {
-				var idx [16]byte
 				cid := p.Future().ToCookie(consolidatedMark)
-				binary.BigEndian.PutUint64(idx[:], uint64(cid))
+				idx := s2pkg.ConvertFutureTo16B(cid)
 				v, _ := extdb.Get(s.DB, append(bkPrefix, idx[:]...))
 				if v != nil {
 					chain[cid] = future.Future(binary.BigEndian.Uint64(v))

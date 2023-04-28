@@ -117,3 +117,14 @@ func AllPairsConsolidated(p []Pair) bool {
 	}
 	return true
 }
+
+func ConvertFutureTo16B(f future.Future) (idx [16]byte) {
+	binary.BigEndian.PutUint64(idx[:], uint64(f))
+	return
+}
+
+func Convert16BToFuture(idx []byte) (f future.Future) {
+	_ = idx[15]
+	v := binary.BigEndian.Uint64(idx)
+	return future.Future(v)
+}

@@ -51,7 +51,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	var kk [][]byte
 	for i := 0; i < len(data); i++ {
 		binary.BigEndian.PutUint16(idx[12:], uint16(i))
-		idx[15] = byte(s.Channel)<<4 | 1
+		idx[14] = byte(s.Channel)<<4 | 1
 
 		kk = append(kk, s2pkg.Bytes(idx))
 
@@ -65,7 +65,10 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	}
 
 	if ttlSec > 0 {
-		s.expireGroup.Do(key, func() (any, error) {
+		_, loaded := s.ttlOnce.LoadOrStore(key, true)
+		if !loaded {
+			defer s.ttlOnce.Delete(key)
+
 			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
 			iter := s.DB.NewIter(&pebble.IterOptions{
 				LowerBound: bkPrefix,
@@ -88,8 +91,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 				}
 			}
 			s.Survey.AppendExpire.Incr(1)
-			return nil, nil
-		})
+		}
 	}
 
 	if err := tx.Commit(pebble.Sync); err != nil {
@@ -152,28 +154,12 @@ func (s *Server) setMissing(key string, kvs []s2pkg.Pair, consolidate bool) {
 			}
 
 			if consolidate {
-				kvs := s2pkg.TrimPairs(kvs)
-
-				var cm [][16]byte
+				kvs := s2pkg.TrimPairsForConsolidation(kvs)
 				for i := 0; i < len(kvs); i++ {
 					cid := kvs[i].Future().ToCookie(consolidatedMark)
 					idx := s2pkg.ConvertFutureTo16B(cid)
-					if len(cm) == 0 || cm[len(cm)-1] != idx {
-						cm = append(cm, idx)
-					}
-				}
-				for i := 0; i < len(cm); i++ {
-					key := append(bkPrefix, cm[i][:]...)
-					if i == 0 {
-						if old, _ := extdb.Get(s.DB, key); old == nil {
-							if err := tx.Set(key, make([]byte, 16), pebble.Sync); err != nil {
-								return err
-							}
-						}
-					} else {
-						if err := tx.Set(key, cm[i-1][:], pebble.Sync); err != nil {
-							return err
-						}
+					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+						return err
 					}
 					c++
 				}
@@ -254,8 +240,7 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		c.SeekGE(start)
 	}
 
-	chain := map[future.Future]future.Future{}
-	var maxFuture future.Future
+	fm := map[future.Future]bool{}
 
 	for c.Valid() && len(data) < n {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
@@ -264,20 +249,14 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 			Data: s2pkg.Bytes(c.Value()),
 		}
 		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
-			chain[p.Future()] = future.Future(binary.BigEndian.Uint64(p.Data))
-			if p.Future() > maxFuture {
-				maxFuture = p.Future()
-			}
+			fm[p.Future()] = true
 		} else {
 			if len(data) == 0 || len(data) == n-1 {
 				cid := p.Future().ToCookie(consolidatedMark)
 				idx := s2pkg.ConvertFutureTo16B(cid)
 				v, _ := extdb.Get(s.DB, append(bkPrefix, idx[:]...))
 				if v != nil {
-					chain[cid] = future.Future(binary.BigEndian.Uint64(v))
-					if cid > maxFuture {
-						maxFuture = cid
-					}
+					fm[cid] = true
 				}
 			}
 			data = append(data, p)
@@ -291,20 +270,9 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 
 	//fmt.Println(s.ln.Addr(), data, chain)
 
-	// Verify that all 'futures' in 'chain' form a linked list, where newer 'futures'
-	// point to older 'futures'. The oldest 'future' may point to null.
-	for c, ok := maxFuture, false; ; {
-		if c, ok = chain[c]; c == 0 {
-			if !ok {
-				return
-			}
-			break
-		}
-	}
-
 	for i, p := range data {
 		cid := p.Future().ToCookie(consolidatedMark)
-		if _, ok := chain[cid]; ok {
+		if fm[cid] {
 			data[i].C = true
 		}
 	}

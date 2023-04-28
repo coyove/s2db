@@ -106,7 +106,7 @@ func TestAppend(t *testing.T) {
 		}
 	}
 
-	data = s2pkg.TrimPairs(data)
+	data = s2pkg.TrimPairsForConsolidation(data)
 	ts := string(data[0].IDHex())
 	data = doRange(rdb2, "a", ts, N)
 	fmt.Println(data, len(data))
@@ -154,7 +154,7 @@ func TestConsolidation(t *testing.T) {
 	data = doRange(rdb1, "a", "+inf", -20)
 	time.Sleep(time.Second)
 
-	data = s2pkg.TrimPairs(data)
+	data = s2pkg.TrimPairsForConsolidation(data)
 	trimmed := pairsMap(data)
 	if len(trimmed) == 0 {
 		t.Fatal(data)
@@ -200,6 +200,30 @@ func TestConsolidation(t *testing.T) {
 	if !s2pkg.AllPairsConsolidated(data) {
 		t.Fatal(data)
 	}
+}
+
+func TestConsolidation2(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	for i := 0; i < 5; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+		time.Sleep(200 * time.Millisecond)
+	}
+	for i := 5; i < 10; i++ {
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i).Err())
+		time.Sleep(200 * time.Millisecond)
+	}
+	for i := 10; i < 15; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	doRange(rdb1, "a", "0", 6)     // returns 0, 1, 2, 3, 4, 5
+	doRange(rdb1, "a", "+inf", -6) // returns 14, 13, 12, 11, 10, 9
+	time.Sleep(time.Second)
 }
 
 func TestTTL(t *testing.T) {

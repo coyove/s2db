@@ -77,6 +77,7 @@ type Server struct {
 	fillLocks   [0x10000]sync.Mutex
 	fillCache   *s2pkg.LRUCache
 	expireGroup singleflight.Group
+	ttlOnce     sync.Map
 
 	test struct {
 		Fail         bool

@@ -13,11 +13,12 @@ import (
 )
 
 var (
-	addr    = flag.String("addr", ":6379", "benchmark endpoint")
-	clients = flag.Int("clients", 100, "")
-	ops     = flag.Int("op", 10000, "")
-	ttl     = flag.Int("ttl", 0, "")
-	keyNum  = flag.Int("k", 1, "")
+	addr      = flag.String("addr", ":6379", "benchmark endpoint")
+	clients   = flag.Int("clients", 100, "")
+	ops       = flag.Int("op", 10000, "")
+	ttl       = flag.Int("ttl", 0, "")
+	keyNum    = flag.Int("k", 1, "")
+	keyPrefix = flag.String("kp", "", "")
 )
 
 func main() {
@@ -39,7 +40,7 @@ func main() {
 			fmt.Println("client #", i)
 			for c := 0; c < *ops; c++ {
 				idx := i**clients + c
-				rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, "a"+strconv.Itoa(rand.Intn(*keyNum)), idx)
+				rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), idx)
 			}
 			wg.Done()
 		}(i)

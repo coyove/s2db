@@ -90,7 +90,7 @@ func ConvertBulksToPairs(a []string) (p []Pair) {
 	return
 }
 
-func TrimPairs(p []Pair) (t []Pair) {
+func TrimPairsForConsolidation(p []Pair) (t []Pair) {
 	if len(p) <= 2 {
 		return nil
 	}

@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -31,18 +31,15 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sync/singleflight"
 	"golang.org/x/sys/unix"
 )
 
 type Server struct {
 	ln           net.Listener
-	lnLocal      net.Listener
 	lnWebConsole *s2pkg.LocalListener
 	rdbCache     *s2pkg.LRUCache
 
 	ServerConfig ServerConfig
-	LocalRedis   *redis.Client
 	Peers        [future.Channels]*endpoint
 	DBPath       string
 	DBOptions    *pebble.Options
@@ -66,7 +63,6 @@ type Server struct {
 		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
 		AllConsolidated s2pkg.Survey          `metrics:"qps"`
 		AppendExpire    s2pkg.Survey          `metrics:"qps"`
-		IExpireBefore   s2pkg.Survey
 		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
@@ -74,10 +70,9 @@ type Server struct {
 
 	DB *pebble.DB
 
-	fillLocks   [0x10000]sync.Mutex
-	fillCache   *s2pkg.LRUCache
-	expireGroup singleflight.Group
-	ttlOnce     sync.Map
+	fillCache  *s2pkg.LRUCache
+	rangeCache *s2pkg.LRUCache
+	ttlOnce    sync.Map
 
 	test struct {
 		Fail         bool
@@ -141,9 +136,7 @@ func (s *Server) Close() (err error) {
 	s.DBOptions.Cache.Unref()
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
-	errs <- s.lnLocal.Close()
 	errs <- s.lnWebConsole.Close()
-	errs <- s.LocalRedis.Close()
 	for _, p := range s.Peers {
 		errs <- p.Close()
 	}
@@ -182,23 +175,13 @@ func (s *Server) Serve(addr string) (err error) {
 	if err != nil {
 		return err
 	}
-	s.lnLocal, err = net.Listen("unix", filepath.Join(os.TempDir(),
-		fmt.Sprintf("_s2db_%d_%d_sock", os.Getpid(), time.Now().UnixNano())))
-	if err != nil {
-		return err
-	}
 	s.lnWebConsole = s2pkg.NewLocalListener()
-	s.LocalRedis = redis.NewClient(&redis.Options{
-		Network:  "unix",
-		Addr:     s.lnLocal.Addr().String(),
-		Password: s.ServerConfig.Password})
 	s.Survey.StartAt = time.Now()
 
-	log.Infof("listening on: redis=%v, local=%v", s.ln.Addr(), s.lnLocal.Addr())
+	log.Infof("listening on: %v", s.ln.Addr())
 
 	go s.startCronjobs()
 	go s.webConsoleHandler()
-	go s.acceptor(s.lnLocal)
 	s.acceptor(s.ln)
 	return nil
 }
@@ -299,13 +282,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 	defer func(start time.Time) {
 		if r := recover(); r != nil {
-			if testFlag {
+			if testFlag || os.Getenv("PRINT_STACK") != "" {
 				fmt.Println(r, string(debug.Stack()))
 			}
-			outErr = w.WriteError(fmt.Sprintf("fatal error (%s): %v", key, r))
+			var fn string
+			var ln int
+			for i := 1; ; i++ {
+				if _, fn, ln, _ = runtime.Caller(i); ln == 0 {
+					fn = "<unknown>"
+					break
+				} else if strings.Contains(fn, "s2db") {
+					break
+				}
+			}
+			outErr = w.WriteError(fmt.Sprintf("fatal error (%s:%d): %v", filepath.Base(fn), ln, r))
 		} else {
 			diff := time.Since(start)
-			if diff > time.Duration(s.ServerConfig.SlowLimit)*time.Millisecond && cmd != "PUSHLOGS" {
+			if diff > time.Duration(s.ServerConfig.SlowLimit)*time.Millisecond {
 				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
 				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
@@ -448,16 +441,17 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			hexIds[i] = hexEncode(ids[i])
 		}
 		return w.WriteBulks(hexIds)
-	case "IRANGE": // IRANGE KEY RAW_START COUNT => [ID 0, TIME 0, DATA 0, ...]
+	case "IRANGE": // IRANGE KEY RAW_START COUNT LEFT_BOUND RIGHT_BOUND => [ID 0, TIME 0, DATA 0, ...]
 		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		b := s2pkg.ConvertPairsToBulksNoTimestamp(data)
 		return w.WriteBulks(b)
-	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+	case "RANGE": // RANGE KEY START COUNT [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
+		var localOnly, mget bool
 		switch s := K.StrRef(2); s {
 		case "+", "+inf", "+INF", "+Inf":
 			start = []byte(maxCursor)
@@ -478,6 +472,10 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if *(*string)(unsafe.Pointer(&start)) > maxCursor {
 			start = []byte(maxCursor)
 		}
+		for i := 4; i < K.ArgCount(); i++ {
+			localOnly = localOnly || K.StrEqFold(i, "local")
+			mget = mget || K.StrEqFold(i, "mget")
+		}
 
 		trueN := iabs(n)
 		if !testFlag {
@@ -487,23 +485,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if !s.HasPeers() || K.StrEqFold(4, "local") {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+		if !s.HasPeers() || localOnly {
+			return s.convertPairs(w, data, trueN, mget)
 		}
 		if s2pkg.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+			return s.convertPairs(w, data, trueN, mget)
 		}
 		if len(data) > trueN && s2pkg.AllPairsConsolidated(data[:trueN]) {
 			s.Survey.AllConsolidated.Incr(1)
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+			return s.convertPairs(w, data, trueN, mget)
 		}
 
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n)
 		})
 		if recv == 0 {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+			return s.convertPairs(w, data, trueN, mget)
 		}
 
 		origData := append([]s2pkg.Pair{}, data...)
@@ -525,7 +523,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			data = data[:iabs(n)]
 		}
 		s.setMissing(key, origData, data, success == s.PeerCount())
-		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+		return s.convertPairs(w, data, trueN, mget)
 	case "IMGET":
 		ids := K.Argv[1:]
 		data, _, err := s.MGet(ids)
@@ -534,7 +532,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		resp := make([][]byte, len(data)*2)
 		for i := range data {
-			resp[2*i] = hexEncode(ids[i])
+			resp[2*i] = ids[i]
 			resp[2*i+1] = data[i]
 		}
 		return w.WriteBulks(resp)
@@ -543,57 +541,57 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		for i := 1; i < K.ArgCount(); i++ {
 			ids = append(ids, hexDecode(K.BytesRef(i)))
 		}
-		data, consolidated, err := s.MGet(ids)
+		data, err := s.wrapMGet(ids)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if consolidated {
-			s.Survey.AllConsolidated.Incr(1)
-			return w.WriteBulkOrBulks(cmd == "GET", data)
+		if cmd == "GET" {
+			return w.WriteBulk(data[0])
 		}
-		var missings []any
-		for i, d := range data {
-			if d == nil {
-				missings = append(missings, ids[i])
-			}
-		}
-		if len(missings) == 0 || !s.HasPeers() {
-			return w.WriteBulkOrBulks(cmd == "GET", data)
-		}
-
-		missings = append([]any{"IMGET"}, missings...)
-		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), missings...)
-		})
-		if recv == 0 {
-			return w.WriteBulkOrBulks(cmd == "GET", data)
-		}
-
-		m := map[string]string{}
-		s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-			if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
-				logrus.Errorf("failed to request peer: %v", err)
-				return false
-			} else {
-				for i := 0; i < len(m0); i += 2 {
-					m[m0[i]] = m0[i+1]
-				}
-				return true
-			}
-		})
-		for i, d := range data {
-			if d != nil {
-				continue
-			}
-			if v, ok := m[hex.EncodeToString(ids[i])]; ok {
-				data[i] = []byte(v)
-			}
-		}
-		return w.WriteBulkOrBulks(cmd == "GET", data)
+		return w.WriteBulks(data)
 	case "SCAN": // SCAN CURSOR COUNT
 		data, nextCursor := s.Scan(K.StrRef(1), K.Int(2))
 		return w.WriteObjects(nextCursor, data)
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())
+}
+
+func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int, mget bool) (err error) {
+	var a [][]byte
+	if len(p) > max {
+		p = p[:max]
+	}
+	if mget {
+		var ids [][]byte
+		for _, p := range p {
+			switch len(p.Data) {
+			case 16:
+				ids = append(ids, p.Data)
+			case 32:
+				ids = append(ids, hexDecode(p.Data))
+			default:
+				return w.WriteError(fmt.Sprintf("%s is not mgettable: %q", p.IDHex(), p.Data))
+			}
+		}
+		data, err := s.wrapMGet(ids)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		for i, p := range p {
+			a = append(a,
+				p.IDHex(),
+				p.UnixMilliBytes(),
+				p.Data,
+				p.Data,
+				(s2pkg.Pair{ID: p.Data}).UnixMilliBytes(),
+				data[i])
+		}
+	} else {
+		for _, p := range p {
+			i := p.IDHex()
+			a = append(a, i, p.UnixMilliBytes(), p.Data)
+		}
+	}
+	return w.WriteBulks(a)
 }

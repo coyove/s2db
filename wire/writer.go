@@ -101,13 +101,6 @@ func (w *Writer) WriteBulkString(s string) error {
 	return w.WriteBulk([]byte(s))
 }
 
-func (w *Writer) WriteBulkOrBulks(single bool, bulks [][]byte) error {
-	if single {
-		return w.WriteBulk(bulks[0])
-	}
-	return w.WriteBulks(bulks)
-}
-
 func (w *Writer) WriteSimpleString(s string) error {
 	w.Write(plus)
 	w.Write([]byte(s))

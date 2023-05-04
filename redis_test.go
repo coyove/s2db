@@ -34,8 +34,11 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 	return m
 }
 
-func doRange(r *redis.Client, key string, start string, n int) []s2pkg.Pair {
+func doRange(r *redis.Client, key string, start string, n int, mget ...any) []s2pkg.Pair {
 	cmd := redis.NewStringSliceCmd(context.TODO(), "RANGE", key, start, n)
+	if len(mget) == 1 {
+		cmd = redis.NewStringSliceCmd(context.TODO(), "RANGE", key, start, n, "mget")
+	}
 	r.Process(context.TODO(), cmd)
 	s2pkg.PanicErr(cmd.Err())
 	return s2pkg.ConvertBulksToPairs(cmd.Val())
@@ -244,41 +247,50 @@ func TestConsolidation2(t *testing.T) {
 	}
 }
 
-// func TestConsolidation3(t *testing.T) {
-// 	rdb1, rdb2, s1, s2 := prepareServers()
-// 	defer s1.Close()
-// 	defer s2.Close()
-//
-// 	ctx := context.TODO()
-// 	for i := 0; i < 5; i++ {
-// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
-// 		time.Sleep(200 * time.Millisecond)
-// 	}
-//
-// 	doRange(rdb1, "a", "+inf", -3) // returns 4, 3, 2
-// 	doRange(rdb1, "a", "+inf", -3) // returns 4, [[3]], 2
-//
-// 	data := doRange(rdb1, "a", "+inf", -7) // returns 15, 14, 13, 12, 11, 10, 9
-// 	if string(data[3].Data) != "12" {
-// 		t.Fatal(data)
-// 	}
-//
-// 	id12 := hex.EncodeToString(data[3].ID)
-//
-// 	s2.test.Fail = true
-// 	s1.test.MustAllPeers = true
-// 	data = doRange(rdb1, "a", id12, -3) // returns 12, 11, 10
-//
-// 	if len(data) != 3 || string(data[1].Data) != "11" {
-// 		t.Fatal(data)
-// 	}
-//
-// 	if err := catchPanic(func() { doRange(rdb1, "a", id12, -4) }); err == nil {
-// 		t.FailNow()
-// 	} else {
-// 		fmt.Println(err)
-// 	}
-// }
+func TestMgettable(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	ids := []string{}
+	m := map[string]int{}
+	for i := 0; i < 10; i++ {
+		r := rdb1
+		if i%2 == 1 {
+			r = rdb2
+		}
+		id := r.Do(ctx, "APPEND", "a", i).Val().([]any)[0].(string)
+		ids = append(ids, id)
+		m[id] = i
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	for i, id := range ids {
+		r := rdb2
+		if i%2 == 1 {
+			r = rdb1
+		}
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "i", id).Err())
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	s2.test.Fail = true
+	data := doRange(rdb1, "i", "0", 10, "mget")
+	for i := 1; i < len(data); i += 2 {
+		if string(data[i].Data) != "" {
+			t.Fatal(data)
+		}
+	}
+	s2.test.Fail = false
+
+	data = doRange(rdb1, "i", "0", 10, "mget")
+	for i := 0; i < 10; i++ {
+		if string(data[i*2+1].Data) != strconv.Itoa(i) {
+			t.Fatal(data)
+		}
+	}
+}
 
 func TestTTL(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()

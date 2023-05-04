@@ -107,8 +107,11 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 
 	con := func(tx *pebble.Batch) {
 		m := map[future.Future]bool{}
-		for _, kv := range s2pkg.TrimPairsForConsolidation(after) {
-			cid := kv.Future().ToCookie(consolidatedMark)
+		for _, p := range s2pkg.TrimPairsForConsolidation(after) {
+			if p.C {
+				continue
+			}
+			cid := p.Future().ToCookie(consolidatedMark)
 			if m[cid] {
 				continue
 			}
@@ -237,6 +240,11 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 	// 	fmt.Println(c.Key())
 	// }
 
+	if c.First() {
+	}
+	if c.Last() {
+	}
+
 	if desc {
 		// OLDER                            NEWER
 		//
@@ -333,6 +341,7 @@ func sortPairs(p []s2pkg.Pair, asc bool) []s2pkg.Pair {
 
 	for i := len(p) - 1; i > 0; i-- {
 		if p[i].Equal(p[i-1]) {
+			p[i-1].C = p[i-1].C || p[i].C // inherit the consolidation mark if any
 			p = append(p[:i], p[i+1:]...)
 		}
 	}

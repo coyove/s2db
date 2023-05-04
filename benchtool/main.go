@@ -22,6 +22,7 @@ var (
 	keyNum    = flag.Int("k", 1, "")
 	keyPrefix = flag.String("kp", "", "")
 	readMode  = flag.Bool("read", false, "")
+	mgetMode  = flag.Bool("mget", false, "")
 )
 
 func main() {
@@ -33,25 +34,38 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        *addr,
 		DialTimeout: time.Second / 2,
+		ReadTimeout: 10 * time.Second,
 	})
 
 	start := time.Now()
-	var tot atomic.Int64
+	var tot, l atomic.Int64
 	wg := sync.WaitGroup{}
 	for i := 0; i < *clients; i++ {
 		wg.Add(1)
 		go func(i int) {
 			fmt.Println("client #", i)
+			start := future.UnixNano()
+			lastID := "00000000000000000000000000000000"
 			for c := 0; c < *ops; c++ {
-				idx := i**clients + c
-				start := future.UnixNano()
 				if *readMode {
-					rdb.Do(ctx, "RANGE", *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), fmt.Sprintf("@%d", time.Now().Unix()), -10)
+					m := ""
+					if *mgetMode {
+						m = "mget"
+					}
+					k := *keyPrefix + strconv.Itoa(rand.Intn(*keyNum))
+					c := fmt.Sprintf("@%d", time.Now().Unix())
+					v := rdb.Do(ctx, "RANGE", k, c, -1000, m).Val()
+					if v == nil {
+						fmt.Println(k, c)
+					} else {
+						l.Add(int64(len(v.([]any))))
+					}
 				} else {
-					rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), idx)
+					id := rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), lastID).Val().([]any)[0].(string)
+					lastID = id
 				}
-				tot.Add(future.UnixNano() - start)
 			}
+			tot.Add(future.UnixNano() - start)
 			wg.Done()
 		}(i)
 	}
@@ -59,4 +73,5 @@ func main() {
 
 	fmt.Println(time.Since(start))
 	fmt.Println(tot.Load()/int64(*ops**clients)/1e6, "ms")
+	fmt.Println(l.Load() / int64(*ops**clients))
 }

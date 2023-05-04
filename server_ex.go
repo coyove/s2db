@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -34,10 +35,7 @@ var (
 		"SCAN":   true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND":        true,
-		"IAPPEND":       true,
-		"EXPIREBEFORE":  true,
-		"IEXPIREBEFORE": true,
+		"APPEND": true,
 	}
 )
 
@@ -55,7 +53,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("version:%v", Version),
 			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
-			fmt.Sprintf("listen_unix:%v", s.lnLocal.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections))
@@ -303,6 +300,56 @@ func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor strin
 		}
 	}
 	return
+}
+
+func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
+	data, consolidated, err := s.MGet(ids)
+	if err != nil {
+		return nil, err
+	}
+	if consolidated {
+		s.Survey.AllConsolidated.Incr(1)
+		return data, nil
+	}
+	var missings []any
+	for i, d := range data {
+		if d == nil {
+			missings = append(missings, ids[i])
+		}
+	}
+	if len(missings) == 0 || !s.HasPeers() {
+		return data, nil
+	}
+
+	missings = append([]any{"IMGET"}, missings...)
+	recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+		return redis.NewStringSliceCmd(context.TODO(), missings...)
+	})
+	if recv == 0 {
+		return data, nil
+	}
+
+	m := map[string]string{}
+	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+		if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
+			logrus.Errorf("failed to request peer: %v", err)
+			return false
+		} else {
+			for i := 0; i < len(m0); i += 2 {
+				m[m0[i]] = m0[i+1]
+			}
+			return true
+		}
+	})
+	for i, d := range data {
+		if d != nil {
+			continue
+		}
+		if v, ok := m[*(*string)(unsafe.Pointer(&ids[i]))]; ok {
+			data[i] = []byte(v)
+		}
+	}
+	return data, nil
 }
 
 func (s *Server) PeerCount() (c int) {

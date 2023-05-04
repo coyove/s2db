@@ -61,6 +61,15 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_QPS", Score: float64(s.QPS[0])})
 		return true
 	})
+	s.Survey.Command.Range(func(k, v any) bool {
+		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
+		pairs = append(pairs,
+			metricsPair{Member: n + "_Mean", Score: m.Mean[0]},
+			metricsPair{Member: n + "_QPS", Score: m.QPS[0]},
+			metricsPair{Member: n + "_Max", Score: float64(m.Max[0])},
+		)
+		return true
+	})
 	pairs = append(pairs, metricsPair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
 	pairs = append(pairs, metricsPair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
 

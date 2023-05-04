@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"sort"
 	"strconv"
 
@@ -23,13 +22,17 @@ type Pair struct {
 	C    bool
 }
 
-func (p Pair) UnixSec() float64 {
+func (p Pair) UnixMilli() int64 {
 	ns := p.UnixNano()
-	ts := float64(ns/1e8) / 10
+	ts := ns / 1e6 / 10 * 10
 	if p.C {
-		ts += 0.01
+		ts += 1
 	}
 	return ts
+}
+
+func (p Pair) UnixMilliBytes() []byte {
+	return strconv.AppendInt(nil, p.UnixMilli(), 10)
 }
 
 func (p Pair) IDHex() []byte {
@@ -70,17 +73,6 @@ func (p Pair) String() string {
 	return fmt.Sprintf("<%s:%q>", id, p.Data)
 }
 
-func ConvertPairsToBulks(p []Pair, max int) (a [][]byte) {
-	if len(p) > max {
-		p = p[:max]
-	}
-	for _, p := range p {
-		i := p.IDHex()
-		a = append(a, i, []byte(strconv.FormatFloat(p.UnixSec(), 'f', -1, 64)), p.Data)
-	}
-	return
-}
-
 func ConvertPairsToBulksNoTimestamp(p []Pair) (a [][]byte) {
 	x := []byte("0")
 	for _, p := range p {
@@ -95,7 +87,7 @@ func ConvertBulksToPairs(a []string) (p []Pair) {
 		var x Pair
 		x.ID, _ = hex.DecodeString(a[i])
 		x.Data = []byte(a[i+2])
-		ts100 := int64(math.Round(MustParseFloat(a[i+1]) * 100))
+		ts100 := MustParseInt64(a[i+1])
 		x.C = ts100%2 == 1
 		p = append(p, x)
 	}

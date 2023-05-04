@@ -31,6 +31,7 @@ type ServerConfig struct {
 	Peer8, Peer9    string
 	Peer10, Peer11  string
 	FillCacheSize   int
+	RangeCacheSize  int
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
 	MetricsEndpoint string
@@ -73,6 +74,7 @@ func (s *Server) loadConfig() error {
 
 func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.FillCacheSize, 100000)
+	ifZero(&s.ServerConfig.RangeCacheSize, 1000000)
 	ifZero(&s.ServerConfig.SlowLimit, 500)
 	ifZero(&s.ServerConfig.TimeoutPeer, 500)
 	if s.ServerConfig.ServerName == "" {
@@ -80,6 +82,7 @@ func (s *Server) saveConfig() error {
 	}
 
 	s.fillCache = s2pkg.NewLRUCache(s.ServerConfig.FillCacheSize, nil)
+	s.rangeCache = s2pkg.NewLRUCache(s.ServerConfig.RangeCacheSize, nil)
 
 	p, err := nj.LoadString(strings.Replace(s.ServerConfig.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -184,10 +187,6 @@ func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) 
 }
 
 func (s *Server) getRedis(addr string) (cli *redis.Client) {
-	switch addr {
-	case "", "local", "LOCAL":
-		return s.LocalRedis
-	}
 	if !strings.HasPrefix(addr, "redis://") {
 		addr = "redis://" + addr
 	}

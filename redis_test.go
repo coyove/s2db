@@ -216,14 +216,33 @@ func TestConsolidation2(t *testing.T) {
 		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
-	for i := 10; i < 15; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+	for i := 10; i <= 15; i += 2 {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i, i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	doRange(rdb1, "a", "0", 6)     // returns 0, 1, 2, 3, 4, 5
-	doRange(rdb1, "a", "+inf", -6) // returns 14, 13, 12, 11, 10, 9
+	doRange(rdb1, "a", "0", 6)             // returns 0, 1, 2, 3, 4, 5
+	data := doRange(rdb1, "a", "+inf", -7) // returns 15, 14, 13, 12, 11, 10, 9
+	if string(data[3].Data) != "12" {
+		t.Fatal(data)
+	}
 	time.Sleep(time.Second)
+
+	id12 := hex.EncodeToString(data[3].ID)
+
+	s2.test.Fail = true
+	s1.test.MustAllPeers = true
+	data = doRange(rdb1, "a", id12, -3) // returns 12, 11, 10
+
+	if len(data) != 3 || string(data[1].Data) != "11" {
+		t.Fatal(data)
+	}
+
+	if err := catchPanic(func() { doRange(rdb1, "a", id12, -4) }); err == nil {
+		t.FailNow()
+	} else {
+		fmt.Println(err)
+	}
 }
 
 func TestTTL(t *testing.T) {

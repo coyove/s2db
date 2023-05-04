@@ -20,6 +20,8 @@ import (
 
 const consolidatedMark = 1
 
+const maxCursor = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+
 func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if len(data) >= 65536 {
 		return nil, fmt.Errorf("too many elements to append")
@@ -233,34 +235,56 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 	// 	fmt.Println(c.Key())
 	// }
 
-	start = append(bkPrefix, start...)
 	if desc {
-		c.SeekLT(s2pkg.IncBytesInplace(start))
+		// OLDER                            NEWER
+		//
+		//    blk 0   |     blk 1    |    blk 2
+		//                .-- start
+		//               /
+		// ~~~K0---K1---K2---k3---cm---K4---K5~~~
+		//                        |
+		//                        `-- actual start
+		//
+		// 'cm' is the consolidation mark of 'blk 1' which contains K2 and K3.
+
+		cm := s2pkg.Convert16BToFuture(start).ToCookie(consolidatedMark)
+		buf := s2pkg.ConvertFutureTo16B(cm)
+		c.SeekLT(append(bkPrefix, s2pkg.IncBytesInplace(buf[:])...))
+		// fmt.Println(start, buf, cm, s2pkg.Convert16BToFuture(start))
 	} else {
-		c.SeekGE(start)
+		c.SeekGE(append(bkPrefix, start...))
 	}
 
-	fm := map[future.Future]bool{}
+	cm := map[future.Future]bool{}
 
-	for c.Valid() && len(data) < n {
+	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 		p := s2pkg.Pair{
 			ID:   s2pkg.Bytes(k),
 			Data: s2pkg.Bytes(c.Value()),
 		}
 		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
-			fm[p.Future()] = true
+			cm[p.Future()] = true
 		} else {
-			if len(data) == 0 || len(data) == n-1 {
-				cid := p.Future().ToCookie(consolidatedMark)
-				idx := s2pkg.ConvertFutureTo16B(cid)
-				v, _ := extdb.Get(s.DB, append(bkPrefix, idx[:]...))
-				if v != nil {
-					fm[cid] = true
+			if desc {
+				// Desc-ranging may start above 'start' cursor, shown by the graph above.
+				if bytes.Compare(k, start) <= 0 {
+					data = append(data, p)
 				}
+			} else {
+				data = append(data, p)
 			}
-			data = append(data, p)
 		}
+
+		if len(data) >= n+2 {
+			// To exit the loop, we either exhausted the cursor, or collected enough
+			// Pairs where last two Pairs belong to different blocks.
+			d0, d1 := data[len(data)-1], data[len(data)-2]
+			if d0.UnixNano()/future.Block != d1.UnixNano()/future.Block {
+				break
+			}
+		}
+
 		if desc {
 			c.Prev()
 		} else {
@@ -268,11 +292,13 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		}
 	}
 
-	//fmt.Println(s.ln.Addr(), data, chain)
+	if len(data) > n {
+		data = data[:n]
+	}
 
 	for i, p := range data {
 		cid := p.Future().ToCookie(consolidatedMark)
-		if fm[cid] {
+		if cm[cid] {
 			data[i].C = true
 		}
 	}

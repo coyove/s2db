@@ -492,7 +492,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		var start []byte
 		switch s := K.StrRef(2); s {
 		case "+", "+inf", "+INF", "+Inf":
-			start = []byte("\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfe")
+			start = []byte(maxCursor)
 		case "0":
 			start = make([]byte, 16)
 		default:
@@ -506,6 +506,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			} else {
 				start = hexDecode(K.BytesRef(2))
 			}
+		}
+		if *(*string)(unsafe.Pointer(&start)) > maxCursor {
+			start = []byte(maxCursor)
 		}
 
 		trueN := n

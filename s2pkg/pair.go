@@ -12,6 +12,11 @@ import (
 	"github.com/coyove/sdss/future"
 )
 
+const (
+	PairCmdAppend = 1
+	PairCmdAmend  = 2
+)
+
 type Pair struct {
 	ID   []byte
 	Data []byte
@@ -50,8 +55,15 @@ func (p Pair) Equal(p2 Pair) bool {
 	return bytes.Equal(p.ID, p2.ID)
 }
 
+func (p Pair) Cmd() int {
+	return int(p.ID[14] & 0xf)
+}
+
 func (p Pair) String() string {
 	id := fmt.Sprintf("%016x_%016x", p.ID[:8], p.ID[8:16])
+	if p.Cmd() == PairCmdAmend {
+		id += "_amend"
+	}
 	if p.C {
 		return fmt.Sprintf("[[%s:%q]]", id, p.Data)
 	}

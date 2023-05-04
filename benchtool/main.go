@@ -7,8 +7,10 @@ import (
 	"math/rand"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 )
 
@@ -19,6 +21,7 @@ var (
 	ttl       = flag.Int("ttl", 0, "")
 	keyNum    = flag.Int("k", 1, "")
 	keyPrefix = flag.String("kp", "", "")
+	readMode  = flag.Bool("read", false, "")
 )
 
 func main() {
@@ -33,6 +36,7 @@ func main() {
 	})
 
 	start := time.Now()
+	var tot atomic.Int64
 	wg := sync.WaitGroup{}
 	for i := 0; i < *clients; i++ {
 		wg.Add(1)
@@ -40,7 +44,13 @@ func main() {
 			fmt.Println("client #", i)
 			for c := 0; c < *ops; c++ {
 				idx := i**clients + c
-				rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), idx)
+				start := future.UnixNano()
+				if *readMode {
+					rdb.Do(ctx, "RANGE", *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), fmt.Sprintf("@%d", time.Now().Unix()), -10)
+				} else {
+					rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), idx)
+				}
+				tot.Add(future.UnixNano() - start)
 			}
 			wg.Done()
 		}(i)
@@ -48,4 +58,5 @@ func main() {
 	wg.Wait()
 
 	fmt.Println(time.Since(start))
+	fmt.Println(tot.Load()/int64(*ops**clients)/1e6, "ms")
 }

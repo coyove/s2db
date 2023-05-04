@@ -112,7 +112,6 @@ func TestAppend(t *testing.T) {
 	fmt.Println(data, len(data))
 	fmt.Println(strings.Repeat("-", 10))
 
-	time.Sleep(time.Second / 2)
 	data = doRange(rdb2, "a", ts, N)
 	fmt.Println(data)
 }
@@ -141,7 +140,6 @@ func TestConsolidation(t *testing.T) {
 
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
-	time.Sleep(time.Second)
 
 	data = doRange(rdb1, "a", "+inf", -10)
 	for _, d := range data {
@@ -152,7 +150,6 @@ func TestConsolidation(t *testing.T) {
 	s2.test.Fail = false
 
 	data = doRange(rdb1, "a", "+inf", -20)
-	time.Sleep(time.Second)
 
 	data = s2pkg.TrimPairsForConsolidation(data)
 	trimmed := pairsMap(data)
@@ -171,7 +168,6 @@ func TestConsolidation(t *testing.T) {
 	}
 
 	data = doRange(rdb2, "a", "0", 4)
-	time.Sleep(time.Second)
 	data = doRange(rdb2, "a", "0", 4) // returns 1, 2, [[3]], 4
 	if data[0].C || data[1].C || !data[2].C || data[3].C {
 		t.Fatal(data)
@@ -191,7 +187,6 @@ func TestConsolidation(t *testing.T) {
 	s1.test.Fail = false
 
 	doRange(rdb2, "a", id3, 5) // returns [[3]], 4, 10, 11, 12
-	time.Sleep(time.Second)
 
 	s1.test.Fail = true
 	data = doRange(rdb2, "a", id3, 3) // returns [[3]], [[4]], [[10]]
@@ -221,12 +216,16 @@ func TestConsolidation2(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	doRange(rdb1, "a", "0", 6)             // returns 0, 1, 2, 3, 4, 5
+	doRange(rdb1, "a", "0", 6) // returns 0, 1, 2, 3, 4, 5
+
+	s1.test.NoSetMissing = true
+	doRange(rdb1, "a", "0", 6) // returns 0, 1, 2, 3, 4, 5
+	s1.test.NoSetMissing = false
+
 	data := doRange(rdb1, "a", "+inf", -7) // returns 15, 14, 13, 12, 11, 10, 9
 	if string(data[3].Data) != "12" {
 		t.Fatal(data)
 	}
-	time.Sleep(time.Second)
 
 	id12 := hex.EncodeToString(data[3].ID)
 
@@ -244,6 +243,42 @@ func TestConsolidation2(t *testing.T) {
 		fmt.Println(err)
 	}
 }
+
+// func TestConsolidation3(t *testing.T) {
+// 	rdb1, rdb2, s1, s2 := prepareServers()
+// 	defer s1.Close()
+// 	defer s2.Close()
+//
+// 	ctx := context.TODO()
+// 	for i := 0; i < 5; i++ {
+// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+// 		time.Sleep(200 * time.Millisecond)
+// 	}
+//
+// 	doRange(rdb1, "a", "+inf", -3) // returns 4, 3, 2
+// 	doRange(rdb1, "a", "+inf", -3) // returns 4, [[3]], 2
+//
+// 	data := doRange(rdb1, "a", "+inf", -7) // returns 15, 14, 13, 12, 11, 10, 9
+// 	if string(data[3].Data) != "12" {
+// 		t.Fatal(data)
+// 	}
+//
+// 	id12 := hex.EncodeToString(data[3].ID)
+//
+// 	s2.test.Fail = true
+// 	s1.test.MustAllPeers = true
+// 	data = doRange(rdb1, "a", id12, -3) // returns 12, 11, 10
+//
+// 	if len(data) != 3 || string(data[1].Data) != "11" {
+// 		t.Fatal(data)
+// 	}
+//
+// 	if err := catchPanic(func() { doRange(rdb1, "a", id12, -4) }); err == nil {
+// 		t.FailNow()
+// 	} else {
+// 		fmt.Println(err)
+// 	}
+// }
 
 func TestTTL(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()

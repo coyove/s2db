@@ -7,9 +7,8 @@ import (
 	"github.com/coyove/s2db/s2pkg"
 )
 
-func GetKeyPrefix(key string) (prefix, tombstone []byte) {
+func GetKeyPrefix(key string) (prefix []byte) {
 	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
-	tombstone = append(append(make([]byte, 64)[:0], 'T'), key...)
 	return
 }
 

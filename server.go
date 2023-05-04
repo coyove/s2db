@@ -82,6 +82,7 @@ type Server struct {
 	test struct {
 		Fail         bool
 		MustAllPeers bool
+		NoSetMissing bool
 	}
 }
 
@@ -392,8 +393,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if end == "" {
 			end = key + "\xff"
 		}
-		startKey, _ := extdb.GetKeyPrefix(key)
-		endKey, _ := extdb.GetKeyPrefix(end)
+		startKey := extdb.GetKeyPrefix(key)
+		endKey := extdb.GetKeyPrefix(end)
 		list, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytesInplace(endKey))
 		return w.WriteInt64(int64(list))
 	case "SLOW.LOG":
@@ -447,46 +448,13 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			hexIds[i] = hexEncode(ids[i])
 		}
 		return w.WriteBulks(hexIds)
-	case "IEXPIREBEFORE":
-		if err := s.ExpireBefore(key, K.Int64(2)); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
-	case "EXPIREBEFORE":
-		if K.StrEqFold(3, "get") {
-			return w.WriteInt64(s.GetTombstone(key))
-		}
-		t := K.Int64(2)
-		if err := s.ExpireBefore(key, t); err != nil {
-			return w.WriteError(err.Error())
-		}
-		if s.HasPeers() {
-			go func(start time.Time) {
-				s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
-					cli.Do(context.TODO(), "IEXPIREBEFORE", key, t)
-				})
-				s.Survey.IExpireBefore.Incr(time.Since(start).Milliseconds())
-			}(time.Now())
-		}
-		return w.WriteInt64(t)
-	case "IRANGE": // IRANGE KEY RAW_START COUNT TOMBSTONE => [ID 0, TIME 0, DATA 0, ... TOMBSTONE]
-		tombstone := K.Int64(4)
-		if tombstone > 0 {
-			localTombstone := s.GetTombstone(key)
-			if tombstone > localTombstone {
-				if err := s.ExpireBefore(key, tombstone); err != nil {
-					logrus.Errorf("IRANGE: failed to ExpireBefore using remote tombstone: %v", err)
-				}
-			} else {
-				tombstone = localTombstone
-			}
-		}
+	case "IRANGE": // IRANGE KEY RAW_START COUNT => [ID 0, TIME 0, DATA 0, ...]
 		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		b := s2pkg.ConvertPairsToBulksNoTimestamp(data)
-		return w.WriteBulks(append(b, strconv.AppendInt(nil, tombstone, 10)))
+		return w.WriteBulks(b)
 	case "RANGE": // RANGE KEY START COUNT [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
@@ -511,7 +479,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			start = []byte(maxCursor)
 		}
 
-		trueN := n
+		trueN := iabs(n)
 		if !testFlag {
 			n = int(float64(n) * (1 + rand.Float64())) // caller wants N elements, we actually fetch more than that
 		}
@@ -520,23 +488,25 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if !s.HasPeers() || K.StrEqFold(4, "local") {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
 		}
 		if s2pkg.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
+		}
+		if len(data) > trueN && s2pkg.AllPairsConsolidated(data[:trueN]) {
+			s.Survey.AllConsolidated.Incr(1)
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
 		}
 
-		tombstone := s.GetTombstone(key)
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, tombstone)
+			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n)
 		})
 		if recv == 0 {
-			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
+			return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
 		}
 
-		oldTombstone := tombstone
-
+		origData := append([]s2pkg.Pair{}, data...)
 		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
 				logrus.Errorf("failed to request peer: %v", err)
@@ -545,27 +515,17 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				}
 				return false
 			} else {
-				remoteTombstone, _ := strconv.ParseInt(string(v[len(v)-1]), 10, 64)
-				if remoteTombstone > tombstone {
-					tombstone = remoteTombstone
-				}
-				data = append(data, s2pkg.ConvertBulksToPairs(v[:len(v)-1])...)
+				data = append(data, s2pkg.ConvertBulksToPairs(v)...)
 				return true
 			}
 		})
-
-		if oldTombstone != tombstone {
-			if err := s.ExpireBefore(key, tombstone); err != nil {
-				logrus.Errorf("RANGE: failed to ExpireBefore using remote tombstone: %v", err)
-			}
-		}
 
 		data = sortPairs(data, n >= 0)
 		if len(data) > iabs(n) {
 			data = data[:iabs(n)]
 		}
-		s.setMissing(key, data, success == s.PeerCount())
-		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, iabs(trueN)))
+		s.setMissing(key, origData, data, success == s.PeerCount())
+		return w.WriteBulks(s2pkg.ConvertPairsToBulks(data, trueN))
 	case "IMGET":
 		ids := K.Argv[1:]
 		data, _, err := s.MGet(ids)

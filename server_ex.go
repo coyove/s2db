@@ -284,7 +284,7 @@ func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor strin
 		count = 65536
 	}
 
-	cPrefix, _ := extdb.GetKeyPrefix(cursor)
+	cPrefix := extdb.GetKeyPrefix(cursor)
 	var tmp []byte
 	for iter.SeekGE(cPrefix); iter.Valid(); {
 		k := iter.Key()

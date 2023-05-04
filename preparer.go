@@ -41,7 +41,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		defer id.Wait()
 	}
 
-	bkPrefix, _ := extdb.GetKeyPrefix(key)
+	bkPrefix := extdb.GetKeyPrefix(key)
 
 	tx := s.DB.NewBatch()
 	defer tx.Close()
@@ -53,7 +53,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	var kk [][]byte
 	for i := 0; i < len(data); i++ {
 		binary.BigEndian.PutUint16(idx[12:], uint16(i))
-		idx[14] = byte(s.Channel)<<4 | 1
+		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
 
 		kk = append(kk, s2pkg.Bytes(idx))
 
@@ -102,82 +102,84 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	return kk, nil
 }
 
-func (s *Server) ExpireBefore(key string, unixSec int64) error {
-	_, err, _ := s.expireGroup.Do(key, func() (any, error) {
-		bkPrefix, bkTombstone := extdb.GetKeyPrefix(key)
+func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate bool) {
+	bkPrefix := extdb.GetKeyPrefix(key)
 
-		if err := extdb.SetInt64(s.DB, bkTombstone, unixSec); err != nil {
-			return nil, err
+	con := func(tx *pebble.Batch) {
+		m := map[future.Future]bool{}
+		for _, kv := range s2pkg.TrimPairsForConsolidation(after) {
+			cid := kv.Future().ToCookie(consolidatedMark)
+			if m[cid] {
+				continue
+			}
+			m[cid] = true
+			idx := s2pkg.ConvertFutureTo16B(cid)
+			tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync)
 		}
+	}
 
-		idx := make([]byte, 16) // id(8b) + random(4b) + cmd(2b) + index(2b)
-		binary.BigEndian.PutUint64(idx[:], uint64(unixSec*1e9))
-		return nil, s.DB.DeleteRange(bkPrefix, append(bkPrefix, idx...), pebble.Sync)
-	})
-	return err
-}
+	before = sortPairs(before, true)
+	var missing []s2pkg.Pair
+	for _, a := range after {
+		idx := sort.Search(len(before), func(i int) bool { return !before[i].Less(a) })
+		if idx < len(before) && before[idx].Equal(a) {
+			// Existed
+		} else {
+			missing = append(missing, a)
+		}
+	}
 
-func (s *Server) GetTombstone(key string) int64 {
-	_, bkTombstone := extdb.GetKeyPrefix(key)
-	localTombstone, _ := extdb.GetInt64(s.DB, bkTombstone)
-	return localTombstone
-}
-
-func (s *Server) setMissing(key string, kvs []s2pkg.Pair, consolidate bool) {
-	if len(kvs) == 0 {
+	if len(missing) == 0 {
+		if consolidate {
+			tx := s.DB.NewBatch()
+			defer tx.Close()
+			if con(tx); tx.Count() > 0 {
+				if err := tx.Commit(pebble.Sync); err != nil {
+					logrus.Errorf("setMissing consolidation: %v", err)
+				}
+			}
+		}
 		s.Survey.PeerOnOK.Incr(1)
 		return
 	}
-	go func(start time.Time) {
-		mu := &s.fillLocks[s2pkg.HashStr(key)&0xffff]
-		mu.Lock()
-		defer mu.Unlock()
 
-		if err := func() error {
-			tx := s.DB.NewBatch()
-			defer tx.Close()
+	if s.test.NoSetMissing {
+		panic("test: no set missing")
+	}
 
-			bkPrefix, _ := extdb.GetKeyPrefix(key)
+	start := time.Now()
 
-			c := 0
-			for _, kv := range kvs {
-				cacheKey := string(kv.ID)
-				if _, ok := s.fillCache.GetSimple(cacheKey); ok {
-					continue
-				}
-				if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
-					return err
-				}
-				if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
-					return err
-				}
-				c += 2
-				s.fillCache.AddSimple(cacheKey, nil)
+	if err := func() error {
+		tx := s.DB.NewBatch()
+		defer tx.Close()
+
+		for _, kv := range missing {
+			cacheKey := string(kv.ID)
+			if _, ok := s.fillCache.GetSimple(cacheKey); ok {
+				continue
 			}
-
-			if consolidate {
-				kvs := s2pkg.TrimPairsForConsolidation(kvs)
-				for i := 0; i < len(kvs); i++ {
-					cid := kvs[i].Future().ToCookie(consolidatedMark)
-					idx := s2pkg.ConvertFutureTo16B(cid)
-					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-						return err
-					}
-					c++
-				}
+			if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
+				return err
 			}
-
-			if c == 0 {
-				return nil
+			if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
+				return err
 			}
-			s.Survey.PeerOnMissingN.Incr(int64(c))
-			return tx.Commit(pebble.Sync)
-		}(); err != nil {
-			logrus.Errorf("setMissing: %v", err)
+			s.fillCache.AddSimple(cacheKey, nil)
 		}
 
-		s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
-	}(time.Now())
+		if consolidate {
+			con(tx)
+		}
+		if tx.Count() == 0 {
+			return nil
+		}
+		s.Survey.PeerOnMissingN.Incr(int64(tx.Count()))
+		return tx.Commit(pebble.Sync)
+	}(); err != nil {
+		logrus.Errorf("setMissing: %v", err)
+	}
+
+	s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
 }
 
 func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error) {
@@ -196,7 +198,7 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 		if len(key) == 0 {
 			data = append(data, nil)
 		} else {
-			bkPrefix, _ := extdb.GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
+			bkPrefix := extdb.GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
 			v, err := extdb.Get(s.DB, append(bkPrefix, id...))
 			if err != nil {
 				return nil, false, err
@@ -223,7 +225,7 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		desc, n = true, -n
 	}
 
-	bkPrefix, _ := extdb.GetKeyPrefix(key)
+	bkPrefix := extdb.GetKeyPrefix(key)
 
 	c := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: bkPrefix,
@@ -239,9 +241,9 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		// OLDER                            NEWER
 		//
 		//    blk 0   |     blk 1    |    blk 2
-		//                .-- start
-		//               /
-		// ~~~K0---K1---K2---k3---cm---K4---K5~~~
+		//            |   ,-- start  |
+		//            |  /           |
+		// ~~~K0---K1-+-K2---k3---cm-+-K4---K5~~~
 		//                        |
 		//                        `-- actual start
 		//

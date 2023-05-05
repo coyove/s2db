@@ -2,13 +2,13 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/coyove/s2db/wire"
 	"github.com/go-redis/redis/v8"
+	"github.com/sirupsen/logrus"
 )
 
 type endpoint struct {
@@ -26,17 +26,14 @@ type commandIn struct {
 	wait chan *commandIn
 }
 
-func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
+func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if connString != e.config.Raw {
-		if connString != "" {
-			cfg, err := wire.ParseConnString(connString)
+	if uri != e.config.URI {
+		if uri != "" {
+			cfg, err := wire.ParseConnString(uri)
 			if err != nil {
 				return false, err
-			}
-			if cfg.Name == "" {
-				return false, fmt.Errorf("sevrer name must be set")
 			}
 			old := e.client
 			e.config, e.client = cfg, cfg.GetClient()
@@ -60,6 +57,10 @@ func (e *endpoint) CreateRedis(connString string) (changed bool, err error) {
 }
 
 func (e *endpoint) work() {
+	defer func() {
+		logrus.Debugf("%s worker exited", e.Config().URI)
+	}()
+
 	ctx := context.TODO()
 	for {
 		if e.Redis() == nil {

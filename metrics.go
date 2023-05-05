@@ -297,3 +297,7 @@ func getInfluxDB1Client(endpoint string) (*client.Client, string, error) {
 	}
 	return c, db, err
 }
+
+func appendUint(b []byte, v uint64) []byte {
+	return append(s2pkg.Bytes(b), s2pkg.Uint64ToBytes(v)...)
+}

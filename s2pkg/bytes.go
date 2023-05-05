@@ -178,28 +178,6 @@ func HashStr128(s string) (buf [16]byte) {
 	return buf
 }
 
-func HashStr32(s string) (h uint32) {
-	if idx := strings.IndexByte(s, '{'); idx > -1 {
-		s2 := s[idx+1:]
-		if idx := strings.IndexByte(s2, '}'); idx > -1 {
-			return HashStr32(s2[:idx])
-		}
-	}
-	return crc32.ChecksumIEEE([]byte(s))
-}
-
-func HashMultiBytes(in [][]byte) (h uint64) {
-	h = 14695981039346656037 // fnv64
-	for _, buf := range in {
-		for _, b := range buf {
-			h = h * 1099511628211
-			h = h ^ uint64(b)
-		}
-		h = h * 1099511628211
-	}
-	return
-}
-
 func Recover(f func()) {
 	if r := recover(); r != nil {
 		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
@@ -217,14 +195,6 @@ func HTTPRecover(w http.ResponseWriter, rr *http.Request) {
 			logrus.Errorf("fatal HTTP error of %q: %v", rr.RequestURI, r)
 		}
 	}()
-}
-
-func SizeOfBytes(in [][]byte) int {
-	sz := 1
-	for _, p := range in {
-		sz += len(p)
-	}
-	return sz
 }
 
 type Locker struct {

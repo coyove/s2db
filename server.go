@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -33,9 +34,8 @@ import (
 )
 
 type Server struct {
-	ln           net.Listener
-	lnWebConsole *s2pkg.LocalListener
-	rdbCache     *s2pkg.LRUCache[string, *redis.Client]
+	ln, lnHTTP net.Listener
+	rdbCache   *s2pkg.LRUCache[string, *redis.Client]
 
 	ServerConfig ServerConfig
 	Peers        [future.Channels]*endpoint
@@ -60,6 +60,7 @@ type Server struct {
 		PeerOnMissing   s2pkg.Survey
 		PeerOnOK        s2pkg.Survey `metrics:"qps"`
 		AllConsolidated s2pkg.Survey `metrics:"qps"`
+		IRangeCacheHits s2pkg.Survey `metrics:"qps"`
 		AppendExpire    s2pkg.Survey `metrics:"qps"`
 		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
@@ -68,9 +69,9 @@ type Server struct {
 
 	DB *pebble.DB
 
-	fillCache  *s2pkg.LRUShard[struct{}]
-	rangeCache *s2pkg.LRUShard[[16]byte]
-	ttlOnce    sync.Map
+	fillCache *s2pkg.LRUShard[struct{}]
+	wmCache   *s2pkg.LRUShard[[16]byte]
+	ttlOnce   sync.Map
 
 	test struct {
 		Fail         bool
@@ -135,7 +136,7 @@ func (s *Server) Close() (err error) {
 	s.DBOptions.Cache.Unref()
 	errs := make(chan error, 100)
 	errs <- s.ln.Close()
-	errs <- s.lnWebConsole.Close()
+	errs <- s.lnHTTP.Close()
 	for _, p := range s.Peers {
 		errs <- p.Close()
 	}
@@ -171,17 +172,27 @@ func (s *Server) Serve(addr string) (err error) {
 	// 	},
 	// }
 	// s.ln, err = lc.Listen(context.Background(), "tcp", addr)
-	s.ln, err = net.Listen("tcp", addr)
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
 	if err != nil {
 		return err
 	}
-	s.lnWebConsole = s2pkg.NewLocalListener()
+	s.ln, err = net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		return err
+	}
+
+	tcpAddr2 := *tcpAddr
+	tcpAddr2.Port++
+	s.lnHTTP, err = net.ListenTCP("tcp", &tcpAddr2)
+	if err != nil {
+		return err
+	}
 	s.Survey.StartAt = time.Now()
 
-	log.Infof("listening on: %v", s.ln.Addr())
+	log.Infof("listening on %v (RESP) and %v (HTTP)", s.ln.Addr(), s.lnHTTP.Addr())
 
 	go s.startCronjobs()
-	go s.webConsoleHandler()
+	go s.httpServer()
 	s.acceptor(s.ln)
 	return nil
 }
@@ -197,20 +208,17 @@ func (s *Server) acceptor(ln net.Listener) {
 				return
 			}
 		}
-		go func() {
-			c := s2pkg.NewBufioConn(conn, &s.Survey.Connections)
-			switch buf, _ := c.Peek(4); *(*string)(unsafe.Pointer(&buf)) {
-			case "GET ", "POST", "HEAD":
-				s.lnWebConsole.Feed(c)
-			default:
-				s.handleConnection(c)
-			}
-		}()
+		go s.handleConnection(conn)
 	}
 }
 
-func (s *Server) handleConnection(conn s2pkg.BufioConn) {
-	defer conn.Close()
+func (s *Server) handleConnection(conn net.Conn) {
+	atomic.AddInt64(&s.Survey.Connections, 1)
+	defer func() {
+		atomic.AddInt64(&s.Survey.Connections, -1)
+		conn.Close()
+	}()
+
 	parser := wire.NewParser(conn)
 	writer := wire.NewWriter(conn, log.StandardLogger())
 	var ew error
@@ -391,11 +399,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		list, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytesInplace(endKey))
 		return w.WriteInt64(int64(list))
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(s2pkg.BufioConn))
+		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -443,22 +451,26 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		return w.WriteBulks(hexIds)
 	case "IRANGE": // IRANGE KEY RAW_START COUNT DESC_LOWEST => [ID 0, TIME 0, DATA 0, ...]
 		if lowest := K.BytesRef(4); len(lowest) == 16 {
-			if wm, ok := s.rangeCache.Get16(s2pkg.HashStr128(key)); ok {
-				if bytes.Compare(wm[:], lowest) < 0 {
+			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
+				if bytes.Compare(wm[:], lowest) <= 0 {
+					s.Survey.IRangeCacheHits.Incr(1)
 					return w.WriteBulks([][]byte{}) // no nil
 				}
 			}
 			if s.test.IRangeCache {
-				panic("test: IRANGE should use rangeCache")
+				panic("test: IRANGE should use watermark cache")
 			}
 		}
 		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		b := s2pkg.ConvertPairsToBulksNoTimestamp(data)
-		return w.WriteBulks(b)
-	case "RANGE": // RANGE KEY START COUNT [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		a := make([][]byte, 0, 3*len(data))
+		for _, p := range data {
+			a = append(a, p.IDHex(), nil, p.Data)
+		}
+		return w.WriteBulks(a)
+	case "RANGE": // RANGE KEY START COUNT [ASC|DESC] [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n := K.Int(3)
 		var start []byte
 		var localOnly, mget bool
@@ -571,43 +583,4 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())
-}
-
-func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int, mget bool) (err error) {
-	var a [][]byte
-	if len(p) > max {
-		p = p[:max]
-	}
-	if mget {
-		var ids [][]byte
-		for _, p := range p {
-			switch len(p.Data) {
-			case 16:
-				ids = append(ids, p.Data)
-			case 32:
-				ids = append(ids, hexDecode(p.Data))
-			default:
-				return w.WriteError(fmt.Sprintf("%s is not mgettable: %q", p.IDHex(), p.Data))
-			}
-		}
-		data, err := s.wrapMGet(ids)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		for i, p := range p {
-			a = append(a,
-				p.IDHex(),
-				p.UnixMilliBytes(),
-				p.Data,
-				p.Data,
-				(s2pkg.Pair{ID: p.Data}).UnixMilliBytes(),
-				data[i])
-		}
-	} else {
-		for _, p := range p {
-			i := p.IDHex()
-			a = append(a, i, p.UnixMilliBytes(), p.Data)
-		}
-	}
-	return w.WriteBulks(a)
 }

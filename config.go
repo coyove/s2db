@@ -31,7 +31,7 @@ type ServerConfig struct {
 	Peer8, Peer9    string
 	Peer10, Peer11  string
 	FillCacheSize   int
-	RangeCacheSize  int
+	WMCacheSize     int
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
 	MetricsEndpoint string
@@ -74,7 +74,7 @@ func (s *Server) loadConfig() error {
 
 func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.FillCacheSize, 100000)
-	ifZero(&s.ServerConfig.RangeCacheSize, 1000000)
+	ifZero(&s.ServerConfig.WMCacheSize, 1024*1024)
 	ifZero(&s.ServerConfig.SlowLimit, 500)
 	ifZero(&s.ServerConfig.TimeoutPeer, 500)
 	if s.ServerConfig.ServerName == "" {
@@ -82,7 +82,7 @@ func (s *Server) saveConfig() error {
 	}
 
 	s.fillCache = s2pkg.NewLRUShardCache[struct{}](s.ServerConfig.FillCacheSize)
-	s.rangeCache = s2pkg.NewLRUShardCache[[16]byte](s.ServerConfig.RangeCacheSize)
+	s.wmCache = s2pkg.NewLRUShardCache[[16]byte](s.ServerConfig.WMCacheSize)
 
 	p, err := nj.LoadString(strings.Replace(s.ServerConfig.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -196,7 +196,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	cfg, err := wire.ParseConnString(addr)
 	s2pkg.PanicErr(err)
 	cli = cfg.GetClient()
-	s.rdbCache.Add(cfg.Raw, cli)
+	s.rdbCache.Add(cfg.URI, cli)
 	return
 }
 

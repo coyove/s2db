@@ -1,7 +1,6 @@
 package wire
 
 import (
-	"fmt"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -10,12 +9,11 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/sirupsen/logrus"
 )
 
 type RedisConfig struct {
-	Raw    string
-	Name   string
-	Prefix string
+	URI string
 	redis.Options
 }
 
@@ -27,7 +25,7 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	if !strings.HasPrefix(addr, "redis://") {
 		addr = "redis://" + addr
 	}
-	cfg.Raw = addr
+	cfg.URI = addr
 	u, err := url.Parse(addr)
 	if err != nil {
 		return cfg, err
@@ -46,16 +44,11 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 		if len(vs) == 0 {
 			continue
 		}
-		if k == "Name" {
-			cfg.Name = vs[0]
-		} else if k == "Prefix" {
-			cfg.Prefix = vs[0]
-		} else if f := rv.FieldByName(k); f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
+		if f := rv.FieldByName(k); f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
 			v, _ := strconv.ParseFloat(vs[0], 64)
 			f.SetInt(int64(v))
 		} else {
-			err = fmt.Errorf("invalid option field: %q", k)
-			return
+			logrus.Infof("invalid option field %q in %s", k, addr)
 		}
 	}
 	if cfg.Options.DialTimeout == 0 {

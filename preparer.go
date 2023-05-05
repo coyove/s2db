@@ -22,6 +22,17 @@ const consolidatedMark = 1
 
 const maxCursor = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 
+func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
+	_ = new[15]
+	// fmt.Println(s.ln.Addr(), new)
+	s.wmCache.Update16(ck, func(old [16]byte) [16]byte {
+		if bytes.Compare(new, old[:]) > 0 {
+			copy(old[:], new)
+		}
+		return old
+	})
+}
+
 func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if len(data) >= 65536 {
 		return nil, fmt.Errorf("too many elements to append")
@@ -66,7 +77,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 			return nil, err
 		}
 
-		s.rangeCache.Add(ck[:], idx)
+		s.updateWatermarkCache(ck, idx[:])
 	}
 
 	if ttlSec > 0 {
@@ -156,6 +167,7 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 	start := time.Now()
 
 	if err := func() error {
+		ck := s2pkg.HashStr128(key)
 		tx := s.DB.NewBatch()
 		defer tx.Close()
 
@@ -170,6 +182,7 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 				return err
 			}
 			s.fillCache.Add(kv.ID, struct{}{})
+			s.updateWatermarkCache(ck, kv.ID)
 		}
 
 		if consolidate {
@@ -242,13 +255,14 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 	// 	fmt.Println(c.Key())
 	// }
 
-	if c.Last() {
-		v := [16]byte{}
-		copy(v[:], c.Key())
-		s.rangeCache.Add16(s2pkg.HashStr128(key), v)
-	} else {
-		s.rangeCache.Add16(s2pkg.HashStr128(key), [16]byte{})
-	}
+	c.Last()
+	s.wmCache.Update16(s2pkg.HashStr128(key), func(old [16]byte) (new [16]byte) {
+		if c.Valid() && bytes.Compare(c.Key(), old[:]) > 0 {
+			copy(new[:], c.Key())
+			return new
+		}
+		return old
+	})
 
 	if desc {
 		// OLDER                            NEWER

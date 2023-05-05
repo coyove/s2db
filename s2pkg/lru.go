@@ -48,7 +48,25 @@ func (m *LRUCache[K, V]) Cap() int {
 	return m.storeCap
 }
 
-func (m *LRUCache[K, V]) Add(key K, value V) bool {
+func (m *LRUCache[K, V]) Update(key K, f func(V) V) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	old, ok := m.store[key]
+	if ok {
+		old.Value = f(old.Value)
+		old.Time = clock.UnixNano()
+		m.store[key] = old
+	} else {
+		m.mu.Unlock()
+		defer m.mu.Lock()
+
+		var null V
+		m.Add(key, f(null))
+	}
+}
+
+func (m *LRUCache[K, V]) Add(key K, value V) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -69,7 +87,6 @@ func (m *LRUCache[K, V]) Add(key K, value V) bool {
 		delete(m.store, k0)
 		m.onEvict(k0, v0.Value)
 	}
-	return true
 }
 
 func (m *LRUCache[K, V]) advance() (K, LRUValue[V]) {
@@ -142,6 +159,11 @@ func (l *LRUShard[T]) Add(key []byte, value T) {
 func (l *LRUShard[T]) Add16(k [16]byte, value T) {
 	idx := crc32.ChecksumIEEE(k[:]) % 32
 	l.s[idx].Add(k, value)
+}
+
+func (l *LRUShard[T]) Update16(k [16]byte, f func(T) T) {
+	idx := crc32.ChecksumIEEE(k[:]) % 32
+	l.s[idx].Update(k, f)
 }
 
 func (l *LRUShard[T]) Get(key []byte) (value T, ok bool) {

@@ -88,8 +88,7 @@ func ConvertBulksToPairs(a []string) (p []Pair) {
 		var x Pair
 		x.ID, _ = hex.DecodeString(a[i])
 		x.Data = []byte(a[i+2])
-		ts100 := MustParseInt64(a[i+1])
-		x.C = ts100%2 == 1
+		x.C = ParseUint64(a[i+1])%2 == 1
 		p = append(p, x)
 	}
 	return

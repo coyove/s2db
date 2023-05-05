@@ -8,7 +8,6 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -55,7 +54,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
-			fmt.Sprintf("range_cache:%v", s.rangeCache.Len()),
+			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 		)
 		if ntp := future.Chrony.Load(); ntp != nil {
 			data = append(data,
@@ -114,15 +113,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	return
 }
 
-func joinArray(v interface{}) string {
-	rv := reflect.ValueOf(v)
-	p := make([]string, 0, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		p = append(p, fmt.Sprint(rv.Index(i).Interface()))
-	}
-	return strings.Join(p, " ")
-}
-
 func makeHTMLStat(s string) template.HTML {
 	var a, b, c float64
 	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
@@ -130,10 +120,6 @@ func makeHTMLStat(s string) template.HTML {
 	}
 	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s",
 		s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
-}
-
-func appendUint(b []byte, v uint64) []byte {
-	return append(s2pkg.Bytes(b), s2pkg.Uint64ToBytes(v)...)
 }
 
 func (s *Server) createDBListener() pebble.EventListener {
@@ -160,12 +146,10 @@ func (s *Server) createDBListener() pebble.EventListener {
 	}
 }
 
-func (s *Server) webConsoleHandler() {
-	if testFlag {
-		return
-	}
+func (s *Server) httpServer() {
 	uuid := s2pkg.UUID()
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		defer s2pkg.HTTPRecover(w, r)
 
 		q := r.URL.Query()
@@ -201,7 +185,7 @@ func (s *Server) webConsoleHandler() {
 			"Sections": []string{"server", "server_misc", "sys_rw_stats", "command_qps", "command_avg_lat"},
 		})
 	})
-	http.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
 		defer s2pkg.HTTPRecover(w, r)
 		chartSources := strings.Split(r.URL.Path[7:], ",")
 		if len(chartSources) == 0 || chartSources[0] == "" {
@@ -221,7 +205,7 @@ func (s *Server) webConsoleHandler() {
 		}
 		json.NewEncoder(w).Encode(m)
 	})
-	http.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
 		defer s2pkg.HTTPRecover(w, r)
 
 		// q := r.URL.Query()
@@ -256,12 +240,12 @@ func (s *Server) webConsoleHandler() {
 		// w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"ssd_%d.csv\"", clock.UnixNano()))
 		// fmt.Println(q.Get("match"))
 	})
-	http.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
 		nj.PlaygroundHandler(s.ServerConfig.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
 			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
 			"println(ok, err)", s.getScriptEnviron())(w, r)
 	})
-	go http.Serve(s.lnWebConsole, nil)
+	http.Serve(s.lnHTTP, mux)
 }
 
 func (s *Server) checkWritable() error {
@@ -378,4 +362,43 @@ MORE:
 		logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
 	}
 	return
+}
+
+func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int, mget bool) (err error) {
+	var a [][]byte
+	if len(p) > max {
+		p = p[:max]
+	}
+	if mget {
+		var ids [][]byte
+		for _, p := range p {
+			switch len(p.Data) {
+			case 16:
+				ids = append(ids, p.Data)
+			case 32:
+				ids = append(ids, hexDecode(p.Data))
+			default:
+				return w.WriteError(fmt.Sprintf("%s is not mgettable: %q", p.IDHex(), p.Data))
+			}
+		}
+		data, err := s.wrapMGet(ids)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		for i, p := range p {
+			a = append(a,
+				p.IDHex(),
+				p.UnixMilliBytes(),
+				p.Data,
+				p.Data,
+				(s2pkg.Pair{ID: p.Data}).UnixMilliBytes(),
+				data[i])
+		}
+	} else {
+		for _, p := range p {
+			i := p.IDHex()
+			a = append(a, i, p.UnixMilliBytes(), p.Data)
+		}
+	}
+	return w.WriteBulks(a)
 }

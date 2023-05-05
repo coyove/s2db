@@ -164,6 +164,20 @@ func HashStr(s string) (h uint64) {
 	return h
 }
 
+func HashStr128(s string) (buf [16]byte) {
+	var h0 uint64 = 14695981039346656037 // fnv64
+	h1 := h0
+	for i := 0; i < len(s); i++ {
+		h0 = h0 * 1099511628211
+		h0 = h0 ^ uint64(s[i])
+		h1 = h1 ^ uint64(s[i])
+		h1 = h1 * 1099511628211
+	}
+	binary.BigEndian.PutUint64(buf[:], h0)
+	binary.BigEndian.PutUint64(buf[8:], h1)
+	return buf
+}
+
 func HashStr32(s string) (h uint32) {
 	if idx := strings.IndexByte(s, '{'); idx > -1 {
 		s2 := s[idx+1:]

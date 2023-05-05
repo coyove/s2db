@@ -15,7 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -31,13 +30,12 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 type Server struct {
 	ln           net.Listener
 	lnWebConsole *s2pkg.LocalListener
-	rdbCache     *s2pkg.LRUCache
+	rdbCache     *s2pkg.LRUCache[string, *redis.Client]
 
 	ServerConfig ServerConfig
 	Peers        [future.Channels]*endpoint
@@ -54,15 +52,15 @@ type Server struct {
 	Survey struct {
 		StartAt         time.Time
 		Connections     int64
-		SysRead         s2pkg.Survey          ``
-		SysReadP99Micro s2pkg.P99SurveyMinute ``
-		SysWrite        s2pkg.Survey          ``
-		SlowLogs        s2pkg.Survey          ``
-		PeerOnMissingN  s2pkg.Survey          `metrics:"mean"`
-		PeerOnMissing   s2pkg.Survey          ``
-		PeerOnOK        s2pkg.Survey          `metrics:"qps"`
-		AllConsolidated s2pkg.Survey          `metrics:"qps"`
-		AppendExpire    s2pkg.Survey          `metrics:"qps"`
+		SysRead         s2pkg.Survey
+		SysReadP99Micro s2pkg.P99SurveyMinute
+		SysWrite        s2pkg.Survey
+		SlowLogs        s2pkg.Survey
+		PeerOnMissingN  s2pkg.Survey `metrics:"mean"`
+		PeerOnMissing   s2pkg.Survey
+		PeerOnOK        s2pkg.Survey `metrics:"qps"`
+		AllConsolidated s2pkg.Survey `metrics:"qps"`
+		AppendExpire    s2pkg.Survey `metrics:"qps"`
 		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
@@ -70,14 +68,15 @@ type Server struct {
 
 	DB *pebble.DB
 
-	fillCache  *s2pkg.LRUCache
-	rangeCache *s2pkg.LRUCache
+	fillCache  *s2pkg.LRUShard[struct{}]
+	rangeCache *s2pkg.LRUShard[[16]byte]
 	ttlOnce    sync.Map
 
 	test struct {
 		Fail         bool
 		MustAllPeers bool
 		NoSetMissing bool
+		IRangeCache  bool
 	}
 }
 
@@ -115,8 +114,8 @@ func Open(dbPath string) (x *Server, err error) {
 	}
 	log.Infof("open data: %s in %v", dbPath, time.Since(start))
 
-	x.rdbCache = s2pkg.NewLRUCache(8, func(k string, v s2pkg.LRUValue) {
-		log.Infof("redis client cache evicted: %s, close=%v", k, v.Value.(*redis.Client).Close())
+	x.rdbCache = s2pkg.NewLRUCache(8, func(k string, v *redis.Client) {
+		log.Infof("redis client cache evicted: %s, close=%v", k, v.Close())
 	})
 	return x, nil
 }
@@ -140,8 +139,8 @@ func (s *Server) Close() (err error) {
 	for _, p := range s.Peers {
 		errs <- p.Close()
 	}
-	s.rdbCache.Range(func(k string, v s2pkg.LRUValue) bool {
-		errs <- v.Value.(*redis.Client).Close()
+	s.rdbCache.Range(func(k string, v *redis.Client) bool {
+		errs <- v.Close()
 		return true
 	})
 
@@ -158,20 +157,21 @@ func (s *Server) Close() (err error) {
 }
 
 func (s *Server) Serve(addr string) (err error) {
-	lc := net.ListenConfig{
-		Control: func(network, address string, conn syscall.RawConn) error {
-			var operr error
-			if *netTCPWbufSize > 0 {
-				if err := conn.Control(func(fd uintptr) {
-					operr = syscall.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, *netTCPWbufSize)
-				}); err != nil {
-					return err
-				}
-			}
-			return operr
-		},
-	}
-	s.ln, err = lc.Listen(context.Background(), "tcp", addr)
+	// lc := net.ListenConfig{
+	// 	Control: func(network, address string, conn syscall.RawConn) error {
+	// 		var operr error
+	// 		if *netTCPWbufSize > 0 {
+	// 			if err := conn.Control(func(fd uintptr) {
+	// 				operr = syscall.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF, *netTCPWbufSize)
+	// 			}); err != nil {
+	// 				return err
+	// 			}
+	// 		}
+	// 		return operr
+	// 	},
+	// }
+	// s.ln, err = lc.Listen(context.Background(), "tcp", addr)
+	s.ln, err = net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
@@ -441,7 +441,17 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			hexIds[i] = hexEncode(ids[i])
 		}
 		return w.WriteBulks(hexIds)
-	case "IRANGE": // IRANGE KEY RAW_START COUNT LEFT_BOUND RIGHT_BOUND => [ID 0, TIME 0, DATA 0, ...]
+	case "IRANGE": // IRANGE KEY RAW_START COUNT DESC_LOWEST => [ID 0, TIME 0, DATA 0, ...]
+		if lowest := K.BytesRef(4); len(lowest) == 16 {
+			if wm, ok := s.rangeCache.Get16(s2pkg.HashStr128(key)); ok {
+				if bytes.Compare(wm[:], lowest) < 0 {
+					return w.WriteBulks([][]byte{}) // no nil
+				}
+			}
+			if s.test.IRangeCache {
+				panic("test: IRANGE should use rangeCache")
+			}
+		}
 		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -479,7 +489,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		trueN := iabs(n)
 		if !testFlag {
-			n = int(float64(n) * (1 + rand.Float64())) // caller wants N elements, we actually fetch more than that
+			// Caller wants N elements, we actually fetch more than that.
+			// Special case: n=1 is still n=1.
+			n = int(float64(n) * (1 + rand.Float64()))
 		}
 		data, err := s.Range(key, start, n)
 		if err != nil {
@@ -497,8 +509,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return s.convertPairs(w, data, trueN, mget)
 		}
 
+		var lowest []byte
+		if n < 0 && len(data) > 0 {
+			lowest = data[len(data)-1].ID
+		}
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n)
+			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, lowest)
 		})
 		if recv == 0 {
 			return s.convertPairs(w, data, trueN, mget)
@@ -506,7 +522,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		origData := append([]s2pkg.Pair{}, data...)
 		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
+			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil && err != redis.Nil {
 				logrus.Errorf("failed to request peer: %v", err)
 				if s.test.MustAllPeers {
 					panic("not all peers respond")

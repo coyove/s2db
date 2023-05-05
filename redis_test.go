@@ -247,6 +247,29 @@ func TestConsolidation2(t *testing.T) {
 	}
 }
 
+func TestIRangeCache(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	for i := 0; i < 10; i++ {
+		r := rdb1
+		if i%2 == 1 {
+			r = rdb2
+		}
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i).Err())
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	s1.test.IRangeCache = true
+	s2.test.MustAllPeers = true
+	data := doRange(rdb2, "a", "+", -1)
+	if string(data[0].Data) != "9" {
+		t.Fatal(data)
+	}
+}
+
 func TestMgettable(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()
 	defer s1.Close()

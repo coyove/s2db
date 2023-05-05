@@ -7,36 +7,13 @@ import (
 	"hash/crc32"
 	"io"
 	"math/rand"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
-
-func TestFixedRange(t *testing.T) {
-	var a FixedRange
-	a.Append([]byte("0000000000000001"), []byte("0000000000000001"))
-	var b FixedRange
-	b.Append([]byte("0000000000000002"), []byte("0000000000000003"))
-	a.Merge(b)
-	fmt.Println(a.String())
-	a.Merge(b)
-	fmt.Println(a.String())
-
-	a.Merge(NewFixedRange([]byte("0000000000000001"), []byte("0000000000000003")))
-	fmt.Println(a.String())
-
-	a.Merge(NewFixedRange(make([]byte, 16), make([]byte, 16)))
-	fmt.Println(a.String())
-
-	one := IncBytesInplace(make([]byte, 16))
-	a.Merge(NewFixedRange(make([]byte, 16), one))
-	fmt.Println(a.String())
-
-	fmt.Println(a.Contains(NewFixedRange(one, one)))
-	fmt.Println(a.Contains(NewFixedRange(one, IncBytes(one))))
-}
 
 func TestHashStr(t *testing.T) {
 	test := func(a, b string) {
@@ -124,30 +101,6 @@ func TestMetrics2(t *testing.T) {
 	fmt.Println(s.Ts)
 }
 
-func TestBuoy(t *testing.T) {
-	b := NewBuoySignal(time.Second, &Survey{})
-	m := make(map[int]chan interface{})
-	for i := 100; i < 200; i++ {
-		ch := make(chan interface{}, 1)
-		b.WaitAt(uint64(i), ch, i)
-		m[i] = ch
-	}
-
-	b.RaiseTo(150)
-	for i := 100; i <= 150; i++ {
-		if i != (<-m[i]).(int) {
-			t.Fatal(i)
-		}
-	}
-
-	time.Sleep(time.Second * 2)
-	for i := 151; i < 200; i++ {
-		if _, ok := (<-m[i]).(error); !ok {
-			t.Fatal(i)
-		}
-	}
-}
-
 type onebytereader struct{ io.Reader }
 
 func (obr onebytereader) Read(p []byte) (int, error) { return obr.Reader.Read(p[:1]) }
@@ -188,7 +141,7 @@ func TestDoubleMapLRU(t *testing.T) {
 	ops := []op{}
 
 	const N = 1024
-	m := NewLRUCache(N, nil)
+	m := NewLRUCache[string, int](N, nil)
 	r := NewLRUCacheTest(N)
 
 	for i := 0; i < 1e6; i++ {
@@ -208,9 +161,9 @@ func TestDoubleMapLRU(t *testing.T) {
 		wg.Add(1)
 		f := func(op op) {
 			if op.add {
-				m.Add(strconv.Itoa(op.v), 0, op.v, 0)
+				m.Add(strconv.Itoa(op.v), op.v)
 			} else {
-				m.GetSimple(strconv.Itoa(op.v))
+				m.Get(strconv.Itoa(op.v))
 			}
 			wg.Done()
 		}
@@ -237,7 +190,7 @@ func TestDoubleMapLRU(t *testing.T) {
 
 	miss := 0
 	r.Info(func(k LRUKey, v interface{}, a int64, b int64) {
-		_, ok := m.GetSimple(k.(string))
+		_, ok := m.Get(k.(string))
 		// fmt.Println("ref", k, tv)
 		if !ok {
 			miss++
@@ -245,13 +198,13 @@ func TestDoubleMapLRU(t *testing.T) {
 	})
 	fmt.Println(r.Len(), miss, m.Cap(), "diff:", hcDiff, refDiff)
 
-	m = NewLRUCache(1, func(k string, v LRUValue) {
+	m = NewLRUCache(1, func(k string, v int) {
 		fmt.Println("evict", k, v) // kv.SlaveKey)
 	})
 	for i := 0; i < 7; i++ {
-		m.Add(strconv.Itoa(i), 0, i, 0)
+		m.Add(strconv.Itoa(i), i)
 	}
-	m.Range(func(k string, v LRUValue) bool {
+	m.Range(func(k string, v int) bool {
 		fmt.Println(k, v)
 		return true
 	})
@@ -459,14 +412,14 @@ func TestBitsMask(t *testing.T) {
 func TestLRUPerf(t *testing.T) {
 	const N = 3000000
 	const C = 1e4
-	m := NewLRUCache(N, nil)
+	m := NewLRUCache[string, int](N, nil)
 	for i := 0; i < N+C; i++ {
-		m.AddSimple(strconv.Itoa(i), 0)
+		m.Add(strconv.Itoa(i), 0)
 	}
 
 	start := time.Now()
 	for i := 0; i < C; i++ {
-		m.AddSimple(strconv.Itoa(i), 0)
+		m.Add(strconv.Itoa(i), 0)
 	}
 	t.Log(time.Since(start))
 
@@ -480,4 +433,26 @@ func TestLRUPerf(t *testing.T) {
 		m2.Add(i, 0)
 	}
 	t.Log(time.Since(start))
+}
+
+func TestLRUMem(t *testing.T) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	fmt.Println(mem.HeapAlloc)
+
+	l := NewLRUCache[uint64, uint64](1e6, nil)
+	for i := 0; i < 1e6; i++ {
+		l.Add(uint64(i), uint64(i))
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&mem)
+	fmt.Println(mem.HeapAlloc)
+
+	m := map[uint64]uint64{}
+	for i := 0; i < 1e6; i++ {
+		m[uint64(i)] = uint64(i)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&mem)
+	fmt.Println(mem.HeapAlloc, len(m), l.Len())
 }

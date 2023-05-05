@@ -1,45 +1,13 @@
 package s2pkg
 
 import (
+	"hash/crc32"
 	"math"
 	"reflect"
 	"sync"
 
 	"github.com/coyove/s2db/clock"
 )
-
-// func init() {
-// 	t := btree.NewG(256, btree.LessFunc[[2]string](func(a, b [2]string) bool {
-// 		return a[0] < b[0]
-// 	}))
-//
-// 	var mem runtime.MemStats
-// 	runtime.ReadMemStats(&mem)
-// 	fmt.Println(mem.HeapAlloc)
-// 	for i := 0; i < 1e6; i++ {
-// 		t.ReplaceOrInsert([2]string{
-// 			strconv.Itoa(i),
-// 			strconv.Itoa(i),
-// 		})
-// 	}
-// 	runtime.ReadMemStats(&mem)
-// 	fmt.Println(mem.HeapAlloc)
-//
-// 	m := map[string]string{}
-// 	for i := 0; i < 1e6; i++ {
-// 		m[strconv.Itoa(i)] = strconv.Itoa(i)
-// 	}
-// 	runtime.ReadMemStats(&mem)
-// 	fmt.Println(mem.HeapAlloc)
-//
-// 	l := NewLRUCache[string, string](1e6, nil)
-// 	for i := 0; i < 1e6; i++ {
-// 		l.Add(strconv.Itoa(i), strconv.Itoa(i))
-// 	}
-// 	runtime.ReadMemStats(&mem)
-// 	fmt.Println(mem.HeapAlloc)
-// 	os.Exit(0)
-// }
 
 type LRUValue[V any] struct {
 	Time  int64
@@ -150,4 +118,47 @@ func (m *LRUCache[K, V]) Range(f func(K, V) bool) {
 			return
 		}
 	}
+}
+
+type LRUShard[T any] struct {
+	s [32]*LRUCache[[16]byte, T]
+}
+
+func NewLRUShardCache[V any](cap int) *LRUShard[V] {
+	l := &LRUShard[V]{}
+	for i := range l.s {
+		l.s[i] = NewLRUCache[[16]byte, V](cap/len(l.s), nil)
+	}
+	return l
+}
+
+func (l *LRUShard[T]) Add(key []byte, value T) {
+	var k [16]byte
+	_ = key[15]
+	copy(k[:], key)
+	l.Add16(k, value)
+}
+
+func (l *LRUShard[T]) Add16(k [16]byte, value T) {
+	idx := crc32.ChecksumIEEE(k[:]) % 32
+	l.s[idx].Add(k, value)
+}
+
+func (l *LRUShard[T]) Get(key []byte) (value T, ok bool) {
+	var k [16]byte
+	_ = key[15]
+	copy(k[:], key)
+	return l.Get16(k)
+}
+
+func (l *LRUShard[T]) Get16(k [16]byte) (value T, ok bool) {
+	idx := crc32.ChecksumIEEE(k[:]) % 32
+	return l.s[idx].Get(k)
+}
+
+func (l *LRUShard[T]) Len() (c int) {
+	for i := range l.s {
+		c += l.s[i].Len()
+	}
+	return
 }

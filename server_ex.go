@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
@@ -55,7 +53,10 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
-			fmt.Sprintf("connections:%v", s.Survey.Connections))
+			fmt.Sprintf("connections:%v", s.Survey.Connections),
+			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
+			fmt.Sprintf("range_cache:%v", s.rangeCache.Len()),
+		)
 		if ntp := future.Chrony.Load(); ntp != nil {
 			data = append(data,
 				fmt.Sprintf("ntp_stats:%v/%v",
@@ -270,38 +271,6 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor string) {
-	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: []byte("l"),
-		UpperBound: []byte("m"),
-	})
-	defer iter.Close()
-
-	if count > 65536 {
-		count = 65536
-	}
-
-	cPrefix := extdb.GetKeyPrefix(cursor)
-	var tmp []byte
-	for iter.SeekGE(cPrefix); iter.Valid(); {
-		k := iter.Key()
-		k = k[:bytes.IndexByte(k, 0)]
-		keys = append(keys, string(k[1:]))
-
-		tmp = append(append(tmp[:0], k...), 1)
-		iter.SeekGE(tmp)
-
-		if len(keys) == count {
-			if iter.Next() {
-				x := iter.Key()
-				nextCursor = string(x[:bytes.IndexByte(x, 0)][1:])
-			}
-			break
-		}
-	}
-	return
-}
-
 func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 	data, consolidated, err := s.MGet(ids)
 	if err != nil {
@@ -331,7 +300,7 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 
 	m := map[string]string{}
 	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-		if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil {
+		if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil && err != redis.Nil {
 			logrus.Errorf("failed to request peer: %v", err)
 			return false
 		} else {

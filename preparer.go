@@ -42,11 +42,12 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	}
 
 	bkPrefix := extdb.GetKeyPrefix(key)
+	ck := s2pkg.HashStr128(key)
 
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	idx := make([]byte, 16) // id(8b) + random(4b) + index(2b) + cmd(2b)
+	var idx [16]byte // id(8b) + random(4b) + index(2b) + cmd(2b)
 	binary.BigEndian.PutUint64(idx[:], uint64(id))
 	rand.Read(idx[8:12])
 
@@ -55,15 +56,17 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		binary.BigEndian.PutUint16(idx[12:], uint16(i))
 		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
 
-		kk = append(kk, s2pkg.Bytes(idx))
+		kk = append(kk, idx[:])
 
-		if err := tx.Set(append(bkPrefix, idx...), data[i], pebble.Sync); err != nil {
+		if err := tx.Set(append(bkPrefix, idx[:]...), data[i], pebble.Sync); err != nil {
 			return nil, err
 		}
 
-		if err := tx.Set(append([]byte("i"), idx...), []byte(key), pebble.Sync); err != nil {
+		if err := tx.Set(append([]byte("i"), idx[:]...), []byte(key), pebble.Sync); err != nil {
 			return nil, err
 		}
+
+		s.rangeCache.Add(ck[:], idx)
 	}
 
 	if ttlSec > 0 {
@@ -157,8 +160,7 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 		defer tx.Close()
 
 		for _, kv := range missing {
-			cacheKey := string(kv.ID)
-			if _, ok := s.fillCache.GetSimple(cacheKey); ok {
+			if _, ok := s.fillCache.Get(kv.ID); ok {
 				continue
 			}
 			if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
@@ -167,7 +169,7 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 			if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
 				return err
 			}
-			s.fillCache.AddSimple(cacheKey, nil)
+			s.fillCache.Add(kv.ID, struct{}{})
 		}
 
 		if consolidate {
@@ -240,9 +242,12 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 	// 	fmt.Println(c.Key())
 	// }
 
-	if c.First() {
-	}
 	if c.Last() {
+		v := [16]byte{}
+		copy(v[:], c.Key())
+		s.rangeCache.Add16(s2pkg.HashStr128(key), v)
+	} else {
+		s.rangeCache.Add16(s2pkg.HashStr128(key), [16]byte{})
 	}
 
 	if desc {
@@ -310,6 +315,38 @@ func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err 
 		cid := p.Future().ToCookie(consolidatedMark)
 		if cm[cid] {
 			data[i].C = true
+		}
+	}
+	return
+}
+
+func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor string) {
+	iter := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("l"),
+		UpperBound: []byte("m"),
+	})
+	defer iter.Close()
+
+	if count > 65536 {
+		count = 65536
+	}
+
+	cPrefix := extdb.GetKeyPrefix(cursor)
+	var tmp []byte
+	for iter.SeekGE(cPrefix); iter.Valid(); {
+		k := iter.Key()
+		k = k[:bytes.IndexByte(k, 0)]
+		keys = append(keys, string(k[1:]))
+
+		tmp = append(append(tmp[:0], k...), 1)
+		iter.SeekGE(tmp)
+
+		if len(keys) == count {
+			if iter.Next() {
+				x := iter.Key()
+				nextCursor = string(x[:bytes.IndexByte(x, 0)][1:])
+			}
+			break
 		}
 	}
 	return

@@ -81,8 +81,8 @@ func (s *Server) saveConfig() error {
 		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}
 
-	s.fillCache = s2pkg.NewLRUCache(s.ServerConfig.FillCacheSize, nil)
-	s.rangeCache = s2pkg.NewLRUCache(s.ServerConfig.RangeCacheSize, nil)
+	s.fillCache = s2pkg.NewLRUShardCache[struct{}](s.ServerConfig.FillCacheSize)
+	s.rangeCache = s2pkg.NewLRUShardCache[[16]byte](s.ServerConfig.RangeCacheSize)
 
 	p, err := nj.LoadString(strings.Replace(s.ServerConfig.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
@@ -190,13 +190,13 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	if !strings.HasPrefix(addr, "redis://") {
 		addr = "redis://" + addr
 	}
-	if cli, ok := s.rdbCache.GetSimple(addr); ok {
-		return cli.(*redis.Client)
+	if cli, ok := s.rdbCache.Get(addr); ok {
+		return cli
 	}
 	cfg, err := wire.ParseConnString(addr)
 	s2pkg.PanicErr(err)
 	cli = cfg.GetClient()
-	s.rdbCache.AddSimple(cfg.Raw, cli)
+	s.rdbCache.Add(cfg.Raw, cli)
 	return
 }
 

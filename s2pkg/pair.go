@@ -74,6 +74,7 @@ func (p Pair) String() string {
 }
 
 func ConvertPairsToBulksNoTimestamp(p []Pair) (a [][]byte) {
+	a = make([][]byte, 0, 3*len(p))
 	x := []byte("0")
 	for _, p := range p {
 		i := p.IDHex()

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/coyove/s2db/clock"
 )
 
 func TestHashStr(t *testing.T) {
@@ -30,12 +32,25 @@ func TestHashStr(t *testing.T) {
 	test("", "b{}c")
 }
 
-func TestHashMB(t *testing.T) {
-	a := (HashMultiBytes([][]byte{nil, []byte("a"), []byte("bc")}))
-	b := (HashMultiBytes([][]byte{nil, []byte("ab"), []byte("c")}))
-	if a == b {
-		t.Fatal(a, b)
+func TestHLL(t *testing.T) {
+	a := NewHyperLogLog()
+	var b HyperLogLog
+	m := map[uint32]int{}
+	rand.Seed(clock.UnixNano())
+	for i := 0; i < 1e7; i++ {
+		x := rand.Uint32()
+		a.Add(x)
+		m[x] = 1
 	}
+
+	for i := 0; i < 1e6; i++ {
+		x := rand.Uint32()
+		b.Add(x)
+		m[x] = 1
+	}
+	fmt.Println(len(m), a.Count(), b.Count())
+	a.Merge(b)
+	fmt.Println(a.Count())
 }
 
 func TestMetrics(t *testing.T) {

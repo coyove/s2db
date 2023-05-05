@@ -17,7 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -29,7 +28,6 @@ import (
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
-	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -71,7 +69,7 @@ type Server struct {
 
 	fillCache *s2pkg.LRUShard[struct{}]
 	wmCache   *s2pkg.LRUShard[[16]byte]
-	ttlOnce   sync.Map
+	ttlOnce   [32]sync.Map
 
 	test struct {
 		Fail         bool
@@ -267,7 +265,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src net.IP, K *wire.Command) (outErr error) {
-	type any = interface{}
 	key := K.Str(1)
 
 	for _, nw := range blacklistIPs {
@@ -277,11 +274,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	if isWriteCommand[cmd] {
-		if key == "" {
-			return w.WriteError("invalid empty key name")
-		}
-		if strings.Contains(key, "\x00") {
-			return w.WriteError("invalid key name containing null bytes (0x00)")
+		if key == "" || key == "*" || strings.Contains(key, "\x00") {
+			return w.WriteError("invalid key name (either empty or containing '\\x00'/'*')")
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
@@ -374,7 +368,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteError("invalid metrics key: " + key)
 	case "INFO":
-		info := s.InfoCommand(strings.ToLower(key))
+		info := s.InfoCommand(key)
 		return w.WriteBulkString(strings.Join(info, "\r\n"))
 	case "DUMPDB":
 		go func(start time.Time) {
@@ -404,20 +398,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "RUNTIME.LOG":
 		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
-	case "WAIT":
-		x := K.BytesRef(1)
-		for i := 2; i < K.ArgCount(); i++ {
-			if bytes.Compare(K.BytesRef(i), x) > 0 {
-				x = K.BytesRef(i)
-			}
-		}
-		future.Future(binary.BigEndian.Uint64(hexDecode(x))).Wait()
-		return w.WriteSimpleString("OK")
-	case "CNFLAG":
-		if _, consolidated, _ := s.MGet(K.Argv[1:]); consolidated {
-			return w.WriteInt64(1)
-		}
-		return w.WriteInt64(0)
 	}
 
 	switch cmd {
@@ -449,8 +429,22 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			hexIds[i] = hexEncode(ids[i])
 		}
 		return w.WriteBulks(hexIds)
-	case "IRANGE": // IRANGE KEY RAW_START COUNT DESC_LOWEST => [ID 0, TIME 0, DATA 0, ...]
-		if lowest := K.BytesRef(4); len(lowest) == 16 {
+	case "ISELECT":
+		// KEY RAW_START COUNT DESC LOWEST => [ID 0, DATA 0, ...]
+		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
+		if key == "*" {
+			ids := K.Argv[2:]
+			data, _, err := s.MGet(ids)
+			if err != nil {
+				return w.WriteError(err.Error())
+			}
+			resp := make([][]byte, 0, len(data)*2)
+			for i := range data {
+				resp = append(resp, ids[i], data[i])
+			}
+			return w.WriteBulks(resp)
+		}
+		if lowest := K.BytesRef(5); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
 					s.Survey.IRangeCacheHits.Incr(1)
@@ -458,54 +452,35 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				}
 			}
 			if s.test.IRangeCache {
-				panic("test: IRANGE should use watermark cache")
+				panic("test: ISELECT should use watermark cache")
 			}
 		}
-		data, err := s.Range(key, K.BytesRef(2), K.Int(3))
+		data, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4) == 1)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		a := make([][]byte, 0, 3*len(data))
+		a := make([][]byte, 0, 2*len(data))
 		for _, p := range data {
-			a = append(a, p.IDHex(), nil, p.Data)
+			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "RANGE": // RANGE KEY START COUNT [ASC|DESC] [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n := K.Int(3)
-		var start []byte
-		var localOnly, mget bool
-		switch s := K.StrRef(2); s {
-		case "+", "+inf", "+INF", "+Inf":
-			start = []byte(maxCursor)
-		case "0":
-			start = make([]byte, 16)
-		default:
-			if strings.HasPrefix(s, "@") {
-				start = make([]byte, 16)
-				if n < 0 {
-					binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s[1:])*1e9+1e9-1))
-				} else {
-					binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s[1:])*1e9))
-				}
-			} else {
-				start = hexDecode(K.BytesRef(2))
-			}
-		}
-		if *(*string)(unsafe.Pointer(&start)) > maxCursor {
-			start = []byte(maxCursor)
-		}
+	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		var localOnly, mget, desc bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
 			mget = mget || K.StrEqFold(i, "mget")
+			desc = desc || K.StrEqFold(i, "desc")
 		}
 
-		trueN := iabs(n)
+		start := s.translateCursor(K.BytesRef(2), desc)
+		n := K.Int(3)
+		trueN := n
 		if !testFlag {
 			// Caller wants N elements, we actually fetch more than that.
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, err := s.Range(key, start, n)
+		data, err := s.Range(key, start, n, desc)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -522,11 +497,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 
 		var lowest []byte
-		if n < 0 && len(data) > 0 {
+		if desc && len(data) > 0 {
 			lowest = data[len(data)-1].ID
 		}
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "IRANGE", key, start, n, lowest)
+			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, desc, lowest)
 		})
 		if recv == 0 {
 			return s.convertPairs(w, data, trueN, mget)
@@ -534,36 +509,19 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		origData := append([]s2pkg.Pair{}, data...)
 		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-			if v, err := cmd.(*redis.StringSliceCmd).Result(); err != nil && err != redis.Nil {
-				logrus.Errorf("failed to request peer: %v", err)
-				if s.test.MustAllPeers {
-					panic("not all peers respond")
-				}
-				return false
-			} else {
-				data = append(data, s2pkg.ConvertBulksToPairs(v)...)
-				return true
+			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
+				_ = v[i][15]
+				data = append(data, s2pkg.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
 			}
+			return true
 		})
 
-		data = sortPairs(data, n >= 0)
-		if len(data) > iabs(n) {
-			data = data[:iabs(n)]
+		data = sortPairs(data, !desc)
+		if len(data) > n {
+			data = data[:n]
 		}
 		s.setMissing(key, origData, data, success == s.PeerCount())
 		return s.convertPairs(w, data, trueN, mget)
-	case "IMGET":
-		ids := K.Argv[1:]
-		data, _, err := s.MGet(ids)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		resp := make([][]byte, len(data)*2)
-		for i := range data {
-			resp[2*i] = ids[i]
-			resp[2*i+1] = data[i]
-		}
-		return w.WriteBulks(resp)
 	case "MGET", "GET":
 		var ids [][]byte
 		for i := 1; i < K.ArgCount(); i++ {
@@ -577,9 +535,38 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulk(data[0])
 		}
 		return w.WriteBulks(data)
+	case "HCOUNT":
+		add, del, err := s.getHLL(key)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if K.StrEqFold(2, "hll") {
+			return w.WriteBulks([][]byte{add, del})
+		}
+		if s.HasPeers() {
+			recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+				return redis.NewStringSliceCmd(context.TODO(), cmd, key, "HLL")
+			})
+			s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+				v := cmd.(*redis.StringSliceCmd).Val()
+				add.Merge(s2pkg.HyperLogLog(v[0]))
+				del.Merge(s2pkg.HyperLogLog(v[1]))
+				return true
+			})
+		}
+		return w.WriteInt64(int64(add.Count()) - int64(del.Count()))
 	case "SCAN": // SCAN CURSOR COUNT
 		data, nextCursor := s.Scan(K.StrRef(1), K.Int(2))
 		return w.WriteObjects(nextCursor, data)
+	case "WAIT":
+		x := K.BytesRef(1)
+		for i := 2; i < K.ArgCount(); i++ {
+			if bytes.Compare(K.BytesRef(i), x) > 0 {
+				x = K.BytesRef(i)
+			}
+		}
+		future.Future(binary.BigEndian.Uint64(hexDecode(x))).Wait()
+		return w.WriteSimpleString("OK")
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())

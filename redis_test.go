@@ -35,10 +35,16 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 }
 
 func doRange(r *redis.Client, key string, start string, n int, mget ...any) []s2pkg.Pair {
-	cmd := redis.NewStringSliceCmd(context.TODO(), "RANGE", key, start, n)
-	if len(mget) == 1 {
-		cmd = redis.NewStringSliceCmd(context.TODO(), "RANGE", key, start, n, "mget")
+	args := []any{"SELECT", key, start}
+	if n < 0 {
+		args = append(args, -n, "desc")
+	} else {
+		args = append(args, n)
 	}
+	if len(mget) == 1 {
+		args = append(args, "mget")
+	}
+	cmd := redis.NewStringSliceCmd(context.TODO(), args...)
 	r.Process(context.TODO(), cmd)
 	s2pkg.PanicErr(cmd.Err())
 	return s2pkg.ConvertBulksToPairs(cmd.Val())
@@ -359,7 +365,7 @@ func TestTTL(t *testing.T) {
 		}
 	}
 
-	fmt.Println(expired)
+	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
 	// for _, ex := range expired {
 	// 	v := (rdb1.Get(ctx, ex).Val())
 	// 	if v != "" {

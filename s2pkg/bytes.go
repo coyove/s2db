@@ -149,15 +149,13 @@ func UUID() string {
 	return hex.EncodeToString(buf)
 }
 
+func HashBytes(s []byte) (h uint64) {
+	return HashStr(*(*string)(unsafe.Pointer(&s)))
+}
+
 func HashStr(s string) (h uint64) {
 	h = 14695981039346656037 // fnv64
 	for i := 0; i < len(s); i++ {
-		if s[i] == '{' {
-			// aaa{bbb}ccc
-			if idx := strings.IndexByte(s[i+1:], '}'); idx > -1 {
-				return HashStr(s[i+1 : i+1+idx])
-			}
-		}
 		h = h * 1099511628211
 		h = h ^ uint64(s[i])
 	}

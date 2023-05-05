@@ -33,8 +33,28 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	})
 }
 
+func (s *Server) getHLL(key string) (s2pkg.HyperLogLog, s2pkg.HyperLogLog, error) {
+	v, err := extdb.Get(s.DB, append([]byte("H"), key...))
+	if err != nil {
+		return nil, nil, err
+	}
+	switch len(v) {
+	case s2pkg.HLLSize * 2:
+		return v[:s2pkg.HLLSize], v[s2pkg.HLLSize:], nil
+	case s2pkg.HLLSize:
+		return v, nil, nil
+	case 0:
+		return nil, nil, nil
+	}
+	return nil, nil, fmt.Errorf("invalid HLL size %d of %q", len(v), key)
+}
+
+func (s *Server) setHLL(tx *pebble.Batch, key string, add, del s2pkg.HyperLogLog) error {
+	return tx.Set(append([]byte("H"), key...), append(add, del...), pebble.Sync)
+}
+
 func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
-	if len(data) >= 65536 {
+	if len(data) > 0xffff {
 		return nil, fmt.Errorf("too many elements to append")
 	}
 	if key == "" {
@@ -52,19 +72,25 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		defer id.Wait()
 	}
 
+	hllAdd, hllDel, err := s.getHLL(key)
+	if err != nil {
+		return nil, err
+	}
+
 	bkPrefix := extdb.GetKeyPrefix(key)
 	ck := s2pkg.HashStr128(key)
 
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	var idx [16]byte // id(8b) + random(4b) + index(2b) + cmd(2b)
+	var idx [16]byte // id(8b) + random(3b) + index(2b) + shard(1b) + cmd(1b) + extra(1b)
 	binary.BigEndian.PutUint64(idx[:], uint64(id))
-	rand.Read(idx[8:12])
+	rand.Read(idx[8:11])
 
 	var kk [][]byte
 	for i := 0; i < len(data); i++ {
-		binary.BigEndian.PutUint16(idx[12:], uint16(i))
+		binary.BigEndian.PutUint16(idx[11:], uint16(i))
+		idx[13] = 0 // shard index, not used by now
 		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
 
 		kk = append(kk, idx[:])
@@ -78,12 +104,14 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		}
 
 		s.updateWatermarkCache(ck, idx[:])
+		hllAdd.Add(uint32(s2pkg.HashBytes(idx[:])))
 	}
 
 	if ttlSec > 0 {
-		_, loaded := s.ttlOnce.LoadOrStore(key, true)
+		m := &s.ttlOnce[s2pkg.HashStr(key)%uint64(len(s.ttlOnce))]
+		_, loaded := m.LoadOrStore(key, true)
 		if !loaded {
-			defer s.ttlOnce.Delete(key)
+			defer m.Delete(key)
 
 			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
 			iter := s.DB.NewIter(&pebble.IterOptions{
@@ -105,11 +133,15 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 				if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
 					return nil, err
 				}
+				hllDel.Add(uint32(s2pkg.HashBytes(idx)))
 			}
 			s.Survey.AppendExpire.Incr(1)
 		}
 	}
 
+	if err := s.setHLL(tx, key, hllAdd, hllDel); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(pebble.Sync); err != nil {
 		return nil, err
 	}
@@ -167,6 +199,11 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 	start := time.Now()
 
 	if err := func() error {
+		add, del, err := s.getHLL(key)
+		if err != nil {
+			return err
+		}
+
 		ck := s2pkg.HashStr128(key)
 		tx := s.DB.NewBatch()
 		defer tx.Close()
@@ -183,14 +220,14 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 			}
 			s.fillCache.Add(kv.ID, struct{}{})
 			s.updateWatermarkCache(ck, kv.ID)
+			add.Add(uint32(s2pkg.HashBytes(kv.ID)))
 		}
 
 		if consolidate {
 			con(tx)
 		}
-		if tx.Count() == 0 {
-			return nil
-		}
+
+		s.setHLL(tx, key, add, del)
 		s.Survey.PeerOnMissingN.Incr(int64(tx.Count()))
 		return tx.Commit(pebble.Sync)
 	}(); err != nil {
@@ -237,12 +274,7 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 	return
 }
 
-func (s *Server) Range(key string, start []byte, n int) (data []s2pkg.Pair, err error) {
-	desc := false
-	if n < 0 {
-		desc, n = true, -n
-	}
-
+func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg.Pair, err error) {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
 	c := s.DB.NewIter(&pebble.IterOptions{
@@ -397,11 +429,4 @@ func sortPairs(p []s2pkg.Pair, asc bool) []s2pkg.Pair {
 		}
 	}
 	return p
-}
-
-func iabs(v int) int {
-	if v < 0 {
-		return -v
-	}
-	return v
 }

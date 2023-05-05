@@ -53,8 +53,8 @@ func main() {
 						m = "mget"
 					}
 					k := *keyPrefix + strconv.Itoa(rand.Intn(*keyNum))
-					c := fmt.Sprintf("@%d", time.Now().Unix())
-					v := rdb.Do(ctx, "RANGE", k, c, -1000, m).Val()
+					c := fmt.Sprintf("%d", time.Now().Unix())
+					v := rdb.Do(ctx, "select", k, c, 1000, "desc", m).Val()
 					if v == nil {
 						fmt.Println(k, c)
 					} else {

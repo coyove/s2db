@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
+	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
@@ -24,12 +26,12 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"RANGE":  true,
-		"IRANGE": true,
-		"GET":    true,
-		"MGET":   true,
-		"IMGET":  true,
-		"SCAN":   true,
+		"ISELECT": true,
+		"SELECT":  true,
+		"GET":     true,
+		"MGET":    true,
+		"SCAN":    true,
+		"HCOUNT":  true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
@@ -45,7 +47,7 @@ func ssRef(b [][]byte) (keys []string) {
 }
 
 func (s *Server) InfoCommand(section string) (data []string) {
-	if section == "" || section == "server" {
+	if section == "" || strings.EqualFold(section, "server") {
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
 			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
@@ -64,12 +66,14 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		data = append(data, "")
 	}
-	if section == "" || section == "server_misc" {
+	if section == "" || strings.EqualFold(section, "server_misc") {
 		dataSize := 0
 		dataFiles, _ := ioutil.ReadDir(s.DBPath)
 		for _, fi := range dataFiles {
 			dataSize += int(fi.Size())
 		}
+		iDisk, _ := s.DB.EstimateDiskUsage([]byte("i"), []byte("j"))
+		HDisk, _ := s.DB.EstimateDiskUsage([]byte("H"), []byte("I"))
 		cwd, _ := os.Getwd()
 		data = append(data, "# server_misc",
 			fmt.Sprintf("cwd:%v", cwd),
@@ -77,9 +81,13 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("data_files:%d", len(dataFiles)),
 			fmt.Sprintf("data_size:%d", dataSize),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
+			fmt.Sprintf("index_size:%d", iDisk),
+			fmt.Sprintf("index_size_mb:%.2f", float64(iDisk)/1024/1024),
+			fmt.Sprintf("hll_size:%d", HDisk),
+			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
 			"")
 	}
-	if section == "" || section == "sys_rw_stats" {
+	if section == "" || strings.EqualFold(section, "sys_rw_stats") {
 		data = append(data, "# sys_rw_stats",
 			fmt.Sprintf("sys_read_qps:%v", s.Survey.SysRead.String()),
 			fmt.Sprintf("sys_read_avg_lat:%v", s.Survey.SysRead.MeanString()),
@@ -89,7 +97,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
 			"")
 	}
-	if section == "" || section == "command_qps" || section == "command_avg_lat" {
+	if section == "" || strings.EqualFold(section, "command_qps") || strings.EqualFold(section, "command_avg_lat") {
 		var keys []string
 		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
 		sort.Strings(keys)
@@ -109,7 +117,22 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			data = append(data, add(func(s *s2pkg.Survey) string { return s.QPSString() })...)
 		}
 	}
-
+	if strings.HasPrefix(section, ":") {
+		key := section[1:]
+		add, del, _ := s.getHLL(key)
+		startKey := extdb.GetKeyPrefix(key)
+		disk, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(startKey))
+		data = append(data, "# key "+key)
+		data = append(data, fmt.Sprintf("size:%d", disk))
+		if wm, wmok := s.wmCache.Get16(s2pkg.HashStr128(key)); wmok {
+			data = append(data, fmt.Sprintf("watermark:%s", hexEncode(wm[:])))
+		} else {
+			data = append(data, "watermark:miss")
+		}
+		data = append(data, fmt.Sprintf("hll_add:%d", add.Count()))
+		data = append(data, fmt.Sprintf("hll_del:%d", del.Count()))
+		data = append(data, "")
+	}
 	return
 }
 
@@ -274,7 +297,7 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 		return data, nil
 	}
 
-	missings = append([]any{"IMGET"}, missings...)
+	missings = append([]any{"ISELECT", "*"}, missings...)
 	recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 		return redis.NewStringSliceCmd(context.TODO(), missings...)
 	})
@@ -284,15 +307,11 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 
 	m := map[string]string{}
 	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-		if m0, err := cmd.(*redis.StringSliceCmd).Result(); err != nil && err != redis.Nil {
-			logrus.Errorf("failed to request peer: %v", err)
-			return false
-		} else {
-			for i := 0; i < len(m0); i += 2 {
-				m[m0[i]] = m0[i+1]
-			}
-			return true
+		m0 := cmd.(*redis.StringSliceCmd).Val()
+		for i := 0; i < len(m0); i += 2 {
+			m[m0[i]] = m0[i+1]
 		}
+		return true
 	})
 	for i, d := range data {
 		if d != nil {
@@ -336,7 +355,7 @@ func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandI
 	out := make(chan *commandIn, len(s.Peers))
 	s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
 		select {
-		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out}:
+		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out, pstart: future.UnixNano()}:
 			recv++
 		case <-time.After(time.Duration(s.ServerConfig.TimeoutPeer) * time.Millisecond):
 			logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
@@ -346,14 +365,24 @@ func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandI
 }
 
 func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(redis.Cmder) bool) (success int) {
-	pstart := time.Now()
+	if recv == 0 {
+		return
+	}
 MORE:
 	select {
 	case res := <-out:
 		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
-		x.(*s2pkg.Survey).Incr(time.Since(pstart).Milliseconds())
-		if f(res.Cmder) {
-			success++
+		x.(*s2pkg.Survey).Incr((future.UnixNano() - res.pstart) / 1e6)
+
+		if err := res.Cmder.Err(); err != nil {
+			logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), res.e.Config().URI, err)
+			if s.test.MustAllPeers {
+				panic("not all peers respond")
+			}
+		} else {
+			if f(res.Cmder) {
+				success++
+			}
 		}
 		if recv--; recv > 0 {
 			goto MORE
@@ -401,4 +430,29 @@ func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int, mget bool
 		}
 	}
 	return w.WriteBulks(a)
+}
+
+func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
+	switch s := *(*string)(unsafe.Pointer(&buf)); s {
+	case "+", "+inf", "+INF", "+Inf":
+		start = []byte(maxCursor)
+	case "0":
+		start = make([]byte, 16)
+	default:
+		if len(s) == 32 || len(s) == 33 {
+			start = hexDecode(buf)
+		} else if len(s) == 16 {
+			start = buf
+		} else if desc {
+			start = make([]byte, 16)
+			binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s)*1e9+1e9-1))
+		} else {
+			start = make([]byte, 16)
+			binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s)*1e9))
+		}
+	}
+	if *(*string)(unsafe.Pointer(&start)) > maxCursor {
+		start = []byte(maxCursor)
+	}
+	return
 }

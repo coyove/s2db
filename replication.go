@@ -23,7 +23,8 @@ type endpoint struct {
 type commandIn struct {
 	e *endpoint
 	redis.Cmder
-	wait chan *commandIn
+	wait   chan *commandIn
+	pstart int64
 }
 
 func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {

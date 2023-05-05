@@ -464,11 +464,10 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [MGET] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		var localOnly, mget, desc bool
+	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		var localOnly, desc bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
-			mget = mget || K.StrEqFold(i, "mget")
 			desc = desc || K.StrEqFold(i, "desc")
 		}
 
@@ -485,15 +484,15 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if !s.HasPeers() || localOnly {
-			return s.convertPairs(w, data, trueN, mget)
+			return s.convertPairs(w, data, trueN)
 		}
 		if s2pkg.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, trueN, mget)
+			return s.convertPairs(w, data, trueN)
 		}
 		if len(data) > trueN && s2pkg.AllPairsConsolidated(data[:trueN]) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, trueN, mget)
+			return s.convertPairs(w, data, trueN)
 		}
 
 		var lowest []byte
@@ -504,7 +503,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, desc, lowest)
 		})
 		if recv == 0 {
-			return s.convertPairs(w, data, trueN, mget)
+			return s.convertPairs(w, data, trueN)
 		}
 
 		origData := append([]s2pkg.Pair{}, data...)
@@ -521,7 +520,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			data = data[:n]
 		}
 		s.setMissing(key, origData, data, success == s.PeerCount())
-		return s.convertPairs(w, data, trueN, mget)
+		return s.convertPairs(w, data, trueN)
 	case "MGET", "GET":
 		var ids [][]byte
 		for i := 1; i < K.ArgCount(); i++ {

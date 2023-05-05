@@ -393,42 +393,42 @@ MORE:
 	return
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int, mget bool) (err error) {
+func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int) (err error) {
 	var a [][]byte
 	if len(p) > max {
 		p = p[:max]
 	}
-	if mget {
-		var ids [][]byte
-		for _, p := range p {
-			switch len(p.Data) {
-			case 16:
-				ids = append(ids, p.Data)
-			case 32:
-				ids = append(ids, hexDecode(p.Data))
-			default:
-				return w.WriteError(fmt.Sprintf("%s is not mgettable: %q", p.IDHex(), p.Data))
-			}
-		}
-		data, err := s.wrapMGet(ids)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		for i, p := range p {
-			a = append(a,
-				p.IDHex(),
-				p.UnixMilliBytes(),
-				p.Data,
-				p.Data,
-				(s2pkg.Pair{ID: p.Data}).UnixMilliBytes(),
-				data[i])
-		}
-	} else {
-		for _, p := range p {
-			i := p.IDHex()
-			a = append(a, i, p.UnixMilliBytes(), p.Data)
-		}
+	// if mget {
+	// 	var ids [][]byte
+	// 	for _, p := range p {
+	// 		switch len(p.Data) {
+	// 		case 16:
+	// 			ids = append(ids, p.Data)
+	// 		case 32:
+	// 			ids = append(ids, hexDecode(p.Data))
+	// 		default:
+	// 			return w.WriteError(fmt.Sprintf("%s is not mgettable: %q", p.IDHex(), p.Data))
+	// 		}
+	// 	}
+	// 	data, err := s.wrapMGet(ids)
+	// 	if err != nil {
+	// 		return w.WriteError(err.Error())
+	// 	}
+	// 	for i, p := range p {
+	// 		a = append(a,
+	// 			p.IDHex(),
+	// 			p.UnixMilliBytes(),
+	// 			p.Data,
+	// 			p.Data,
+	// 			(s2pkg.Pair{ID: p.Data}).UnixMilliBytes(),
+	// 			data[i])
+	// 	}
+	// } else {
+	for _, p := range p {
+		i := p.IDHex()
+		a = append(a, i, p.UnixMilliBytes(), p.Data)
 	}
+	// }
 	return w.WriteBulks(a)
 }
 

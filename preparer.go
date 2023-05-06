@@ -18,9 +18,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-const consolidatedMark = 1
-
-const maxCursor = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+const (
+	consolidatedMark = 1
+	eolMark          = 2
+	maxCursor        = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+)
 
 func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	_ = new[15]
@@ -113,7 +115,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		if !loaded {
 			defer m.Delete(key)
 
-			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano() - ttlSec*1e9))
+			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9))
 			iter := s.DB.NewIter(&pebble.IterOptions{
 				LowerBound: bkPrefix,
 				UpperBound: append(bkPrefix, idx[:]...),
@@ -121,19 +123,28 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 			defer iter.Close()
 
 			count := 0
-			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+			for iter.First(); iter.Valid(); iter.Next() {
 				count++
 				if err := tx.Delete(iter.Key(), pebble.Sync); err != nil {
 					return nil, err
 				}
 				idx := bytes.TrimPrefix(iter.Key(), bkPrefix)
-				if v, _ := s2pkg.Convert16BToFuture(idx).Cookie(); v == consolidatedMark {
+				if _, ok := s2pkg.Convert16BToFuture(idx).Cookie(); ok {
 					continue
 				}
 				if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
 					return nil, err
 				}
 				hllDel.Add(uint32(s2pkg.HashBytes(idx)))
+
+				if count >= *ttlEvictLimit {
+					eol := s2pkg.Convert16BToFuture(idx).ToCookie(eolMark)
+					idx := s2pkg.ConvertFutureTo16B(eol)
+					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+						return nil, err
+					}
+					break
+				}
 			}
 			s.Survey.AppendExpire.Incr(1)
 		}
@@ -274,7 +285,7 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 	return
 }
 
-func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg.Pair, err error) {
+func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (data []s2pkg.Pair, err error) {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
 	c := s.DB.NewIter(&pebble.IterOptions{
@@ -317,6 +328,24 @@ func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg
 	}
 
 	cm := map[future.Future]bool{}
+	var dedup map[string]bool
+	var dedupTx *pebble.Batch
+	var hllAdd, hllDel s2pkg.HyperLogLog
+
+	if distinct {
+		m := &s.delOnce[s2pkg.HashStr(key)%uint64(len(s.delOnce))]
+		if _, loaded := m.LoadOrStore(key, true); !loaded {
+			dedup = map[string]bool{}
+			dedupTx = s.DB.NewBatch()
+			defer dedupTx.Close()
+			defer m.Delete(key)
+
+			hllAdd, hllDel, err = s.getHLL(key)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
@@ -324,11 +353,30 @@ func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg
 			ID:   s2pkg.Bytes(k),
 			Data: s2pkg.Bytes(c.Value()),
 		}
-		if v, ok := p.Future().Cookie(); ok && v == consolidatedMark {
-			cm[p.Future()] = true
+		if v, ok := p.Future().Cookie(); ok {
+			if v == consolidatedMark {
+				cm[p.Future()] = true
+			} else if v == eolMark {
+				if desc {
+					break
+				}
+			} else {
+				return nil, fmt.Errorf("invalid mark: %x", v)
+			}
 		} else {
+			if dedupTx != nil {
+				if dedup[p.DataStrRef()] {
+					dedupTx.Delete(c.Key(), pebble.NoSync)
+					idx := bytes.TrimPrefix(c.Key(), bkPrefix)
+					dedupTx.Delete(append([]byte("i"), idx...), pebble.NoSync)
+					hllDel.Add(uint32(s2pkg.HashBytes(idx)))
+					// Note that we still append 'p' to 'data' to ensure we can exit based on 'len(data)'.
+				} else {
+					dedup[p.DataStrRef()] = true
+				}
+			}
 			if desc {
-				// Desc-ranging may start above 'start' cursor, shown by the graph above.
+				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
 					data = append(data, p)
 				}
@@ -353,6 +401,17 @@ func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg
 		}
 	}
 
+	if dedupTx != nil {
+		new := make([]s2pkg.Pair, 0, len(data))
+		for _, p := range data {
+			if dedup[p.DataStrRef()] {
+				new = append(new, p)
+				delete(dedup, p.DataStrRef())
+			}
+		}
+		data = new
+	}
+
 	if len(data) > n {
 		data = data[:n]
 	}
@@ -361,6 +420,15 @@ func (s *Server) Range(key string, start []byte, n int, desc bool) (data []s2pkg
 		cid := p.Future().ToCookie(consolidatedMark)
 		if cm[cid] {
 			data[i].C = true
+		}
+	}
+
+	if dedupTx != nil && dedupTx.Count() > 0 {
+		s.setHLL(dedupTx, key, hllAdd, hllDel)
+		// Use NoSync here because loss of deletions is okay. We will delete again next time
+		// we call Range().
+		if err := dedupTx.Commit(pebble.NoSync); err != nil {
+			logrus.Errorf("range distinct commit failed: %v", err)
 		}
 	}
 	return

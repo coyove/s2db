@@ -22,7 +22,7 @@ var (
 	keyNum    = flag.Int("k", 1, "")
 	keyPrefix = flag.String("kp", "", "")
 	readMode  = flag.Bool("read", false, "")
-	mgetMode  = flag.Bool("mget", false, "")
+	dedupMode = flag.Bool("distinct", false, "")
 )
 
 func main() {
@@ -45,24 +45,27 @@ func main() {
 		go func(i int) {
 			fmt.Println("client #", i)
 			start := future.UnixNano()
-			lastID := "00000000000000000000000000000000"
 			for c := 0; c < *ops; c++ {
 				if *readMode {
 					m := ""
-					if *mgetMode {
-						m = "mget"
+					n := 1000
+					if *dedupMode {
+						m = "distinct"
+						n = 100
 					}
 					k := *keyPrefix + strconv.Itoa(rand.Intn(*keyNum))
 					c := fmt.Sprintf("%d", time.Now().Unix())
-					v := rdb.Do(ctx, "select", k, c, 1000, "desc", m).Val()
+					v := rdb.Do(ctx, "select", k, c, n, "desc", m).Val()
 					if v == nil {
 						fmt.Println(k, c)
 					} else {
 						l.Add(int64(len(v.([]any))))
 					}
 				} else {
-					id := rdb.Do(ctx, "APPEND", "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), lastID).Val().([]any)[0].(string)
-					lastID = id
+					args := []any{"APPEND"}
+					args = append(args, "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)))
+					args = append(args, rand.Intn(10))
+					rdb.Do(ctx, args...)
 				}
 			}
 			tot.Add(future.UnixNano() - start)

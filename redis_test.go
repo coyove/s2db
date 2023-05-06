@@ -34,15 +34,15 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 	return m
 }
 
-func doRange(r *redis.Client, key string, start string, n int, mget ...any) []s2pkg.Pair {
+func doRange(r *redis.Client, key string, start string, n int, dedup ...any) []s2pkg.Pair {
 	args := []any{"SELECT", key, start}
 	if n < 0 {
 		args = append(args, -n, "desc")
 	} else {
 		args = append(args, n)
 	}
-	if len(mget) == 1 {
-		args = append(args, "mget")
+	if len(dedup) == 1 {
+		args = append(args, "distinct")
 	}
 	cmd := redis.NewStringSliceCmd(context.TODO(), args...)
 	r.Process(context.TODO(), cmd)
@@ -288,50 +288,24 @@ func TestWatermark(t *testing.T) {
 	}
 }
 
-// func TestMgettable(t *testing.T) {
-// 	rdb1, rdb2, s1, s2 := prepareServers()
-// 	defer s1.Close()
-// 	defer s2.Close()
-//
-// 	ctx := context.TODO()
-// 	ids := []string{}
-// 	m := map[string]int{}
-// 	for i := 0; i < 10; i++ {
-// 		r := rdb1
-// 		if i%2 == 1 {
-// 			r = rdb2
-// 		}
-// 		id := r.Do(ctx, "APPEND", "a", i).Val().([]any)[0].(string)
-// 		ids = append(ids, id)
-// 		m[id] = i
-// 		time.Sleep(150 * time.Millisecond)
-// 	}
-//
-// 	for i, id := range ids {
-// 		r := rdb2
-// 		if i%2 == 1 {
-// 			r = rdb1
-// 		}
-// 		s2pkg.PanicErr(r.Do(ctx, "APPEND", "i", id).Err())
-// 		time.Sleep(150 * time.Millisecond)
-// 	}
-//
-// 	s2.test.Fail = true
-// 	data := rdb1.Do(ctx, "mget", ids).Val().([]any)
-// 	for i := 1; i < len(data); i += 2 {
-// 		if string(data[i].Data) != "" {
-// 			t.Fatal(data)
-// 		}
-// 	}
-// 	s2.test.Fail = false
-//
-// 	data = doRange(rdb1, "i", "0", 10, "mget")
-// 	for i := 0; i < 10; i++ {
-// 		if string(data[i*2+1].Data) != strconv.Itoa(i) {
-// 			t.Fatal(data)
-// 		}
-// 	}
-// }
+func TestDistinct(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	for i := 0; i < 10; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1).Err())
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	data := doRange(rdb1, "a", "+Inf", -100)
+	fmt.Println(data)
+
+	data = doRange(rdb1, "a", "+Inf", -100, "distinct")
+	fmt.Println(data)
+}
 
 func TestTTL(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()

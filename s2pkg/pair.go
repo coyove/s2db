@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"unsafe"
 
 	"github.com/coyove/sdss/future"
 )
@@ -60,6 +61,10 @@ func (p Pair) Equal(p2 Pair) bool {
 
 func (p Pair) Cmd() int {
 	return int(p.ID[14] & 0xf)
+}
+
+func (p Pair) DataStrRef() string {
+	return *(*string)(unsafe.Pointer(&p.Data))
 }
 
 func (p Pair) String() string {

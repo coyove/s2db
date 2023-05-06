@@ -70,6 +70,7 @@ type Server struct {
 	fillCache *s2pkg.LRUShard[struct{}]
 	wmCache   *s2pkg.LRUShard[[16]byte]
 	ttlOnce   [32]sync.Map
+	delOnce   [32]sync.Map
 
 	test struct {
 		Fail         bool
@@ -430,7 +431,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteBulks(hexIds)
 	case "ISELECT":
-		// KEY RAW_START COUNT DESC LOWEST => [ID 0, DATA 0, ...]
+		// KEY RAW_START COUNT DISTINCT DESC LOWEST => [ID 0, DATA 0, ...]
 		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
 		if key == "*" {
 			ids := K.Argv[2:]
@@ -444,7 +445,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 			return w.WriteBulks(resp)
 		}
-		if lowest := K.BytesRef(5); len(lowest) == 16 {
+		if lowest := K.BytesRef(6); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
 					s.Survey.IRangeCacheHits.Incr(1)
@@ -455,7 +456,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				panic("test: ISELECT should use watermark cache")
 			}
 		}
-		data, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4) == 1)
+		data, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4) == 1, K.Int(5) == 1)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -464,11 +465,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		var localOnly, desc bool
+	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [DEDUP] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		var localOnly, desc, distinct bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
 			desc = desc || K.StrEqFold(i, "desc")
+			distinct = distinct || K.StrEqFold(i, "distinct")
 		}
 
 		start := s.translateCursor(K.BytesRef(2), desc)
@@ -479,7 +481,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, err := s.Range(key, start, n, desc)
+		data, err := s.Range(key, start, n, distinct, desc)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -500,7 +502,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			lowest = data[len(data)-1].ID
 		}
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, desc, lowest)
+			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, distinct, desc, lowest)
 		})
 		if recv == 0 {
 			return s.convertPairs(w, data, trueN)

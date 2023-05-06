@@ -16,6 +16,7 @@ import (
 	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/sdss/future"
 	client "github.com/influxdata/influxdb1-client"
 	log "github.com/sirupsen/logrus"
 )
@@ -72,6 +73,9 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	})
 	pairs = append(pairs, metricsPair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
 	pairs = append(pairs, metricsPair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
+	if c := future.Chrony.Load(); c != nil {
+		pairs = append(pairs, metricsPair{Member: "NTPError", Score: c.EstimatedOffsetErr})
+	}
 
 	lsmMetrics := s.DB.Metrics()
 	dbm := reflect.ValueOf(lsmMetrics).Elem()

@@ -31,6 +31,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const lockShards = 32
+
 type Server struct {
 	ln, lnHTTP net.Listener
 	rdbCache   *s2pkg.LRUCache[string, *redis.Client]
@@ -60,6 +62,7 @@ type Server struct {
 		AllConsolidated s2pkg.Survey `metrics:"qps"`
 		IRangeCacheHits s2pkg.Survey `metrics:"qps"`
 		AppendExpire    s2pkg.Survey `metrics:"qps"`
+		RangeDistinct   s2pkg.Survey
 		PeerBatchSize   s2pkg.Survey
 		PeerLatency     sync.Map
 		Command         sync.Map
@@ -69,8 +72,8 @@ type Server struct {
 
 	fillCache *s2pkg.LRUShard[struct{}]
 	wmCache   *s2pkg.LRUShard[[16]byte]
-	ttlOnce   [32]sync.Map
-	delOnce   [32]sync.Map
+	ttlOnce   [lockShards]sync.Map
+	delOnce   [lockShards]sync.Map
 
 	test struct {
 		Fail         bool
@@ -445,6 +448,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 			return w.WriteBulks(resp)
 		}
+		distinct, desc := K.Int(4) == 1, K.Int(5) == 1
 		if lowest := K.BytesRef(6); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
@@ -456,9 +460,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				panic("test: ISELECT should use watermark cache")
 			}
 		}
-		data, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4) == 1, K.Int(5) == 1)
+		data, timedout, err := s.Range(key, K.BytesRef(2), K.Int(3), distinct, desc)
 		if err != nil {
 			return w.WriteError(err.Error())
+		}
+		if timedout {
+			return w.WriteError("timedout")
 		}
 		a := make([][]byte, 0, 2*len(data))
 		for _, p := range data {
@@ -475,26 +482,37 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 		start := s.translateCursor(K.BytesRef(2), desc)
 		n := K.Int(3)
-		trueN := n
+		origN := n
 		if !testFlag {
 			// Caller wants N elements, we actually fetch more than that.
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, err := s.Range(key, start, n, distinct, desc)
+		data, timedout, err := s.Range(key, start, n, distinct, desc)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		if !s.HasPeers() || localOnly {
-			return s.convertPairs(w, data, trueN)
+			return s.convertPairs(w, data, origN)
 		}
 		if s2pkg.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, trueN)
+			return s.convertPairs(w, data, origN)
 		}
-		if len(data) > trueN && s2pkg.AllPairsConsolidated(data[:trueN]) {
+		if len(data) > origN && s2pkg.AllPairsConsolidated(data[:origN]) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, trueN)
+			return s.convertPairs(w, data, origN)
+		}
+		if timedout && len(data) == 0 {
+			return w.WriteBulks([][]byte{})
+		}
+
+		if timedout {
+			// Range() has timed out before we collected enough Pairs. Say 'n' is 10 and we have 2 Pairs,
+			// it is still possible that there exist 8 more Pairs. If another peer returns 8 Pairs to us,
+			// we will have enough 10 Pairs, thus incorrectly insert consolidation marks into the database.
+			// So we have to reduce 'n' to 2 in this case.
+			n = len(data)
 		}
 
 		var lowest []byte
@@ -505,7 +523,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, distinct, desc, lowest)
 		})
 		if recv == 0 {
-			return s.convertPairs(w, data, trueN)
+			return s.convertPairs(w, data, origN)
 		}
 
 		origData := append([]s2pkg.Pair{}, data...)
@@ -518,11 +536,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		})
 
 		data = sortPairs(data, !desc)
+		if distinct {
+			data = distinctPairsData(data)
+		}
 		if len(data) > n {
 			data = data[:n]
 		}
 		s.setMissing(key, origData, data, success == s.PeerCount())
-		return s.convertPairs(w, data, trueN)
+		return s.convertPairs(w, data, origN)
 	case "MGET", "GET":
 		var ids [][]byte
 		for i := 1; i < K.ArgCount(); i++ {

@@ -53,10 +53,10 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
+			fmt.Sprintf("wall_clock:%v", time.Now()),
+			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano())),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
-			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
-			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 		)
 		if ntp := future.Chrony.Load(); ntp != nil {
 			data = append(data,
@@ -85,6 +85,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("index_size_mb:%.2f", float64(iDisk)/1024/1024),
 			fmt.Sprintf("hll_size:%d", HDisk),
 			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
+			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
+			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 			"")
 	}
 	if section == "" || strings.EqualFold(section, "sys_rw_stats") {
@@ -408,7 +410,7 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 	switch s := *(*string)(unsafe.Pointer(&buf)); s {
 	case "+", "+inf", "+INF", "+Inf", "recent", "RECENT":
 		start = []byte(maxCursor)
-	case "0":
+	case "0", "":
 		start = make([]byte, 16)
 	default:
 		if len(s) == 32 || len(s) == 33 {

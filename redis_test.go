@@ -295,16 +295,28 @@ func TestDistinct(t *testing.T) {
 
 	ctx := context.TODO()
 	for i := 0; i < 10; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2).Err())
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1).Err())
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, 100).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, 100).Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
+	s2.test.Fail = true
 	data := doRange(rdb1, "a", "+Inf", -100)
-	fmt.Println(data)
+	if len(data) != 20 {
+		t.Fatal(data)
+	}
+	s2.test.Fail = false
 
 	data = doRange(rdb1, "a", "+Inf", -100, "distinct")
-	fmt.Println(data)
+	if len(data) != 11 || string(data[10].Data) != "0" {
+		t.Fatal(data)
+	}
+
+	s1.test.Fail = true
+	data = doRange(rdb2, "a", "0", 100)
+	if len(data) != 6 || string(data[0].Data) != "1" {
+		t.Fatal(data)
+	}
 }
 
 func TestTTL(t *testing.T) {

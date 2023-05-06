@@ -34,6 +34,7 @@ type ServerConfig struct {
 	WMCacheSize     int
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
+	TimeoutRange    int // ms
 	MetricsEndpoint string
 	InspectorSource string
 }
@@ -77,6 +78,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.WMCacheSize, 1024*1024)
 	ifZero(&s.ServerConfig.SlowLimit, 500)
 	ifZero(&s.ServerConfig.TimeoutPeer, 500)
+	ifZero(&s.ServerConfig.TimeoutRange, 500)
 	if s.ServerConfig.ServerName == "" {
 		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}

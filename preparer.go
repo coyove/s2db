@@ -55,6 +55,21 @@ func (s *Server) setHLL(tx *pebble.Batch, key string, add, del s2pkg.HyperLogLog
 	return tx.Set(append([]byte("H"), key...), append(add, del...), pebble.Sync)
 }
 
+func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2pkg.HyperLogLog) (future.Future, error) {
+	if err := tx.Delete(key, pebble.Sync); err != nil {
+		return 0, err
+	}
+
+	idx := bytes.TrimPrefix(key, bkPrefix)
+	eol := (s2pkg.Convert16BToFuture(idx) - 1e9).ToCookie(eolMark)
+	hllDel.Add(uint32(s2pkg.HashBytes(idx)))
+
+	if _, ok := s2pkg.Convert16BToFuture(idx).Cookie(); ok {
+		return eol, nil
+	}
+	return eol, tx.Delete(append([]byte("i"), idx...), pebble.Sync)
+}
+
 func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if len(data) > 0xffff {
 		return nil, fmt.Errorf("too many elements to append")
@@ -110,7 +125,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	}
 
 	if ttlSec > 0 {
-		m := &s.ttlOnce[s2pkg.HashStr(key)%uint64(len(s.ttlOnce))]
+		m := &s.ttlOnce[s2pkg.HashStr(key)%lockShards]
 		_, loaded := m.LoadOrStore(key, true)
 		if !loaded {
 			defer m.Delete(key)
@@ -125,20 +140,11 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 			count := 0
 			for iter.First(); iter.Valid(); iter.Next() {
 				count++
-				if err := tx.Delete(iter.Key(), pebble.Sync); err != nil {
+				eol, err := s.deleteElement(tx, bkPrefix, iter.Key(), hllDel)
+				if err != nil {
 					return nil, err
 				}
-				idx := bytes.TrimPrefix(iter.Key(), bkPrefix)
-				if _, ok := s2pkg.Convert16BToFuture(idx).Cookie(); ok {
-					continue
-				}
-				if err := tx.Delete(append([]byte("i"), idx...), pebble.Sync); err != nil {
-					return nil, err
-				}
-				hllDel.Add(uint32(s2pkg.HashBytes(idx)))
-
 				if count >= *ttlEvictLimit {
-					eol := s2pkg.Convert16BToFuture(idx).ToCookie(eolMark)
 					idx := s2pkg.ConvertFutureTo16B(eol)
 					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
 						return nil, err
@@ -285,13 +291,10 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 	return
 }
 
-func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (data []s2pkg.Pair, err error) {
+func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (data []s2pkg.Pair, timedout bool, err error) {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
-	c := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: bkPrefix,
-		UpperBound: s2pkg.IncBytes(bkPrefix),
-	})
+	c := extdb.NewPrefixIter(s.DB, bkPrefix)
 	defer c.Close()
 
 	// for c.First(); c.Valid(); c.Next() {
@@ -328,26 +331,25 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 	}
 
 	cm := map[future.Future]bool{}
-	var dedup map[string]bool
+	dedup := map[string]bool{}
 	var dedupTx *pebble.Batch
 	var hllAdd, hllDel s2pkg.HyperLogLog
 
 	if distinct {
-		m := &s.delOnce[s2pkg.HashStr(key)%uint64(len(s.delOnce))]
+		m := &s.delOnce[s2pkg.HashStr(key)%lockShards]
 		if _, loaded := m.LoadOrStore(key, true); !loaded {
-			dedup = map[string]bool{}
 			dedupTx = s.DB.NewBatch()
 			defer dedupTx.Close()
 			defer m.Delete(key)
 
 			hllAdd, hllDel, err = s.getHLL(key)
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
 	}
 
-	for c.Valid() {
+	for ns := future.UnixNano(); c.Valid(); {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 		p := s2pkg.Pair{
 			ID:   s2pkg.Bytes(k),
@@ -361,30 +363,27 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 					break
 				}
 			} else {
-				return nil, fmt.Errorf("invalid mark: %x", v)
+				return nil, false, fmt.Errorf("invalid mark: %x", v)
 			}
 		} else {
-			if dedupTx != nil {
-				if dedup[p.DataStrRef()] {
-					dedupTx.Delete(c.Key(), pebble.NoSync)
-					idx := bytes.TrimPrefix(c.Key(), bkPrefix)
-					dedupTx.Delete(append([]byte("i"), idx...), pebble.NoSync)
-					hllDel.Add(uint32(s2pkg.HashBytes(idx)))
-					// Note that we still append 'p' to 'data' to ensure we can exit based on 'len(data)'.
-				} else {
-					dedup[p.DataStrRef()] = true
-				}
+			if dedupTx != nil && dedup[p.DataStrRef()] {
+				s.deleteElement(dedupTx, bkPrefix, c.Key(), hllDel)
+				goto NEXT
 			}
+
 			if desc {
 				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
 					data = append(data, p)
+					dedup[p.DataStrRef()] = true
 				}
 			} else {
 				data = append(data, p)
+				dedup[p.DataStrRef()] = true
 			}
 		}
 
+	NEXT:
 		if len(data) >= n+2 {
 			// To exit the loop, we either exhausted the cursor, or collected enough
 			// Pairs where last two Pairs belong to different blocks.
@@ -394,22 +393,16 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 			}
 		}
 
+		if future.UnixNano()-ns > int64(s.ServerConfig.TimeoutRange)*1e6 {
+			timedout = true
+			break
+		}
+
 		if desc {
 			c.Prev()
 		} else {
 			c.Next()
 		}
-	}
-
-	if dedupTx != nil {
-		new := make([]s2pkg.Pair, 0, len(data))
-		for _, p := range data {
-			if dedup[p.DataStrRef()] {
-				new = append(new, p)
-				delete(dedup, p.DataStrRef())
-			}
-		}
-		data = new
 	}
 
 	if len(data) > n {
@@ -424,9 +417,11 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 	}
 
 	if dedupTx != nil && dedupTx.Count() > 0 {
+		s.Survey.RangeDistinct.Incr(int64(dedupTx.Count()))
 		s.setHLL(dedupTx, key, hllAdd, hllDel)
-		// Use NoSync here because loss of deletions is okay. We will delete again next time
-		// we call Range().
+
+		// Use NoSync here because loss of deletions is okay.
+		// They will be eventually deleted again next time we call Range().
 		if err := dedupTx.Commit(pebble.NoSync); err != nil {
 			logrus.Errorf("range distinct commit failed: %v", err)
 		}
@@ -494,6 +489,19 @@ func sortPairs(p []s2pkg.Pair, asc bool) []s2pkg.Pair {
 		if p[i].Equal(p[i-1]) {
 			p[i-1].C = p[i-1].C || p[i].C // inherit the consolidation mark if any
 			p = append(p[:i], p[i+1:]...)
+		}
+	}
+	return p
+}
+
+func distinctPairsData(p []s2pkg.Pair) []s2pkg.Pair {
+	m := map[string]bool{}
+	for i := 0; i < len(p); {
+		if m[p[i].DataStrRef()] {
+			p = append(p[:i], p[i+1:]...)
+		} else {
+			m[p[i].DataStrRef()] = true
+			i++
 		}
 	}
 	return p

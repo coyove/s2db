@@ -434,7 +434,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteBulks(hexIds)
 	case "ISELECT":
-		// KEY RAW_START COUNT DISTINCT DESC LOWEST => [ID 0, DATA 0, ...]
+		// KEY RAW_START COUNT FLAG LOWEST => [ID 0, DATA 0, ...]
 		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
 		if key == "*" {
 			ids := K.Argv[2:]
@@ -448,8 +448,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 			return w.WriteBulks(resp)
 		}
-		distinct, desc := K.Int(4) == 1, K.Int(5) == 1
-		if lowest := K.BytesRef(6); len(lowest) == 16 {
+		if lowest := K.BytesRef(5); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
 					s.Survey.IRangeCacheHits.Incr(1)
@@ -460,7 +459,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				panic("test: ISELECT should use watermark cache")
 			}
 		}
-		data, timedout, err := s.Range(key, K.BytesRef(2), K.Int(3), distinct, desc)
+		data, timedout, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -472,14 +471,18 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [DEDUP] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		var localOnly, desc, distinct bool
+	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		var localOnly, desc, distinct, raw bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
 			desc = desc || K.StrEqFold(i, "desc")
 			distinct = distinct || K.StrEqFold(i, "distinct")
+			raw = raw || K.StrEqFold(i, "raw")
 		}
 
+		flag := orFlag(0, desc, RangeDesc)
+		flag = orFlag(flag, distinct, RangeDistinct)
+		flag = orFlag(flag, raw, RangeAll)
 		start := s.translateCursor(K.BytesRef(2), desc)
 		n := K.Int(3)
 		origN := n
@@ -488,18 +491,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, timedout, err := s.Range(key, start, n, distinct, desc)
+		data, timedout, err := s.Range(key, start, n, flag)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if !s.HasPeers() || localOnly {
+		if !s.HasPeers() || localOnly || raw {
 			return s.convertPairs(w, data, origN)
 		}
 		if s2pkg.AllPairsConsolidated(data) {
-			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, origN)
-		}
-		if len(data) > origN && s2pkg.AllPairsConsolidated(data[:origN]) {
 			s.Survey.AllConsolidated.Incr(1)
 			return s.convertPairs(w, data, origN)
 		}
@@ -510,8 +509,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if timedout {
 			// Range() has timed out before we collected enough Pairs. Say 'n' is 10 and we have 2 Pairs,
 			// it is still possible that there exist 8 more Pairs. If another peer returns 8 Pairs to us,
-			// we will have enough 10 Pairs, thus incorrectly insert consolidation marks into the database.
-			// So we have to reduce 'n' to 2 in this case.
+			// we will have 10 Pairs which meet the SELECT criteria, thus incorrectly insert consolidation
+			// marks into the database. So we have to reduce 'n' to 2 in this case.
 			n = len(data)
 		}
 
@@ -520,7 +519,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			lowest = data[len(data)-1].ID
 		}
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, distinct, desc, lowest)
+			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, flag, lowest)
 		})
 		if recv == 0 {
 			return s.convertPairs(w, data, origN)

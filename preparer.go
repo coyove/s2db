@@ -55,19 +55,18 @@ func (s *Server) setHLL(tx *pebble.Batch, key string, add, del s2pkg.HyperLogLog
 	return tx.Set(append([]byte("H"), key...), append(add, del...), pebble.Sync)
 }
 
-func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2pkg.HyperLogLog) (future.Future, error) {
+func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2pkg.HyperLogLog) error {
 	if err := tx.Delete(key, pebble.Sync); err != nil {
-		return 0, err
+		return err
 	}
 
 	idx := bytes.TrimPrefix(key, bkPrefix)
-	eol := (s2pkg.Convert16BToFuture(idx) - 1e9).ToCookie(eolMark)
 	hllDel.Add(uint32(s2pkg.HashBytes(idx)))
 
 	if _, ok := s2pkg.Convert16BToFuture(idx).Cookie(); ok {
-		return eol, nil
+		return nil
 	}
-	return eol, tx.Delete(append([]byte("i"), idx...), pebble.Sync)
+	return tx.Delete(append([]byte("i"), idx...), pebble.Sync)
 }
 
 func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
@@ -106,6 +105,10 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 
 	var kk [][]byte
 	for i := 0; i < len(data); i++ {
+		if len(data[i]) == 0 {
+			return nil, fmt.Errorf("can't append null data")
+		}
+
 		binary.BigEndian.PutUint16(idx[11:], uint16(i))
 		idx[13] = 0 // shard index, not used by now
 		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
@@ -130,7 +133,8 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		if !loaded {
 			defer m.Delete(key)
 
-			idx := s2pkg.ConvertFutureTo16B(future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9))
+			f := future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9)
+			idx := s2pkg.ConvertFutureTo16B(f)
 			iter := s.DB.NewIter(&pebble.IterOptions{
 				LowerBound: bkPrefix,
 				UpperBound: append(bkPrefix, idx[:]...),
@@ -138,19 +142,15 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 			defer iter.Close()
 
 			count := 0
-			for iter.First(); iter.Valid(); iter.Next() {
-				count++
-				eol, err := s.deleteElement(tx, bkPrefix, iter.Key(), hllDel)
-				if err != nil {
+			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+				if err := s.deleteElement(tx, bkPrefix, iter.Key(), hllDel); err != nil {
 					return nil, err
 				}
-				if count >= *ttlEvictLimit {
-					idx := s2pkg.ConvertFutureTo16B(eol)
-					if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-						return nil, err
-					}
-					break
-				}
+				count++
+			}
+			idx = s2pkg.ConvertFutureTo16B(f.ToCookie(eolMark))
+			if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+				return nil, err
 			}
 			s.Survey.AppendExpire.Incr(1)
 		}
@@ -291,7 +291,13 @@ func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error
 	return
 }
 
-func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (data []s2pkg.Pair, timedout bool, err error) {
+const (
+	RangeDesc     = 1
+	RangeDistinct = 2
+	RangeAll      = 4
+)
+
+func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.Pair, timedout bool, err error) {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
 	c := extdb.NewPrefixIter(s.DB, bkPrefix)
@@ -310,6 +316,7 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 		return old
 	})
 
+	desc := flag&RangeDesc > 0
 	if desc {
 		// OLDER                            NEWER
 		//
@@ -335,7 +342,7 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 	var dedupTx *pebble.Batch
 	var hllAdd, hllDel s2pkg.HyperLogLog
 
-	if distinct {
+	if flag&RangeDistinct > 0 {
 		m := &s.delOnce[s2pkg.HashStr(key)%lockShards]
 		if _, loaded := m.LoadOrStore(key, true); !loaded {
 			dedupTx = s.DB.NewBatch()
@@ -349,12 +356,19 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 		}
 	}
 
-	for ns := future.UnixNano(); c.Valid(); {
+	ns := future.UnixNano()
+	rangeAll := flag&RangeAll > 0
+	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 		p := s2pkg.Pair{
 			ID:   s2pkg.Bytes(k),
 			Data: s2pkg.Bytes(c.Value()),
 		}
+		if rangeAll {
+			data = append(data, p)
+			goto NEXT
+		}
+
 		if v, ok := p.Future().Cookie(); ok {
 			if v == consolidatedMark {
 				cm[p.Future()] = true
@@ -385,8 +399,8 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 
 	NEXT:
 		if len(data) >= n+2 {
-			// To exit the loop, we either exhausted the cursor, or collected enough
-			// Pairs where last two Pairs belong to different blocks.
+			// If we have collected enough Pairs where last two Pairs belong to different blocks,
+			// we can safely exit the loop.
 			d0, d1 := data[len(data)-1], data[len(data)-2]
 			if d0.UnixNano()/future.Block != d1.UnixNano()/future.Block {
 				break
@@ -394,6 +408,13 @@ func (s *Server) Range(key string, start []byte, n int, distinct, desc bool) (da
 		}
 
 		if future.UnixNano()-ns > int64(s.ServerConfig.TimeoutRange)*1e6 {
+			// Iterating timed out
+			timedout = true
+			break
+		}
+
+		if dedupTx != nil && dedupTx.Count() > uint32(s.ServerConfig.DistinctLimit) {
+			// Too many deletions in one request.
 			timedout = true
 			break
 		}
@@ -505,4 +526,11 @@ func distinctPairsData(p []s2pkg.Pair) []s2pkg.Pair {
 		}
 	}
 	return p
+}
+
+func orFlag(v int, c bool, f int) int {
+	if c {
+		v |= f
+	}
+	return v
 }

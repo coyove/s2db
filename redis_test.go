@@ -41,9 +41,7 @@ func doRange(r *redis.Client, key string, start string, n int, dedup ...any) []s
 	} else {
 		args = append(args, n)
 	}
-	if len(dedup) == 1 {
-		args = append(args, "distinct")
-	}
+	args = append(args, dedup...)
 	cmd := redis.NewStringSliceCmd(context.TODO(), args...)
 	r.Process(context.TODO(), cmd)
 	s2pkg.PanicErr(cmd.Err())
@@ -352,6 +350,9 @@ func TestTTL(t *testing.T) {
 	}
 
 	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
+
+	data = doRange(rdb1, "a", "0", 100, "raw")
+	fmt.Println(data)
 	// for _, ex := range expired {
 	// 	v := (rdb1.Get(ctx, ex).Val())
 	// 	if v != "" {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -401,7 +402,11 @@ func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int) (err erro
 	}
 	a := make([][]byte, 0, len(p)*3)
 	for _, p := range p {
-		a = append(a, p.IDHex(), p.UnixMilliBytes(), p.Data)
+		d := p.Data
+		if v, ok := p.Future().Cookie(); ok {
+			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)
+		}
+		a = append(a, p.IDHex(), p.UnixMilliBytes(), d)
 	}
 	return w.WriteBulks(a)
 }

@@ -35,6 +35,7 @@ type ServerConfig struct {
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
 	TimeoutRange    int // ms
+	DistinctLimit   int
 	MetricsEndpoint string
 	InspectorSource string
 }
@@ -79,6 +80,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.SlowLimit, 500)
 	ifZero(&s.ServerConfig.TimeoutPeer, 500)
 	ifZero(&s.ServerConfig.TimeoutRange, 500)
+	ifZero(&s.ServerConfig.DistinctLimit, 8192)
 	if s.ServerConfig.ServerName == "" {
 		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
 	}

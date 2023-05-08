@@ -54,6 +54,9 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	if cfg.Options.DialTimeout == 0 {
 		cfg.Options.DialTimeout = time.Second
 	}
+	if cfg.Options.PoolSize < 20 {
+		cfg.Options.PoolSize = 20
+	}
 	return
 }
 

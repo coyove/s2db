@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"io/ioutil"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -27,7 +29,7 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"ISELECT": true,
+		"PSELECT": true,
 		"SELECT":  true,
 		"GET":     true,
 		"MGET":    true,
@@ -54,8 +56,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
-			fmt.Sprintf("wall_clock:%v", time.Now()),
-			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano())),
+			fmt.Sprintf("wall_clock:%v", time.Now().Format(time.StampNano)),
+			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano()).Format(time.StampNano)),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 		)
@@ -378,7 +380,10 @@ MORE:
 		x.(*s2pkg.Survey).Incr((future.UnixNano() - res.pstart) / 1e6)
 
 		if err := res.Cmder.Err(); err != nil {
-			logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), res.e.Config().URI, err)
+			uri := res.e.Config().URI
+			if !s.throtErrors(uri, err) {
+				logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), uri, err)
+			}
 			if s.test.MustAllPeers {
 				panic("not all peers respond")
 			}
@@ -434,4 +439,22 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 		start = []byte(maxCursor)
 	}
 	return
+}
+
+func (s *Server) throtErrors(key string, err error) bool {
+	if !errors.Is(err, syscall.ECONNREFUSED) {
+		if !strings.Contains(err.Error(), "connection refused") {
+			return false
+		}
+	}
+	now := future.UnixNano()
+	last, loaded := s.errRecords.LoadOrStore(key, now)
+	if loaded {
+		return false
+	}
+	if now-last.(int64) < 1e9 {
+		return true
+	}
+	s.errRecords.Store(key, now)
+	return false
 }

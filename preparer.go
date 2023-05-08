@@ -297,7 +297,7 @@ const (
 	RangeAll      = 4
 )
 
-func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.Pair, timedout bool, err error) {
+func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.Pair, partial bool, err error) {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
 	c := extdb.NewPrefixIter(s.DB, bkPrefix)
@@ -409,13 +409,13 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.
 
 		if future.UnixNano()-ns > int64(s.ServerConfig.TimeoutRange)*1e6 {
 			// Iterating timed out
-			timedout = true
+			partial = true
 			break
 		}
 
 		if dedupTx != nil && dedupTx.Count() > uint32(s.ServerConfig.DistinctLimit) {
 			// Too many deletions in one request.
-			timedout = true
+			partial = true
 			break
 		}
 

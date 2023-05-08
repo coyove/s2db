@@ -60,7 +60,7 @@ type Server struct {
 		PeerOnMissing   s2pkg.Survey
 		PeerOnOK        s2pkg.Survey `metrics:"qps"`
 		AllConsolidated s2pkg.Survey `metrics:"qps"`
-		IRangeCacheHits s2pkg.Survey `metrics:"qps"`
+		SelectCacheHits s2pkg.Survey `metrics:"qps"`
 		AppendExpire    s2pkg.Survey `metrics:"qps"`
 		RangeDistinct   s2pkg.Survey
 		PeerBatchSize   s2pkg.Survey
@@ -70,10 +70,11 @@ type Server struct {
 
 	DB *pebble.DB
 
-	fillCache *s2pkg.LRUShard[struct{}]
-	wmCache   *s2pkg.LRUShard[[16]byte]
-	ttlOnce   [lockShards]sync.Map
-	delOnce   [lockShards]sync.Map
+	fillCache  *s2pkg.LRUShard[struct{}]
+	wmCache    *s2pkg.LRUShard[[16]byte]
+	ttlOnce    [lockShards]sync.Map
+	delOnce    [lockShards]sync.Map
+	errRecords sync.Map
 
 	test struct {
 		Fail         bool
@@ -433,7 +434,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			hexIds[i] = hexEncode(ids[i])
 		}
 		return w.WriteBulks(hexIds)
-	case "ISELECT":
+	case "PSELECT":
 		// KEY RAW_START COUNT FLAG LOWEST => [ID 0, DATA 0, ...]
 		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
 		if key == "*" {
@@ -451,7 +452,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if lowest := K.BytesRef(5); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
-					s.Survey.IRangeCacheHits.Incr(1)
+					s.Survey.SelectCacheHits.Incr(1)
 					return w.WriteBulks([][]byte{}) // no nil
 				}
 			}
@@ -459,12 +460,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				panic("test: ISELECT should use watermark cache")
 			}
 		}
-		data, timedout, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4))
+		data, partial, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if timedout {
-			return w.WriteError("timedout")
+		if partial {
+			return w.WriteError("SELECT partial data")
 		}
 		a := make([][]byte, 0, 2*len(data))
 		for _, p := range data {
@@ -491,7 +492,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, timedout, err := s.Range(key, start, n, flag)
+		data, partial, err := s.Range(key, start, n, flag)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -502,24 +503,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			s.Survey.AllConsolidated.Incr(1)
 			return s.convertPairs(w, data, origN)
 		}
-		if timedout && len(data) == 0 {
-			return w.WriteBulks([][]byte{})
-		}
 
-		if timedout {
-			// Range() has timed out before we collected enough Pairs. Say 'n' is 10 and we have 2 Pairs,
-			// it is still possible that there exist 8 more Pairs. If another peer returns 8 Pairs to us,
-			// we will have 10 Pairs which meet the SELECT criteria, thus incorrectly insert consolidation
-			// marks into the database. So we have to reduce 'n' to 2 in this case.
+		if partial {
+			if len(data) == 0 {
+				return w.WriteBulks([][]byte{})
+			}
+			// Range() has exited before we collected enough Pairs. Say 'n' is 10 and we have 2 Pairs, if
+			// another peer returns 8 Pairs to us, we will have 10 Pairs which meet the SELECT criteria,
+			// thus incorrectly insert consolidation marks into the database.
 			n = len(data)
 		}
 
 		var lowest []byte
-		if desc && len(data) > 0 {
+		if desc && len(data) > 0 && len(data) == n {
 			lowest = data[len(data)-1].ID
 		}
 		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "ISELECT", key, start, n, flag, lowest)
+			return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest)
 		})
 		if recv == 0 {
 			return s.convertPairs(w, data, origN)

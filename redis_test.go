@@ -79,8 +79,8 @@ func prepareServers() (*redis.Client, *redis.Client, *Server, *Server) {
 	rdb2 := redis.NewClient(&redis.Options{Addr: ":7777"})
 
 	ctx := context.TODO()
-	s2pkg.PanicErr(rdb1.ConfigSet(ctx, "Peer2", "127.0.0.1:7777/?Name=1").Err())
-	s2pkg.PanicErr(rdb2.ConfigSet(ctx, "Peer1", "127.0.0.1:6666/?Name=2").Err())
+	s2pkg.PanicErr(rdb1.ConfigSet(ctx, "Peer2", "127.0.0.1:7777").Err())
+	s2pkg.PanicErr(rdb2.ConfigSet(ctx, "Peer1", "127.0.0.1:6666").Err())
 
 	return rdb1, rdb2, s1, s2
 }
@@ -313,6 +313,17 @@ func TestDistinct(t *testing.T) {
 	s1.test.Fail = true
 	data = doRange(rdb2, "a", "0", 100)
 	if len(data) != 6 || string(data[0].Data) != "1" {
+		t.Fatal(data)
+	}
+	s1.test.Fail = false
+
+	for i := 0; i < 10; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "b", i).Err())
+		time.Sleep(150 * time.Millisecond)
+	}
+	s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", 10).Err())
+	data = doRange(rdb2, "b", "+inf", -2)
+	if len(data) != 2 {
 		t.Fatal(data)
 	}
 }

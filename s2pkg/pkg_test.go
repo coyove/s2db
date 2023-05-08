@@ -11,11 +11,28 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/coyove/s2db/clock"
 )
+
+func TestThrottler(t *testing.T) {
+	e := ErrorThrottler{}
+	wg := sync.WaitGroup{}
+	for i := 0; i < 1e3; i++ {
+		wg.Add(1)
+		go func() {
+			time.Sleep(time.Millisecond * time.Duration(rand.Intn(1200)+400))
+			if !e.Throttle("test", syscall.ECONNREFUSED) {
+				fmt.Println("not throttled")
+			}
+			wg.Done()
+		}()
+	}
+	wg.Wait()
+}
 
 func TestHashStr(t *testing.T) {
 	test := func(a, b string) {

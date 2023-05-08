@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"html/template"
 	"io/ioutil"
@@ -13,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -56,8 +54,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
 			fmt.Sprintf("listen:%v", s.ln.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
-			fmt.Sprintf("wall_clock:%v", time.Now().Format(time.StampNano)),
-			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano()).Format(time.StampNano)),
+			fmt.Sprintf("wall_clock:%v", time.Now().Format("15:04:05.000000000")),
+			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano()).Format("15:04:05.000000000")),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
 		)
@@ -381,7 +379,7 @@ MORE:
 
 		if err := res.Cmder.Err(); err != nil {
 			uri := res.e.Config().URI
-			if !s.throtErrors(uri, err) {
+			if !s.errThrot.Throttle(uri, err) {
 				logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), uri, err)
 			}
 			if s.test.MustAllPeers {
@@ -439,22 +437,4 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 		start = []byte(maxCursor)
 	}
 	return
-}
-
-func (s *Server) throtErrors(key string, err error) bool {
-	if !errors.Is(err, syscall.ECONNREFUSED) {
-		if !strings.Contains(err.Error(), "connection refused") {
-			return false
-		}
-	}
-	now := future.UnixNano()
-	last, loaded := s.errRecords.LoadOrStore(key, now)
-	if loaded {
-		return false
-	}
-	if now-last.(int64) < 1e9 {
-		return true
-	}
-	s.errRecords.Store(key, now)
-	return false
 }

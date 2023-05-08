@@ -34,10 +34,9 @@ import (
 const lockShards = 32
 
 type Server struct {
-	ln, lnHTTP net.Listener
-	rdbCache   *s2pkg.LRUCache[string, *redis.Client]
-
+	ln, lnHTTP   net.Listener
 	ServerConfig ServerConfig
+	DB           *pebble.DB
 	Peers        [future.Channels]*endpoint
 	DBPath       string
 	DBOptions    *pebble.Options
@@ -68,13 +67,12 @@ type Server struct {
 		Command         sync.Map
 	}
 
-	DB *pebble.DB
-
-	fillCache  *s2pkg.LRUShard[struct{}]
-	wmCache    *s2pkg.LRUShard[[16]byte]
-	ttlOnce    [lockShards]sync.Map
-	delOnce    [lockShards]sync.Map
-	errRecords sync.Map
+	rdbCache  *s2pkg.LRUCache[string, *redis.Client]
+	fillCache *s2pkg.LRUShard[struct{}]
+	wmCache   *s2pkg.LRUShard[[16]byte]
+	ttlOnce   [lockShards]sync.Map
+	delOnce   [lockShards]sync.Map
+	errThrot  s2pkg.ErrorThrottler
 
 	test struct {
 		Fail         bool
@@ -127,36 +125,29 @@ func Open(dbPath string) (x *Server, err error) {
 func (s *Server) Close() (err error) {
 	s.dieLock.Lock()
 
-	log.Info("server closing flush")
-	if err := s.DB.Flush(); err != nil {
-		log.Info("server closing: failed to flush: ", err)
-		return err
-	}
+	start := time.Now()
+	err = errors.CombineErrors(err, s.DB.Flush())
+	log.Infof("server closing flush in %v", time.Since(start))
 
-	log.Info("server closing jobs")
 	s.Closed = true
 	s.ReadOnly = true
 	s.DBOptions.Cache.Unref()
-	errs := make(chan error, 100)
-	errs <- s.ln.Close()
-	errs <- s.lnHTTP.Close()
+
+	err = errors.CombineErrors(err, s.ln.Close())
+	err = errors.CombineErrors(err, s.lnHTTP.Close())
 	for _, p := range s.Peers {
-		errs <- p.Close()
+		err = errors.CombineErrors(err, p.Close())
 	}
+
 	s.rdbCache.Range(func(k string, v *redis.Client) bool {
-		errs <- v.Close()
+		err = errors.CombineErrors(err, v.Close())
 		return true
 	})
 
-	errs <- s.DB.Close()
-
-	close(errs)
-	for e := range errs {
-		if e != nil {
-			err = errors.CombineErrors(err, e)
-		}
+	err = errors.CombineErrors(err, s.DB.Close())
+	if err != nil {
+		log.Info("server closed, err=", err)
 	}
-	log.Info("server closed, err=", err)
 	return err
 }
 
@@ -196,20 +187,15 @@ func (s *Server) Serve(addr string) (err error) {
 
 	go s.startCronjobs()
 	go s.httpServer()
-	s.acceptor(s.ln)
-	return nil
-}
 
-func (s *Server) acceptor(ln net.Listener) {
 	for {
-		conn, err := ln.Accept()
+		conn, err := s.ln.Accept()
 		if err != nil {
 			if !s.Closed {
-				log.Error("accept: ", err, " current connections: ", s.Survey.Connections)
+				log.Errorf("failed to accept (N=%d): %v", s.Survey.Connections, err)
 				continue
-			} else {
-				return
 			}
+			return err
 		}
 		go s.handleConnection(conn)
 	}
@@ -457,7 +443,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				}
 			}
 			if s.test.IRangeCache {
-				panic("test: ISELECT should use watermark cache")
+				panic("test: PSELECT should use watermark cache")
 			}
 		}
 		data, partial, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4))

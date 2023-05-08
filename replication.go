@@ -43,7 +43,7 @@ func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {
 			}
 			e.job.Do(func() {
 				e.jobq = make(chan *commandIn, 1e3)
-				for i := 0; i < runtime.NumCPU(); i++ {
+				for i := 0; i < runtime.NumCPU()*5; i++ {
 					go e.work()
 				}
 			})
@@ -82,12 +82,18 @@ func (e *endpoint) work() {
 				return
 			}
 			commands = append(commands, cmd)
-			goto MORE
+			if len(commands) < e.server.ServerConfig.BatchLimit {
+				goto MORE
+			}
 		default:
 		}
 
 		cli := e.Redis()
 		if cli == nil {
+			for _, cmd := range commands {
+				cmd.SetErr(redis.ErrClosed)
+				cmd.wait <- cmd
+			}
 			time.Sleep(time.Second)
 			continue
 		}

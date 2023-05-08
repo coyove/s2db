@@ -309,8 +309,9 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.
 
 	c.Last()
 	s.wmCache.Update16(s2pkg.HashStr128(key), func(old [16]byte) (new [16]byte) {
-		if c.Valid() && bytes.Compare(c.Key(), old[:]) > 0 {
-			copy(new[:], c.Key())
+		k := bytes.TrimPrefix(c.Key(), bkPrefix)
+		if bytes.Compare(k, old[:]) > 0 {
+			copy(new[:], k)
 			return new
 		}
 		return old

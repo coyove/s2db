@@ -312,7 +312,9 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 		m0 := cmd.(*redis.StringSliceCmd).Val()
 		for i := 0; i < len(m0); i += 2 {
-			m[m0[i]] = m0[i+1]
+			if v := m0[i+1]; v != "" {
+				m[m0[i]] = v
+			}
 		}
 		return true
 	})

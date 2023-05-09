@@ -113,7 +113,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		idx[13] = 0 // shard index, not used by now
 		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
 
-		kk = append(kk, idx[:])
+		kk = append(kk, s2pkg.Bytes(idx[:]))
 
 		if err := tx.Set(append(bkPrefix, idx[:]...), data[i], pebble.Sync); err != nil {
 			return nil, err

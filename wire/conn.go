@@ -3,6 +3,7 @@ package wire
 import (
 	"net/url"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"text/scanner"
@@ -54,8 +55,8 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	if cfg.Options.DialTimeout == 0 {
 		cfg.Options.DialTimeout = time.Second
 	}
-	if cfg.Options.PoolSize < 20 {
-		cfg.Options.PoolSize = 20
+	if m := 20 * runtime.NumCPU(); cfg.Options.PoolSize < m {
+		cfg.Options.PoolSize = m
 	}
 	return
 }

@@ -97,7 +97,7 @@ func TestAppend(t *testing.T) {
 		if rand.Intn(2) == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", count).Err())
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", count, "WAIT").Err())
 	}
 
 	fmt.Println("count:", count)

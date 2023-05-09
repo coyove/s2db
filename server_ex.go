@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -89,6 +91,17 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 			"")
+	}
+	if section == "" || strings.EqualFold(section, "peers") {
+		data = append(data, "# peers")
+		s.ForeachPeer(func(i int, p *endpoint, cli *redis.Client) {
+			u, _ := url.Parse(p.Config().URI)
+			addr, _ := net.ResolveTCPAddr("tcp", u.Host)
+			addr.Port++
+			data = append(data, fmt.Sprintf("peer%d:%s", i, p.Config().URI))
+			data = append(data, fmt.Sprintf("peer%d_console:http://%s", i, addr.String()))
+		})
+		data = append(data, "")
 	}
 	if section == "" || strings.EqualFold(section, "sys_rw_stats") {
 		data = append(data, "# sys_rw_stats",
@@ -208,7 +221,7 @@ func (s *Server) httpServer() {
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{"server", "server_misc", "sys_rw_stats", "command_qps", "command_avg_lat"},
+			"Sections": []string{"server", "server_misc", "sys_rw_stats", "peers", "command_qps", "command_avg_lat"},
 		})
 	})
 	mux.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
@@ -347,10 +360,10 @@ func (s *Server) HasPeers() bool {
 	return false
 }
 
-func (s *Server) ForeachPeer(f func(p *endpoint, c *redis.Client)) {
+func (s *Server) ForeachPeer(f func(i int, p *endpoint, c *redis.Client)) {
 	for i, p := range s.Peers {
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
-			f(p, cli)
+			f(i, p, cli)
 		}
 	}
 }
@@ -358,7 +371,7 @@ func (s *Server) ForeachPeer(f func(p *endpoint, c *redis.Client)) {
 func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandIn) {
 	recv := 0
 	out := make(chan *commandIn, len(s.Peers))
-	s.ForeachPeer(func(p *endpoint, cli *redis.Client) {
+	s.ForeachPeer(func(_ int, p *endpoint, cli *redis.Client) {
 		select {
 		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out, pstart: future.UnixNano()}:
 			recv++

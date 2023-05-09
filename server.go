@@ -392,23 +392,19 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND": // APPEND [DEFER] [TTL SECONDS] KEY DATA_0 DATA_1 ...
-		var data [][]byte
+	case "APPEND": // KEY DATA_0 [DEFER] [TTL SECONDS] [[AND DATA_1] ...]
+		var data = [][]byte{K.BytesRef(2)}
 		var ttl int64
 		var wait = true
-		key = ""
-		for i := 1; i < K.ArgCount(); i++ {
+		for i := 3; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "ttl") {
 				ttl = K.Int64(i + 1)
 				i++
 			} else if K.StrEqFold(i, "defer") {
 				wait = false
-			} else {
-				key = K.StrRef(i)
-				for i++; i < K.ArgCount(); i++ {
-					data = append(data, K.Bytes(i))
-				}
-				break
+			} else if K.StrEqFold(i, "and") {
+				data = append(data, K.BytesRef(i+1))
+				i++
 			}
 		}
 		ids, err := s.Append(key, data, ttl, wait)

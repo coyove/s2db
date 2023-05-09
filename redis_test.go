@@ -129,19 +129,19 @@ func TestConsolidation(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 1, 2).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 1, "AND", 2).Err())
 	time.Sleep(200 * time.Millisecond)
 	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 3).Err())
 	time.Sleep(200 * time.Millisecond)
 	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 4).Err())
 
 	for i := 10; i <= 15; i += 2 {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i, i+1).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 20, 21, 22).Err())
+	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 20, "AND", 21, "AND", 22).Err())
 
 	s2.test.Fail = true
 
@@ -219,7 +219,7 @@ func TestConsolidation2(t *testing.T) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	for i := 10; i <= 15; i += 2 {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i, i+1).Err())
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
@@ -293,8 +293,8 @@ func TestDistinct(t *testing.T) {
 
 	ctx := context.TODO()
 	for i := 0; i < 10; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, 100).Err())
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, 100).Err())
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, "AND", 100).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, "AND", 100).Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
@@ -336,7 +336,7 @@ func TestTTL(t *testing.T) {
 	ctx := context.TODO()
 	var ids []string
 	for i := 0; i <= 20; i++ {
-		id := rdb2.Do(ctx, "APPEND", "TTL", 1, "a", i).Val().([]any)[0].(string)
+		id := rdb2.Do(ctx, "APPEND", "a", i, "TTL", 1).Val().([]any)[0].(string)
 		ids = append(ids, id)
 		time.Sleep(time.Duration(rand.Intn(100)+200) * time.Millisecond)
 	}

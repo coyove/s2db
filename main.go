@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
@@ -61,7 +60,7 @@ var webuiHTML string
 
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-	rand.Seed(clock.UnixNano())
+	rand.Seed(future.UnixNano())
 }
 
 func main() {

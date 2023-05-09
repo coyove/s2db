@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/coyove/s2db/clock"
+	"github.com/coyove/sdss/future"
 )
 
 type LRUValue[V any] struct {
@@ -55,7 +55,7 @@ func (m *LRUCache[K, V]) Update(key K, f func(V) V) {
 	old, ok := m.store[key]
 	if ok {
 		old.Value = f(old.Value)
-		old.Time = clock.UnixNano()
+		old.Time = future.UnixNano()
 		m.store[key] = old
 	} else {
 		m.mu.Unlock()
@@ -71,7 +71,7 @@ func (m *LRUCache[K, V]) Add(key K, value V) {
 	defer m.mu.Unlock()
 
 	m.store[key] = LRUValue[V]{
-		Time:  clock.UnixNano(),
+		Time:  future.UnixNano(),
 		Value: value,
 	}
 
@@ -104,7 +104,7 @@ func (m *LRUCache[K, V]) Get(k K) (V, bool) {
 	defer m.mu.Unlock()
 	v, ok := m.store[k]
 	if ok {
-		v.Time = clock.UnixNano()
+		v.Time = future.UnixNano()
 		m.store[k] = v
 	}
 	return v.Value, ok

@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coyove/s2db/clock"
+	"github.com/coyove/sdss/future"
 	"github.com/influxdata/tdigest"
 )
 
@@ -140,7 +140,7 @@ type P99SurveyMinute struct {
 }
 
 func (psm *P99SurveyMinute) Incr(v int64) {
-	now := clock.Unix() / 60 * 60
+	now := future.UnixNano() / 1e9 / 60 * 60
 
 	psm.mu.Lock()
 	defer psm.mu.Unlock()
@@ -161,7 +161,7 @@ func (psm *P99SurveyMinute) Incr(v int64) {
 }
 
 func (psm *P99SurveyMinute) P99() float64 {
-	prev := clock.Unix()/60*60 - 60
+	prev := future.UnixNano()/1e9/60*60 - 60
 	if psm.history[0] == float64(prev) {
 		return psm.history[1]
 	}

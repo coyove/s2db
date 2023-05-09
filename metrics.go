@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"math"
+	"math/rand"
 	"net/url"
 	"reflect"
 	"runtime"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/sdss/future"
@@ -36,8 +36,8 @@ type metricsPair struct {
 
 func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	var pairs []metricsPair
-	start := clock.Now()
-	now := start.UnixNano() - int64(60*time.Second)
+	start := future.UnixNano()
+	now := start - int64(60*time.Second)
 	pairs = append(pairs, metricsPair{Member: "Connections", Score: float64(s.Survey.Connections)})
 	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
 	for i := 0; i < rv.NumField(); i++ {
@@ -111,7 +111,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 				if err := b.Set(appendUint(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 					return err
 				}
-				if clock.Rand() <= 0.01 {
+				if rand.Float64() <= 0.01 {
 					if err := b.DeleteRange(key, appendUint(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
 						return err
 					}
@@ -132,7 +132,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 					Measurement: "s2db." + p.Member,
 					Tags:        tags,
 					Fields:      map[string]interface{}{"value": p.Score, "count": 1},
-					Time:        start.Add(-time.Minute),
+					Time:        time.Unix(0, start-int64(time.Minute)),
 					Precision:   "s",
 				})
 			}
@@ -149,8 +149,8 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 
-	if diff := time.Since(start); diff.Milliseconds() > int64(s.ServerConfig.SlowLimit) {
-		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, diff.Seconds(), "127.0.0.1", "metrics")
+	if diff := future.UnixNano() - start; diff/1e6 > int64(s.ServerConfig.SlowLimit) {
+		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, float64(diff)/1e9, "127.0.0.1", "metrics")
 	}
 
 	return nil
@@ -171,7 +171,7 @@ func (s *Server) ListMetricsNames() (names []string) {
 
 func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
 	if endNano == 0 && startNano == 0 {
-		startNano, endNano = clock.UnixNano()-int64(time.Hour), clock.UnixNano()
+		startNano, endNano = future.UnixNano()-int64(time.Hour), future.UnixNano()
 	}
 	res := map[string]s2pkg.GroupedMetrics{}
 	getter := func(f string) {
@@ -231,7 +231,7 @@ func (s *Server) DeleteMetrics(name string) error {
 	return s.DB.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
 }
 
-func (s *Server) MetricsCommand(key string) interface{} {
+func (s *Server) getMetrics(key string) interface{} {
 	var sv *s2pkg.Survey
 	if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key); rv.IsValid() {
 		switch v := rv.Addr().Interface().(type) {

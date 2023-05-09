@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble/vfs"
-	"github.com/coyove/s2db/clock"
+	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
 )
 
@@ -73,9 +73,9 @@ func (fs *VFS) Open(name string, opts ...vfs.OpenOption) (vfs.File, error) {
 	vf := ctr.(*vfsFileRecord)
 	atomic.AddInt64(&vf.Count, 1)
 	vf.Name = name
-	vf.End = clock.UnixNano()
+	vf.End = future.UnixNano()
 	if !loaded {
-		vf.Start = clock.UnixNano()
+		vf.Start = future.UnixNano()
 	}
 	f, err := fs.FS.Open(name, opts...)
 	if f != nil {
@@ -156,7 +156,7 @@ func (vf vfsFileRecord) String() string {
 
 type VFSVirtualDumpFile struct {
 	vfs    *VFS
-	start  time.Time
+	start  int64
 	name   string
 	h      hash.Hash32
 	w      *io.PipeWriter
@@ -193,7 +193,7 @@ func NewVFSVirtualDumpFile(name string, dest string, vfs *VFS) (*VFSVirtualDumpF
 	}()
 
 	return &VFSVirtualDumpFile{
-		start:  clock.Now(),
+		start:  future.UnixNano(),
 		name:   name,
 		h:      crc32.NewIEEE(),
 		w:      w,
@@ -209,7 +209,7 @@ func (vf *VFSVirtualDumpFile) Close() error {
 	vf.w.Close()
 
 	code := <-vf.reqSig
-	vf.vfs.DumpTx.Logger.Infof("vdf: %q finished in %v, [code, size]=%v", vf.name, clock.Now().Sub(vf.start), code)
+	vf.vfs.DumpTx.Logger.Infof("vdf: %q finished in %v, [code, size]=%v", vf.name, time.Duration(future.UnixNano()-vf.start), code)
 	if code[0] != 200 {
 		return fmt.Errorf("vdf remote error: %v", code)
 	}

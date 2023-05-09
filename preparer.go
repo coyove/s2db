@@ -69,7 +69,7 @@ func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2
 	return tx.Delete(append([]byte("i"), idx...), pebble.Sync)
 }
 
-func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
+func (s *Server) Append(id future.Future, key string, data [][]byte, ttlSec int64) ([][]byte, error) {
 	if len(data) > 0xffff {
 		return nil, fmt.Errorf("too many elements to append")
 	}
@@ -77,33 +77,19 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		return nil, fmt.Errorf("append to null key")
 	}
 
-	id := future.Get(s.Channel)
 	if testFlag {
 		x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
 		if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
 			panic("fatal: duplicated id")
 		}
 	}
-	if wait {
-		defer id.Wait()
-	}
-
-	hllAdd, hllDel, err := s.getHLL(key)
-	if err != nil {
-		return nil, err
-	}
-
-	bkPrefix := extdb.GetKeyPrefix(key)
-	ck := s2pkg.HashStr128(key)
-
-	tx := s.DB.NewBatch()
-	defer tx.Close()
 
 	var idx [16]byte // id(8b) + random(3b) + index(2b) + shard(1b) + cmd(1b) + extra(1b)
 	binary.BigEndian.PutUint64(idx[:], uint64(id))
 	rand.Read(idx[8:11])
 
 	var kk [][]byte
+	var p []s2pkg.Pair
 	for i := 0; i < len(data); i++ {
 		if len(data[i]) == 0 {
 			return nil, fmt.Errorf("can't append null data")
@@ -113,59 +99,18 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 		idx[13] = 0 // shard index, not used by now
 		idx[14] = byte(s.Channel)<<4 | s2pkg.PairCmdAppend
 
-		kk = append(kk, s2pkg.Bytes(idx[:]))
-
-		if err := tx.Set(append(bkPrefix, idx[:]...), data[i], pebble.Sync); err != nil {
-			return nil, err
-		}
-
-		if err := tx.Set(append([]byte("i"), idx[:]...), []byte(key), pebble.Sync); err != nil {
-			return nil, err
-		}
-
-		s.updateWatermarkCache(ck, idx[:])
-		hllAdd.Add(uint32(s2pkg.HashBytes(idx[:])))
+		k := s2pkg.Bytes(idx[:])
+		kk = append(kk, k)
+		p = append(p, s2pkg.Pair{ID: k, Data: data[i]})
 	}
 
-	if ttlSec > 0 {
-		m := &s.ttlOnce[s2pkg.HashStr(key)%lockShards]
-		_, loaded := m.LoadOrStore(key, true)
-		if !loaded {
-			defer m.Delete(key)
-
-			f := future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9)
-			idx := s2pkg.ConvertFutureTo16B(f)
-			iter := s.DB.NewIter(&pebble.IterOptions{
-				LowerBound: bkPrefix,
-				UpperBound: append(bkPrefix, idx[:]...),
-			})
-			defer iter.Close()
-
-			count := 0
-			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
-				if err := s.deleteElement(tx, bkPrefix, iter.Key(), hllDel); err != nil {
-					return nil, err
-				}
-				count++
-			}
-			idx = s2pkg.ConvertFutureTo16B(f.ToCookie(eolMark))
-			if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-				return nil, err
-			}
-			s.Survey.AppendExpire.Incr(1)
-		}
-	}
-
-	if err := s.setHLL(tx, key, hllAdd, hllDel); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(pebble.Sync); err != nil {
+	if _, err := s.rawSet(key, p, ttlSec, nil); err != nil {
 		return nil, err
 	}
 	return kk, nil
 }
 
-func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate bool) {
+func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate bool) error {
 	bkPrefix := extdb.GetKeyPrefix(key)
 
 	con := func(tx *pebble.Batch) {
@@ -202,11 +147,12 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 			if con(tx); tx.Count() > 0 {
 				if err := tx.Commit(pebble.Sync); err != nil {
 					logrus.Errorf("setMissing consolidation: %v", err)
+					return err
 				}
 			}
 		}
 		s.Survey.PeerOnOK.Incr(1)
-		return
+		return nil
 	}
 
 	if s.test.NoSetMissing {
@@ -215,43 +161,84 @@ func (s *Server) setMissing(key string, before, after []s2pkg.Pair, consolidate 
 
 	start := time.Now()
 
-	if err := func() error {
-		add, del, err := s.getHLL(key)
-		if err != nil {
-			return err
-		}
-
-		ck := s2pkg.HashStr128(key)
-		tx := s.DB.NewBatch()
-		defer tx.Close()
-
-		for _, kv := range missing {
-			if _, ok := s.fillCache.Get(kv.ID); ok {
-				continue
-			}
-			if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
-				return err
-			}
-			if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
-				return err
-			}
-			s.fillCache.Add(kv.ID, struct{}{})
-			s.updateWatermarkCache(ck, kv.ID)
-			add.Add(uint32(s2pkg.HashBytes(kv.ID)))
-		}
-
+	count, err := s.rawSet(key, missing, 0, func(tx *pebble.Batch) {
 		if consolidate {
 			con(tx)
 		}
-
-		s.setHLL(tx, key, add, del)
-		s.Survey.PeerOnMissingN.Incr(int64(tx.Count()))
-		return tx.Commit(pebble.Sync)
-	}(); err != nil {
+	})
+	s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
+	if err != nil {
 		logrus.Errorf("setMissing: %v", err)
+		return err
+	}
+	s.Survey.PeerOnMissingN.Incr(int64(count))
+	return nil
+}
+
+func (s *Server) rawSet(key string, missing []s2pkg.Pair, ttlSec int64, f func(*pebble.Batch)) (int, error) {
+	bkPrefix := extdb.GetKeyPrefix(key)
+
+	add, del, err := s.getHLL(key)
+	if err != nil {
+		return 0, err
 	}
 
-	s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
+	ck := s2pkg.HashStr128(key)
+	tx := s.DB.NewBatch()
+	defer tx.Close()
+
+	for _, kv := range missing {
+		if _, ok := s.fillCache.Get(kv.ID); ok {
+			continue
+		}
+		if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
+			return 0, err
+		}
+		if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
+			return 0, err
+		}
+		s.fillCache.Add(kv.ID, struct{}{})
+		s.updateWatermarkCache(ck, kv.ID)
+		add.Add(uint32(s2pkg.HashBytes(kv.ID)))
+	}
+
+	if f != nil {
+		f(tx)
+	}
+
+	if ttlSec > 0 {
+		m := &s.ttlOnce[s2pkg.HashStr(key)%lockShards]
+		_, loaded := m.LoadOrStore(key, true)
+		if !loaded {
+			defer m.Delete(key)
+
+			f := future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9)
+			idx := s2pkg.ConvertFutureTo16B(f)
+			iter := s.DB.NewIter(&pebble.IterOptions{
+				LowerBound: bkPrefix,
+				UpperBound: append(bkPrefix, idx[:]...),
+			})
+			defer iter.Close()
+
+			count := 0
+			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+				if err := s.deleteElement(tx, bkPrefix, iter.Key(), del); err != nil {
+					return 0, err
+				}
+				count++
+			}
+			idx = s2pkg.ConvertFutureTo16B(f.ToCookie(eolMark))
+			if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+				return 0, err
+			}
+			s.Survey.AppendExpire.Incr(1)
+		}
+	}
+
+	if err := s.setHLL(tx, key, add, del); err != nil {
+		return 0, err
+	}
+	return int(tx.Count()), tx.Commit(pebble.Sync)
 }
 
 func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error) {

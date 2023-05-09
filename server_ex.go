@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +40,7 @@ var (
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
+		"RAWSET": true,
 	}
 )
 
@@ -147,6 +150,19 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		data = append(data, fmt.Sprintf("hll_add:%d", add.Count()))
 		data = append(data, fmt.Sprintf("hll_del:%d", del.Count()))
+		data = append(data, "")
+	}
+	if strings.HasPrefix(section, "=") {
+		data = append(data, "# metrics "+section[1:])
+		switch v := s.getMetrics(section[1:]).(type) {
+		case *s2pkg.Survey:
+			m := v.Metrics()
+			data = append(data, fmt.Sprintf("qps1:%f", m.QPS[0]), fmt.Sprintf("qps5:%f", m.QPS[1]), fmt.Sprintf("qps:%f", m.QPS[2]))
+			data = append(data, fmt.Sprintf("mean1:%f", m.Mean[0]), fmt.Sprintf("mean5:%f", m.Mean[1]), fmt.Sprintf("mean:%f", m.Mean[2]))
+			data = append(data, fmt.Sprintf("max1:%d", m.Max[0]), fmt.Sprintf("max5:%d", m.Max[1]), fmt.Sprintf("max:%d", m.Max[2]))
+		case *s2pkg.P99SurveyMinute:
+			data = append(data, fmt.Sprintf("p99:%f", v.P99()))
+		}
 		data = append(data, "")
 	}
 	return
@@ -309,7 +325,7 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 			missings = append(missings, ids[i])
 		}
 	}
-	if len(missings) == 0 || !s.HasPeers() {
+	if len(missings) == 0 || !s.HasOtherPeers() {
 		return data, nil
 	}
 
@@ -342,7 +358,7 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 	return data, nil
 }
 
-func (s *Server) PeerCount() (c int) {
+func (s *Server) OtherPeersCount() (c int) {
 	for i, p := range s.Peers {
 		if p.Redis() != nil && s.Channel != int64(i) {
 			c++
@@ -351,7 +367,7 @@ func (s *Server) PeerCount() (c int) {
 	return
 }
 
-func (s *Server) HasPeers() bool {
+func (s *Server) HasOtherPeers() bool {
 	for i, p := range s.Peers {
 		if p.Redis() != nil && s.Channel != int64(i) {
 			return true
@@ -409,7 +425,8 @@ MORE:
 			goto MORE
 		}
 	case <-time.After(time.Duration(s.ServerConfig.TimeoutPeer) * time.Millisecond):
-		logrus.Errorf("failed to request peer, timed out, remains: %v", recv)
+		_, fn, ln, _ := runtime.Caller(1)
+		logrus.Errorf("%s:%d failed to request peer, timed out, remains: %v", filepath.Base(fn), ln, recv)
 	}
 	return
 }

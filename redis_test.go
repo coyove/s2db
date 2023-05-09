@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -23,7 +22,7 @@ func init() {
 	slowLogger = log.New()
 	dbLogger = log.New()
 	testFlag = true
-	rand.Seed(clock.UnixNano())
+	rand.Seed(future.UnixNano())
 }
 
 func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
@@ -370,4 +369,31 @@ func TestTTL(t *testing.T) {
 	// 		t.Fatal(v, ex)
 	// 	}
 	// }
+}
+
+func TestQuorum(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	var ids []string
+	for i := 0; i < 20; i++ {
+		id := rdb1.Do(ctx, "APPEND", "a", i, "QUORUM").Val().([]any)[2].(string)
+		ids = append(ids, id)
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	data := doRange(rdb2, "a", "0", 100)
+	for i := range ids {
+		if string(data[i].IDHex()) != ids[i] {
+			t.Fatal(data, ids)
+		}
+	}
+
+	rdb1.Do(ctx, "APPEND", "a", 100, "QUORUM", "TTL", 1)
+	data2 := doRange(rdb2, "a", "0", 100)
+	if len(data2) >= len(data) {
+		t.Fatal(data2)
+	}
 }

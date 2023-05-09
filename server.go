@@ -22,7 +22,6 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
@@ -55,6 +54,7 @@ type Server struct {
 		SysReadP99Micro s2pkg.P99SurveyMinute
 		SysWrite        s2pkg.Survey
 		SlowLogs        s2pkg.Survey
+		RawSetN         s2pkg.Survey `metrics:"mean"`
 		PeerOnMissingN  s2pkg.Survey `metrics:"mean"`
 		PeerOnMissing   s2pkg.Survey
 		PeerOnOK        s2pkg.Survey `metrics:"qps"`
@@ -98,7 +98,7 @@ func Open(dbPath string) (x *Server, err error) {
 	}
 	x.DBOptions.FS = &extdb.VFS{
 		FS:       x.DBOptions.FS,
-		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatUint(clock.Id(), 16)),
+		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatInt(future.UnixNano(), 16)),
 	}
 	if !testFlag {
 		x.DBOptions.EventListener = x.createDBListener()
@@ -114,7 +114,7 @@ func Open(dbPath string) (x *Server, err error) {
 	if err := x.loadConfig(); err != nil {
 		return nil, err
 	}
-	log.Infof("open data: %s in %v", dbPath, time.Since(start))
+	log.Infof("open data %s in %v", dbPath, time.Since(start))
 
 	x.rdbCache = s2pkg.NewLRUCache(8, func(k string, v *redis.Client) {
 		log.Infof("redis client cache evicted: %s, close=%v", k, v.Close())
@@ -146,7 +146,7 @@ func (s *Server) Close() (err error) {
 
 	err = errors.CombineErrors(err, s.DB.Close())
 	if err != nil {
-		log.Info("server closed, err=", err)
+		log.Errorf("server failed to close: %v", err)
 	}
 	return err
 }
@@ -266,7 +266,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 	if isWriteCommand[cmd] {
 		if key == "" || key == "*" || strings.Contains(key, "\x00") {
-			return w.WriteError("invalid key name (either empty or containing '\\x00'/'*')")
+			return w.WriteError("invalid key name")
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())
@@ -345,19 +345,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		default:
 			return w.WriteBulkStrings(s.listConfigCommand())
 		}
-	case "INFOMETRICS":
-		switch v := s.MetricsCommand(key).(type) {
-		case *s2pkg.Survey:
-			m := v.Metrics()
-			return w.WriteObjects(
-				"qps1m", m.QPS[0], "qps5m", m.QPS[1], "qps", m.QPS[2],
-				"mean1m", m.Mean[0], "mean5m", m.Mean[1], "mean", m.Mean[2],
-				"max1m", m.Max[0], "max5m", m.Max[1], "max", m.Max[2],
-			)
-		case *s2pkg.P99SurveyMinute:
-			return w.WriteObjects("p99", v.P99())
-		}
-		return w.WriteError("invalid metrics key: " + key)
 	case "INFO":
 		info := s.InfoCommand(key)
 		return w.WriteBulkString(strings.Join(info, "\r\n"))
@@ -374,15 +361,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "DUMPWIRE":
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
-	case "SSDISKSIZE":
-		end := K.Str(2)
-		if end == "" {
-			end = key + "\xff"
-		}
-		startKey := extdb.GetKeyPrefix(key)
-		endKey := extdb.GetKeyPrefix(end)
-		list, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytesInplace(endKey))
-		return w.WriteInt64(int64(list))
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "DB.LOG":
@@ -392,30 +370,69 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND": // KEY DATA_0 [WAIT] [TTL SECONDS] [[AND DATA_1] ...]
+	case "APPEND": // KEY DATA_0 [SETID ID] [QUORUM] [WAIT] [TTL SECONDS] [[AND DATA_1] ...]
 		var data = [][]byte{K.BytesRef(2)}
 		var ttl int64
-		var wait bool
+		var wait, quorum bool
 		for i := 3; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "ttl") {
 				ttl = K.Int64(i + 1)
 				i++
 			} else if K.StrEqFold(i, "wait") {
 				wait = true
+			} else if K.StrEqFold(i, "quorum") {
+				quorum = true
 			} else if K.StrEqFold(i, "and") {
 				data = append(data, K.BytesRef(i+1))
 				i++
+			} else {
+				return w.WriteError(fmt.Sprintf("invalid flag %q", K.StrRef(i)))
 			}
 		}
-		ids, err := s.Append(key, data, ttl, wait)
+		setID := future.Get(s.Channel)
+		ids, err := s.Append(setID, key, data, ttl)
 		if err != nil {
 			return w.WriteError(err.Error())
+		}
+		if wait {
+			setID.Wait()
 		}
 		hexIds := make([][]byte, len(ids))
 		for i := range hexIds {
 			hexIds[i] = hexEncode(ids[i])
 		}
+		if quorum {
+			if s.HasOtherPeers() {
+				args := []any{"RAWSET", key, ttl}
+				for i, d := range data {
+					args = append(args, ids[i], s2pkg.Bytes(d))
+				}
+				recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+					return redis.NewStringCmd(context.TODO(), args...)
+				})
+				success := s.ProcessPeerResponse(recv, out, func(redis.Cmder) bool { return true })
+				hexIds = append([][]byte{
+					strconv.AppendInt(nil, int64(recv)+1, 10),
+					strconv.AppendInt(nil, int64(success)+1, 10),
+				}, hexIds...)
+			} else {
+				hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
+			}
+		}
 		return w.WriteBulks(hexIds)
+	case "RAWSET": // KEY TTL ID_0 DATA_0 ID_1 DATA_1...
+		var after []s2pkg.Pair
+		for i := 3; i < K.ArgCount(); i += 2 {
+			id := K.BytesRef(i)
+			_ = id[15]
+			after = append(after, s2pkg.Pair{ID: id, Data: K.BytesRef(i + 1)})
+		}
+		n, err := s.rawSet(key, after, K.Int64(2), nil)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		s.Survey.RawSetN.Incr(int64(n))
+		return w.WriteSimpleString("OK")
 	case "PSELECT":
 		// KEY RAW_START COUNT FLAG LOWEST => [ID 0, DATA 0, ...]
 		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
@@ -478,7 +495,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if !s.HasPeers() || localOnly || raw {
+		if !s.HasOtherPeers() || localOnly || raw {
 			return s.convertPairs(w, data, origN)
 		}
 		if s2pkg.AllPairsConsolidated(data) {
@@ -523,7 +540,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if len(data) > n {
 			data = data[:n]
 		}
-		s.setMissing(key, origData, data, success == s.PeerCount())
+		s.setMissing(key, origData, data, success == s.OtherPeersCount())
 		return s.convertPairs(w, data, origN)
 	case "MGET", "GET":
 		var ids [][]byte
@@ -546,7 +563,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if K.StrEqFold(2, "hll") {
 			return w.WriteBulks([][]byte{add, del})
 		}
-		if s.HasPeers() {
+		if s.HasOtherPeers() {
 			recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 				return redis.NewStringSliceCmd(context.TODO(), cmd, key, "HLL")
 			})

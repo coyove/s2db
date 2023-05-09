@@ -13,10 +13,10 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/clock"
 	"github.com/coyove/s2db/extdb"
 	"github.com/coyove/s2db/s2pkg"
 	"github.com/coyove/s2db/wire"
+	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
@@ -84,7 +84,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.ServerConfig.DistinctLimit, 8192)
 	ifZero(&s.ServerConfig.BatchLimit, 100)
 	if s.ServerConfig.ServerName == "" {
-		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", clock.UnixNano())
+		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())
 	}
 
 	s.fillCache = s2pkg.NewLRUShardCache[struct{}](s.ServerConfig.FillCacheSize)

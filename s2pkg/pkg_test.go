@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/clock"
+	"github.com/coyove/sdss/future"
 )
 
 func TestThrottler(t *testing.T) {
@@ -53,7 +53,7 @@ func TestHLL(t *testing.T) {
 	a := NewHyperLogLog()
 	var b HyperLogLog
 	m := map[uint32]int{}
-	rand.Seed(clock.UnixNano())
+	rand.Seed(future.UnixNano())
 	for i := 0; i < 1e7; i++ {
 		x := rand.Uint32()
 		a.Add(x)

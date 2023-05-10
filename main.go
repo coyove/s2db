@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	_ "embed"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -15,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -55,9 +54,6 @@ var (
 	blacklistIPs []*net.IPNet
 )
 
-//go:embed scripts/index.html
-var webuiHTML string
-
 func init() {
 	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 	rand.Seed(future.UnixNano())
@@ -65,7 +61,7 @@ func init() {
 
 func main() {
 	flag.Parse()
-	go s2pkg.OSWatcher()
+	go s2.OSWatcher()
 
 	if *showVersion {
 		fmt.Println("s2db", Version)
@@ -73,7 +69,7 @@ func main() {
 	}
 
 	log.SetReportCaller(true)
-	s2pkg.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
+	s2.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
 
 	if *channel < 0 || *channel >= future.Channels {
 		errorExit("invalid channel")
@@ -126,10 +122,10 @@ func main() {
 	}
 
 	slowLogger = log.New()
-	s2pkg.SetLogger(slowLogger, *logSlowConfig, true)
+	s2.SetLogger(slowLogger, *logSlowConfig, true)
 
 	dbLogger = log.New()
-	s2pkg.SetLogger(dbLogger, *logDBConfig, true)
+	s2.SetLogger(dbLogger, *logDBConfig, true)
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:        *listenAddr,

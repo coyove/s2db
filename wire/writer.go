@@ -11,7 +11,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/nj/typ"
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/sirupsen/logrus"
 )
 
@@ -160,7 +160,7 @@ func (w *Writer) WriteValue(v bas.Value) error {
 		if v.IsInt64() {
 			return w.WriteInt64(v.Int64())
 		}
-		return w.WriteBulk(s2pkg.FormatFloatBulk(v.Float64()))
+		return w.WriteBulk(s2.FormatFloatBulk(v.Float64()))
 	}
 	if v.IsArray() {
 		var args []interface{}
@@ -228,7 +228,7 @@ func (w *Writer) WriteObjects(objs ...interface{}) error {
 				return err
 			}
 		case float64:
-			if err := w.WriteBulk(s2pkg.FormatFloatBulk(v)); err != nil {
+			if err := w.WriteBulk(s2.FormatFloatBulk(v)); err != nil {
 				return err
 			}
 		case []interface{}:

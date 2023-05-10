@@ -8,13 +8,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -41,6 +42,28 @@ type ServerConfig struct {
 	InspectorSource string
 }
 
+type ServerSurvey struct {
+	StartAt          time.Time
+	Connections      int64
+	FatalError       s2.Survey `metrics:"qps"`
+	SysRead          s2.Survey
+	SysReadP99Micro  s2.P99SurveyMinute
+	SysWrite         s2.Survey
+	SysWriteP99Micro s2.P99SurveyMinute
+	SlowLogs         s2.Survey
+	RawSetN          s2.Survey `metrics:"mean"`
+	PeerOnMissingN   s2.Survey `metrics:"mean"`
+	PeerOnMissing    s2.Survey
+	PeerOnOK         s2.Survey `metrics:"qps"`
+	AllConsolidated  s2.Survey `metrics:"qps"`
+	SelectCacheHits  s2.Survey `metrics:"qps"`
+	AppendExpire     s2.Survey `metrics:"qps"`
+	RangeDistinct    s2.Survey
+	PeerBatchSize    s2.Survey
+	PeerLatency      sync.Map
+	Command          sync.Map
+}
+
 func init() {
 	bas.AddTopValue("ctx", bas.ValueOf(context.TODO()))
 	bas.AddTopFunc("log", func(env *bas.Env) {
@@ -51,20 +74,20 @@ func init() {
 		log.Info("[logIO] ", x.String())
 	})
 	bas.AddTopFunc("atof", func(e *bas.Env) {
-		v := s2pkg.MustParseFloat(e.Str(0))
+		v := s2.MustParseFloat(e.Str(0))
 		e.A = bas.Float64(v)
 	})
 }
 
 func (s *Server) loadConfig() error {
 	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := extdb.Get(s.DB, []byte("config__"+strings.ToLower(f.Name)))
+		buf, err := s.Get([]byte("config__" + strings.ToLower(f.Name)))
 		if err != nil {
 			return err
 		}
 		switch f.Type.Kind() {
 		case reflect.Int:
-			fv.SetInt(int64(s2pkg.BytesToFloatZero(buf)))
+			fv.SetInt(int64(s2.BytesToFloatZero(buf)))
 		case reflect.String:
 			fv.SetString(string(buf))
 		}
@@ -76,21 +99,21 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig() error {
-	ifZero(&s.ServerConfig.FillCacheSize, 100000)
-	ifZero(&s.ServerConfig.WMCacheSize, 1024*1024)
-	ifZero(&s.ServerConfig.SlowLimit, 500)
-	ifZero(&s.ServerConfig.TimeoutPeer, 50)
-	ifZero(&s.ServerConfig.TimeoutRange, 500)
-	ifZero(&s.ServerConfig.DistinctLimit, 8192)
-	ifZero(&s.ServerConfig.BatchLimit, 100)
-	if s.ServerConfig.ServerName == "" {
-		s.ServerConfig.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())
+	ifZero(&s.Config.FillCacheSize, 100000)
+	ifZero(&s.Config.WMCacheSize, 1024*1024)
+	ifZero(&s.Config.SlowLimit, 500)
+	ifZero(&s.Config.TimeoutPeer, 50)
+	ifZero(&s.Config.TimeoutRange, 500)
+	ifZero(&s.Config.DistinctLimit, 8192)
+	ifZero(&s.Config.BatchLimit, 100)
+	if s.Config.ServerName == "" {
+		s.Config.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())
 	}
 
-	s.fillCache = s2pkg.NewLRUShardCache[struct{}](s.ServerConfig.FillCacheSize)
-	s.wmCache = s2pkg.NewLRUShardCache[[16]byte](s.ServerConfig.WMCacheSize)
+	s.fillCache = s2.NewLRUShardCache[struct{}](s.Config.FillCacheSize)
+	s.wmCache = s2.NewLRUShardCache[[16]byte](s.Config.WMCacheSize)
 
-	p, err := nj.LoadString(strings.Replace(s.ServerConfig.InspectorSource, "\r", "", -1), s.getScriptEnviron())
+	p, err := nj.LoadString(strings.Replace(s.Config.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {
 		return err
 	} else if out := p.Run(); out.IsError() {
@@ -100,7 +123,7 @@ func (s *Server) saveConfig() error {
 	}
 
 	for i := range s.Peers {
-		x := reflect.ValueOf(s.ServerConfig).FieldByName("Peer" + strconv.Itoa(i)).String()
+		x := reflect.ValueOf(s.Config).FieldByName("Peer" + strconv.Itoa(i)).String()
 		if changed, err := s.Peers[i].CreateRedis(x); err != nil {
 			return err
 		} else if changed {
@@ -112,7 +135,7 @@ func (s *Server) saveConfig() error {
 		var buf []byte
 		switch f.Type {
 		case reflect.TypeOf(0):
-			buf = s2pkg.FloatToBytes(float64(fv.Int()))
+			buf = s2.FloatToBytes(float64(fv.Int()))
 		case reflect.TypeOf(""):
 			buf = []byte(fv.String())
 		}
@@ -125,7 +148,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return false, fmt.Errorf("invalid char in server name")
 	}
 	found := false
-	old := s.ServerConfig
+	old := s.Config
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if !strings.EqualFold(f.Name, key) {
 			return nil
@@ -137,7 +160,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		}
 		switch f.Type {
 		case reflect.TypeOf(0):
-			fv.SetInt(int64(s2pkg.ParseInt(value)))
+			fv.SetInt(int64(s2.ParseInt(value)))
 		case reflect.TypeOf(""):
 			fv.SetString(value)
 		}
@@ -146,7 +169,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 	})
 	if found {
 		if err := s.saveConfig(); err != nil {
-			s.ServerConfig = old
+			s.Config = old
 			return false, err
 		}
 	}
@@ -154,7 +177,10 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 }
 
 func (s *Server) GetConfig(key string) (v string, ok bool) {
-	fast := reflect.ValueOf(&s.ServerConfig).Elem().FieldByName(key)
+	if strings.EqualFold(key, "channel") {
+		return strconv.Itoa(int(s.Channel)), true
+	}
+	fast := reflect.ValueOf(&s.Config).Elem().FieldByName(key)
 	if fast.IsValid() {
 		return fmt.Sprint(fast.Interface()), true
 	}
@@ -182,8 +208,8 @@ func (s *Server) listConfigCommand() (list []string) {
 }
 
 func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {
-	rv := reflect.ValueOf(&s.ServerConfig)
-	rt := reflect.TypeOf(s.ServerConfig)
+	rv := reflect.ValueOf(&s.Config)
+	rt := reflect.TypeOf(s.Config)
 	for i := 0; i < rt.NumField(); i++ {
 		if err := cb(rt.Field(i), rv.Elem().Field(i)); err != nil {
 			return err
@@ -200,7 +226,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 		return cli
 	}
 	cfg, err := wire.ParseConnString(addr)
-	s2pkg.PanicErr(err)
+	s2.PanicErr(err)
 	cli = cfg.GetClient()
 	s.rdbCache.Add(cfg.URI, cli)
 	return
@@ -242,7 +268,7 @@ func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, err
 	if s.SelfManager == nil {
 		return bas.Nil, nil
 	}
-	defer s2pkg.Recover(nil)
+	defer s2.Recover(nil)
 	f, _ := s.SelfManager.Get(name)
 	if !f.IsObject() {
 		return f, nil
@@ -257,6 +283,10 @@ func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, err
 		return bas.Nil, res.Error()
 	}
 	return res, nil
+}
+
+func (s *Server) mustRunCode(code string, args ...[]byte) bas.Value {
+	return nj.MustRun(nj.LoadString(code, s.getScriptEnviron(args...)))
 }
 
 func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
@@ -284,33 +314,6 @@ func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
 				ToValue()).
 			ToMap(),
 	}
-}
-
-type LocalStorage struct{ db *pebble.DB }
-
-func (s *Server) LocalStorage() *LocalStorage {
-	return &LocalStorage{db: s.DB}
-}
-
-func (s *LocalStorage) Get(k string) (string, error) {
-	v, err := extdb.Get(s.db, []byte("local___"+k))
-	return string(v), err
-}
-
-func (s *LocalStorage) GetInt64(k string) (v int64, err error) {
-	vs, err := s.Get(k)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseInt(vs, 10, 64)
-}
-
-func (s *LocalStorage) Set(k string, v interface{}) (err error) {
-	return s.db.Set([]byte("local___"+k), []byte(fmt.Sprint(v)), pebble.Sync)
-}
-
-func (s *LocalStorage) Delete(k string) (err error) {
-	return s.db.Delete([]byte("local___"+k), pebble.Sync)
 }
 
 func ifZero(v *int, v2 int) {

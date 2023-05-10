@@ -1,6 +1,7 @@
-//+build !windows
+//go:build !windows
+// +build !windows
 
-package s2pkg
+package s2
 
 import (
 	"bytes"

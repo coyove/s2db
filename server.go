@@ -20,10 +20,8 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
-	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -33,47 +31,27 @@ import (
 const lockShards = 32
 
 type Server struct {
-	ln, lnHTTP   net.Listener
-	ServerConfig ServerConfig
-	DB           *pebble.DB
-	Peers        [future.Channels]*endpoint
-	DBPath       string
-	DBOptions    *pebble.Options
-	Channel      int64
-	ReadOnly     bool
-	Closed       bool // server close flag
-	SelfManager  *bas.Program
+	DB          *pebble.DB
+	Peers       [future.Channels]*endpoint
+	DBPath      string
+	DBOptions   *pebble.Options
+	Channel     int64
+	ReadOnly    bool
+	Closed      bool // server close flag
+	SelfManager *bas.Program
+	Config      ServerConfig
+	Survey      ServerSurvey
 
+	lnRESP       net.Listener
+	lnHTTP       net.Listener
 	dieLock      sync.Mutex
-	dumpWireLock s2pkg.Locker
-
-	Survey struct {
-		StartAt          time.Time
-		Connections      int64
-		SysRead          s2pkg.Survey
-		SysReadP99Micro  s2pkg.P99SurveyMinute
-		SysWrite         s2pkg.Survey
-		SysWriteP99Micro s2pkg.P99SurveyMinute
-		SlowLogs         s2pkg.Survey
-		RawSetN          s2pkg.Survey `metrics:"mean"`
-		PeerOnMissingN   s2pkg.Survey `metrics:"mean"`
-		PeerOnMissing    s2pkg.Survey
-		PeerOnOK         s2pkg.Survey `metrics:"qps"`
-		AllConsolidated  s2pkg.Survey `metrics:"qps"`
-		SelectCacheHits  s2pkg.Survey `metrics:"qps"`
-		AppendExpire     s2pkg.Survey `metrics:"qps"`
-		RangeDistinct    s2pkg.Survey
-		PeerBatchSize    s2pkg.Survey
-		PeerLatency      sync.Map
-		Command          sync.Map
-	}
-
-	rdbCache  *s2pkg.LRUCache[string, *redis.Client]
-	fillCache *s2pkg.LRUShard[struct{}]
-	wmCache   *s2pkg.LRUShard[[16]byte]
-	ttlOnce   [lockShards]sync.Map
-	delOnce   [lockShards]sync.Map
-	errThrot  s2pkg.ErrorThrottler
+	dumpWireLock s2.Locker
+	rdbCache     *s2.LRUCache[string, *redis.Client]
+	fillCache    *s2.LRUShard[struct{}]
+	wmCache      *s2.LRUShard[[16]byte]
+	ttlOnce      [lockShards]sync.Map
+	delOnce      [lockShards]sync.Map
+	errThrot     s2.ErrorThrottler
 
 	test struct {
 		Fail         bool
@@ -83,12 +61,12 @@ type Server struct {
 	}
 }
 
-func Open(dbPath string) (x *Server, err error) {
+func Open(dbPath string) (s *Server, err error) {
 	if err := os.MkdirAll(dbPath, 0777); err != nil {
 		return nil, err
 	}
 
-	x = &Server{
+	s = &Server{
 		DBPath: dbPath,
 		DBOptions: (&pebble.Options{
 			Logger:       dbLogger,
@@ -97,30 +75,30 @@ func Open(dbPath string) (x *Server, err error) {
 			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
 	}
-	x.DBOptions.FS = &extdb.VFS{
-		FS:       x.DBOptions.FS,
+	s.DBOptions.FS = &VFS{
+		FS:       s.DBOptions.FS,
 		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatInt(future.UnixNano(), 16)),
 	}
 	if !testFlag {
-		x.DBOptions.EventListener = x.createDBListener()
+		s.DBOptions.EventListener = s.createDBListener()
 	}
 	start := time.Now()
-	x.DB, err = pebble.Open(dbPath, x.DBOptions)
+	s.DB, err = pebble.Open(dbPath, s.DBOptions)
 	if err != nil {
 		return nil, err
 	}
-	for i := range x.Peers {
-		x.Peers[i] = &endpoint{server: x}
+	for i := range s.Peers {
+		s.Peers[i] = &endpoint{server: s}
 	}
-	if err := x.loadConfig(); err != nil {
+	if err := s.loadConfig(); err != nil {
 		return nil, err
 	}
 	log.Infof("open data %s in %v", dbPath, time.Since(start))
 
-	x.rdbCache = s2pkg.NewLRUCache(8, func(k string, v *redis.Client) {
+	s.rdbCache = s2.NewLRUCache(8, func(k string, v *redis.Client) {
 		log.Infof("redis client cache evicted: %s, close=%v", k, v.Close())
 	})
-	return x, nil
+	return s, nil
 }
 
 func (s *Server) Close() (err error) {
@@ -134,7 +112,7 @@ func (s *Server) Close() (err error) {
 	s.ReadOnly = true
 	s.DBOptions.Cache.Unref()
 
-	err = errors.CombineErrors(err, s.ln.Close())
+	err = errors.CombineErrors(err, s.lnRESP.Close())
 	err = errors.CombineErrors(err, s.lnHTTP.Close())
 	for _, p := range s.Peers {
 		err = errors.CombineErrors(err, p.Close())
@@ -171,7 +149,7 @@ func (s *Server) Serve(addr string) (err error) {
 	if err != nil {
 		return err
 	}
-	s.ln, err = net.ListenTCP("tcp", tcpAddr)
+	s.lnRESP, err = net.ListenTCP("tcp", tcpAddr)
 	if err != nil {
 		return err
 	}
@@ -184,13 +162,13 @@ func (s *Server) Serve(addr string) (err error) {
 	}
 	s.Survey.StartAt = time.Now()
 
-	log.Infof("listening on %v (RESP) and %v (HTTP)", s.ln.Addr(), s.lnHTTP.Addr())
+	log.Infof("listening on %v (RESP) and %v (HTTP)", s.lnRESP.Addr(), s.lnHTTP.Addr())
 
 	go s.startCronjobs()
 	go s.httpServer()
 
 	for {
-		conn, err := s.ln.Accept()
+		conn, err := s.lnRESP.Accept()
 		if err != nil {
 			if !s.Closed {
 				log.Errorf("failed to accept (N=%d): %v", s.Survey.Connections, err)
@@ -228,8 +206,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if !command.IsLast() {
 				writer.EnablePipelineMode()
 			}
-			if s.ServerConfig.Password != "" && !auth {
-				if command.StrEqFold(0, "AUTH") && command.Str(1) == s.ServerConfig.Password {
+			if s.Config.Password != "" && !auth {
+				if command.StrEqFold(0, "AUTH") && command.Str(1) == s.Config.Password {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
@@ -243,7 +221,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			} else {
 				startTime := time.Now()
 				cmd := strings.ToUpper(command.Str(0))
-				ew = s.runCommand(startTime, cmd, writer, s2pkg.GetRemoteIP(conn.RemoteAddr()), command)
+				ew = s.runCommand(startTime, cmd, writer, s2.GetRemoteIP(conn.RemoteAddr()), command)
 			}
 		}
 		if command.IsLast() {
@@ -289,10 +267,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 					break
 				}
 			}
-			outErr = w.WriteError(fmt.Sprintf("fatal error (%s:%d): %v", filepath.Base(fn), ln, r))
+			outErr = w.WriteError(fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r))
+			s.Survey.FatalError.Incr(1)
 		} else {
 			diff := time.Since(start)
-			if diff > time.Duration(s.ServerConfig.SlowLimit)*time.Millisecond {
+			if diff > time.Duration(s.Config.SlowLimit)*time.Millisecond {
 				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
 				s.Survey.SlowLogs.Incr(diff.Milliseconds())
 			}
@@ -305,8 +284,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
 			}
 			if isWriteCommand[cmd] || isReadCommand[cmd] {
-				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2pkg.Survey))
-				x.(*s2pkg.Survey).Incr(diff.Milliseconds())
+				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2.Survey))
+				x.(*s2.Survey).Incr(diff.Milliseconds())
 			}
 		}
 	}(startTime)
@@ -318,12 +297,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		os.Exit(0)
 	case "AUTH": // AUTH command is processed before runComamnd, so always return OK here
 		return w.WriteSimpleString("OK")
-	case "EVAL", "EVALRO":
-		v := nj.MustRun(nj.LoadString(key, s.getScriptEnviron(K.Argv[2:]...)))
-		return w.WriteValue(v)
+	case "EVAL":
+		return w.WriteValue(s.mustRunCode(key, K.Argv[2:]...))
 	case "PING":
 		if key == "" {
-			return w.WriteSimpleString("PONG " + s.ServerConfig.ServerName + " " + Version)
+			return w.WriteSimpleString("PONG " + s.Config.ServerName + " " + Version)
 		}
 		return w.WriteSimpleString(key)
 	case "CONFIG":
@@ -364,11 +342,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return slowLogger.Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return dbLogger.Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*s2pkg.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return log.StandardLogger().Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
 	}
 
 	switch cmd {
@@ -407,7 +385,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			if s.HasOtherPeers() {
 				args := []any{"RAWSET", key, ttl}
 				for i, d := range data {
-					args = append(args, ids[i], s2pkg.Bytes(d))
+					args = append(args, ids[i], s2.Bytes(d))
 				}
 				recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 					return redis.NewStringCmd(context.TODO(), args...)
@@ -423,11 +401,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteBulks(hexIds)
 	case "RAWSET": // key ttl ID_0 DATA_0 ID_1 DATA_1...
-		var after []s2pkg.Pair
+		var after []s2.Pair
 		for i := 3; i < K.ArgCount(); i += 2 {
 			id := K.BytesRef(i)
 			_ = id[15]
-			after = append(after, s2pkg.Pair{ID: id, Data: K.BytesRef(i + 1)})
+			after = append(after, s2.Pair{ID: id, Data: K.BytesRef(i + 1)})
 		}
 		n, err := s.rawSet(key, after, K.Int64(2), nil)
 		if err != nil {
@@ -451,7 +429,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulks(resp)
 		}
 		if lowest := K.BytesRef(5); len(lowest) == 16 {
-			if wm, ok := s.wmCache.Get16(s2pkg.HashStr128(key)); ok {
+			if wm, ok := s.wmCache.Get16(s2.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
 					s.Survey.SelectCacheHits.Incr(1)
 					return w.WriteBulks([][]byte{}) // no nil
@@ -482,9 +460,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			raw = raw || K.StrEqFold(i, "raw")
 		}
 
-		flag := orFlag(0, desc, RangeDesc)
-		flag = orFlag(flag, distinct, RangeDistinct)
-		flag = orFlag(flag, raw, RangeAll)
+		flag := buildFlag([]bool{desc, distinct, raw}, []int{RangeDesc, RangeDistinct, RangeAll})
 		start := s.translateCursor(K.BytesRef(2), desc)
 		n := K.Int(3)
 		origN := n
@@ -500,7 +476,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if !s.HasOtherPeers() || localOnly || raw {
 			return s.convertPairs(w, data, origN)
 		}
-		if s2pkg.AllPairsConsolidated(data) {
+		if s2.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
 			return s.convertPairs(w, data, origN)
 		}
@@ -526,11 +502,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return s.convertPairs(w, data, origN)
 		}
 
-		origData := append([]s2pkg.Pair{}, data...)
+		origData := append([]s2.Pair{}, data...)
 		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
 				_ = v[i][15]
-				data = append(data, s2pkg.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
+				data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
 			}
 			return true
 		})
@@ -557,7 +533,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulk(data[0])
 		}
 		return w.WriteBulks(data)
-	case "HCOUNT":
+	case "SELECTCOUNT":
 		add, del, err := s.getHLL(key)
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -571,12 +547,16 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			})
 			s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
 				v := cmd.(*redis.StringSliceCmd).Val()
-				add.Merge(s2pkg.HyperLogLog(v[0]))
-				del.Merge(s2pkg.HyperLogLog(v[1]))
+				add.Merge(s2.HyperLogLog(v[0]))
+				del.Merge(s2.HyperLogLog(v[1]))
 				return true
 			})
 		}
-		return w.WriteInt64(int64(add.Count()) - int64(del.Count()))
+		x := int64(add.Count()) - int64(del.Count())
+		if x < 0 {
+			x = 0
+		}
+		return w.WriteInt64(x)
 	case "SCAN": // cursor COUNT count [LOCAL]
 		if K.StrEqFold(4, "local") {
 			return w.WriteObjects(s.ScanLocalIndex(s.translateCursor(K.BytesRef(1), false), K.Int(3)))

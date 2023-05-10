@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -85,7 +85,7 @@ func (e *endpoint) work() {
 				return
 			}
 			commands = append(commands, cmd)
-			if len(commands) < e.server.ServerConfig.BatchLimit {
+			if len(commands) < e.server.Config.BatchLimit {
 				goto MORE
 			}
 		default:
@@ -170,7 +170,7 @@ func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandI
 		select {
 		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out, pstart: future.UnixNano()}:
 			recv++
-		case <-time.After(time.Duration(s.ServerConfig.TimeoutPeer) * time.Millisecond):
+		case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
 			logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
 		}
 	})
@@ -184,8 +184,8 @@ func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(red
 MORE:
 	select {
 	case res := <-out:
-		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2pkg.Survey))
-		x.(*s2pkg.Survey).Incr((future.UnixNano() - res.pstart) / 1e6)
+		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2.Survey))
+		x.(*s2.Survey).Incr((future.UnixNano() - res.pstart) / 1e6)
 
 		if err := res.Cmder.Err(); err != nil {
 			uri := res.e.Config().URI
@@ -203,7 +203,7 @@ MORE:
 		if recv--; recv > 0 {
 			goto MORE
 		}
-	case <-time.After(time.Duration(s.ServerConfig.TimeoutPeer) * time.Millisecond):
+	case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
 		_, fn, ln, _ := runtime.Caller(1)
 		logrus.Errorf("%s:%d failed to request peer, timed out, remains: %v", filepath.Base(fn), ln, recv)
 	}

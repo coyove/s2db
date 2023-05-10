@@ -40,7 +40,7 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 		cfg.Password = u.User.Username()
 	}
 
-	rv := reflect.ValueOf(cfg.Options)
+	rv := reflect.ValueOf(&cfg.Options).Elem()
 	for k, vs := range u.Query() {
 		if len(vs) == 0 {
 			continue
@@ -58,6 +58,7 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 	if m := 20 * runtime.NumCPU(); cfg.Options.PoolSize < m {
 		cfg.Options.PoolSize = m
 	}
+	cfg.Options.MaxRetries = -1
 	return
 }
 

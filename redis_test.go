@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coyove/s2db/s2pkg"
+	s2pkg "github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"

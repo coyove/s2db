@@ -1,4 +1,4 @@
-package s2pkg
+package s2
 
 import (
 	"hash/crc32"
@@ -9,7 +9,7 @@ import (
 	"github.com/coyove/sdss/future"
 )
 
-type LRUValue[V any] struct {
+type lruValue[V any] struct {
 	Time  int64
 	Value V
 }
@@ -18,7 +18,7 @@ type LRUCache[K comparable, V any] struct {
 	mu        sync.RWMutex
 	onEvict   func(K, V)
 	storeCap  int
-	store     map[K]LRUValue[V]
+	store     map[K]lruValue[V]
 	storeIter *reflect.MapIter
 }
 
@@ -32,7 +32,7 @@ func NewLRUCache[K comparable, V any](cap int, onEvict func(K, V)) *LRUCache[K, 
 	c := &LRUCache[K, V]{
 		onEvict:  onEvict,
 		storeCap: cap,
-		store:    map[K]LRUValue[V]{},
+		store:    map[K]lruValue[V]{},
 	}
 	c.storeIter = reflect.ValueOf(c.store).MapRange()
 	return c
@@ -70,14 +70,14 @@ func (m *LRUCache[K, V]) Add(key K, value V) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	m.store[key] = LRUValue[V]{
+	m.store[key] = lruValue[V]{
 		Time:  future.UnixNano(),
 		Value: value,
 	}
 
 	for len(m.store) > m.storeCap {
 		var k0 K
-		v0 := LRUValue[V]{Time: math.MaxInt64}
+		v0 := lruValue[V]{Time: math.MaxInt64}
 		for i := 0; i < 2; i++ {
 			k, v := m.advance()
 			if v.Time < v0.Time {
@@ -89,13 +89,13 @@ func (m *LRUCache[K, V]) Add(key K, value V) {
 	}
 }
 
-func (m *LRUCache[K, V]) advance() (K, LRUValue[V]) {
+func (m *LRUCache[K, V]) advance() (K, lruValue[V]) {
 	if !m.storeIter.Next() {
 		m.storeIter = reflect.ValueOf(m.store).MapRange()
 		m.storeIter.Next()
 	}
 	k := m.storeIter.Key().Interface().(K)
-	v := m.storeIter.Value().Interface().(LRUValue[V])
+	v := m.storeIter.Value().Interface().(lruValue[V])
 	return k, v
 }
 
@@ -113,7 +113,7 @@ func (m *LRUCache[K, V]) Get(k K) (V, bool) {
 func (m *LRUCache[K, V]) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.store = map[K]LRUValue[V]{}
+	m.store = map[K]lruValue[V]{}
 }
 
 func (m *LRUCache[K, V]) Delete(key K) V {

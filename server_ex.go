@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -19,8 +20,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
-	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -28,17 +28,19 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"PSELECT": true,
-		"SELECT":  true,
-		"GET":     true,
-		"MGET":    true,
-		"SCAN":    true,
-		"HCOUNT":  true,
+		"PSELECT":     true,
+		"SELECT":      true,
+		"SELECTCOUNT": true,
+		"GET":         true,
+		"MGET":        true,
+		"SCAN":        true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
 		"RAWSET": true,
 	}
+	//go:embed scripts/index.html
+	webuiHTML string
 )
 
 func ssRef(b [][]byte) (keys []string) {
@@ -53,8 +55,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || strings.EqualFold(section, "server") {
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
-			fmt.Sprintf("servername:%v", s.ServerConfig.ServerName),
-			fmt.Sprintf("listen:%v", s.ln.Addr()),
+			fmt.Sprintf("servername:%v", s.Config.ServerName),
+			fmt.Sprintf("listen:%v", s.lnRESP.Addr()),
 			fmt.Sprintf("uptime:%v", time.Since(s.Survey.StartAt)),
 			fmt.Sprintf("wall_clock:%v", time.Now().Format("15:04:05.000000000")),
 			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano()).Format("15:04:05.000000000")),
@@ -117,30 +119,30 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		var keys []string
 		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
 		sort.Strings(keys)
-		add := func(f func(*s2pkg.Survey) string) (res []string) {
+		add := func(f func(*s2.Survey) string) (res []string) {
 			for _, k := range keys {
 				v, _ := s.Survey.Command.Load(k)
-				res = append(res, fmt.Sprintf("%v:%v", k, f(v.(*s2pkg.Survey))))
+				res = append(res, fmt.Sprintf("%v:%v", k, f(v.(*s2.Survey))))
 			}
 			return append(res, "")
 		}
 		if section == "" || section == "command_avg_lat" {
 			data = append(data, "# command_avg_lat")
-			data = append(data, add(func(s *s2pkg.Survey) string { return s.MeanString() })...)
+			data = append(data, add(func(s *s2.Survey) string { return s.MeanString() })...)
 		}
 		if section == "" || section == "command_qps" {
 			data = append(data, "# command_qps")
-			data = append(data, add(func(s *s2pkg.Survey) string { return s.QPSString() })...)
+			data = append(data, add(func(s *s2.Survey) string { return s.QPSString() })...)
 		}
 	}
 	if strings.HasPrefix(section, ":") {
 		key := section[1:]
 		add, del, _ := s.getHLL(key)
-		startKey := extdb.GetKeyPrefix(key)
-		disk, _ := s.DB.EstimateDiskUsage(startKey, s2pkg.IncBytes(startKey))
+		startKey := GetKeyPrefix(key)
+		disk, _ := s.DB.EstimateDiskUsage(startKey, s2.IncBytes(startKey))
 		data = append(data, "# key "+key)
 		data = append(data, fmt.Sprintf("size:%d", disk))
-		if wm, wmok := s.wmCache.Get16(s2pkg.HashStr128(key)); wmok {
+		if wm, wmok := s.wmCache.Get16(s2.HashStr128(key)); wmok {
 			data = append(data, fmt.Sprintf("watermark:%s", hexEncode(wm[:])))
 		} else {
 			data = append(data, "watermark:miss")
@@ -152,12 +154,12 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	if strings.HasPrefix(section, "=") {
 		data = append(data, "# metrics "+section[1:])
 		switch v := s.getMetrics(section[1:]).(type) {
-		case *s2pkg.Survey:
+		case *s2.Survey:
 			m := v.Metrics()
 			data = append(data, fmt.Sprintf("qps1:%f", m.QPS[0]), fmt.Sprintf("qps5:%f", m.QPS[1]), fmt.Sprintf("qps:%f", m.QPS[2]))
 			data = append(data, fmt.Sprintf("mean1:%f", m.Mean[0]), fmt.Sprintf("mean5:%f", m.Mean[1]), fmt.Sprintf("mean:%f", m.Mean[2]))
 			data = append(data, fmt.Sprintf("max1:%d", m.Max[0]), fmt.Sprintf("max5:%d", m.Max[1]), fmt.Sprintf("max:%d", m.Max[2]))
-		case *s2pkg.P99SurveyMinute:
+		case *s2.P99SurveyMinute:
 			data = append(data, fmt.Sprintf("p99:%f", v.P99()))
 		}
 		data = append(data, "")
@@ -171,7 +173,7 @@ func makeHTMLStat(s string) template.HTML {
 		return template.HTML(s)
 	}
 	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s",
-		s2pkg.FormatFloatShort(a), s2pkg.FormatFloatShort(b), s2pkg.FormatFloatShort(c)))
+		s2.FormatFloatShort(a), s2.FormatFloatShort(b), s2.FormatFloatShort(c)))
 }
 
 func (s *Server) createDBListener() pebble.EventListener {
@@ -199,15 +201,15 @@ func (s *Server) createDBListener() pebble.EventListener {
 }
 
 func (s *Server) httpServer() {
-	uuid := s2pkg.UUID()
+	uuid := s2.UUID()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		defer s2pkg.HTTPRecover(w, r)
+		defer s2.HTTPRecover(w, r)
 
 		q := r.URL.Query()
 		start := time.Now()
 
-		if s.ServerConfig.Password != "" && s.ServerConfig.Password != q.Get("p") {
+		if s.Config.Password != "" && s.Config.Password != q.Get("p") {
 			w.WriteHeader(400)
 			w.Write([]byte("s2db: password required"))
 			return
@@ -215,7 +217,7 @@ func (s *Server) httpServer() {
 
 		sp := []string{s.DBPath}
 		// sp = append(sp, filepath.Dir(s.db.
-		cpu, iops, disk := s2pkg.GetOSUsage(sp[:])
+		cpu, iops, disk := s2.GetOSUsage(sp[:])
 		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
 		}
 		w.Header().Add("Content-Type", "text/html")
@@ -238,13 +240,13 @@ func (s *Server) httpServer() {
 		})
 	})
 	mux.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
-		defer s2pkg.HTTPRecover(w, r)
+		defer s2.HTTPRecover(w, r)
 		chartSources := strings.Split(r.URL.Path[7:], ",")
 		if len(chartSources) == 0 || chartSources[0] == "" {
 			w.Write([]byte("[]"))
 			return
 		}
-		startTs, endTs := s2pkg.MustParseInt64(r.URL.Query().Get("start")), s2pkg.MustParseInt64(r.URL.Query().Get("end"))
+		startTs, endTs := s2.MustParseInt64(r.URL.Query().Get("start")), s2.MustParseInt64(r.URL.Query().Get("end"))
 		w.Header().Add("Content-Type", "text/json")
 		data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
 		if len(data) == 0 {
@@ -258,7 +260,7 @@ func (s *Server) httpServer() {
 		json.NewEncoder(w).Encode(m)
 	})
 	mux.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
-		defer s2pkg.HTTPRecover(w, r)
+		defer s2.HTTPRecover(w, r)
 
 		// q := r.URL.Query()
 
@@ -281,10 +283,10 @@ func (s *Server) httpServer() {
 
 		// start, end := math.Inf(-1), math.Inf(1)
 		// if sv := q.Get("start"); sv != "" {
-		// 	start = s2pkg.MustParseFloat(sv)
+		// 	start = s2.MustParseFloat(sv)
 		// }
 		// if sv := q.Get("end"); sv != "" {
-		// 	end = s2pkg.MustParseFloat(sv)
+		// 	end = s2.MustParseFloat(sv)
 		// }
 
 		// w.Header().Add("Content-Type", "application/octet-stream")
@@ -293,7 +295,8 @@ func (s *Server) httpServer() {
 		// fmt.Println(q.Get("match"))
 	})
 	mux.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
-		nj.PlaygroundHandler(s.ServerConfig.InspectorSource+"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
+		nj.PlaygroundHandler(s.Config.InspectorSource+
+			"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
 			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
 			"println(ok, err)", s.getScriptEnviron())(w, r)
 	})
@@ -355,7 +358,7 @@ func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
 	return data, nil
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2pkg.Pair, max int) (err error) {
+func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
@@ -383,14 +386,57 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 			start = buf
 		} else if desc {
 			start = make([]byte, 16)
-			binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s)*1e9+1e9-1))
+			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(s)*1e9+1e9-1))
 		} else {
 			start = make([]byte, 16)
-			binary.BigEndian.PutUint64(start, uint64(s2pkg.MustParseFloat(s)*1e9))
+			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(s)*1e9))
 		}
 	}
 	if *(*string)(unsafe.Pointer(&start)) > maxCursor {
 		start = []byte(maxCursor)
 	}
 	return
+}
+
+func GetKeyPrefix(key string) (prefix []byte) {
+	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
+	return
+}
+
+func NewPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
+	return db.NewIter(&pebble.IterOptions{
+		LowerBound: key,
+		UpperBound: s2.IncBytes(key),
+	})
+}
+
+func (s *Server) Get(key []byte) ([]byte, error) {
+	buf, rd, err := s.DB.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rd.Close()
+	return s2.Bytes(buf), nil
+}
+
+func (s *Server) GetInt64(key []byte) (int64, error) {
+	buf, rd, err := s.DB.Get(key)
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer rd.Close()
+	if len(buf) != 8 {
+		return 0, fmt.Errorf("invalid number bytes (8)")
+	}
+	return int64(s2.BytesToUint64(buf)), nil
+}
+
+func (s *Server) SetInt64(key []byte, vi int64) error {
+	return s.DB.Set(key, s2.Uint64ToBytes(uint64(vi)), pebble.Sync)
 }

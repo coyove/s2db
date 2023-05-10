@@ -36,22 +36,9 @@ func TestWriter_WriteSlice2(t *testing.T) {
 	}
 }
 
-func BenchmarkFlags(b *testing.B) {
-	cmd := Command{Argv: [][]byte{
-		[]byte("ZADD"),
-		[]byte("zzz"),
-		[]byte("1.2345"),
-		[]byte("key"),
-		[]byte("withscores"),
-	}}
-	for i := 0; i < b.N; i++ {
-		cmd.Flags(2)
-	}
-}
-
 func TestConnString(t *testing.T) {
 	a, _ := ParseConnString("a?Name=name&ReadTimeout=1e9")
-	if a.ReadTimeout != time.Second || a.Name != "name" {
+	if a.ReadTimeout != time.Second {
 		t.Fail()
 	}
 

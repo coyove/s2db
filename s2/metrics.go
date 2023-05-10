@@ -1,4 +1,4 @@
-package s2pkg
+package s2
 
 import (
 	"fmt"

@@ -14,8 +14,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/s2db/extdb"
-	"github.com/coyove/s2db/s2pkg"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
 	client "github.com/influxdata/influxdb1-client"
 	log "github.com/sirupsen/logrus"
@@ -39,9 +38,9 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	start := future.UnixNano()
 	now := start - int64(60*time.Second)
 	pairs = append(pairs, metricsPair{Member: "Connections", Score: float64(s.Survey.Connections)})
-	rv, rt := reflect.ValueOf(s.Survey), reflect.TypeOf(s.Survey)
+	rv, rt := reflect.ValueOf(&s.Survey).Elem(), reflect.TypeOf(&s.Survey).Elem()
 	for i := 0; i < rv.NumField(); i++ {
-		if sv, ok := rv.Field(i).Interface().(s2pkg.Survey); ok {
+		if sv, ok := rv.Field(i).Interface().(s2.Survey); ok {
 			m, n := sv.Metrics(), rt.Field(i)
 			t := n.Tag.Get("metrics")
 			if t == "mean" || t == "" {
@@ -56,14 +55,14 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 	s.Survey.PeerLatency.Range(func(k, v any) bool {
-		s := v.(*s2pkg.Survey).Metrics()
+		s := v.(*s2.Survey).Metrics()
 		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_Mean", Score: float64(s.Mean[0])})
 		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_Max", Score: float64(s.Max[0])})
 		pairs = append(pairs, metricsPair{Member: "Peer_" + k.(string) + "_QPS", Score: float64(s.QPS[0])})
 		return true
 	})
 	s.Survey.Command.Range(func(k, v any) bool {
-		m, n := v.(*s2pkg.Survey).Metrics(), "Cmd"+k.(string)
+		m, n := v.(*s2.Survey).Metrics(), "Cmd"+k.(string)
 		pairs = append(pairs,
 			metricsPair{Member: n + "_Mean", Score: m.Mean[0]},
 			metricsPair{Member: n + "_QPS", Score: m.QPS[0]},
@@ -101,7 +100,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 
-	for _, ep := range strings.Split(s.ServerConfig.MetricsEndpoint, ",") {
+	for _, ep := range strings.Split(s.Config.MetricsEndpoint, ",") {
 		switch ep {
 		case "-", "null", "none":
 		default:
@@ -109,7 +108,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			defer b.Close()
 			for _, mp := range pairs {
 				key := []byte("metrics_" + mp.Member + "\x00")
-				if err := b.Set(appendUint(key, uint64(now)), s2pkg.FloatToBytes(mp.Score), pebble.Sync); err != nil {
+				if err := b.Set(appendUint(key, uint64(now)), s2.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 					return err
 				}
 				if rand.Float64() <= 0.01 {
@@ -126,7 +125,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 				continue
 			}
 			pairs = append(pairs, metricsPair{Member: "Heartbeat", Score: 1})
-			tags := map[string]string{"ServerName": s.ServerConfig.ServerName}
+			tags := map[string]string{"ServerName": s.Config.ServerName}
 			points := make([]client.Point, 0, len(pairs))
 			for _, p := range pairs {
 				points = append(points, client.Point{
@@ -150,7 +149,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 		}
 	}
 
-	if diff := future.UnixNano() - start; diff/1e6 > int64(s.ServerConfig.SlowLimit) {
+	if diff := future.UnixNano() - start; diff/1e6 > int64(s.Config.SlowLimit) {
 		slowLogger.Infof("#%d\t% 4.3f\t%s\t%v", 0, float64(diff)/1e9, "127.0.0.1", "metrics")
 	}
 
@@ -159,7 +158,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 
 func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
-	c := extdb.NewPrefixIter(s.DB, key)
+	c := NewPrefixIter(s.DB, key)
 	defer c.Close()
 	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
 		k := c.Key()[8:]
@@ -170,14 +169,14 @@ func (s *Server) ListMetricsNames() (names []string) {
 	return
 }
 
-func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2pkg.GroupedMetrics, err error) {
+func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2.GroupedMetrics, err error) {
 	if endNano == 0 && startNano == 0 {
 		startNano, endNano = future.UnixNano()-int64(time.Hour), future.UnixNano()
 	}
-	res := map[string]s2pkg.GroupedMetrics{}
+	res := map[string]s2.GroupedMetrics{}
 	getter := func(f string) {
 		key := []byte("metrics_" + f + "\x00")
-		c := extdb.NewPrefixIter(s.DB, key)
+		c := NewPrefixIter(s.DB, key)
 		defer c.Close()
 
 		for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
@@ -185,7 +184,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 			if ts >= startNano && ts <= endNano {
 				a := res[f]
 				a.Name = f
-				vf := s2pkg.BytesToFloat(c.Value())
+				vf := s2.BytesToFloat(c.Value())
 				if math.IsNaN(vf) {
 					vf = 0
 				}
@@ -209,7 +208,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	return fillMetricsHoles(res, names, startNano, endNano), err
 }
 
-func fillMetricsHoles(res map[string]s2pkg.GroupedMetrics, names []string, startNano, endNano int64) (m []s2pkg.GroupedMetrics) {
+func fillMetricsHoles(res map[string]s2.GroupedMetrics, names []string, startNano, endNano int64) (m []s2.GroupedMetrics) {
 	mints, maxts := startNano/1e9/60*60, endNano/1e9/60*60
 	for _, name := range names {
 		p := res[name]
@@ -233,12 +232,12 @@ func (s *Server) DeleteMetrics(name string) error {
 }
 
 func (s *Server) getMetrics(key string) interface{} {
-	var sv *s2pkg.Survey
+	var sv *s2.Survey
 	if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key); rv.IsValid() {
 		switch v := rv.Addr().Interface().(type) {
-		case *s2pkg.Survey:
+		case *s2.Survey:
 			sv = v
-		case *s2pkg.P99SurveyMinute:
+		case *s2.P99SurveyMinute:
 			return v
 		}
 	}
@@ -247,7 +246,7 @@ func (s *Server) getMetrics(key string) interface{} {
 		if !ok {
 			return nil
 		}
-		sv = x.(*s2pkg.Survey)
+		sv = x.(*s2.Survey)
 	}
 	return sv
 }
@@ -304,5 +303,5 @@ func getInfluxDB1Client(endpoint string) (*client.Client, string, error) {
 }
 
 func appendUint(b []byte, v uint64) []byte {
-	return append(s2pkg.Bytes(b), s2pkg.Uint64ToBytes(v)...)
+	return append(s2.Bytes(b), s2.Uint64ToBytes(v)...)
 }

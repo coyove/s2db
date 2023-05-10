@@ -48,23 +48,24 @@ type Server struct {
 	dumpWireLock s2pkg.Locker
 
 	Survey struct {
-		StartAt         time.Time
-		Connections     int64
-		SysRead         s2pkg.Survey
-		SysReadP99Micro s2pkg.P99SurveyMinute
-		SysWrite        s2pkg.Survey
-		SlowLogs        s2pkg.Survey
-		RawSetN         s2pkg.Survey `metrics:"mean"`
-		PeerOnMissingN  s2pkg.Survey `metrics:"mean"`
-		PeerOnMissing   s2pkg.Survey
-		PeerOnOK        s2pkg.Survey `metrics:"qps"`
-		AllConsolidated s2pkg.Survey `metrics:"qps"`
-		SelectCacheHits s2pkg.Survey `metrics:"qps"`
-		AppendExpire    s2pkg.Survey `metrics:"qps"`
-		RangeDistinct   s2pkg.Survey
-		PeerBatchSize   s2pkg.Survey
-		PeerLatency     sync.Map
-		Command         sync.Map
+		StartAt          time.Time
+		Connections      int64
+		SysRead          s2pkg.Survey
+		SysReadP99Micro  s2pkg.P99SurveyMinute
+		SysWrite         s2pkg.Survey
+		SysWriteP99Micro s2pkg.P99SurveyMinute
+		SlowLogs         s2pkg.Survey
+		RawSetN          s2pkg.Survey `metrics:"mean"`
+		PeerOnMissingN   s2pkg.Survey `metrics:"mean"`
+		PeerOnMissing    s2pkg.Survey
+		PeerOnOK         s2pkg.Survey `metrics:"qps"`
+		AllConsolidated  s2pkg.Survey `metrics:"qps"`
+		SelectCacheHits  s2pkg.Survey `metrics:"qps"`
+		AppendExpire     s2pkg.Survey `metrics:"qps"`
+		RangeDistinct    s2pkg.Survey
+		PeerBatchSize    s2pkg.Survey
+		PeerLatency      sync.Map
+		Command          sync.Map
 	}
 
 	rdbCache  *s2pkg.LRUCache[string, *redis.Client]
@@ -297,6 +298,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 			if isWriteCommand[cmd] {
 				s.Survey.SysWrite.Incr(diff.Milliseconds())
+				s.Survey.SysWriteP99Micro.Incr(diff.Microseconds())
 			}
 			if isReadCommand[cmd] {
 				s.Survey.SysRead.Incr(diff.Milliseconds())
@@ -370,7 +372,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND": // KEY DATA_0 [SETID ID] [QUORUM] [WAIT] [TTL SECONDS] [[AND DATA_1] ...]
+	case "APPEND": // key data_0 [QUORUM] [WAIT] [TTL seconds] [[AND DATA_1] ...]
 		var data = [][]byte{K.BytesRef(2)}
 		var ttl int64
 		var wait, quorum bool
@@ -420,7 +422,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 		}
 		return w.WriteBulks(hexIds)
-	case "RAWSET": // KEY TTL ID_0 DATA_0 ID_1 DATA_1...
+	case "RAWSET": // key ttl ID_0 DATA_0 ID_1 DATA_1...
 		var after []s2pkg.Pair
 		for i := 3; i < K.ArgCount(); i += 2 {
 			id := K.BytesRef(i)
@@ -434,7 +436,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		s.Survey.RawSetN.Incr(int64(n))
 		return w.WriteSimpleString("OK")
 	case "PSELECT":
-		// KEY RAW_START COUNT FLAG LOWEST => [ID 0, DATA 0, ...]
+		// key raw_start count flag lowest => [ID 0, DATA 0, ...]
 		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
 		if key == "*" {
 			ids := K.Argv[2:]
@@ -471,7 +473,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // KEY START COUNT [ASC|DESC] [LOCAL] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		var localOnly, desc, distinct, raw bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
@@ -575,9 +577,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			})
 		}
 		return w.WriteInt64(int64(add.Count()) - int64(del.Count()))
-	case "SCAN": // SCAN CURSOR COUNT
-		data, nextCursor := s.Scan(K.StrRef(1), K.Int(2))
-		return w.WriteObjects(nextCursor, data)
+	case "SCAN": // cursor COUNT count [LOCAL]
+		if K.StrEqFold(4, "local") {
+			return w.WriteObjects(s.ScanLocalIndex(s.translateCursor(K.BytesRef(1), false), K.Int(3)))
+		}
+		return w.WriteObjects(s.Scan(K.StrRef(1), K.Int(3)))
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {

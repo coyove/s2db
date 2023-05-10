@@ -438,7 +438,38 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2pkg.
 	return
 }
 
-func (s *Server) Scan(cursor string, count int) (keys []string, nextCursor string) {
+func (s *Server) ScanLocalIndex(cursor []byte, count int) (nextCursor string, keys []string) {
+	_ = cursor[15]
+	iter := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: []byte("i"),
+		UpperBound: []byte("j"),
+	})
+	defer iter.Close()
+
+	if count > 65536 {
+		count = 65536
+	}
+
+	for iter.SeekGE(append([]byte("i"), cursor...)); iter.Valid(); iter.Next() {
+		ch := iter.Key()[1:][14] >> 4
+		if ch != byte(s.Channel) {
+			continue
+		}
+
+		k := string(append(append(hexEncode(iter.Key()[1:]), '.'), iter.Value()...))
+		keys = append(keys, k)
+
+		if len(keys) >= count {
+			if iter.Next() {
+				nextCursor = string(hexEncode(iter.Key()[1:]))
+			}
+			break
+		}
+	}
+	return
+}
+
+func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []string) {
 	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("l"),
 		UpperBound: []byte("m"),

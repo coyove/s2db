@@ -73,6 +73,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	})
 	pairs = append(pairs, metricsPair{Member: "Goroutines", Score: float64(runtime.NumGoroutine())})
 	pairs = append(pairs, metricsPair{Member: "SysReadP99", Score: s.Survey.SysReadP99Micro.P99() / 1e3})
+	pairs = append(pairs, metricsPair{Member: "SysWriteP99", Score: s.Survey.SysWriteP99Micro.P99() / 1e3})
 	if c := future.Chrony.Load(); c != nil {
 		pairs = append(pairs, metricsPair{Member: "NTPError", Score: c.EstimatedOffsetErr})
 	}

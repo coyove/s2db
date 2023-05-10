@@ -39,17 +39,10 @@ var (
 		"APPEND": true,
 		"RAWSET": true,
 	}
+
 	//go:embed scripts/index.html
 	webuiHTML string
 )
-
-func ssRef(b [][]byte) (keys []string) {
-	for i, b := range b {
-		keys = append(keys, "")
-		*(*[2]uintptr)(unsafe.Pointer(&keys[i])) = *(*[2]uintptr)(unsafe.Pointer(&b))
-	}
-	return keys
-}
 
 func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || strings.EqualFold(section, "server") {

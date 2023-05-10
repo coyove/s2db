@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -290,6 +291,14 @@ func (s *Server) mustRunCode(code string, args ...[]byte) bas.Value {
 }
 
 func (s *Server) getScriptEnviron(args ...[]byte) *nj.LoadOptions {
+	ssRef := func(b [][]byte) (keys []string) {
+		for i, b := range b {
+			keys = append(keys, "")
+			*(*[2]uintptr)(unsafe.Pointer(&keys[i])) = *(*[2]uintptr)(unsafe.Pointer(&b))
+		}
+		return keys
+	}
+
 	a := bas.ValueOf(ssRef(args))
 	return &nj.LoadOptions{
 		Globals: bas.NewObject(8).

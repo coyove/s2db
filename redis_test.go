@@ -9,9 +9,11 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/coyove/s2db/client"
 	s2pkg "github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -396,4 +398,65 @@ func TestQuorum(t *testing.T) {
 	if len(data2) >= len(data) {
 		t.Fatal(data2)
 	}
+}
+
+func TestFuzzy1(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	db := []*redis.Client{rdb1, rdb2}
+	ss := []*Server{s1, s2}
+
+	const N = 500
+	rand.Seed(future.UnixNano())
+	for i := 0; i < 5; i++ {
+		s := ss[rand.Intn(len(ss))]
+		s.test.Fail = true
+		go func() {
+			time.Sleep(time.Duration(rand.Intn(400)+500) * time.Millisecond)
+			s.test.Fail = false
+		}()
+
+		wg := sync.WaitGroup{}
+		for j := 0; j < N/5; j++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
+				a := client.Begin(db)
+				a.Append(ctx, "a", i)
+				a.Close()
+			}(i*100 + j)
+		}
+		wg.Wait()
+	}
+
+	s1.test.Fail = false
+	s2.test.Fail = true
+	data1 := doRange(rdb1, "a", "recent", -N)
+
+	s1.test.Fail = true
+	s2.test.Fail = false
+	data2 := doRange(rdb2, "a", "recent", -N)
+
+	if len(data1)+len(data2) != N {
+		t.Fatal(len(data1), len(data2))
+	}
+	fmt.Println(len(data1), len(data2))
+
+	s1.test.Fail = false
+	s2.test.Fail = false
+	data := doRange(rdb1, "a", "recent", -N)
+
+	m := map[string]bool{}
+	for _, d := range data {
+		m[string(d.Data)] = true
+	}
+
+	if len(m) != N {
+		t.Fatal(len(m), len(data))
+	}
+
 }

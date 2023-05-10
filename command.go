@@ -226,9 +226,11 @@ func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*peb
 				}
 				count++
 			}
-			idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
-			if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-				return 0, err
+			if count > 0 {
+				idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
+				if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+					return 0, err
+				}
 			}
 			s.Survey.AppendExpire.Incr(1)
 		}
@@ -406,11 +408,7 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 			break
 		}
 
-		if desc {
-			c.Prev()
-		} else {
-			c.Next()
-		}
+		moveIter(c, desc)
 	}
 
 	if len(data) > n {
@@ -437,7 +435,7 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	return
 }
 
-func (s *Server) ScanLocalIndex(cursor []byte, count int) (nextCursor string, keys []string) {
+func (s *Server) ScanIndex(cursor []byte, local, desc bool, count int) (nextCursor string, keys []string) {
 	_ = cursor[15]
 	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("i"),
@@ -449,21 +447,25 @@ func (s *Server) ScanLocalIndex(cursor []byte, count int) (nextCursor string, ke
 		count = 65536
 	}
 
-	for iter.SeekGE(append([]byte("i"), cursor...)); iter.Valid(); iter.Next() {
+	if desc {
+		iter.SeekLT(s2.IncBytes(append([]byte("i"), cursor...)))
+	} else {
+		iter.SeekGE(append([]byte("i"), cursor...))
+	}
+	for start := future.UnixNano(); iter.Valid() && future.UnixNano()-start < 10e9; {
 		ch := iter.Key()[1:][14] >> 4
-		if ch != byte(s.Channel) {
-			continue
-		}
+		if !local || ch == byte(s.Channel) {
+			k := string(append(append(hexEncode(iter.Key()[1:]), '.'), iter.Value()...))
+			keys = append(keys, k)
 
-		k := string(append(append(hexEncode(iter.Key()[1:]), '.'), iter.Value()...))
-		keys = append(keys, k)
-
-		if len(keys) >= count {
-			if iter.Next() {
-				nextCursor = string(hexEncode(iter.Key()[1:]))
+			if len(keys) >= count {
+				if moveIter(iter, desc) {
+					nextCursor = string(hexEncode(iter.Key()[1:]))
+				}
+				break
 			}
-			break
 		}
+		moveIter(iter, desc)
 	}
 	return
 }
@@ -553,4 +555,11 @@ func buildFlag(c []bool, f []int) (flag int) {
 		}
 	}
 	return flag
+}
+
+func moveIter(iter *pebble.Iterator, desc bool) bool {
+	if desc {
+		return iter.Prev()
+	}
+	return iter.Next()
 }

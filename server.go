@@ -127,6 +127,8 @@ func (s *Server) Close() (err error) {
 	if err != nil {
 		log.Errorf("server failed to close: %v", err)
 	}
+
+	log.Infof("server closed: %v", err)
 	return err
 }
 
@@ -557,11 +559,22 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			x = 0
 		}
 		return w.WriteInt64(x)
-	case "SCAN": // cursor COUNT count [LOCAL]
-		if K.StrEqFold(4, "local") {
-			return w.WriteObjects(s.ScanLocalIndex(s.translateCursor(K.BytesRef(1), false), K.Int(3)))
+	case "SCAN": // cursor [COUNT count] [INDEX [LOCAL] [DESC]]
+		index, local, desc, count := false, false, false, 10
+		for i := 2; i < K.ArgCount(); i++ {
+			if K.StrEqFold(i, "count") {
+				count = K.Int(i + 1)
+				i++
+			} else {
+				local = local || K.StrEqFold(i, "local")
+				desc = desc || K.StrEqFold(i, "desc")
+				index = index || K.StrEqFold(i, "index")
+			}
 		}
-		return w.WriteObjects(s.Scan(K.StrRef(1), K.Int(3)))
+		if index {
+			return w.WriteObjects(s.ScanIndex(s.translateCursor(K.BytesRef(1), false), local, desc, count))
+		}
+		return w.WriteObjects(s.Scan(K.StrRef(1), count))
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {

@@ -36,17 +36,19 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 }
 
 func doRange(r *redis.Client, key string, start string, n int, dedup ...any) []s2pkg.Pair {
-	args := []any{"SELECT", key, start}
+	flag := client.ONCE
 	if n < 0 {
-		args = append(args, -n, "desc")
-	} else {
-		args = append(args, n)
+		n = -n
+		flag = flag | client.DESC
 	}
-	args = append(args, dedup...)
-	cmd := redis.NewStringSliceCmd(context.TODO(), args...)
-	r.Process(context.TODO(), cmd)
-	s2pkg.PanicErr(cmd.Err())
-	return s2pkg.ConvertBulksToPairs(cmd.Val())
+	if len(dedup) > 0 {
+		flag = flag | client.DISTINCT
+	}
+
+	a := client.Begin(r)
+	p, err := a.Select(context.TODO(), key, start, n, flag)
+	s2pkg.PanicErr(err)
+	return p
 }
 
 func catchPanic(f func()) (err error) {
@@ -406,7 +408,6 @@ func TestFuzzy1(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
-	db := []*redis.Client{rdb1, rdb2}
 	ss := []*Server{s1, s2}
 
 	const N = 500
@@ -425,7 +426,7 @@ func TestFuzzy1(t *testing.T) {
 			go func(i int) {
 				defer wg.Done()
 				time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
-				a := client.Begin(db)
+				a := client.Begin(rdb1, rdb2)
 				a.Append(ctx, "a", i)
 				a.Close()
 			}(i*100 + j)

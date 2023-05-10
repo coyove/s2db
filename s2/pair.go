@@ -78,27 +78,6 @@ func (p Pair) String() string {
 	return fmt.Sprintf("<%s:%q>", id, p.Data)
 }
 
-func ConvertPairsToBulksNoTimestamp(p []Pair) (a [][]byte) {
-	a = make([][]byte, 0, 3*len(p))
-	x := []byte("0")
-	for _, p := range p {
-		i := p.IDHex()
-		a = append(a, i, x, p.Data)
-	}
-	return
-}
-
-func ConvertBulksToPairs(a []string) (p []Pair) {
-	for i := 0; i < len(a); i += 3 {
-		var x Pair
-		x.ID, _ = hex.DecodeString(a[i])
-		x.Data = []byte(a[i+2])
-		x.C = ParseUint64(a[i+1])%2 == 1
-		p = append(p, x)
-	}
-	return
-}
-
 func TrimPairsForConsolidation(p []Pair) (t []Pair) {
 	if len(p) <= 2 {
 		return nil

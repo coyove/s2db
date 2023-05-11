@@ -31,8 +31,7 @@ var (
 		"PSELECT":     true,
 		"SELECT":      true,
 		"SELECTCOUNT": true,
-		"GET":         true,
-		"MGET":        true,
+		"LOOKUP":      true,
 		"SCAN":        true,
 	}
 	isWriteCommand = map[string]bool{
@@ -70,7 +69,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		for _, fi := range dataFiles {
 			dataSize += int(fi.Size())
 		}
-		iDisk, _ := s.DB.EstimateDiskUsage([]byte("i"), []byte("j"))
+		iDisk, _ := s.DB.EstimateDiskUsage([]byte{'z'}, []byte{'z' + 1})
 		HDisk, _ := s.DB.EstimateDiskUsage([]byte("H"), []byte("I"))
 		cwd, _ := os.Getwd()
 		data = append(data, "# server_misc",
@@ -142,6 +141,15 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		data = append(data, fmt.Sprintf("hll_add:%d", add.Count()))
 		data = append(data, fmt.Sprintf("hll_del:%d", del.Count()))
+		data = append(data, "")
+	}
+	if strings.HasPrefix(section, "*") {
+		data = append(data, "# id "+section[1:])
+		id := s.translateCursor([]byte(section[1:]), false)
+		v, key, _ := s.LookupID(id)
+		data = append(data, fmt.Sprintf("hash:%08x", id[8:12]))
+		data = append(data, fmt.Sprintf("key:%s", key))
+		data = append(data, fmt.Sprintf("data_size:%d", len(v)))
 		data = append(data, "")
 	}
 	if strings.HasPrefix(section, "=") {
@@ -303,52 +311,30 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-func (s *Server) wrapMGet(ids [][]byte) (data [][]byte, err error) {
-	data, consolidated, err := s.MGet(ids)
+func (s *Server) wrapGetID(id []byte) (data []byte, err error) {
+	data, _, err = s.LookupID(id)
 	if err != nil {
 		return nil, err
 	}
-	if consolidated {
-		s.Survey.AllConsolidated.Incr(1)
-		return data, nil
-	}
-	var missings []any
-	for i, d := range data {
-		if d == nil {
-			missings = append(missings, ids[i])
-		}
-	}
-	if len(missings) == 0 || !s.HasOtherPeers() {
+	if len(data) > 0 || !s.HasOtherPeers() {
 		return data, nil
 	}
 
-	missings = append([]any{"ISELECT", "*"}, missings...)
 	recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-		return redis.NewStringSliceCmd(context.TODO(), missings...)
+		return redis.NewStringCmd(context.TODO(), "LOOKUP", id, "LOCAL")
 	})
 	if recv == 0 {
 		return data, nil
 	}
-
-	m := map[string]string{}
+	var m string
 	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
-		m0 := cmd.(*redis.StringSliceCmd).Val()
-		for i := 0; i < len(m0); i += 2 {
-			if v := m0[i+1]; v != "" {
-				m[m0[i]] = v
-			}
+		m0 := cmd.(*redis.StringCmd).Val()
+		if m0 != "" {
+			m = m0
 		}
 		return true
 	})
-	for i, d := range data {
-		if d != nil {
-			continue
-		}
-		if v, ok := m[*(*string)(unsafe.Pointer(&ids[i]))]; ok {
-			data[i] = []byte(v)
-		}
-	}
-	return data, nil
+	return []byte(m), nil
 }
 
 func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {

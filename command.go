@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -62,41 +63,39 @@ func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2
 	idx := bytes.TrimPrefix(key, bkPrefix)
 	hllDel.Add(uint32(s2.HashBytes(idx)))
 
-	if _, ok := s2.Convert16BToFuture(idx).Cookie(); ok {
-		return nil
-	}
-	return tx.Delete(append([]byte("i"), idx...), pebble.Sync)
+	return nil
 }
 
-func (s *Server) Append(id future.Future, key string, data [][]byte, ttlSec int64) ([][]byte, error) {
-	if len(data) > 0xffff {
-		return nil, fmt.Errorf("too many elements to append")
-	}
+func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if key == "" {
 		return nil, fmt.Errorf("append to null key")
 	}
-
-	if testFlag {
-		x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
-		if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
-			panic("fatal: duplicated id")
-		}
-	}
-
-	var idx [16]byte // id(8b) + random(3b) + index(2b) + shard(1b) + cmd(1b) + extra(1b)
-	binary.BigEndian.PutUint64(idx[:], uint64(id))
-	rand.Read(idx[8:11])
+	kh := sha1.Sum([]byte(key))
 
 	var kk [][]byte
 	var p []s2.Pair
+	var id future.Future
+
 	for i := 0; i < len(data); i++ {
 		if len(data[i]) == 0 {
 			return nil, fmt.Errorf("can't append null data")
 		}
 
-		binary.BigEndian.PutUint16(idx[11:], uint16(i))
+		id = future.Get(s.Channel)
+		if testFlag {
+			x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
+			if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
+				panic("fatal: duplicated id")
+			}
+		}
+
+		var idx [16]byte // id(8b) + keyhash(4b) + random(1b) + shard(1b) + cmd(1b) + extra(1b)
+		binary.BigEndian.PutUint64(idx[:], uint64(id))
+		copy(idx[8:12], kh[:])
+		rand.Read(idx[12:13])
 		idx[13] = 0 // shard index, not used by now
 		idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
+		idx[15] = 0 // extra
 
 		k := s2.Bytes(idx[:])
 		kk = append(kk, k)
@@ -105,6 +104,10 @@ func (s *Server) Append(id future.Future, key string, data [][]byte, ttlSec int6
 
 	if _, err := s.rawSet(key, p, ttlSec, nil); err != nil {
 		return nil, err
+	}
+
+	if wait && id > 0 {
+		id.Wait()
 	}
 	return kk, nil
 }
@@ -174,7 +177,7 @@ func (s *Server) setMissing(key string, before, after []s2.Pair, consolidate boo
 	return nil
 }
 
-func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*pebble.Batch)) (int, error) {
+func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble.Batch)) (int, error) {
 	bkPrefix := GetKeyPrefix(key)
 
 	add, del, err := s.getHLL(key)
@@ -186,19 +189,21 @@ func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*peb
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	for _, kv := range missing {
+	for _, kv := range data {
 		if _, ok := s.fillCache.Get(kv.ID); ok {
 			continue
 		}
 		if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
 			return 0, err
 		}
-		if err := tx.Set(append([]byte("i"), kv.ID...), []byte(key), pebble.Sync); err != nil {
-			return 0, err
-		}
 		s.fillCache.Add(kv.ID, struct{}{})
 		s.updateWatermarkCache(ck, kv.ID)
 		add.Add(uint32(s2.HashBytes(kv.ID)))
+	}
+
+	kh := sha1.Sum([]byte(key))
+	if err := tx.Set(append(append([]byte("z"), kh[:4]...), key...), nil, pebble.Sync); err != nil {
+		return 0, err
 	}
 
 	if f != nil {
@@ -211,7 +216,7 @@ func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*peb
 		if !loaded {
 			defer m.Delete(key)
 
-			f := future.Future(future.UnixNano()/1e9*1e9 - ttlSec*1e9)
+			f := future.Future(future.UnixNano() - ttlSec*1e9)
 			idx := s2.ConvertFutureTo16B(f)
 			iter := s.DB.NewIter(&pebble.IterOptions{
 				LowerBound: bkPrefix,
@@ -232,7 +237,7 @@ func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*peb
 					return 0, err
 				}
 			}
-			s.Survey.AppendExpire.Incr(1)
+			s.Survey.AppendExpire.Incr(int64(count))
 		}
 	}
 
@@ -242,40 +247,24 @@ func (s *Server) rawSet(key string, missing []s2.Pair, ttlSec int64, f func(*peb
 	return int(tx.Count()), tx.Commit(pebble.Sync)
 }
 
-func (s *Server) MGet(ids [][]byte) (data [][]byte, consolidated bool, err error) {
-	if len(ids) == 0 {
-		return nil, true, nil
-	}
+func (s *Server) LookupID(id []byte) (data []byte, key string, err error) {
+	_ = id[15]
+	iter := NewPrefixIter(s.DB, append([]byte{'z'}, id[8:12]...))
+	defer iter.Close()
 
-	var k []byte
-	score := 0
-	for _, id := range ids {
-		k = append(append(k[:0], 'i'), id...)
-		key, err := s.Get(k)
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()[5:]
+		bkPrefix := GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
+
+		v, err := s.Get(append(bkPrefix, id...))
 		if err != nil {
-			return nil, false, err
+			return nil, "", err
 		}
-		if len(key) == 0 {
-			data = append(data, nil)
-		} else {
-			bkPrefix := GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
-			v, err := s.Get(append(bkPrefix, id...))
-			if err != nil {
-				return nil, false, err
-			}
-			if v == nil {
-				return nil, false, fmt.Errorf("get %q.%s: not found", key, hexEncode(id))
-			}
-			data = append(data, v)
-
-			mark := s2.Convert16BToFuture(id).ToCookie(consolidatedMark)
-			idx := s2.ConvertFutureTo16B(mark)
-			if con, _ := s.Get(append(bkPrefix, idx[:]...)); con != nil {
-				score++
-			}
+		if v == nil {
+			continue
 		}
+		return v, string(key), nil
 	}
-	consolidated = score == len(ids)
 	return
 }
 
@@ -435,11 +424,10 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	return
 }
 
-func (s *Server) ScanIndex(cursor []byte, local, desc bool, count int) (nextCursor string, keys []string) {
-	_ = cursor[15]
+func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []string) {
 	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: []byte("i"),
-		UpperBound: []byte("j"),
+		LowerBound: []byte{'z'},
+		UpperBound: []byte{'z' + 1},
 	})
 	defer iter.Close()
 
@@ -447,33 +435,25 @@ func (s *Server) ScanIndex(cursor []byte, local, desc bool, count int) (nextCurs
 		count = 65536
 	}
 
-	if desc {
-		iter.SeekLT(s2.IncBytes(append([]byte("i"), cursor...)))
-	} else {
-		iter.SeekGE(append([]byte("i"), cursor...))
-	}
-	for start := future.UnixNano(); iter.Valid() && future.UnixNano()-start < 10e9; {
-		ch := iter.Key()[1:][14] >> 4
-		if !local || ch == byte(s.Channel) {
-			k := string(append(append(hexEncode(iter.Key()[1:]), '.'), iter.Value()...))
-			keys = append(keys, k)
+	kh := sha1.Sum([]byte(cursor))
 
-			if len(keys) >= count {
-				if moveIter(iter, desc) {
-					nextCursor = string(hexEncode(iter.Key()[1:]))
-				}
-				break
+	start := append(append([]byte("z"), kh[:4]...), cursor...)
+	for iter.SeekGE(start); iter.Valid(); iter.Next() {
+		keys = append(keys, string(iter.Key()[5:]))
+		if len(keys) >= count {
+			if iter.Next() {
+				nextCursor = string(iter.Key()[5:])
 			}
+			break
 		}
-		moveIter(iter, desc)
 	}
 	return
 }
 
 func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []string) {
 	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: []byte("l"),
-		UpperBound: []byte("m"),
+		LowerBound: []byte{'l'},
+		UpperBound: []byte{'l' + 1},
 	})
 	defer iter.Close()
 

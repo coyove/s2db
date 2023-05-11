@@ -459,5 +459,4 @@ func TestFuzzy1(t *testing.T) {
 	if len(m) != N {
 		t.Fatal(len(m), len(data))
 	}
-
 }

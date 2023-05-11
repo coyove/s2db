@@ -3,12 +3,15 @@ package s2
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"hash/crc32"
 	"io"
 	"math"
 	"net/http"
+	"reflect"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -163,17 +166,13 @@ func HashStr(s string) (h uint64) {
 }
 
 func HashStr128(s string) (buf [16]byte) {
-	var h0 uint64 = 14695981039346656037 // fnv64
-	h1 := h0
-	for i := 0; i < len(s); i++ {
-		h0 = h0 * 1099511628211
-		h0 = h0 ^ uint64(s[i])
-		h1 = h1 ^ uint64(s[i])
-		h1 = h1 * 1099511628211
-	}
-	binary.BigEndian.PutUint64(buf[:], h0)
-	binary.BigEndian.PutUint64(buf[8:], h1)
-	return buf
+	var b []byte
+	*(*string)(unsafe.Pointer(&b)) = s
+	(*reflect.SliceHeader)(unsafe.Pointer(&b)).Cap = len(s)
+	h := sha1.Sum(b)
+	copy(buf[:], h[:])
+	runtime.KeepAlive(s)
+	return
 }
 
 func Recover(f func()) {

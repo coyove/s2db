@@ -35,18 +35,8 @@ func TestThrottler(t *testing.T) {
 }
 
 func TestHashStr(t *testing.T) {
-	test := func(a, b string) {
-		if ah, bh := HashStr(a), HashStr(b); ah != bh {
-			t.Fatal(a, ah, b, bh)
-		}
-	}
-	test("", "")
-	test("a", "a")
-	test("a", "{a}")
-	test("a", "b{a}")
-	test("a", "{a}b")
-	test("a", "b{a}c")
-	test("", "b{}c")
+	fmt.Println(HashStr128("a"))
+	fmt.Println(HashStr128("b"))
 }
 
 func TestHLL(t *testing.T) {

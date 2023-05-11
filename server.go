@@ -87,6 +87,8 @@ func Open(dbPath string) (s *Server, err error) {
 	if err != nil {
 		return nil, err
 	}
+	// s.DB.DeleteRange([]byte("i"), []byte("j"), pebble.Sync)
+	// s.DB.DeleteRange([]byte("z"), []byte("{"), pebble.Sync)
 	for i := range s.Peers {
 		s.Peers[i] = &endpoint{server: s}
 	}
@@ -371,13 +373,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				return w.WriteError(fmt.Sprintf("invalid flag %q", K.StrRef(i)))
 			}
 		}
-		setID := future.Get(s.Channel)
-		ids, err := s.Append(setID, key, data, ttl)
+		ids, err := s.Append(key, data, ttl, wait)
 		if err != nil {
 			return w.WriteError(err.Error())
-		}
-		if wait {
-			setID.Wait()
 		}
 		hexIds := make([][]byte, len(ids))
 		for i := range hexIds {
@@ -415,21 +413,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		s.Survey.RawSetN.Incr(int64(n))
 		return w.WriteSimpleString("OK")
-	case "PSELECT":
-		// key raw_start count flag lowest => [ID 0, DATA 0, ...]
-		// '*' ID_0 ID_1 ... => [ID 0, DATA 0, ...]
-		if key == "*" {
-			ids := K.Argv[2:]
-			data, _, err := s.MGet(ids)
-			if err != nil {
-				return w.WriteError(err.Error())
-			}
-			resp := make([][]byte, 0, len(data)*2)
-			for i := range data {
-				resp = append(resp, ids[i], data[i])
-			}
-			return w.WriteBulks(resp)
-		}
+	case "PSELECT": // key raw_start count flag lowest => [ID 0, DATA 0, ...]
 		if lowest := K.BytesRef(5); len(lowest) == 16 {
 			if wm, ok := s.wmCache.Get16(s2.HashStr128(key)); ok {
 				if bytes.Compare(wm[:], lowest) <= 0 {
@@ -522,19 +506,21 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		s.setMissing(key, origData, data, success == s.OtherPeersCount())
 		return s.convertPairs(w, data, origN)
-	case "MGET", "GET":
-		var ids [][]byte
-		for i := 1; i < K.ArgCount(); i++ {
-			ids = append(ids, hexDecode(K.BytesRef(i)))
+	case "LOOKUP": // id [LOCAL]
+		var data []byte
+		var err error
+		if K.StrEqFold(2, "local") {
+			data, _, err = s.LookupID(s.translateCursor(K.BytesRef(1), false))
+		} else {
+			data, err = s.wrapGetID(s.translateCursor(K.BytesRef(1), false))
 		}
-		data, err := s.wrapMGet(ids)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if cmd == "GET" {
-			return w.WriteBulk(data[0])
+		if data == nil {
+			data = []byte{}
 		}
-		return w.WriteBulks(data)
+		return w.WriteBulk(data)
 	case "SELECTCOUNT":
 		add, del, err := s.getHLL(key)
 		if err != nil {
@@ -559,20 +545,18 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			x = 0
 		}
 		return w.WriteInt64(x)
-	case "SCAN": // cursor [COUNT count] [INDEX [LOCAL] [DESC]]
-		index, local, desc, count := false, false, false, 10
+	case "SCAN": // cursor [COUNT count] [INDEX]
+		index, count := false, 10
 		for i := 2; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "count") {
 				count = K.Int(i + 1)
 				i++
 			} else {
-				local = local || K.StrEqFold(i, "local")
-				desc = desc || K.StrEqFold(i, "desc")
 				index = index || K.StrEqFold(i, "index")
 			}
 		}
 		if index {
-			return w.WriteObjects(s.ScanIndex(s.translateCursor(K.BytesRef(1), false), local, desc, count))
+			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
 	case "WAIT":

@@ -358,7 +358,7 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 				return nil, false, fmt.Errorf("invalid mark: %x", v)
 			}
 		} else {
-			if dedupTx != nil && dedup[p.DataStrRef()] {
+			if dedupTx != nil && dedup[p.DataForDistinct()] {
 				s.deleteElement(dedupTx, bkPrefix, c.Key(), hllDel)
 				goto NEXT
 			}
@@ -367,11 +367,11 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
 					data = append(data, p)
-					dedup[p.DataStrRef()] = true
+					dedup[p.DataForDistinct()] = true
 				}
 			} else {
 				data = append(data, p)
-				dedup[p.DataStrRef()] = true
+				dedup[p.DataForDistinct()] = true
 			}
 		}
 
@@ -518,10 +518,10 @@ func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
 func distinctPairsData(p []s2.Pair) []s2.Pair {
 	m := map[string]bool{}
 	for i := 0; i < len(p); {
-		if m[p[i].DataStrRef()] {
+		if m[p[i].DataForDistinct()] {
 			p = append(p[:i], p[i+1:]...)
 		} else {
-			m[p[i].DataStrRef()] = true
+			m[p[i].DataForDistinct()] = true
 			i++
 		}
 	}

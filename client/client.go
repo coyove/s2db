@@ -198,3 +198,16 @@ func (a *Session) Get(ctx context.Context, key string) (data []byte, err error) 
 	}
 	return
 }
+
+func (a *Session) Lookup(ctx context.Context, id string) (data []byte, err error) {
+	cmd := redis.NewStringCmd(ctx, "LOOKUP", id)
+	for _, db := range a.rdb {
+		db.Process(ctx, cmd)
+		err = cmd.Err()
+		if err != nil {
+			continue
+		}
+		return cmd.Bytes()
+	}
+	return
+}

@@ -63,8 +63,12 @@ func (p Pair) Cmd() int {
 	return int(p.ID[14] & 0xf)
 }
 
-func (p Pair) DataStrRef() string {
-	return *(*string)(unsafe.Pointer(&p.Data))
+func (p Pair) DataForDistinct() string {
+	v := *(*string)(unsafe.Pointer(&p.Data))
+	if len(p.Data) >= 2 && p.Data[0] == 0 {
+		return v[2 : 2+v[1]]
+	}
+	return v
 }
 
 func (p Pair) String() string {

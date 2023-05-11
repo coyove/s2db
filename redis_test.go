@@ -297,7 +297,7 @@ func TestDistinct(t *testing.T) {
 	ctx := context.TODO()
 	for i := 0; i < 10; i++ {
 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, "AND", 100).Err())
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, "AND", 100).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, "AND", "\x00\x03100abc").Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
@@ -363,7 +363,12 @@ func TestTTL(t *testing.T) {
 		}
 	}
 
-	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
+	res, _ := client.Begin(rdb1).Lookup(context.TODO(), ids[len(ids)-1])
+	if string(res) != "20" {
+		t.Fatal(string(res))
+	}
+
+	fmt.Println(expired, rdb1.Do(ctx, "SELECTCOUNT", "a").Val())
 
 	data = doRange(rdb1, "a", "0", 100, "raw")
 	fmt.Println(data)

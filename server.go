@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
@@ -504,7 +505,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if len(data) > n {
 			data = data[:n]
 		}
-		s.setMissing(key, origData, data, success == s.OtherPeersCount())
+		s.setMissing(key, origData, data,
+			// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
+			success == s.OtherPeersCount(),
+			// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
+			*(*string)(unsafe.Pointer(&start)) == minCursor && !desc,
+			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
+			len(data) < n && desc,
+		)
 		return s.convertPairs(w, data, origN)
 	case "LOOKUP": // id [LOCAL]
 		var data []byte

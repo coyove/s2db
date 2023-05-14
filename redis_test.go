@@ -116,7 +116,7 @@ func TestAppend(t *testing.T) {
 		}
 	}
 
-	data = s2pkg.TrimPairsForConsolidation(data)
+	data = s2pkg.TrimPairsForConsolidation(data, true, true)
 	ts := string(data[0].IDHex())
 	data = doRange(rdb2, "a", ts, N)
 	fmt.Println(data, len(data))
@@ -161,7 +161,7 @@ func TestConsolidation(t *testing.T) {
 
 	data = doRange(rdb1, "a", "+inf", -20)
 
-	data = s2pkg.TrimPairsForConsolidation(data)
+	data = s2pkg.TrimPairsForConsolidation(data, true, false)
 	trimmed := pairsMap(data)
 	if len(trimmed) == 0 {
 		t.Fatal(data)
@@ -178,8 +178,8 @@ func TestConsolidation(t *testing.T) {
 	}
 
 	data = doRange(rdb2, "a", "0", 4)
-	data = doRange(rdb2, "a", "0", 4) // returns 1, 2, [[3]], 4
-	if data[0].C || data[1].C || !data[2].C || data[3].C {
+	data = doRange(rdb2, "a", "0", 4) // returns [[1]], [[2]], [[3]], 4
+	if !data[0].C || !data[1].C || !data[2].C || data[3].C {
 		t.Fatal(data)
 	}
 

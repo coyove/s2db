@@ -82,8 +82,8 @@ func (p Pair) String() string {
 	return fmt.Sprintf("<%s:%q>", id, p.Data)
 }
 
-func TrimPairsForConsolidation(p []Pair) (t []Pair) {
-	if len(p) <= 2 {
+func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {
+	if len(p) == 0 {
 		return nil
 	}
 
@@ -92,9 +92,13 @@ func TrimPairsForConsolidation(p []Pair) (t []Pair) {
 
 	for _, p := range p {
 		sec := p.UnixNano() / future.Block
-		if sec != head && sec != tail {
-			t = append(t, p)
+		if sec == head && left {
+			continue
 		}
+		if sec == tail && right {
+			continue
+		}
+		t = append(t, p)
 	}
 
 	sort.Slice(t, func(i, j int) bool { return t[i].Less(t[j]) })

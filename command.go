@@ -22,6 +22,7 @@ const (
 	consolidatedMark = 1
 	eolMark          = 2
 	maxCursor        = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
+	minCursor        = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
 func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
@@ -112,12 +113,13 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 	return kk, nil
 }
 
-func (s *Server) setMissing(key string, before, after []s2.Pair, consolidate bool) error {
+func (s *Server) setMissing(key string, before, after []s2.Pair,
+	consolidate, consolidateLeft, consolidateRight bool) error {
 	bkPrefix := GetKeyPrefix(key)
 
 	con := func(tx *pebble.Batch) {
 		m := map[future.Future]bool{}
-		for _, p := range s2.TrimPairsForConsolidation(after) {
+		for _, p := range s2.TrimPairsForConsolidation(after, !consolidateLeft, !consolidateRight) {
 			if p.C {
 				continue
 			}

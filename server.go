@@ -52,11 +52,11 @@ type Server struct {
 	wmCache      *s2.LRUShard[[16]byte]
 	ttlOnce      [lockShards]sync.Map
 	delOnce      [lockShards]sync.Map
+	setLocks     [lockShards]sync.Mutex
 	errThrot     s2.ErrorThrottler
 
 	test struct {
 		Fail         bool
-		MustAllPeers bool
 		NoSetMissing bool
 		IRangeCache  bool
 	}
@@ -391,7 +391,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 					return redis.NewStringCmd(context.TODO(), args...)
 				})
-				success := s.ProcessPeerResponse(recv, out, func(redis.Cmder) bool { return true })
+				success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
 				hexIds = append([][]byte{
 					strconv.AppendInt(nil, int64(recv)+1, 10),
 					strconv.AppendInt(nil, int64(success)+1, 10),
@@ -442,13 +442,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		var localOnly, desc, distinct, raw bool
+	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] [ALL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		var localOnly, desc, distinct, raw, all bool
 		for i := 4; i < K.ArgCount(); i++ {
 			localOnly = localOnly || K.StrEqFold(i, "local")
 			desc = desc || K.StrEqFold(i, "desc")
 			distinct = distinct || K.StrEqFold(i, "distinct")
 			raw = raw || K.StrEqFold(i, "raw")
+			all = all || K.StrEqFold(i, "all")
 		}
 
 		flag := buildFlag([]bool{desc, distinct, raw}, []int{RangeDesc, RangeDistinct, RangeAll})
@@ -490,17 +491,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest)
 		})
 		if recv == 0 {
+			if all {
+				return w.WriteError("no peer respond")
+			}
 			return s.convertPairs(w, data, origN)
 		}
 
 		origData := append([]s2.Pair{}, data...)
-		success := s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+		success := s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
 			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
 				_ = v[i][15]
 				data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
 			}
 			return true
 		})
+		if all && success != s.OtherPeersCount() {
+			return w.WriteError(fmt.Sprintf("not all peers respond: %d/%d", success, s.OtherPeersCount()))
+		}
 
 		data = sortPairs(data, !desc)
 		if distinct {
@@ -524,7 +531,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if K.StrEqFold(2, "local") {
 			data, _, err = s.LookupID(s.translateCursor(K.BytesRef(1), false))
 		} else {
-			data, err = s.wrapGetID(s.translateCursor(K.BytesRef(1), false))
+			data, err = s.wrapLookup(s.translateCursor(K.BytesRef(1), false))
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -545,7 +552,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
 				return redis.NewStringSliceCmd(context.TODO(), cmd, key, "HLL")
 			})
-			s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+			s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
 				v := cmd.(*redis.StringSliceCmd).Val()
 				add.Merge(s2.HyperLogLog(v[0]))
 				del.Merge(s2.HyperLogLog(v[1]))
@@ -571,6 +578,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
+	case "GETFUTURE":
+		idx := s2.ConvertFutureTo16B(future.Get(s.Channel))
+		return w.WriteBulk(idx[:])
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {

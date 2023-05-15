@@ -177,9 +177,15 @@ func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandI
 	return recv, out
 }
 
-func (s *Server) ProcessPeerResponse(recv int, out <-chan *commandIn, f func(redis.Cmder) bool) (success int) {
+func (s *Server) ProcessPeerResponse(longWait bool, recv int, out <-chan *commandIn, f func(redis.Cmder) bool) (success int) {
 	if recv == 0 {
 		return
+	}
+
+	w := time.Duration(s.Config.TimeoutPeer) * time.Millisecond
+	if longWait {
+		// Some commands (RAWSET) may require longer waits.
+		w = time.Duration(s.Config.TimeoutPeerLong) * time.Millisecond
 	}
 MORE:
 	select {
@@ -192,9 +198,6 @@ MORE:
 			if !s.errThrot.Throttle(uri, err) {
 				logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), uri, err)
 			}
-			if s.test.MustAllPeers {
-				panic("not all peers respond")
-			}
 		} else {
 			if f(res.Cmder) {
 				success++
@@ -203,7 +206,7 @@ MORE:
 		if recv--; recv > 0 {
 			goto MORE
 		}
-	case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
+	case <-time.After(w):
 		_, fn, ln, _ := runtime.Caller(1)
 		logrus.Errorf("%s:%d failed to request peer, timed out, remains: %v", filepath.Base(fn), ln, recv)
 	}

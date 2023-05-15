@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"sort"
@@ -115,7 +114,7 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 
 func (s *Server) setMissing(key string, before, after []s2.Pair,
 	consolidate, consolidateLeft, consolidateRight bool) error {
-	bkPrefix := GetKeyPrefix(key)
+	bkPrefix := kkp(key)
 
 	con := func(tx *pebble.Batch) {
 		m := map[future.Future]bool{}
@@ -180,7 +179,7 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 }
 
 func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble.Batch)) (int, error) {
-	bkPrefix := GetKeyPrefix(key)
+	bkPrefix := kkp(key)
 
 	add, del, err := s.getHLL(key)
 	if err != nil {
@@ -251,12 +250,12 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 
 func (s *Server) LookupID(id []byte) (data []byte, key string, err error) {
 	_ = id[15]
-	iter := NewPrefixIter(s.DB, append([]byte{'z'}, id[8:12]...))
+	iter := newPrefixIter(s.DB, append([]byte{'z'}, id[8:12]...))
 	defer iter.Close()
 
 	for iter.First(); iter.Valid(); iter.Next() {
 		key := iter.Key()[5:]
-		bkPrefix := GetKeyPrefix(*(*string)(unsafe.Pointer(&key)))
+		bkPrefix := kkp(*(*string)(unsafe.Pointer(&key)))
 
 		v, err := s.Get(append(bkPrefix, id...))
 		if err != nil {
@@ -277,9 +276,9 @@ const (
 )
 
 func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pair, partial bool, err error) {
-	bkPrefix := GetKeyPrefix(key)
+	bkPrefix := kkp(key)
 
-	c := NewPrefixIter(s.DB, bkPrefix)
+	c := newPrefixIter(s.DB, bkPrefix)
 	defer c.Close()
 
 	// for c.First(); c.Valid(); c.Next() {
@@ -463,7 +462,7 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 		count = 65536
 	}
 
-	cPrefix := GetKeyPrefix(cursor)
+	cPrefix := kkp(cursor)
 	var tmp []byte
 	for iter.SeekGE(cPrefix); iter.Valid(); {
 		k := iter.Key()
@@ -484,64 +483,96 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-func hexEncode(k []byte) []byte {
-	_ = k[15]
-	k0 := make([]byte, 32)
-	hex.Encode(k0, k)
-	return k0
-}
-
-func hexDecode(k []byte) []byte {
-	_ = k[31]
-	k0 := make([]byte, 16)
-	if len(k) == 33 && k[16] == '_' {
-		hex.Decode(k0[:8], k[:16])
-		hex.Decode(k0[8:], k[17:])
-	} else {
-		hex.Decode(k0, k)
-	}
-	return k0
-}
-
-func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
-	sort.Slice(p, func(i, j int) bool {
-		return p[i].Less(p[j]) == asc
-	})
-
-	for i := len(p) - 1; i > 0; i-- {
-		if p[i].Equal(p[i-1]) {
-			p[i-1].C = p[i-1].C || p[i].C // inherit the consolidation mark if any
-			p = append(p[:i], p[i+1:]...)
-		}
-	}
-	return p
-}
-
-func distinctPairsData(p []s2.Pair) []s2.Pair {
-	m := map[string]bool{}
-	for i := 0; i < len(p); {
-		if m[p[i].DataForDistinct()] {
-			p = append(p[:i], p[i+1:]...)
-		} else {
-			m[p[i].DataForDistinct()] = true
-			i++
-		}
-	}
-	return p
-}
-
-func buildFlag(c []bool, f []int) (flag int) {
-	for i, c := range c {
-		if c {
-			flag |= f[i]
-		}
-	}
-	return flag
-}
-
-func moveIter(iter *pebble.Iterator, desc bool) bool {
-	if desc {
-		return iter.Prev()
-	}
-	return iter.Next()
-}
+// func (s *Server) SAddRemMerge(key string, add, rem []s2.Pair) (future.Future, error) {
+// 	if len(add)+len(rem) == 0 {
+// 		return 0, nil
+// 	}
+//
+// 	m := &s.setLocks[s2.HashStr(key)%lockShards]
+// 	m.Lock()
+// 	defer m.Unlock()
+//
+// 	bkLive, bkTomb, bkWatermark := skp(key)
+// 	tx := s.DB.NewBatch()
+// 	defer tx.Close()
+//
+// 	var maxID int64
+// 	for _, m := range add {
+// 		_ = m.ID[7]
+// 		id := int64(binary.BigEndian.Uint64(m.ID))
+// 		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
+// 		tomb, err := s.GetInt64(kTomb)
+// 		if err != nil {
+// 			return 0, err
+// 		}
+// 		if id > tomb {
+// 			if err := tx.Set(kLive, m.ID, pebble.Sync); err != nil {
+// 				return 0, err
+// 			}
+// 			if err := tx.Delete(kTomb, pebble.Sync); err != nil {
+// 				return 0, err
+// 			}
+// 		}
+// 		if id > maxID {
+// 			maxID = id
+// 		}
+// 	}
+//
+// 	for _, m := range rem {
+// 		_ = m.ID[7]
+// 		id := int64(binary.BigEndian.Uint64(m.ID))
+// 		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
+// 		live, err := s.GetInt64(kLive)
+// 		if err != nil {
+// 			return 0, err
+// 		}
+// 		if id > live {
+// 			if err := tx.Set(kTomb, m.ID, pebble.Sync); err != nil {
+// 				return 0, err
+// 			}
+// 			if err := tx.Delete(kLive, pebble.Sync); err != nil {
+// 				return 0, err
+// 			}
+// 		}
+// 		if id > maxID {
+// 			id = maxID
+// 		}
+// 	}
+// 	if err := tx.Set(bkWatermark, s2.ConvertFutureTo8B(future.Future(maxID)), pebble.Sync); err != nil {
+// 		return 0, err
+// 	}
+// 	return future.Future(maxID), tx.Commit(pebble.Sync)
+// }
+//
+// func (s *Server) SMembers(key string) (add, rem, merged [][]byte) {
+// 	bkLive, bkTomb, _ := skp(key)
+// 	iter := s.DB.NewIter(&pebble.IterOptions{
+// 		LowerBound: bkLive,
+// 		UpperBound: s2.IncBytes(bkLive),
+// 	})
+// 	defer iter.Close()
+//
+// 	for iter.First(); iter.Valid(); iter.Next() {
+// 		k := bytes.TrimPrefix(iter.Key(), bkLive)
+// 		kk := s2.Bytes(k)
+// 		merged = append(merged, kk)
+// 		add = append(add, kk)
+// 	}
+//
+// 	sort.Slice(merged, func(i, j int) bool {
+// 		return bytes.Compare(merged[i], merged[j]) < 0
+// 	})
+//
+// 	iter.SetBounds(bkTomb, s2.IncBytes(bkTomb))
+// 	for iter.First(); iter.Valid(); iter.Next() {
+// 		k := bytes.TrimPrefix(iter.Key(), bkTomb)
+// 		idx := sort.Search(len(merged), func(i int) bool {
+// 			return bytes.Compare(merged[i], k) >= 0
+// 		})
+// 		if idx < len(merged) && bytes.Equal(merged[idx], k) {
+// 			merged = append(merged[:idx], merged[idx+1:]...)
+// 		}
+// 		rem = append(rem, s2.Bytes(k))
+// 	}
+// 	return
+// }

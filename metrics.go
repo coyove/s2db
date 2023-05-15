@@ -158,7 +158,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 
 func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
-	c := NewPrefixIter(s.DB, key)
+	c := newPrefixIter(s.DB, key)
 	defer c.Close()
 	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
 		k := c.Key()[8:]
@@ -176,7 +176,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 	res := map[string]s2.GroupedMetrics{}
 	getter := func(f string) {
 		key := []byte("metrics_" + f + "\x00")
-		c := NewPrefixIter(s.DB, key)
+		c := newPrefixIter(s.DB, key)
 		defer c.Close()
 
 		for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {

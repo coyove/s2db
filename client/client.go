@@ -126,12 +126,12 @@ func (a *Session) Close() {
 }
 
 const (
-	DESC     = 1
-	ASC      = 2
-	DISTINCT = 4
-	LOCAL    = 8
-	ONCE     = 16
-	RAW      = 32
+	DESC     = 1  // select in desc order
+	ASC      = 2  // select in asc order
+	DISTINCT = 4  // distinct data
+	LOCAL    = 8  // select local peer data
+	RAW      = 16 // select raw Pairs
+	ALL      = 32 // select all peers data
 )
 
 func (a *Session) Select(ctx context.Context, key string, cursor string, n int, flag int) (p []s2.Pair, err error) {
@@ -148,15 +148,15 @@ func (a *Session) Select(ctx context.Context, key string, cursor string, n int, 
 	if flag&RAW > 0 {
 		args = append(args, "RAW")
 	}
+	if flag&ALL > 0 {
+		args = append(args, "ALL")
+	}
 	cmd := redis.NewStringSliceCmd(ctx, args...)
 
 	for _, db := range a.rdb {
 		db.Process(ctx, cmd)
 		err = cmd.Err()
 		if err != nil {
-			if flag&ONCE > 0 {
-				return nil, err
-			}
 			continue
 		}
 

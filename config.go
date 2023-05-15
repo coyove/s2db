@@ -36,6 +36,7 @@ type ServerConfig struct {
 	WMCacheSize     int
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
+	TimeoutPeerLong int // ms
 	TimeoutRange    int // ms
 	DistinctLimit   int
 	BatchLimit      int
@@ -104,6 +105,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.Config.WMCacheSize, 1024*1024)
 	ifZero(&s.Config.SlowLimit, 500)
 	ifZero(&s.Config.TimeoutPeer, 50)
+	ifZero(&s.Config.TimeoutPeerLong, 1000)
 	ifZero(&s.Config.TimeoutRange, 500)
 	ifZero(&s.Config.DistinctLimit, 8192)
 	ifZero(&s.Config.BatchLimit, 100)

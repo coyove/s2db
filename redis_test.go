@@ -35,14 +35,19 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 	return m
 }
 
-func doRange(r *redis.Client, key string, start string, n int, dedup ...any) []s2pkg.Pair {
-	flag := client.ONCE
+func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2pkg.Pair {
+	flag := 0
 	if n < 0 {
 		n = -n
 		flag = flag | client.DESC
 	}
-	if len(dedup) > 0 {
-		flag = flag | client.DISTINCT
+	for _, el := range args {
+		switch el {
+		case "distinct":
+			flag = flag | client.DISTINCT
+		case "all":
+			flag = flag | client.ALL
+		}
 	}
 
 	a := client.Begin(r)
@@ -186,14 +191,12 @@ func TestConsolidation(t *testing.T) {
 	id3 := string(data[2].IDHex())
 
 	s1.test.Fail = true
-	s2.test.MustAllPeers = true
-	if x := doRange(rdb2, "a", id3, 1); !x[0].Equal(data[2]) {
+	if x := doRange(rdb2, "a", id3, 1, "all"); !x[0].Equal(data[2]) {
 		t.Fatal(x)
 	}
-	if x := catchPanic(func() { doRange(rdb2, "a", id3, 2) }); x == nil {
+	if x := catchPanic(func() { doRange(rdb2, "a", id3, 2, "all") }); x == nil {
 		t.Fatal("should fail")
 	}
-	s2.test.MustAllPeers = false
 	s1.test.Fail = false
 
 	doRange(rdb2, "a", id3, 5) // returns [[3]], 4, 10, 11, 12
@@ -240,14 +243,13 @@ func TestConsolidation2(t *testing.T) {
 	id12 := hex.EncodeToString(data[3].ID)
 
 	s2.test.Fail = true
-	s1.test.MustAllPeers = true
-	data = doRange(rdb1, "a", id12, -3) // returns 12, 11, 10
+	data = doRange(rdb1, "a", id12, -3, "all") // returns 12, 11, 10
 
 	if len(data) != 3 || string(data[1].Data) != "11" {
 		t.Fatal(data)
 	}
 
-	if err := catchPanic(func() { doRange(rdb1, "a", id12, -4) }); err == nil {
+	if err := catchPanic(func() { doRange(rdb1, "a", id12, -4, "all") }); err == nil {
 		t.FailNow()
 	} else {
 		fmt.Println(err)
@@ -273,17 +275,16 @@ func TestWatermark(t *testing.T) {
 		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i).Err())
 	}
 
-	doRange(rdb2, "b", "+", -4)
+	doRange(rdb2, "b", "recent", -4)
 
 	s1.test.IRangeCache = true
-	s2.test.MustAllPeers = true
 
-	data := doRange(rdb2, "b", "+", -4)
+	data := doRange(rdb2, "b", "recent", -4, "all")
 	if string(data[3].Data) != "1" {
 		t.Fatal(data)
 	}
 
-	data = doRange(rdb2, "a", "+", -1)
+	data = doRange(rdb2, "a", "recent", -1, "all")
 	if string(data[0].Data) != "9" {
 		t.Fatal(data)
 	}

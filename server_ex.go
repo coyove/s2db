@@ -130,7 +130,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	if strings.HasPrefix(section, ":") {
 		key := section[1:]
 		add, del, _ := s.getHLL(key)
-		startKey := GetKeyPrefix(key)
+		startKey := kkp(key)
 		disk, _ := s.DB.EstimateDiskUsage(startKey, s2.IncBytes(startKey))
 		data = append(data, "# key "+key)
 		data = append(data, fmt.Sprintf("size:%d", disk))
@@ -311,7 +311,7 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-func (s *Server) wrapGetID(id []byte) (data []byte, err error) {
+func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	data, _, err = s.LookupID(id)
 	if err != nil {
 		return nil, err
@@ -327,7 +327,7 @@ func (s *Server) wrapGetID(id []byte) (data []byte, err error) {
 		return data, nil
 	}
 	var m string
-	s.ProcessPeerResponse(recv, out, func(cmd redis.Cmder) bool {
+	s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
 		m0 := cmd.(*redis.StringCmd).Val()
 		if m0 != "" {
 			m = m0
@@ -353,40 +353,31 @@ func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) 
 }
 
 func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
-	switch s := *(*string)(unsafe.Pointer(&buf)); s {
-	case "+", "+inf", "+INF", "+Inf", "recent", "RECENT":
+	switch x := *(*string)(unsafe.Pointer(&buf)); x {
+	case "+", "+inf", "+INF", "+Inf":
 		start = []byte(maxCursor)
+	case "recent", "RECENT":
+		tmp := s2.ConvertFutureTo16B(future.Get(s.Channel))
+		start = tmp[:]
 	case "0", "":
 		start = make([]byte, 16)
 	default:
-		if len(s) == 32 || len(s) == 33 {
+		if len(x) == 32 || len(x) == 33 {
 			start = hexDecode(buf)
-		} else if len(s) == 16 {
+		} else if len(x) == 16 {
 			start = buf
 		} else if desc {
 			start = make([]byte, 16)
-			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(s)*1e9+1e9-1))
+			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(x)*1e9+1e9-1))
 		} else {
 			start = make([]byte, 16)
-			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(s)*1e9))
+			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(x)*1e9))
 		}
 	}
 	if *(*string)(unsafe.Pointer(&start)) > maxCursor {
 		start = []byte(maxCursor)
 	}
 	return
-}
-
-func GetKeyPrefix(key string) (prefix []byte) {
-	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
-	return
-}
-
-func NewPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
-	return db.NewIter(&pebble.IterOptions{
-		LowerBound: key,
-		UpperBound: s2.IncBytes(key),
-	})
 }
 
 func (s *Server) Get(key []byte) ([]byte, error) {

@@ -287,6 +287,16 @@ func TestWatermark(t *testing.T) {
 	if string(data[0].Data) != "9" {
 		t.Fatal(data)
 	}
+
+	id1 := rdb2.Do(ctx, "APPEND", "c", 0, "AND", 1, "WAIT").Val().([]any)[1].(string)
+
+	for i := 2; i <= 5; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "c", i, "WAIT").Err())
+	}
+	data = doRange(rdb1, "c", id1, 3) // returns 1, 2, 3
+	if len(data) != 3 || string(data[2].Data) != "3" {
+		t.Fatal(data)
+	}
 }
 
 func TestDistinct(t *testing.T) {

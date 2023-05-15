@@ -415,18 +415,22 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		s.Survey.RawSetN.Incr(int64(n))
 		return w.WriteSimpleString("OK")
 	case "PSELECT": // key raw_start count flag lowest => [ID 0, DATA 0, ...]
+		start, flag := K.BytesRef(2), K.Int(4)
+		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
 		if lowest := K.BytesRef(5); len(lowest) == 16 {
-			if wm, ok := s.wmCache.Get16(s2.HashStr128(key)); ok {
-				if bytes.Compare(wm[:], lowest) <= 0 {
-					s.Survey.SelectCacheHits.Incr(1)
-					return w.WriteBulks([][]byte{}) // no nil
-				}
+			if wmok && bytes.Compare(wm[:], lowest) <= 0 {
+				s.Survey.SelectCacheHits.Incr(1)
+				return w.WriteBulks([][]byte{}) // no nil
 			}
 			if s.test.IRangeCache {
 				panic("test: PSELECT should use watermark cache")
 			}
 		}
-		data, partial, err := s.Range(key, K.BytesRef(2), K.Int(3), K.Int(4))
+		if flag&RangeDesc == 0 && wmok && bytes.Compare(wm[:], start) < 0 {
+			s.Survey.SelectCacheHits.Incr(1)
+			return w.WriteBulks([][]byte{}) // no nil
+		}
+		data, partial, err := s.Range(key, start, K.Int(3), flag)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

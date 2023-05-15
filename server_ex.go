@@ -356,7 +356,7 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 	switch x := *(*string)(unsafe.Pointer(&buf)); x {
 	case "+", "+inf", "+INF", "+Inf":
 		start = []byte(maxCursor)
-	case "recent", "RECENT":
+	case "recent", "RECENT", "now", "NOW":
 		tmp := s2.ConvertFutureTo16B(future.Get(s.Channel))
 		start = tmp[:]
 	case "0", "":

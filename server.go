@@ -578,9 +578,71 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
-	case "GETFUTURE":
-		idx := s2.ConvertFutureTo16B(future.Get(s.Channel))
-		return w.WriteBulk(idx[:])
+	case "SADDREM": // key
+		var add, rem []s2.Pair
+		var wait bool
+		for i := 2; i < K.ArgCount(); i++ {
+			x := uint64(future.Get(s.Channel))
+			if K.StrEqFold(i, "add") {
+				add = append(add, s2.Pair{ID: s2.Uint64ToBytes(x), Data: K.BytesRef(i + 1)})
+				i++
+			} else if K.StrEqFold(i, "rem") {
+				rem = append(rem, s2.Pair{ID: s2.Uint64ToBytes(x), Data: K.BytesRef(i + 1)})
+				i++
+			} else if K.StrEqFold(i, "wait") {
+				wait = true
+			}
+		}
+		id, err := s.SAddRemMerge(key, add, rem)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if wait {
+			id.Wait()
+		}
+		return w.WriteInt64(int64(id))
+	case "SMEMBERS": // key watermark
+		raw := len(K.BytesRef(2)) > 0
+		if raw {
+			K.Int64(2)
+		}
+		add, rem, members, watermark, err := s.SMembers(key)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if raw {
+			res := [][]byte{strconv.AppendInt(nil, 2*int64(len(add)), 10)}
+			for _, a := range append(add, rem...) {
+				res = append(res, a.ID, a.Data)
+			}
+			return w.WriteBulks(res)
+		}
+		if len(add)+len(rem)+len(members) > 0 || !s.HasOtherPeers() {
+			return w.WriteBulks(members)
+		}
+		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+			return redis.NewStringSliceCmd(context.TODO(), "SMEMBERS", key, watermark)
+		})
+		if recv == 0 {
+			return w.WriteBulks(members)
+		}
+
+		var add2, rem2 []s2.Pair
+		s.ProcessPeerResponse(false, recv, out, func(c redis.Cmder) bool {
+			v := c.(*redis.StringSliceCmd).Val()
+			n, _ := strconv.ParseInt(v[0], 10, 64)
+			for i, add := 0, v[1:1+n]; i < len(add); i += 2 {
+				add2 = append(add2, s2.Pair{ID: []byte(add[i]), Data: []byte(add[i+1])})
+			}
+			for i, rem := 0, v[1+n:]; i < len(rem); i += 2 {
+				rem2 = append(rem2, s2.Pair{ID: []byte(rem[i]), Data: []byte(rem[i+1])})
+			}
+			return true
+		})
+		if _, err = s.SAddRemMerge(key, add2, rem2); err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulks(setsub(append(add, add2...), append(rem, rem2...)))
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {

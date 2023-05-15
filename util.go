@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"sort"
 
@@ -87,4 +88,25 @@ func newPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 		LowerBound: key,
 		UpperBound: s2.IncBytes(key),
 	})
+}
+
+func setsub(add, rem []s2.Pair) (res [][]byte) {
+	sort.Slice(rem, func(i, j int) bool {
+		return bytes.Compare(rem[i].ID, rem[j].ID) < 0
+	})
+
+	dedup := map[string]bool{}
+	for _, a := range add {
+		idx := sort.Search(len(rem), func(i int) bool {
+			return bytes.Compare(rem[i].ID, a.ID) >= 0
+		})
+
+		if dedup[a.DataForDistinct()] {
+		} else if idx < len(rem) && bytes.Equal(rem[idx].ID, a.ID) {
+		} else {
+			res = append(res, a.Data)
+			dedup[a.DataForDistinct()] = true
+		}
+	}
+	return
 }

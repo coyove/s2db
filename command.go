@@ -483,96 +483,96 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-// func (s *Server) SAddRemMerge(key string, add, rem []s2.Pair) (future.Future, error) {
-// 	if len(add)+len(rem) == 0 {
-// 		return 0, nil
-// 	}
-//
-// 	m := &s.setLocks[s2.HashStr(key)%lockShards]
-// 	m.Lock()
-// 	defer m.Unlock()
-//
-// 	bkLive, bkTomb, bkWatermark := skp(key)
-// 	tx := s.DB.NewBatch()
-// 	defer tx.Close()
-//
-// 	var maxID int64
-// 	for _, m := range add {
-// 		_ = m.ID[7]
-// 		id := int64(binary.BigEndian.Uint64(m.ID))
-// 		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
-// 		tomb, err := s.GetInt64(kTomb)
-// 		if err != nil {
-// 			return 0, err
-// 		}
-// 		if id > tomb {
-// 			if err := tx.Set(kLive, m.ID, pebble.Sync); err != nil {
-// 				return 0, err
-// 			}
-// 			if err := tx.Delete(kTomb, pebble.Sync); err != nil {
-// 				return 0, err
-// 			}
-// 		}
-// 		if id > maxID {
-// 			maxID = id
-// 		}
-// 	}
-//
-// 	for _, m := range rem {
-// 		_ = m.ID[7]
-// 		id := int64(binary.BigEndian.Uint64(m.ID))
-// 		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
-// 		live, err := s.GetInt64(kLive)
-// 		if err != nil {
-// 			return 0, err
-// 		}
-// 		if id > live {
-// 			if err := tx.Set(kTomb, m.ID, pebble.Sync); err != nil {
-// 				return 0, err
-// 			}
-// 			if err := tx.Delete(kLive, pebble.Sync); err != nil {
-// 				return 0, err
-// 			}
-// 		}
-// 		if id > maxID {
-// 			id = maxID
-// 		}
-// 	}
-// 	if err := tx.Set(bkWatermark, s2.ConvertFutureTo8B(future.Future(maxID)), pebble.Sync); err != nil {
-// 		return 0, err
-// 	}
-// 	return future.Future(maxID), tx.Commit(pebble.Sync)
-// }
-//
-// func (s *Server) SMembers(key string) (add, rem, merged [][]byte) {
-// 	bkLive, bkTomb, _ := skp(key)
-// 	iter := s.DB.NewIter(&pebble.IterOptions{
-// 		LowerBound: bkLive,
-// 		UpperBound: s2.IncBytes(bkLive),
-// 	})
-// 	defer iter.Close()
-//
-// 	for iter.First(); iter.Valid(); iter.Next() {
-// 		k := bytes.TrimPrefix(iter.Key(), bkLive)
-// 		kk := s2.Bytes(k)
-// 		merged = append(merged, kk)
-// 		add = append(add, kk)
-// 	}
-//
-// 	sort.Slice(merged, func(i, j int) bool {
-// 		return bytes.Compare(merged[i], merged[j]) < 0
-// 	})
-//
-// 	iter.SetBounds(bkTomb, s2.IncBytes(bkTomb))
-// 	for iter.First(); iter.Valid(); iter.Next() {
-// 		k := bytes.TrimPrefix(iter.Key(), bkTomb)
-// 		idx := sort.Search(len(merged), func(i int) bool {
-// 			return bytes.Compare(merged[i], k) >= 0
-// 		})
-// 		if idx < len(merged) && bytes.Equal(merged[idx], k) {
-// 			merged = append(merged[:idx], merged[idx+1:]...)
-// 		}
-// 		rem = append(rem, s2.Bytes(k))
-// 	}
-// 	return
-// }
+func (s *Server) SAddRemMerge(key string, add, rem []s2.Pair) (future.Future, error) {
+	if len(add)+len(rem) == 0 {
+		return 0, nil
+	}
+
+	m := &s.setLocks[s2.HashStr(key)%lockShards]
+	m.Lock()
+	defer m.Unlock()
+
+	bkLive, bkTomb, bkWatermark := skp(key)
+	tx := s.DB.NewBatch()
+	defer tx.Close()
+
+	var maxID int64
+	for _, m := range add {
+		id := int64(s2.BytesToUint64(m.ID))
+		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
+		tomb, err := s.GetInt64(kTomb)
+		if err != nil {
+			return 0, err
+		}
+		if id > tomb {
+			if err := tx.Set(kLive, m.ID, pebble.Sync); err != nil {
+				return 0, err
+			}
+			if err := tx.Delete(kTomb, pebble.Sync); err != nil {
+				return 0, err
+			}
+		}
+		if id > maxID {
+			maxID = id
+		}
+	}
+
+	for _, m := range rem {
+		id := int64(s2.BytesToUint64(m.ID))
+		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
+		live, err := s.GetInt64(kLive)
+		if err != nil {
+			return 0, err
+		}
+		if id > live {
+			if err := tx.Set(kTomb, m.ID, pebble.Sync); err != nil {
+				return 0, err
+			}
+			if err := tx.Delete(kLive, pebble.Sync); err != nil {
+				return 0, err
+			}
+		}
+		if id > maxID {
+			id = maxID
+		}
+	}
+
+	if err := tx.Set(bkWatermark, s2.Uint64ToBytes(uint64(maxID)), pebble.Sync); err != nil {
+		return 0, err
+	}
+	return future.Future(maxID), tx.Commit(pebble.Sync)
+}
+
+func (s *Server) SMembers(key string) (add, rem []s2.Pair, merged [][]byte, watermark int64, err error) {
+	bkLive, bkTomb, bkWatermark := skp(key)
+	iter := s.DB.NewIter(&pebble.IterOptions{
+		LowerBound: bkLive,
+		UpperBound: s2.IncBytes(bkLive),
+	})
+	defer iter.Close()
+
+	now := uint64(future.Get(s.Channel))
+	merged = make([][]byte, 0)
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		if s2.BytesToUint64(iter.Value()) > now {
+			continue
+		}
+		k := bytes.TrimPrefix(iter.Key(), bkLive)
+		add = append(add, s2.Pair{ID: s2.Bytes(k), Data: s2.Bytes(iter.Value())})
+	}
+
+	iter.SetBounds(bkTomb, s2.IncBytes(bkTomb))
+
+	for iter.First(); iter.Valid(); iter.Next() {
+		if s2.BytesToUint64(iter.Value()) > now {
+			continue
+		}
+		k := bytes.TrimPrefix(iter.Key(), bkTomb)
+		rem = append(rem, s2.Pair{ID: s2.Bytes(k), Data: s2.Bytes(iter.Value())})
+	}
+
+	watermark, err = s.GetInt64(bkWatermark)
+	merged = setsub(add, rem)
+	return
+}

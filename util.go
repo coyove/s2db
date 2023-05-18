@@ -1,9 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"encoding/hex"
 	"sort"
+	"unsafe"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2"
@@ -76,9 +76,8 @@ func kkp(key string) (prefix []byte) {
 	return
 }
 
-func skp(key string) (live, tomb, watermark []byte) {
-	live = append(append(append(make([]byte, 64)[:0], "s"...), key...), 0, 'l', 0)
-	tomb = append(append(append(make([]byte, 64)[:0], "s"...), key...), 0, 't', 0)
+func skp(key string) (live, watermark []byte) {
+	live = append(append(append(make([]byte, 64)[:0], "s"...), key...), 0)
 	watermark = append(append(make([]byte, 64)[:0], "s"...), key...)
 	return
 }
@@ -90,23 +89,14 @@ func newPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 	})
 }
 
-func setsub(add, rem []s2.Pair) (res [][]byte) {
-	sort.Slice(rem, func(i, j int) bool {
-		return bytes.Compare(rem[i].ID, rem[j].ID) < 0
-	})
-
-	dedup := map[string]bool{}
-	for _, a := range add {
-		idx := sort.Search(len(rem), func(i int) bool {
-			return bytes.Compare(rem[i].ID, a.ID) >= 0
-		})
-
-		if dedup[a.DataForDistinct()] {
-		} else if idx < len(rem) && bytes.Equal(rem[idx].ID, a.ID) {
-		} else {
-			res = append(res, a.Data)
-			dedup[a.DataForDistinct()] = true
-		}
+func ssbb(in []string) (out [][]byte) {
+	x := make([]struct {
+		a string
+		c int
+	}, len(in))
+	for i := range x {
+		x[i].a = in[i]
+		x[i].c = len(in[i])
 	}
-	return
+	return *(*[][]byte)(unsafe.Pointer(&x))
 }

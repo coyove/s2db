@@ -71,6 +71,11 @@ func (c *Command) Int(index int) int {
 	return int(c.Int64(index))
 }
 
+func (c *Command) MaybeInt64(index int) int64 {
+	i, _ := strconv.ParseInt(c.StrRef(index), 10, 64)
+	return i
+}
+
 func (c *Command) Int64(index int) int64 {
 	i, err := strconv.ParseInt(c.StrRef(index), 10, 64)
 	c.panicNumber(err, index)

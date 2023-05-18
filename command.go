@@ -483,68 +483,34 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-func (s *Server) SAddRemMerge(key string, add, rem []s2.Pair) (future.Future, error) {
-	if len(add)+len(rem) == 0 {
+func (s *Server) HSet(key string, kvs ...[]byte) (future.Future, error) {
+	if len(kvs) == 0 {
 		return 0, nil
 	}
 
-	m := &s.setLocks[s2.HashStr(key)%lockShards]
-	m.Lock()
-	defer m.Unlock()
-
-	bkLive, bkTomb, bkWatermark := skp(key)
+	bkLive, bkWatermark := skp(key)
 	tx := s.DB.NewBatch()
 	defer tx.Close()
 
-	var maxID int64
-	for _, m := range add {
-		id := int64(s2.BytesToUint64(m.ID))
-		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
-		tomb, err := s.GetInt64(kTomb)
-		if err != nil {
+	var maxID future.Future
+	for i := 0; i < len(kvs); i += 3 {
+		maxID = future.Future(binary.BigEndian.Uint64(kvs[i]))
+		v := make([]byte, 9+len(kvs[i+2]))
+		v[0] = 0x01
+		copy(v[1:], kvs[i])
+		copy(v[9:], kvs[i+2])
+		if err := tx.Merge(append(bkLive, kvs[i+1]...), v, pebble.Sync); err != nil {
 			return 0, err
 		}
-		if id > tomb {
-			if err := tx.Set(kLive, m.ID, pebble.Sync); err != nil {
-				return 0, err
-			}
-			if err := tx.Delete(kTomb, pebble.Sync); err != nil {
-				return 0, err
-			}
-		}
-		if id > maxID {
-			maxID = id
-		}
 	}
-
-	for _, m := range rem {
-		id := int64(s2.BytesToUint64(m.ID))
-		kLive, kTomb := append(bkLive, m.Data...), append(bkTomb, m.Data...)
-		live, err := s.GetInt64(kLive)
-		if err != nil {
-			return 0, err
-		}
-		if id > live {
-			if err := tx.Set(kTomb, m.ID, pebble.Sync); err != nil {
-				return 0, err
-			}
-			if err := tx.Delete(kLive, pebble.Sync); err != nil {
-				return 0, err
-			}
-		}
-		if id > maxID {
-			id = maxID
-		}
-	}
-
 	if err := tx.Set(bkWatermark, s2.Uint64ToBytes(uint64(maxID)), pebble.Sync); err != nil {
 		return 0, err
 	}
 	return future.Future(maxID), tx.Commit(pebble.Sync)
 }
 
-func (s *Server) SMembers(key string) (add, rem []s2.Pair, merged [][]byte, watermark int64, err error) {
-	bkLive, bkTomb, bkWatermark := skp(key)
+func (s *Server) HIter(key string, after int64, f func(k, v []byte, ts int64) bool) (watermark int64, err error) {
+	bkLive, bkWatermark := skp(key)
 	iter := s.DB.NewIter(&pebble.IterOptions{
 		LowerBound: bkLive,
 		UpperBound: s2.IncBytes(bkLive),
@@ -552,27 +518,20 @@ func (s *Server) SMembers(key string) (add, rem []s2.Pair, merged [][]byte, wate
 	defer iter.Close()
 
 	now := uint64(future.Get(s.Channel))
-	merged = make([][]byte, 0)
 
 	for iter.First(); iter.Valid(); iter.Next() {
-		if s2.BytesToUint64(iter.Value()) > now {
+		// fmt.Println(iter.Key(), iter.Value())
+		ts := s2.BytesToUint64(iter.Value()[1:])
+		if ts > now || ts < uint64(after) {
 			continue
 		}
+
 		k := bytes.TrimPrefix(iter.Key(), bkLive)
-		add = append(add, s2.Pair{ID: s2.Bytes(k), Data: s2.Bytes(iter.Value())})
-	}
-
-	iter.SetBounds(bkTomb, s2.IncBytes(bkTomb))
-
-	for iter.First(); iter.Valid(); iter.Next() {
-		if s2.BytesToUint64(iter.Value()) > now {
-			continue
+		if !f(k, iter.Value()[9:], int64(ts)) {
+			break
 		}
-		k := bytes.TrimPrefix(iter.Key(), bkTomb)
-		rem = append(rem, s2.Pair{ID: s2.Bytes(k), Data: s2.Bytes(iter.Value())})
 	}
 
 	watermark, err = s.GetInt64(bkWatermark)
-	merged = setsub(add, rem)
 	return
 }

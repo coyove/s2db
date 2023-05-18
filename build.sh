@@ -1,4 +1,4 @@
-SRC='main.go server.go server_ex.go peer.go command.go dump.go config.go metrics.go util.go'
+SRC='main.go server.go server_ex.go peer.go command.go dump.go config.go metrics.go util.go merger.go'
 
 COMMIT=$(git log --pretty=format:'%h' -n 1)
 VERSION=$(($(date -u +%y)-20))

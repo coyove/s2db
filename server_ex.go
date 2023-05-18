@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"net/url"
 	"os"
 	"runtime"
@@ -226,6 +227,8 @@ func (s *Server) createDBListener() pebble.EventListener {
 func (s *Server) httpServer() {
 	uuid := s2.UUID()
 	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		defer s2.HTTPRecover(w, r)
 

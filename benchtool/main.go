@@ -22,7 +22,6 @@ var (
 	keyNum    = flag.Int("k", 1, "")
 	keyPrefix = flag.String("kp", "", "")
 	mode      = flag.String("mode", "append", "")
-	dedupMode = flag.Bool("distinct", false, "")
 )
 
 func main() {
@@ -47,10 +46,10 @@ func main() {
 			start := future.UnixNano()
 			for c := 0; c < *ops; c++ {
 				switch *mode {
-				case "select":
+				case "select", "select_distinct":
 					m := ""
 					n := 1000
-					if *dedupMode {
+					if *mode == "select_distinct" {
 						m = "distinct"
 						n = 100
 					}
@@ -71,6 +70,10 @@ func main() {
 					args := []any{"HSET"}
 					args = append(args, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)))
 					args = append(args, fmt.Sprintf("member%d", rand.Intn(1000)), rand.Intn(1000))
+					rdb.Do(ctx, args...)
+				case "hgetall":
+					args := []any{"HGETALL"}
+					args = append(args, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)))
 					rdb.Do(ctx, args...)
 				}
 			}

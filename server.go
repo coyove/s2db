@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -29,8 +30,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-const lockShards = 32
-
 type Server struct {
 	DB          *pebble.DB
 	Peers       [future.Channels]*endpoint
@@ -50,9 +49,9 @@ type Server struct {
 	rdbCache     *s2.LRUCache[string, *redis.Client]
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
-	ttlOnce      [lockShards]sync.Map
-	delOnce      [lockShards]sync.Map
-	setLocks     [lockShards]sync.Mutex
+	ttlOnce      keyLock
+	delOnce      keyLock
+	hashSyncOnce keyLock
 	errThrot     s2.ErrorThrottler
 
 	test struct {
@@ -74,13 +73,13 @@ func Open(dbPath string) (s *Server, err error) {
 			Cache:        pebble.NewCache(int64(*pebbleCacheSize) << 20),
 			MemTableSize: *pebbleMemtableSize << 20,
 			MaxOpenFiles: *pebbleMaxOpenFiles,
-			Merger:       crdbMerger,
 		}).EnsureDefaults(),
 	}
 	s.DBOptions.FS = &VFS{
 		FS:       s.DBOptions.FS,
 		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatInt(future.UnixNano(), 16)),
 	}
+	s.DBOptions.Merger = s.createMerger()
 	if !testFlag {
 		s.DBOptions.EventListener = s.createDBListener()
 	}
@@ -90,7 +89,7 @@ func Open(dbPath string) (s *Server, err error) {
 		return nil, err
 	}
 	// s.DB.DeleteRange([]byte("i"), []byte("j"), pebble.Sync)
-	// s.DB.DeleteRange([]byte("z"), []byte("{"), pebble.Sync)
+	// s.DB.DeleteRange([]byte("h"), []byte("i"), pebble.Sync)
 	for i := range s.Peers {
 		s.Peers[i] = &endpoint{server: s}
 	}
@@ -580,11 +579,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
 	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]]
-		kvs := [][]byte{s2.Uint64ToBytes(uint64(future.Get(s.Channel))), K.BytesRef(2), K.BytesRef(3)}
+		kvs := [][]byte{K.BytesRef(2), K.BytesRef(3)}
 		var wait bool
 		for i := 2; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "set") {
-				kvs = append(kvs, s2.Uint64ToBytes(uint64(future.Get(s.Channel))), K.BytesRef(i+1), K.BytesRef(i+2))
+				kvs = append(kvs, K.BytesRef(i+1), K.BytesRef(i+2))
 				i += 2
 			} else if K.StrEqFold(i, "wait") {
 				wait = true
@@ -598,44 +597,47 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			id.Wait()
 		}
 		return w.WriteInt64(int64(id))
-	case "PHGETALL": // key after
-		var res [][]byte
-		_, err := s.HIter(key, K.Int64(2), func(k, v []byte, ts int64) bool {
-			res = append(res, s2.Uint64ToBytes(uint64(ts)), s2.Bytes(k), s2.Bytes(v))
-			return true
-		})
+	case "PHGETALL": // key checksum
+		data, err := s.Get(skp(key))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(res)
-	case "HGETALL": // key [LOCAL]
-		var res [][]byte
-		watermark, err := s.HIter(key, 0, func(k, v []byte, ts int64) bool {
-			res = append(res, s2.Bytes(k), s2.Bytes(v))
-			return true
-		})
+		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
+			data = []byte{}
+		}
+		return w.WriteBulk(data)
+	case "HLEN": // key [SYNC]
+		if err := s.wrapHGetAll(key, K.StrEqFold(2, "sync")); err != nil {
+			return w.WriteError(err.Error())
+		}
+		res, err := s.HLen(key)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if !s.HasOtherPeers() || K.StrEqFold(2, "local") {
-			return w.WriteBulks(res)
+		return w.WriteInt64(int64(res))
+	case "HGET": // key member [SYNC]
+		if err := s.wrapHGetAll(key, K.StrEqFold(3, "sync")); err != nil {
+			return w.WriteError(err.Error())
 		}
-		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "PHGETALL", key, watermark+1)
-		})
-		if recv == 0 {
-			return w.WriteBulks(res)
+		res, err := s.HGet(key, K.BytesRef(2))
+		if err != nil {
+			return w.WriteError(err.Error())
 		}
-		var pres []string
-		s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
-			pres = append(pres, cmd.(*redis.StringSliceCmd).Val()...)
-			return true
-		})
-		s.HSet(key, ssbb(pres)...)
-		_, err = s.HIter(key, 0, func(k, v []byte, ts int64) bool {
-			res = append(res, s2.Bytes(k), s2.Bytes(v))
-			return true
-		})
+		return w.WriteBulk(res)
+	case "HGETALL": // key [SYNC] [MATCH match]
+		var sync bool
+		var match []byte
+		for i := 2; i < K.ArgCount(); i++ {
+			sync = sync || K.StrEqFold(i, "sync")
+			if K.StrEqFold(i, "match") {
+				match = K.BytesRef(i + 1)
+				i++
+			}
+		}
+		if err := s.wrapHGetAll(key, sync); err != nil {
+			return w.WriteError(err.Error())
+		}
+		res, err := s.HGetAll(key, match)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

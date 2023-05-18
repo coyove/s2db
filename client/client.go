@@ -211,3 +211,23 @@ func (a *Session) Lookup(ctx context.Context, id string) (data []byte, err error
 	}
 	return
 }
+
+func (a *Session) HGetAll(ctx context.Context, key string, match []byte, sync bool) (data map[string]string, err error) {
+	args := []any{"HGETALL", key}
+	if sync {
+		args = append(args, "SYNC")
+	}
+	if match != nil {
+		args = append(args, "MATCH", match)
+	}
+	cmd := redis.NewStringStringMapCmd(ctx, args...)
+	for _, db := range a.rdb {
+		db.Process(ctx, cmd)
+		err = cmd.Err()
+		if err != nil {
+			continue
+		}
+		return cmd.Val(), nil
+	}
+	return
+}

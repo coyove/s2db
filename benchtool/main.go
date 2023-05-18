@@ -21,7 +21,7 @@ var (
 	ttl       = flag.Int("ttl", 0, "")
 	keyNum    = flag.Int("k", 1, "")
 	keyPrefix = flag.String("kp", "", "")
-	readMode  = flag.Bool("read", false, "")
+	mode      = flag.String("mode", "append", "")
 	dedupMode = flag.Bool("distinct", false, "")
 )
 
@@ -46,7 +46,8 @@ func main() {
 			fmt.Println("client #", i)
 			start := future.UnixNano()
 			for c := 0; c < *ops; c++ {
-				if *readMode {
+				switch *mode {
+				case "select":
 					m := ""
 					n := 1000
 					if *dedupMode {
@@ -61,10 +62,15 @@ func main() {
 					} else {
 						l.Add(int64(len(v.([]any))))
 					}
-				} else {
+				case "append":
 					args := []any{"APPEND"}
-					args = append(args, "defer", "TTL", *ttl, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)))
+					args = append(args, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)), "TTL", *ttl)
 					args = append(args, rand.Intn(10))
+					rdb.Do(ctx, args...)
+				case "hset":
+					args := []any{"HSET"}
+					args = append(args, *keyPrefix+strconv.Itoa(rand.Intn(*keyNum)))
+					args = append(args, fmt.Sprintf("member%d", rand.Intn(1000)), rand.Intn(1000))
 					rdb.Do(ctx, args...)
 				}
 			}

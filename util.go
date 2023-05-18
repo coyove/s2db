@@ -1,13 +1,18 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/hex"
+	"io"
 	"sort"
-	"unsafe"
+	"sync"
+	"sync/atomic"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2"
 )
+
+const lockShards = 32
 
 func hexEncode(k []byte) []byte {
 	_ = k[15]
@@ -76,9 +81,8 @@ func kkp(key string) (prefix []byte) {
 	return
 }
 
-func skp(key string) (live, watermark []byte) {
-	live = append(append(append(make([]byte, 64)[:0], "s"...), key...), 0)
-	watermark = append(append(make([]byte, 64)[:0], "s"...), key...)
+func skp(key string) (prefix []byte) {
+	prefix = append(append(make([]byte, 64)[:0], "h"...), key...)
 	return
 }
 
@@ -89,14 +93,43 @@ func newPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 	})
 }
 
-func ssbb(in []string) (out [][]byte) {
-	x := make([]struct {
-		a string
-		c int
-	}, len(in))
-	for i := range x {
-		x[i].a = in[i]
-		x[i].c = len(in[i])
+func readBytes(r io.Reader) (out []byte, err error) {
+	var n uint16
+	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
+		return nil, err
 	}
-	return *(*[][]byte)(unsafe.Pointer(&x))
+	out = make([]byte, n)
+	_, err = io.ReadFull(r, out)
+	return
+}
+
+type keyLock struct {
+	m [lockShards]sync.Map
+	c [lockShards]atomic.Int64
+}
+
+func (kl *keyLock) lock(key string) bool {
+	i := s2.HashStr(key) % lockShards
+	_, loaded := kl.m[i].LoadOrStore(key, 1)
+	if !loaded {
+		kl.c[i].Add(1)
+		return true
+	}
+	return false
+}
+
+func (kl *keyLock) unlock(key string) {
+	i := s2.HashStr(key) % lockShards
+	_, loaded := kl.m[i].LoadAndDelete(key)
+	if !loaded {
+		panic("unlock non-existed key: shouldn't happen")
+	}
+	kl.c[i].Add(-1)
+}
+
+func (kl *keyLock) count() (c int64) {
+	for i := range kl.c {
+		c += kl.c[i].Load()
+	}
+	return
 }

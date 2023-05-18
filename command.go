@@ -212,10 +212,9 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 	}
 
 	if ttlSec > 0 {
-		m := &s.ttlOnce[s2.HashStr(key)%lockShards]
-		_, loaded := m.LoadOrStore(key, true)
-		if !loaded {
-			defer m.Delete(key)
+		if s.ttlOnce.lock(key) {
+			defer s.ttlOnce.unlock(key)
+			s.Survey.TTLOnce.Incr(s.ttlOnce.count())
 
 			f := future.Future(future.UnixNano() - ttlSec*1e9)
 			idx := s2.ConvertFutureTo16B(f)
@@ -322,11 +321,11 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	var hllAdd, hllDel s2.HyperLogLog
 
 	if flag&RangeDistinct > 0 {
-		m := &s.delOnce[s2.HashStr(key)%lockShards]
-		if _, loaded := m.LoadOrStore(key, true); !loaded {
+		if s.delOnce.lock(key) {
+			s.Survey.DistinctOnce.Incr(s.delOnce.count())
 			dedupTx = s.DB.NewBatch()
 			defer dedupTx.Close()
-			defer m.Delete(key)
+			defer s.delOnce.unlock(key)
 
 			hllAdd, hllDel, err = s.getHLL(key)
 			if err != nil {
@@ -488,50 +487,95 @@ func (s *Server) HSet(key string, kvs ...[]byte) (future.Future, error) {
 		return 0, nil
 	}
 
-	bkLive, bkWatermark := skp(key)
+	var maxID int64
+	m := map[string]hashmapData{}
+	for i := 0; i < len(kvs); i += 2 {
+		maxID = int64(future.Get(s.Channel))
+		m[string(kvs[i])] = hashmapData{ts: maxID, key: kvs[i], data: kvs[i+1]}
+	}
+
 	tx := s.DB.NewBatch()
 	defer tx.Close()
-
-	var maxID future.Future
-	for i := 0; i < len(kvs); i += 3 {
-		maxID = future.Future(binary.BigEndian.Uint64(kvs[i]))
-		v := make([]byte, 9+len(kvs[i+2]))
-		v[0] = 0x01
-		copy(v[1:], kvs[i])
-		copy(v[9:], kvs[i+2])
-		if err := tx.Merge(append(bkLive, kvs[i+1]...), v, pebble.Sync); err != nil {
-			return 0, err
-		}
-	}
-	if err := tx.Set(bkWatermark, s2.Uint64ToBytes(uint64(maxID)), pebble.Sync); err != nil {
+	if err := tx.Merge(skp(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
 		return 0, err
 	}
 	return future.Future(maxID), tx.Commit(pebble.Sync)
 }
 
-func (s *Server) HIter(key string, after int64, f func(k, v []byte, ts int64) bool) (watermark int64, err error) {
-	bkLive, bkWatermark := skp(key)
-	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: bkLive,
-		UpperBound: s2.IncBytes(bkLive),
-	})
-	defer iter.Close()
-
-	now := uint64(future.Get(s.Channel))
-
-	for iter.First(); iter.Valid(); iter.Next() {
-		// fmt.Println(iter.Key(), iter.Value())
-		ts := s2.BytesToUint64(iter.Value()[1:])
-		if ts > now || ts < uint64(after) {
-			continue
+func (s *Server) HGet(key string, member []byte) (res []byte, err error) {
+	buf, rd, err := s.DB.Get(skp(key))
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, nil
 		}
+		return nil, err
+	}
+	defer rd.Close()
 
-		k := bytes.TrimPrefix(iter.Key(), bkLive)
-		if !f(k, iter.Value()[9:], int64(ts)) {
-			break
+	if err := hashmapMergerIter(buf, func(d hashmapData) bool {
+		if bytes.Equal(d.key, member) {
+			future.Future(d.ts).Wait()
+			res = d.data
+			return false
 		}
+		return true
+	}); err != nil {
+		return nil, err
+	}
+	return
+}
+
+func (s *Server) HGetAll(key string, matchValue []byte) (res [][]byte, err error) {
+	buf, rd, err := s.DB.Get(skp(key))
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rd.Close()
+
+	m, err := hashmapMergerParse(buf)
+	if err != nil {
+		return nil, err
 	}
 
-	watermark, err = s.GetInt64(bkWatermark)
+	now := int64(future.Get(s.Channel))
+	for _, v := range m {
+		if matchValue != nil && !bytes.Equal(matchValue, v.data) {
+			continue
+		}
+		if v.ts > now {
+			continue
+		}
+		res = append(res, v.key, v.data)
+	}
 	return
+}
+
+func (s *Server) HLen(key string) (count int, err error) {
+	buf, rd, err := s.DB.Get(skp(key))
+	if err != nil {
+		if err == pebble.ErrNotFound {
+			return 0, nil
+		}
+		return 0, err
+	}
+	defer rd.Close()
+	err = hashmapMergerIter(buf, func(d hashmapData) bool {
+		count++
+		return true
+	})
+	return
+}
+
+func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
+	buf, rd, err := s.DB.Get(skp(key))
+	if err == pebble.ErrNotFound {
+	} else if err != nil {
+		return v, 0, err
+	} else {
+		defer rd.Close()
+	}
+	return sha1.Sum(buf), len(buf), nil
 }

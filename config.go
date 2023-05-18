@@ -59,9 +59,15 @@ type ServerSurvey struct {
 	PeerOnOK         s2.Survey `metrics:"qps"`
 	AllConsolidated  s2.Survey `metrics:"qps"`
 	SelectCacheHits  s2.Survey `metrics:"qps"`
+	HIterCacheHits   s2.Survey `metrics:"qps"`
 	AppendExpire     s2.Survey
 	RangeDistinct    s2.Survey
 	PeerBatchSize    s2.Survey
+	HashMerger       s2.Survey
+	HashSyncer       s2.Survey
+	TTLOnce          s2.Survey `metrics:"mean"`
+	DistinctOnce     s2.Survey `metrics:"mean"`
+	HashSyncOnce     s2.Survey `metrics:"mean"`
 	PeerLatency      sync.Map
 	Command          sync.Map
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -33,10 +35,15 @@ var (
 		"SELECTCOUNT": true,
 		"LOOKUP":      true,
 		"SCAN":        true,
+		"HLEN":        true,
+		"HGET":        true,
+		"HGETALL":     true,
+		"PHGETALL":    true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
 		"RAWSET": true,
+		"HSET":   true,
 	}
 
 	//go:embed scripts/index.html
@@ -71,6 +78,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		}
 		iDisk, _ := s.DB.EstimateDiskUsage([]byte{'z'}, []byte{'z' + 1})
 		HDisk, _ := s.DB.EstimateDiskUsage([]byte("H"), []byte("I"))
+		hDisk, _ := s.DB.EstimateDiskUsage([]byte("h"), []byte("i"))
 		cwd, _ := os.Getwd()
 		data = append(data, "# server_misc",
 			fmt.Sprintf("cwd:%v", cwd),
@@ -80,10 +88,15 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
 			fmt.Sprintf("index_size:%d", iDisk),
 			fmt.Sprintf("index_size_mb:%.2f", float64(iDisk)/1024/1024),
+			fmt.Sprintf("hashmap_size:%d", hDisk),
+			fmt.Sprintf("hashmap_size_mb:%.2f", float64(hDisk)/1024/1024),
 			fmt.Sprintf("hll_size:%d", HDisk),
 			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
+			fmt.Sprintf("ttl_once:%v", s.ttlOnce.count()),
+			fmt.Sprintf("del_once:%v", s.delOnce.count()),
+			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.count()),
 			"")
 	}
 	if section == "" || strings.EqualFold(section, "peers") {
@@ -150,6 +163,15 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		data = append(data, fmt.Sprintf("hash:%08x", id[8:12]))
 		data = append(data, fmt.Sprintf("key:%s", key))
 		data = append(data, fmt.Sprintf("data_size:%d", len(v)))
+		data = append(data, "")
+	}
+	if strings.HasPrefix(section, "#") {
+		count, _ := s.HLen(section[1:])
+		hash, size, _ := s.hChecksum(section[1:])
+		data = append(data, "# hashmap "+section[1:])
+		data = append(data, fmt.Sprintf("size:%d", size))
+		data = append(data, fmt.Sprintf("count:%d", count))
+		data = append(data, fmt.Sprintf("hash:%x", hash))
 		data = append(data, "")
 	}
 	if strings.HasPrefix(section, "=") {
@@ -335,6 +357,68 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 		return true
 	})
 	return []byte(m), nil
+}
+
+func (s *Server) wrapHGetAll(key string, syncWork bool) error {
+	if !s.HasOtherPeers() {
+		return nil
+	}
+
+	work := func() error {
+		defer func(start time.Time) {
+			if !syncWork {
+				s.hashSyncOnce.unlock(key)
+			}
+			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
+		}(time.Now())
+
+		checksum, _, err := s.hChecksum(key)
+		if err != nil {
+			return err
+		}
+		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
+		})
+		if recv == 0 {
+			return fmt.Errorf("no peer respond")
+		}
+
+		var pres []string
+		s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
+			pres = append(pres, cmd.(*redis.StringCmd).Val())
+			return true
+		})
+
+		bkLive := skp(key)
+		tx := s.DB.NewBatch()
+		defer tx.Close()
+		for _, p := range pres {
+			if p == "" {
+				continue
+			}
+			if err := tx.Merge(bkLive, []byte(p), pebble.Sync); err != nil {
+				return err
+			}
+		}
+		if err := tx.Commit(pebble.Sync); err != nil {
+			return err
+		}
+		runtime.KeepAlive(pres)
+		return nil
+	}
+
+	if syncWork {
+		return work()
+	}
+	if s.hashSyncOnce.lock(key) {
+		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.count())
+		time.AfterFunc(time.Second, func() {
+			if err := work(); err != nil {
+				logrus.Errorf("hashmap sync error: %v", err)
+			}
+		})
+	}
+	return nil
 }
 
 func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {

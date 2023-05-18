@@ -165,12 +165,17 @@ func HashStr(s string) (h uint64) {
 	return h
 }
 
+func HashBytes128(b []byte) (buf [16]byte) {
+	h := sha1.Sum(b)
+	copy(buf[:], h[:])
+	return
+}
+
 func HashStr128(s string) (buf [16]byte) {
 	var b []byte
 	*(*string)(unsafe.Pointer(&b)) = s
 	(*reflect.SliceHeader)(unsafe.Pointer(&b)).Cap = len(s)
-	h := sha1.Sum(b)
-	copy(buf[:], h[:])
+	buf = HashBytes128(b)
 	runtime.KeepAlive(s)
 	return
 }

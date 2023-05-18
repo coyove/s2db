@@ -39,8 +39,6 @@ github.com/coreos/go-etcd v2.0.0+incompatible/go.mod h1:Jez6KQU2B/sWsbdaef3ED8Nz
 github.com/coreos/go-semver v0.2.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3EedlOD2RNk=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db h1:eQaGKwwenv6kAnPH7LcC543XdWuJ6rT0XqlamVh/3zw=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
-github.com/coyove/sdss v0.0.0-20230426055844-665368fa2b52 h1:GbXKrgsHpn9lNTnqoVU5T/NtHwMM62rbzjhVC0b9z/4=
-github.com/coyove/sdss v0.0.0-20230426055844-665368fa2b52/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/coyove/sdss v0.0.0-20230509023801-44f1569bd3ad h1:+w9o4MN/tQUGjtEVxKR4LqrvNB3CayfpsX2Lk74i+uw=
 github.com/coyove/sdss v0.0.0-20230509023801-44f1569bd3ad/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=
@@ -98,8 +96,6 @@ github.com/golang/protobuf v1.4.2/go.mod h1:oDoupMAO8OvCJWAcko0GGGIgR6R6ocIYbsSw
 github.com/golang/snappy v0.0.3 h1:fHPg5GQYlCeLIPB9BZqMVR5nR9A+IM5zcgeTdjMYmLA=
 github.com/golang/snappy v0.0.3/go.mod h1:/XxbfmMg8lxefKM7IXC3fBNl/7bRcc72aCRzEWrmP2Q=
 github.com/gomodule/redigo v1.7.1-0.20190724094224-574c33c3df38/go.mod h1:B4C85qUVwatsJoIUNIfCRsp7qO0iAmpGFZ4EELWSbC4=
-github.com/google/btree v1.1.2 h1:xf4v41cLI2Z6FxbKm+8Bu+m8ifhj15JuZ9sa0jZCMUU=
-github.com/google/btree v1.1.2/go.mod h1:qOPhT0dTNdNzV6Z/lhRX0YXUafgPLFUh+gZMl761Gm4=
 github.com/google/go-cmp v0.2.0/go.mod h1:oXzfMopK8JAjlY9xF4vHSVASa0yLyX7SntLO5aqRK0M=
 github.com/google/go-cmp v0.3.0/go.mod h1:8QqcDgzrUqlUb/G2PQTWiueGozuR1884gddMywk6iLU=
 github.com/google/go-cmp v0.3.1/go.mod h1:8QqcDgzrUqlUb/G2PQTWiueGozuR1884gddMywk6iLU=

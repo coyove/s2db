@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/url"
@@ -37,7 +38,9 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 	var pairs []metricsPair
 	start := future.UnixNano()
 	now := start - int64(60*time.Second)
-	pairs = append(pairs, metricsPair{Member: "Connections", Score: float64(s.Survey.Connections)})
+	pairs = append(pairs,
+		metricsPair{Member: "Connections", Score: float64(s.Survey.Connections)},
+	)
 	rv, rt := reflect.ValueOf(&s.Survey).Elem(), reflect.TypeOf(&s.Survey).Elem()
 	for i := 0; i < rv.NumField(); i++ {
 		if sv, ok := rv.Field(i).Interface().(s2.Survey); ok {
@@ -160,11 +163,11 @@ func (s *Server) ListMetricsNames() (names []string) {
 	key := []byte("metrics_")
 	c := newPrefixIter(s.DB, key)
 	defer c.Close()
-	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
+	for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); {
 		k := c.Key()[8:]
 		k = k[:bytes.IndexByte(k, 0)]
 		names = append(names, string(k))
-		c.SeekLT(append(append(key, k...), 0xff))
+		c.SeekGE(append(append(key, k...), 1))
 	}
 	return
 }
@@ -210,6 +213,7 @@ func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m [
 
 func fillMetricsHoles(res map[string]s2.GroupedMetrics, names []string, startNano, endNano int64) (m []s2.GroupedMetrics) {
 	mints, maxts := startNano/1e9/60*60, endNano/1e9/60*60
+	fmt.Println(len(m))
 	for _, name := range names {
 		p := res[name]
 		for c, ts := 0, mints; ts <= maxts; ts += 60 {
@@ -224,6 +228,7 @@ func fillMetricsHoles(res map[string]s2.GroupedMetrics, names []string, startNan
 		}
 		m = append(m, p)
 	}
+	fmt.Println(len(m))
 	return m
 }
 

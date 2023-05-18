@@ -39,6 +39,7 @@ var (
 		"HLEN":        true,
 		"HGET":        true,
 		"HGETALL":     true,
+		"HKEYS":       true,
 		"PHGETALL":    true,
 	}
 	isWriteCommand = map[string]bool{
@@ -429,13 +430,20 @@ func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) 
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
+	var maxFuture future.Future
 	for _, p := range p {
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)
 		}
 		a = append(a, p.IDHex(), p.UnixMilliBytes(), d)
+		if p.Future() > maxFuture {
+			maxFuture = p.Future()
+		}
 	}
+
+	// Data may contain Pairs from the future created by other channels. We wait until we reach the timestamp.
+	maxFuture.Wait()
 	return w.WriteBulks(a)
 }
 
@@ -444,7 +452,7 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 	case "+", "+inf", "+INF", "+Inf":
 		start = []byte(maxCursor)
 	case "recent", "RECENT", "now", "NOW":
-		tmp := s2.ConvertFutureTo16B(future.Get(s.Channel))
+		tmp := s2.ConvertFutureTo16B(future.Future(future.UnixNano()))
 		start = tmp[:]
 	case "0", "":
 		start = make([]byte, 16)

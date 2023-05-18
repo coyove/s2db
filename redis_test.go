@@ -267,12 +267,12 @@ func TestWatermark(t *testing.T) {
 		if i%2 == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i).Err())
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i, "WAIT").Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
 	for i := 0; i < 5; i++ {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i, "WAIT").Err())
 	}
 
 	doRange(rdb2, "b", "recent", -4)

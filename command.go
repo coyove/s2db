@@ -424,16 +424,25 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	return
 }
 
-func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []string) {
-	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{'z'},
-		UpperBound: []byte{'z' + 1},
-	})
+func (s *Server) ScanHash(cursor string, count int) (nextCursor string, keys []string) {
+	iter := newPrefixIter(s.DB, []byte("h"))
 	defer iter.Close()
 
-	if count > 65536 {
-		count = 65536
+	for iter.SeekGE(skp(cursor)); iter.Valid(); iter.Next() {
+		keys = append(keys, string(iter.Key()[1:]))
+		if len(keys) >= count {
+			if iter.Next() {
+				nextCursor = string(iter.Key()[1:])
+			}
+			break
+		}
 	}
+	return
+}
+
+func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []string) {
+	iter := newPrefixIter(s.DB, []byte("z"))
+	defer iter.Close()
 
 	kh := sha1.Sum([]byte(cursor))
 
@@ -451,15 +460,8 @@ func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []
 }
 
 func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []string) {
-	iter := s.DB.NewIter(&pebble.IterOptions{
-		LowerBound: []byte{'l'},
-		UpperBound: []byte{'l' + 1},
-	})
+	iter := newPrefixIter(s.DB, []byte("l"))
 	defer iter.Close()
-
-	if count > 65536 {
-		count = 65536
-	}
 
 	cPrefix := kkp(cursor)
 	var tmp []byte
@@ -525,7 +527,7 @@ func (s *Server) HGet(key string, member []byte) (res []byte, err error) {
 	return
 }
 
-func (s *Server) HGetAll(key string, matchValue []byte) (res [][]byte, err error) {
+func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue bool) (res [][]byte, err error) {
 	buf, rd, err := s.DB.Get(skp(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -540,16 +542,22 @@ func (s *Server) HGetAll(key string, matchValue []byte) (res [][]byte, err error
 		return nil, err
 	}
 
-	now := int64(future.Get(s.Channel))
+	var max int64
 	for _, v := range m {
 		if matchValue != nil && !bytes.Equal(matchValue, v.data) {
 			continue
 		}
-		if v.ts > now {
-			continue
+		if v.ts > max {
+			max = v.ts
 		}
-		res = append(res, v.key, v.data)
+		if inclKey {
+			res = append(res, v.key)
+		}
+		if inclValue {
+			res = append(res, v.data)
+		}
 	}
+	future.Future(max).Wait()
 	return
 }
 
@@ -562,10 +570,7 @@ func (s *Server) HLen(key string) (count int, err error) {
 		return 0, err
 	}
 	defer rd.Close()
-	err = hashmapMergerIter(buf, func(d hashmapData) bool {
-		count++
-		return true
-	})
+	count = int(binary.BigEndian.Uint32(buf[1:]))
 	return
 }
 

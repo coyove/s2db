@@ -27,7 +27,7 @@ var (
 	listenAddr   = flag.String("l", ":6379", "listen address")
 	dataDir      = flag.String("d", "test", "data directory")
 	readOnly     = flag.Bool("ro", false, "start server as read-only, slaves are always read-only")
-	channel      = flag.Int64("ch", -1, "channel 0-"+strconv.Itoa(int(future.Channels)))
+	channel      = flag.Int64("ch", -1, "channel 0-"+strconv.Itoa(int(future.Channels)-1))
 	showVersion  = flag.Bool("v", false, "print s2db version then exit")
 	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	configSet    = func() (f [6]*string) {

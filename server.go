@@ -564,15 +564,22 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			x = 0
 		}
 		return w.WriteInt64(x)
-	case "SCAN": // cursor [COUNT count] [INDEX]
-		index, count := false, 10
+	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
+		hash, index, count := false, false, 10
 		for i := 2; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "count") {
 				count = K.Int(i + 1)
 				i++
 			} else {
 				index = index || K.StrEqFold(i, "index")
+				hash = hash || K.StrEqFold(i, "hash")
 			}
+		}
+		if count > 65536 {
+			count = 65536
+		}
+		if hash {
+			return w.WriteObjects(s.ScanHash(K.StrRef(1), count))
 		}
 		if index {
 			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
@@ -624,7 +631,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(res)
-	case "HGETALL": // key [SYNC] [MATCH match]
+	case "HGETALL", "HKEYS": // key [SYNC] [MATCH match]
 		var sync bool
 		var match []byte
 		for i := 2; i < K.ArgCount(); i++ {
@@ -637,7 +644,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err := s.wrapHGetAll(key, sync); err != nil {
 			return w.WriteError(err.Error())
 		}
-		res, err := s.HGetAll(key, match)
+		res, err := s.HGetAll(key, match, true, cmd == "HGETALL")
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

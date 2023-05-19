@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -66,7 +67,7 @@ func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2
 	return nil
 }
 
-func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
+func (s *Server) Append(key string, ids, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if key == "" {
 		return nil, fmt.Errorf("append to null key")
 	}
@@ -81,25 +82,30 @@ func (s *Server) Append(key string, data [][]byte, ttlSec int64, wait bool) ([][
 			return nil, fmt.Errorf("can't append null data")
 		}
 
-		id = future.Get(s.Channel)
-		if testFlag {
-			x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
-			if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
-				panic("fatal: duplicated id")
+		if len(ids) == len(data) {
+			kk = append(kk, ids[i])
+			p = append(p, s2.Pair{ID: ids[i], Data: data[i]})
+		} else {
+			id = future.Get(s.Channel)
+			if testFlag {
+				x, _ := rand.Int(rand.Reader, big.NewInt(1<<32))
+				if v, _ := testDedup.LoadOrStore(id, x.Int64()); v != x.Int64() {
+					panic("fatal: duplicated id")
+				}
 			}
+
+			var idx [16]byte // id(8b) + keyhash(4b) + random(1b) + shard(1b) + cmd(1b) + extra(1b)
+			binary.BigEndian.PutUint64(idx[:], uint64(id))
+			copy(idx[8:12], kh[:])
+			rand.Read(idx[12:13])
+			idx[13] = 0 // shard index, not used by now
+			idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
+			idx[15] = 0 // extra
+
+			k := s2.Bytes(idx[:])
+			kk = append(kk, k)
+			p = append(p, s2.Pair{ID: k, Data: data[i]})
 		}
-
-		var idx [16]byte // id(8b) + keyhash(4b) + random(1b) + shard(1b) + cmd(1b) + extra(1b)
-		binary.BigEndian.PutUint64(idx[:], uint64(id))
-		copy(idx[8:12], kh[:])
-		rand.Read(idx[12:13])
-		idx[13] = 0 // shard index, not used by now
-		idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
-		idx[15] = 0 // extra
-
-		k := s2.Bytes(idx[:])
-		kk = append(kk, k)
-		p = append(p, s2.Pair{ID: k, Data: data[i]})
 	}
 
 	if _, err := s.rawSet(key, p, ttlSec, nil); err != nil {
@@ -271,7 +277,7 @@ func (s *Server) LookupID(id []byte) (data []byte, key string, err error) {
 const (
 	RangeDesc     = 1
 	RangeDistinct = 2
-	RangeAll      = 4
+	RangeRaw      = 4
 )
 
 func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pair, partial bool, err error) {
@@ -335,7 +341,7 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	}
 
 	ns := future.UnixNano()
-	rangeAll := flag&RangeAll > 0
+	rangeAll := flag&RangeRaw > 0
 	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 		p := s2.Pair{
@@ -489,6 +495,8 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 		return nil, nil
 	}
 
+	kh := sha1.Sum([]byte(key))
+
 	var maxID future.Future
 	var kk [][]byte
 	m := map[string]hashmapData{}
@@ -505,6 +513,11 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 		} else {
 			maxID = future.Get(s.Channel)
 			idx := s2.ConvertFutureTo16B(maxID)
+			copy(idx[8:12], kh[:])
+			rand.Read(idx[12:13])
+			idx[13] = 0 // shard index, not used by now
+			idx[14] = byte(s.Channel)<<4 | s2.PairCmdHSet
+			idx[15] = 0 // extra
 			kk = append(kk, idx[:])
 		}
 		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
@@ -519,13 +532,13 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 	return kk, nil
 }
 
-func (s *Server) HGet(key string, member []byte) (res []byte, err error) {
+func (s *Server) HGet(key string, member []byte) (res []byte, ts int64, err error) {
 	buf, rd, err := s.DB.Get(skp(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
-			return nil, nil
+			return nil, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	defer rd.Close()
 
@@ -533,16 +546,17 @@ func (s *Server) HGet(key string, member []byte) (res []byte, err error) {
 		if bytes.Equal(d.key, member) {
 			future.Future(d.ts).Wait()
 			res = d.data
+			ts = d.ts
 			return false
 		}
 		return true
 	}); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	return
 }
 
-func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue bool) (res [][]byte, err error) {
+func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
 	buf, rd, err := s.DB.Get(skp(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -565,6 +579,9 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue bool)
 		}
 		if inclValue {
 			res = append(res, d.data)
+		}
+		if inclTime {
+			res = append(res, strconv.AppendInt(nil, d.ts/1e6/10*10, 10))
 		}
 		return true
 	}); err != nil {

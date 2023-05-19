@@ -10,6 +10,7 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/wire"
 )
 
 const lockShards = 32
@@ -60,13 +61,101 @@ func distinctPairsData(p []s2.Pair) []s2.Pair {
 	return p
 }
 
-func buildFlag(c []bool, f []int) (flag int) {
-	for i, c := range c {
-		if c {
-			flag |= f[i]
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait, quorum bool) {
+	data = [][]byte{K.BytesRef(2)}
+	for i := 3; i < K.ArgCount(); i++ {
+		if K.StrEqFold(i, "ttl") {
+			ttl = K.Int64(i + 1)
+			i++
+		} else if K.StrEqFold(i, "wait") {
+			wait = true
+		} else if K.StrEqFold(i, "quorum") {
+			quorum = true
+		} else if K.StrEqFold(i, "and") {
+			data = append(data, K.BytesRef(i+1))
+			i++
+		} else if K.StrEqFold(i, "setid") {
+			ids = K.Argv[i+1:]
+			break
 		}
 	}
-	return flag
+	return
+}
+
+func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw, all bool, flag int) {
+	// SELECT key start n [...]
+	n = K.Int(3)
+	for i := 4; i < K.ArgCount(); i++ {
+		localOnly = localOnly || K.StrEqFold(i, "local")
+		desc = desc || K.StrEqFold(i, "desc")
+		distinct = distinct || K.StrEqFold(i, "distinct")
+		raw = raw || K.StrEqFold(i, "raw")
+		all = all || K.StrEqFold(i, "all")
+	}
+	if desc {
+		flag |= RangeDesc
+	}
+	if distinct {
+		flag |= RangeDistinct
+	}
+	if raw {
+		flag |= RangeRaw
+	}
+	return
+}
+
+func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait, quorum bool) {
+	kvs = [][]byte{K.BytesRef(2), K.BytesRef(3)}
+	for i := 2; i < K.ArgCount(); i++ {
+		if K.StrEqFold(i, "set") {
+			kvs = append(kvs, K.BytesRef(i+1), K.BytesRef(i+2))
+			i += 2
+		} else if K.StrEqFold(i, "setid") {
+			ids = K.Argv[i+1:]
+			break
+		} else {
+			wait = wait || K.StrEqFold(i, "wait")
+			quorum = quorum || K.StrEqFold(i, "quorum")
+		}
+	}
+	return
+}
+
+func parseHGETALL(K *wire.Command) (sync, noCompress, ts bool, match []byte) {
+	for i := 2; i < K.ArgCount(); i++ {
+		sync = sync || K.StrEqFold(i, "sync")
+		noCompress = noCompress || K.StrEqFold(i, "nocompress")
+		ts = ts || K.StrEqFold(i, "timestamp")
+		if K.StrEqFold(i, "match") {
+			match = K.BytesRef(i + 1)
+			i++
+		}
+	}
+	return
+}
+
+func parseHGET(K *wire.Command) (sync, ts bool) {
+	for i := 3; i < K.ArgCount(); i++ {
+		sync = sync || K.StrEqFold(i, "sync")
+		ts = ts || K.StrEqFold(i, "timestamp")
+	}
+	return
+}
+
+func parseSCAN(K *wire.Command) (hash, index bool, count int) {
+	for i := 2; i < K.ArgCount(); i++ {
+		if K.StrEqFold(i, "count") {
+			count = K.Int(i + 1)
+			i++
+		} else {
+			index = index || K.StrEqFold(i, "index")
+			hash = hash || K.StrEqFold(i, "hash")
+		}
+	}
+	if count > 65536 {
+		count = 65536
+	}
+	return
 }
 
 func moveIter(iter *pebble.Iterator, desc bool) bool {
@@ -140,4 +229,12 @@ func hexEncodeBulks(ids [][]byte) [][]byte {
 		hexIds[i] = hexEncode(ids[i])
 	}
 	return hexIds
+}
+
+func bbany(b [][]byte) []any {
+	res := make([]any, len(b))
+	for i := range res {
+		res[i] = b[i]
+	}
+	return res
 }

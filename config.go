@@ -54,7 +54,8 @@ type ServerSurvey struct {
 	SysWrite         s2.Survey
 	SysWriteP99Micro s2.P99SurveyMinute
 	SlowLogs         s2.Survey
-	RawSetN          s2.Survey `metrics:"mean"`
+	AppendQuorumN    s2.Survey `metrics:"mean"`
+	HSetQuorumN      s2.Survey `metrics:"mean"`
 	PeerOnMissingN   s2.Survey `metrics:"mean"`
 	PeerOnMissing    s2.Survey
 	PeerOnOK         s2.Survey `metrics:"qps"`

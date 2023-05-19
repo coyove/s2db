@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -184,7 +185,7 @@ func (s *Server) ProcessPeerResponse(longWait bool, recv int, out <-chan *comman
 
 	w := time.Duration(s.Config.TimeoutPeer) * time.Millisecond
 	if longWait {
-		// Some commands (RAWSET) may require longer waits.
+		// Some commands (APPEND) may require longer waits.
 		w = time.Duration(s.Config.TimeoutPeerLong) * time.Millisecond
 	}
 MORE:
@@ -211,4 +212,18 @@ MORE:
 		logrus.Errorf("%s:%d failed to request peer, timed out, remains: %v", filepath.Base(fn), ln, recv)
 	}
 	return
+}
+
+func (s *Server) requireQuorum(hexIds [][]byte, f func() redis.Cmder) [][]byte {
+	if s.HasOtherPeers() {
+		recv, out := s.ForeachPeerSendCmd(f)
+		success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
+		hexIds = append([][]byte{
+			strconv.AppendInt(nil, int64(recv)+1, 10),
+			strconv.AppendInt(nil, int64(success)+1, 10),
+		}, hexIds...)
+	} else {
+		hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
+	}
+	return hexIds
 }

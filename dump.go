@@ -53,7 +53,10 @@ func (s *Server) DumpWire(dest string) {
 	start := time.Now()
 	log := log.WithField("shard", "dw")
 
-	s.dumpWireLock.Lock(func() { log.Info("wire dumping already started") })
+	if !s.dumpWireLock.TryLock() {
+		log.Info("wire dumping already started")
+		return
+	}
 	defer s.dumpWireLock.Unlock()
 
 	dbDir, err := os.Open(s.DBPath)

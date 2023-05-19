@@ -32,6 +32,7 @@ import (
 var (
 	isReadCommand = map[string]bool{
 		"PSELECT":     true,
+		"PHGETALL":    true,
 		"SELECT":      true,
 		"SELECTCOUNT": true,
 		"LOOKUP":      true,
@@ -40,11 +41,9 @@ var (
 		"HGET":        true,
 		"HGETALL":     true,
 		"HKEYS":       true,
-		"PHGETALL":    true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
-		"RAWSET": true,
 		"HSET":   true,
 	}
 
@@ -505,18 +504,4 @@ func (s *Server) GetInt64(key []byte) (int64, error) {
 
 func (s *Server) SetInt64(key []byte, vi int64) error {
 	return s.DB.Set(key, s2.Uint64ToBytes(uint64(vi)), pebble.Sync)
-}
-
-func (s *Server) requireQuorum(hexIds [][]byte, f func() redis.Cmder) [][]byte {
-	if s.HasOtherPeers() {
-		recv, out := s.ForeachPeerSendCmd(f)
-		success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
-		hexIds = append([][]byte{
-			strconv.AppendInt(nil, int64(recv)+1, 10),
-			strconv.AppendInt(nil, int64(success)+1, 10),
-		}, hexIds...)
-	} else {
-		hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
-	}
-	return hexIds
 }

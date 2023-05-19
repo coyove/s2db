@@ -537,9 +537,12 @@ func TestHashSet(t *testing.T) {
 	}
 
 	dedup := map[string]bool{}
-	for _, id := range staticLZ4 {
-		rdb1.Do(ctx, "HSET", "t", id, "1", "QUORUM")
+	for i := 0; i < len(staticLZ4); i += 2 {
+		id, id2 := staticLZ4[i], staticLZ4[i+1]
+		q, _ := client.Begin(rdb1).HSetQuorum(ctx, "t", id, "1", id2, 1)
+		fmt.Println(q)
 		dedup[id] = true
+		dedup[id2] = true
 	}
 
 	fmt.Println(rdb1.Info(ctx, "#t").Val())
@@ -551,6 +554,11 @@ func TestHashSet(t *testing.T) {
 	s1.test.Fail = true
 	if c := rdb2.HLen(ctx, "t").Val(); c != int64(len(dedup)) {
 		t.Fatal(len(dedup), c)
+	}
+
+	bb, _ := s2pkg.DecompressBulks(strings.NewReader(rdb2.Do(ctx, "HGETALL", "t", "timestamp").Val().(string)))
+	for _, l := range bb {
+		fmt.Println(string(l))
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 
 const (
 	PairCmdAppend = 1
-	PairCmdAmend  = 2
+	PairCmdHSet   = 2
 )
 
 type Pair struct {
@@ -73,9 +73,6 @@ func (p Pair) DataForDistinct() string {
 
 func (p Pair) String() string {
 	id := fmt.Sprintf("%016x_%016x", p.ID[:8], p.ID[8:16])
-	if p.Cmd() == PairCmdAmend {
-		id += "_amend"
-	}
 	if p.C {
 		return fmt.Sprintf("[[%s:%q]]", id, p.Data)
 	}

@@ -16,7 +16,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"unsafe"
 
 	"github.com/pierrec/lz4/v4"
@@ -199,21 +198,6 @@ func HTTPRecover(w http.ResponseWriter, rr *http.Request) {
 			logrus.Errorf("fatal HTTP error of %q: %v", rr.RequestURI, r)
 		}
 	}()
-}
-
-type Locker struct {
-	mu sync.Mutex
-}
-
-func (l *Locker) Unlock() {
-	l.mu.Unlock()
-}
-
-func (l *Locker) Lock(waiting func()) {
-	if *(*int32)(unsafe.Pointer(l)) != 0 && waiting != nil {
-		waiting()
-	}
-	l.mu.Lock()
 }
 
 func PanicErr(err error) {

@@ -45,7 +45,7 @@ type Server struct {
 	lnRESP       net.Listener
 	lnHTTP       net.Listener
 	dieLock      sync.Mutex
-	dumpWireLock s2.Locker
+	dumpWireLock sync.Mutex
 	rdbCache     *s2.LRUCache[string, *redis.Client]
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
@@ -88,7 +88,7 @@ func Open(dbPath string) (s *Server, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// s.DB.DeleteRange([]byte("i"), []byte("j"), pebble.Sync)
+
 	// s.DB.DeleteRange([]byte("h"), []byte("i"), pebble.Sync)
 	for i := range s.Peers {
 		s.Peers[i] = &endpoint{server: s}
@@ -249,7 +249,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	if isWriteCommand[cmd] {
-		if key == "" || key == "*" || strings.Contains(key, "\x00") {
+		if key == "" || strings.Contains(key, "\x00") {
 			return w.WriteError("invalid key name")
 		}
 		if err := s.checkWritable(); err != nil {
@@ -355,53 +355,26 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	}
 
 	switch cmd {
-	case "APPEND": // key data_0 [QUORUM] [WAIT] [TTL seconds] [[AND DATA_1] ...]
-		var data = [][]byte{K.BytesRef(2)}
-		var ttl int64
-		var wait, quorum bool
-		for i := 3; i < K.ArgCount(); i++ {
-			if K.StrEqFold(i, "ttl") {
-				ttl = K.Int64(i + 1)
-				i++
-			} else if K.StrEqFold(i, "wait") {
-				wait = true
-			} else if K.StrEqFold(i, "quorum") {
-				quorum = true
-			} else if K.StrEqFold(i, "and") {
-				data = append(data, K.BytesRef(i+1))
-				i++
-			} else {
-				return w.WriteError(fmt.Sprintf("invalid flag %q", K.StrRef(i)))
-			}
-		}
-		ids, err := s.Append(key, data, ttl, wait)
+	case "APPEND": // key data_0 [QUORUM] [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
+		data, ids, ttl, wait, quorum := parseAPPEND(K)
+		ids, err := s.Append(key, ids, data, ttl, wait)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		hexIds := hexEncodeBulks(ids)
 		if quorum {
-			args := []any{"RAWSET", key, ttl}
-			for i, d := range data {
-				args = append(args, ids[i], s2.Bytes(d))
+			args := []any{"APPEND", key, data[0], "TTL", ttl}
+			for i := 1; i < len(data); i++ {
+				args = append(args, "AND", data[i])
 			}
+			args = append(args, "SETID")
+			args = append(args, bbany(ids)...)
 			hexIds = s.requireQuorum(hexIds, func() redis.Cmder {
-				return redis.NewStringCmd(context.TODO(), args...)
+				return redis.NewStringSliceCmd(context.TODO(), args...)
 			})
+			s.Survey.AppendQuorumN.Incr(int64(len(ids)))
 		}
 		return w.WriteBulks(hexIds)
-	case "RAWSET": // key ttl ID_0 DATA_0 ID_1 DATA_1...
-		var after []s2.Pair
-		for i := 3; i < K.ArgCount(); i += 2 {
-			id := K.BytesRef(i)
-			_ = id[15]
-			after = append(after, s2.Pair{ID: id, Data: K.BytesRef(i + 1)})
-		}
-		n, err := s.rawSet(key, after, K.Int64(2), nil)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		s.Survey.RawSetN.Incr(int64(n))
-		return w.WriteSimpleString("OK")
 	case "PSELECT": // key raw_start count flag lowest => [ID 0, DATA 0, ...]
 		start, flag := K.BytesRef(2), K.Int(4)
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -431,18 +404,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteBulks(a)
 	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] [ALL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		var localOnly, desc, distinct, raw, all bool
-		for i := 4; i < K.ArgCount(); i++ {
-			localOnly = localOnly || K.StrEqFold(i, "local")
-			desc = desc || K.StrEqFold(i, "desc")
-			distinct = distinct || K.StrEqFold(i, "distinct")
-			raw = raw || K.StrEqFold(i, "raw")
-			all = all || K.StrEqFold(i, "all")
-		}
-
-		flag := buildFlag([]bool{desc, distinct, raw}, []int{RangeDesc, RangeDistinct, RangeAll})
+		n, localOnly, desc, distinct, raw, all, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
-		n := K.Int(3)
 		origN := n
 		if !testFlag {
 			// Caller wants N elements, we actually fetch more than that.
@@ -553,19 +516,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteInt64(x)
 	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
-		hash, index, count := false, false, 10
-		for i := 2; i < K.ArgCount(); i++ {
-			if K.StrEqFold(i, "count") {
-				count = K.Int(i + 1)
-				i++
-			} else {
-				index = index || K.StrEqFold(i, "index")
-				hash = hash || K.StrEqFold(i, "hash")
-			}
-		}
-		if count > 65536 {
-			count = 65536
-		}
+		hash, index, count := parseSCAN(K)
 		if hash {
 			return w.WriteObjects(s.ScanHash(K.StrRef(1), count))
 		}
@@ -574,21 +525,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
 	case "HSET": // key member value [WAIT] [QUORUM] [SET member_2 value_2 [SET ...]] [SETID ...]
-		kvs := [][]byte{K.BytesRef(2), K.BytesRef(3)}
-		var ids [][]byte
-		var wait, quorum bool
-		for i := 2; i < K.ArgCount(); i++ {
-			if K.StrEqFold(i, "set") {
-				kvs = append(kvs, K.BytesRef(i+1), K.BytesRef(i+2))
-				i += 2
-			} else if K.StrEqFold(i, "setid") {
-				ids = K.Argv[i+1:]
-				break
-			} else {
-				wait = wait || K.StrEqFold(i, "wait")
-				quorum = quorum || K.StrEqFold(i, "quorum")
-			}
-		}
+		kvs, ids, wait, quorum := parseHSET(K)
 		ids, err := s.HSet(key, wait, kvs, ids)
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -600,12 +537,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				args = append(args, "SET", kvs[i], kvs[i+1])
 			}
 			args = append(args, "SETID")
-			for _, id := range ids {
-				args = append(args, id)
-			}
+			args = append(args, bbany(ids)...)
 			hexIds = s.requireQuorum(hexIds, func() redis.Cmder {
 				return redis.NewStringSliceCmd(context.TODO(), args...)
 			})
+			s.Survey.HSetQuorumN.Incr(int64(len(ids)))
 		}
 		return w.WriteBulks(hexIds)
 	case "PHGETALL": // key checksum
@@ -633,30 +569,25 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt64(int64(res))
-	case "HGET": // key member [SYNC]
-		if err := s.syncHashmap(key, K.StrEqFold(3, "sync")); err != nil {
-			return w.WriteError(err.Error())
-		}
-		res, err := s.HGet(key, K.BytesRef(2))
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteBulk(res)
-	case "HGETALL", "HKEYS": // key [SYNC] [MATCH match] [NOCOMPRESS]
-		var sync, noCompress bool
-		var match []byte
-		for i := 2; i < K.ArgCount(); i++ {
-			sync = sync || K.StrEqFold(i, "sync")
-			noCompress = noCompress || K.StrEqFold(i, "nocompress")
-			if K.StrEqFold(i, "match") {
-				match = K.BytesRef(i + 1)
-				i++
-			}
-		}
+	case "HGET": // key member [SYNC] [TIMESTAMP]
+		sync, ts := parseHGET(K)
 		if err := s.syncHashmap(key, sync); err != nil {
 			return w.WriteError(err.Error())
 		}
-		res, err := s.HGetAll(key, match, true, cmd == "HGETALL")
+		res, time, err := s.HGet(key, K.BytesRef(2))
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if ts {
+			return w.WriteInt64(time / 1e6 / 10 * 10)
+		}
+		return w.WriteBulk(res)
+	case "HGETALL", "HKEYS": // key [SYNC] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
+		sync, noCompress, ts, match := parseHGETALL(K)
+		if err := s.syncHashmap(key, sync); err != nil {
+			return w.WriteError(err.Error())
+		}
+		res, err := s.HGetAll(key, match, true, cmd == "HGETALL", ts)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
@@ -220,14 +222,32 @@ func (a *Session) HGetAll(ctx context.Context, key string, match []byte, sync bo
 	if match != nil {
 		args = append(args, "MATCH", match)
 	}
-	cmd := redis.NewStringStringMapCmd(ctx, args...)
+
 	for _, db := range a.rdb {
-		db.Process(ctx, cmd)
-		err = cmd.Err()
+		v, err := db.Do(ctx, args...).Result()
 		if err != nil {
 			continue
 		}
-		return cmd.Val(), nil
+		if bulk, ok := v.(string); ok {
+			bulks, err := s2.DecompressBulks(strings.NewReader(bulk))
+			if err != nil {
+				// Serious error, no fallback.
+				return nil, err
+			}
+			data = make(map[string]string, len(bulks))
+			for i := 0; i < len(bulks); i += 2 {
+				k := *(*string)(unsafe.Pointer(&bulks[i]))
+				v := *(*string)(unsafe.Pointer(&bulks[i+1]))
+				data[k] = v
+			}
+			return data, nil
+		}
+		res := v.([]any)
+		data = make(map[string]string, len(res))
+		for i := 0; i < len(res); i += 2 {
+			data[res[i].(string)] = res[i+1].(string)
+		}
+		return data, nil
 	}
 	return
 }

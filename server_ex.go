@@ -363,7 +363,7 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	return []byte(m), nil
 }
 
-func (s *Server) wrapHGetAll(key string, syncWork bool) error {
+func (s *Server) syncHashmap(key string, syncWork bool) error {
 	if !s.HasOtherPeers() {
 		return nil
 	}
@@ -387,9 +387,10 @@ func (s *Server) wrapHGetAll(key string, syncWork bool) error {
 			return fmt.Errorf("no peer respond")
 		}
 
-		var pres []string
+		var pres [][]byte
 		s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
-			pres = append(pres, cmd.(*redis.StringCmd).Val())
+			p, _ := cmd.(*redis.StringCmd).Bytes()
+			pres = append(pres, p)
 			return true
 		})
 
@@ -397,10 +398,10 @@ func (s *Server) wrapHGetAll(key string, syncWork bool) error {
 		tx := s.DB.NewBatch()
 		defer tx.Close()
 		for _, p := range pres {
-			if p == "" {
+			if len(p) == 0 {
 				continue
 			}
-			if err := tx.Merge(bkLive, []byte(p), pebble.Sync); err != nil {
+			if err := tx.Merge(bkLive, p, pebble.Sync); err != nil {
 				return err
 			}
 		}
@@ -504,4 +505,18 @@ func (s *Server) GetInt64(key []byte) (int64, error) {
 
 func (s *Server) SetInt64(key []byte, vi int64) error {
 	return s.DB.Set(key, s2.Uint64ToBytes(uint64(vi)), pebble.Sync)
+}
+
+func (s *Server) requireQuorum(hexIds [][]byte, f func() redis.Cmder) [][]byte {
+	if s.HasOtherPeers() {
+		recv, out := s.ForeachPeerSendCmd(f)
+		success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
+		hexIds = append([][]byte{
+			strconv.AppendInt(nil, int64(recv)+1, 10),
+			strconv.AppendInt(nil, int64(success)+1, 10),
+		}, hexIds...)
+	} else {
+		hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
+	}
+	return hexIds
 }

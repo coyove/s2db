@@ -483,6 +483,10 @@ func TestHashSet(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
+	rdb1.ConfigSet(ctx, "CompressLimit", "1")
+	rdb2.ConfigSet(ctx, "CompressLimit", "1")
+	fmt.Println(rdb1.ConfigGet(ctx, "CompressLimit").Val())
+
 	for i := 0; i < 10; i++ {
 		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i), "WAIT")
 	}
@@ -513,7 +517,7 @@ func TestHashSet(t *testing.T) {
 		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), "v16", "WAIT")
 	}
 
-	data3 := rdb2.Do(ctx, "HGETALL", "h", "SYNC", "MATCH", "v16").Val().([]any)
+	data3 := rdb2.Do(ctx, "HGETALL", "h", "SYNC", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
 	if len(data3) != 10 {
 		t.Fatal(data3)
 	}
@@ -534,13 +538,18 @@ func TestHashSet(t *testing.T) {
 
 	dedup := map[string]bool{}
 	for _, id := range staticLZ4 {
-		rdb1.HSet(ctx, "t", id, "1")
+		rdb1.Do(ctx, "HSET", "t", id, "1", "QUORUM")
 		dedup[id] = true
 	}
 
 	fmt.Println(rdb1.Info(ctx, "#t").Val())
 
 	if c := rdb1.HLen(ctx, "t").Val(); c != int64(len(dedup)) {
+		t.Fatal(len(dedup), c)
+	}
+
+	s1.test.Fail = true
+	if c := rdb2.HLen(ctx, "t").Val(); c != int64(len(dedup)) {
 		t.Fatal(len(dedup), c)
 	}
 }

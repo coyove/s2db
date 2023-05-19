@@ -133,3 +133,11 @@ func (kl *keyLock) count() (c int64) {
 	}
 	return
 }
+
+func hexEncodeBulks(ids [][]byte) [][]byte {
+	hexIds := make([][]byte, len(ids))
+	for i := range hexIds {
+		hexIds[i] = hexEncode(ids[i])
+	}
+	return hexIds
+}

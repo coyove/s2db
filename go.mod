@@ -10,6 +10,7 @@ require (
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c
 	github.com/influxdata/tdigest v0.0.1
+	github.com/pierrec/lz4/v4 v4.1.17
 	github.com/sirupsen/logrus v1.9.0
 	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0

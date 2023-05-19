@@ -484,24 +484,39 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-func (s *Server) HSet(key string, kvs ...[]byte) (future.Future, error) {
+func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error) {
 	if len(kvs) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 
-	var maxID int64
+	var maxID future.Future
+	var kk [][]byte
 	m := map[string]hashmapData{}
 	for i := 0; i < len(kvs); i += 2 {
-		maxID = int64(future.Get(s.Channel))
-		m[string(kvs[i])] = hashmapData{ts: maxID, key: kvs[i], data: kvs[i+1]}
+		k := *(*string)(unsafe.Pointer(&kvs[i]))
+		v := kvs[i+1]
+		if len(k) == 0 || len(v) == 0 {
+			return nil, fmt.Errorf("HSet: member and value can't be null")
+		}
+		if len(ids) > 0 {
+			id := ids[i/2]
+			maxID = s2.Convert16BToFuture(id)
+			kk = append(kk, id)
+		} else {
+			maxID = future.Get(s.Channel)
+			idx := s2.ConvertFutureTo16B(maxID)
+			kk = append(kk, idx[:])
+		}
+		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
 	}
 
-	tx := s.DB.NewBatch()
-	defer tx.Close()
-	if err := tx.Merge(skp(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
-		return 0, err
+	if err := s.DB.Merge(skp(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
+		return nil, err
 	}
-	return future.Future(maxID), tx.Commit(pebble.Sync)
+	if wait {
+		future.Future(maxID).Wait()
+	}
+	return kk, nil
 }
 
 func (s *Server) HGet(key string, member []byte) (res []byte, err error) {
@@ -537,26 +552,25 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue bool)
 	}
 	defer rd.Close()
 
-	m, err := hashmapMergerParse(buf)
-	if err != nil {
+	var max int64
+	if err := hashmapMergerIter(buf, func(d hashmapData) bool {
+		if matchValue != nil && !bytes.Equal(matchValue, d.data) {
+			return true
+		}
+		if d.ts > max {
+			max = d.ts
+		}
+		if inclKey {
+			res = append(res, d.key)
+		}
+		if inclValue {
+			res = append(res, d.data)
+		}
+		return true
+	}); err != nil {
 		return nil, err
 	}
 
-	var max int64
-	for _, v := range m {
-		if matchValue != nil && !bytes.Equal(matchValue, v.data) {
-			continue
-		}
-		if v.ts > max {
-			max = v.ts
-		}
-		if inclKey {
-			res = append(res, v.key)
-		}
-		if inclValue {
-			res = append(res, v.data)
-		}
-	}
 	future.Future(max).Wait()
 	return
 }

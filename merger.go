@@ -23,15 +23,6 @@ type hashmapMerger struct {
 	m map[string]hashmapData
 }
 
-func hashmapMergerParse(p []byte) (m map[string]hashmapData, err error) {
-	m = map[string]hashmapData{}
-	err = hashmapMergerIter(p, func(d hashmapData) bool {
-		m[*(*string)(unsafe.Pointer(&d.key))] = d
-		return true
-	})
-	return
-}
-
 func hashmapMergerIter(p []byte, f func(d hashmapData) bool) (err error) {
 	if p[0] != 0x01 {
 		return fmt.Errorf("setMerger: invalid opcode %x", p)
@@ -78,16 +69,13 @@ func (a *hashmapMerger) MergeNewer(value []byte) error {
 }
 
 func (s *hashmapMerger) MergeOlder(value []byte) error {
-	new, err := hashmapMergerParse(value)
-	if err != nil {
-		return err
-	}
-	for a, v := range new {
-		if v.ts > s.m[a].ts {
-			s.m[a] = v
+	return hashmapMergerIter(value, func(d hashmapData) bool {
+		k := *(*string)(unsafe.Pointer(&d.key))
+		if d.ts > s.m[k].ts {
+			s.m[k] = d
 		}
-	}
-	return nil
+		return true
+	})
 }
 
 func (s *hashmapMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
@@ -98,20 +86,17 @@ func (s *hashmapMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
 }
 
 func hashmapMergerBytes(m map[string]hashmapData) []byte {
-	p := &bytes.Buffer{}
-	p.WriteByte(0x01)
-	binary.Write(p, binary.BigEndian, uint32(len(m)))
-	var tmp []byte
+	tmp := make([]byte, 0, len(m)*32)
+	tmp = append(tmp, 0x01)
+	tmp = binary.BigEndian.AppendUint32(tmp, uint32(len(m)))
 	for k, v := range m {
-		tmp = append(tmp[:0], 0, 0, 0, 0, 0, 0, 0, 0)
-		binary.BigEndian.PutUint64(tmp, uint64(v.ts))
+		tmp = binary.BigEndian.AppendUint64(tmp, uint64(v.ts))
 		tmp = binary.AppendUvarint(tmp, uint64(len(k)))
 		tmp = append(tmp, k...)
 		tmp = binary.AppendUvarint(tmp, uint64(len(v.data)))
 		tmp = append(tmp, v.data...)
-		p.Write(tmp)
 	}
-	return p.Bytes()
+	return tmp
 }
 
 func (s *Server) createMerger() *pebble.Merger {
@@ -122,10 +107,13 @@ func (s *Server) createMerger() *pebble.Merger {
 			}
 			switch value[0] {
 			case 1:
-				var err error
 				res := &hashmapMerger{}
 				res.s = s
-				res.m, err = hashmapMergerParse(value)
+				res.m = map[string]hashmapData{}
+				err := hashmapMergerIter(value, func(d hashmapData) bool {
+					res.m[*(*string)(unsafe.Pointer(&d.key))] = d
+					return true
+				})
 				return res, err
 			}
 			return nil, fmt.Errorf("Merger: invalid opcode: %x", value[0])

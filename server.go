@@ -378,27 +378,15 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		hexIds := make([][]byte, len(ids))
-		for i := range hexIds {
-			hexIds[i] = hexEncode(ids[i])
-		}
+		hexIds := hexEncodeBulks(ids)
 		if quorum {
-			if s.HasOtherPeers() {
-				args := []any{"RAWSET", key, ttl}
-				for i, d := range data {
-					args = append(args, ids[i], s2.Bytes(d))
-				}
-				recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-					return redis.NewStringCmd(context.TODO(), args...)
-				})
-				success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
-				hexIds = append([][]byte{
-					strconv.AppendInt(nil, int64(recv)+1, 10),
-					strconv.AppendInt(nil, int64(success)+1, 10),
-				}, hexIds...)
-			} else {
-				hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
+			args := []any{"RAWSET", key, ttl}
+			for i, d := range data {
+				args = append(args, ids[i], s2.Bytes(d))
 			}
+			hexIds = s.requireQuorum(hexIds, func() redis.Cmder {
+				return redis.NewStringCmd(context.TODO(), args...)
+			})
 		}
 		return w.WriteBulks(hexIds)
 	case "RAWSET": // key ttl ID_0 DATA_0 ID_1 DATA_1...
@@ -585,36 +573,59 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
 		}
 		return w.WriteObjects(s.Scan(K.StrRef(1), count))
-	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]]
+	case "HSET": // key member value [WAIT] [QUORUM] [SET member_2 value_2 [SET ...]] [SETID ...]
 		kvs := [][]byte{K.BytesRef(2), K.BytesRef(3)}
-		var wait bool
+		var ids [][]byte
+		var wait, quorum bool
 		for i := 2; i < K.ArgCount(); i++ {
 			if K.StrEqFold(i, "set") {
 				kvs = append(kvs, K.BytesRef(i+1), K.BytesRef(i+2))
 				i += 2
-			} else if K.StrEqFold(i, "wait") {
-				wait = true
+			} else if K.StrEqFold(i, "setid") {
+				ids = K.Argv[i+1:]
+				break
+			} else {
+				wait = wait || K.StrEqFold(i, "wait")
+				quorum = quorum || K.StrEqFold(i, "quorum")
 			}
 		}
-		id, err := s.HSet(key, kvs...)
+		ids, err := s.HSet(key, wait, kvs, ids)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if wait {
-			id.Wait()
+		hexIds := hexEncodeBulks(ids)
+		if quorum {
+			args := []any{"HSET", key, kvs[0], kvs[1]}
+			for i := 2; i < len(kvs); i += 2 {
+				args = append(args, "SET", kvs[i], kvs[i+1])
+			}
+			args = append(args, "SETID")
+			for _, id := range ids {
+				args = append(args, id)
+			}
+			hexIds = s.requireQuorum(hexIds, func() redis.Cmder {
+				return redis.NewStringSliceCmd(context.TODO(), args...)
+			})
 		}
-		return w.WriteInt64(int64(id))
+		return w.WriteBulks(hexIds)
 	case "PHGETALL": // key checksum
-		data, err := s.Get(skp(key))
+		data, rd, err := s.DB.Get(skp(key))
+		if err == pebble.ErrNotFound {
+			return w.WriteBulk([]byte{})
+		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
+		defer rd.Close()
 		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
 			data = []byte{}
 		}
+		if data == nil {
+			data = []byte{} // no nil
+		}
 		return w.WriteBulk(data)
 	case "HLEN": // key [SYNC]
-		if err := s.wrapHGetAll(key, K.StrEqFold(2, "sync")); err != nil {
+		if err := s.syncHashmap(key, K.StrEqFold(2, "sync")); err != nil {
 			return w.WriteError(err.Error())
 		}
 		res, err := s.HLen(key)
@@ -623,7 +634,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		return w.WriteInt64(int64(res))
 	case "HGET": // key member [SYNC]
-		if err := s.wrapHGetAll(key, K.StrEqFold(3, "sync")); err != nil {
+		if err := s.syncHashmap(key, K.StrEqFold(3, "sync")); err != nil {
 			return w.WriteError(err.Error())
 		}
 		res, err := s.HGet(key, K.BytesRef(2))
@@ -631,22 +642,26 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(res)
-	case "HGETALL", "HKEYS": // key [SYNC] [MATCH match]
-		var sync bool
+	case "HGETALL", "HKEYS": // key [SYNC] [MATCH match] [NOCOMPRESS]
+		var sync, noCompress bool
 		var match []byte
 		for i := 2; i < K.ArgCount(); i++ {
 			sync = sync || K.StrEqFold(i, "sync")
+			noCompress = noCompress || K.StrEqFold(i, "nocompress")
 			if K.StrEqFold(i, "match") {
 				match = K.BytesRef(i + 1)
 				i++
 			}
 		}
-		if err := s.wrapHGetAll(key, sync); err != nil {
+		if err := s.syncHashmap(key, sync); err != nil {
 			return w.WriteError(err.Error())
 		}
 		res, err := s.HGetAll(key, match, true, cmd == "HGETALL")
 		if err != nil {
 			return w.WriteError(err.Error())
+		}
+		if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
+			return w.WriteBulk(s2.CompressBulks(res))
 		}
 		return w.WriteBulks(res)
 	case "WAIT":

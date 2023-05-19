@@ -1,6 +1,7 @@
 package s2
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/sha1"
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/pierrec/lz4/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -298,4 +300,46 @@ func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err e
 
 func BitsMask(hi, lo int64) int64 {
 	return int64(1<<hi - 1<<lo + 1<<hi)
+}
+
+func CompressBulks(m [][]byte) []byte {
+	p := &bytes.Buffer{}
+	w := lz4.NewWriter(p)
+	var tmp []byte
+	for _, v := range m {
+		tmp = binary.AppendUvarint(tmp[:0], uint64(len(v)))
+		tmp = append(tmp, v...)
+		w.Write(tmp)
+	}
+	w.Flush()
+	return p.Bytes()
+}
+
+func DecompressBulks(r io.Reader) (bulks [][]byte, err error) {
+	rd := bufio.NewReader(lz4.NewReader(r))
+	for {
+		n, err := binary.ReadUvarint(rd)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		b := make([]byte, n)
+		if _, err := io.ReadFull(rd, b); err != nil {
+			return nil, err
+		}
+		bulks = append(bulks, b)
+	}
+	return
+}
+
+func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
+	for _, b := range bulks {
+		max -= len(b)
+		if max < 0 {
+			return true
+		}
+	}
+	return false
 }

@@ -40,6 +40,7 @@ type ServerConfig struct {
 	TimeoutRange    int // ms
 	DistinctLimit   int
 	BatchLimit      int
+	CompressLimit   int
 	MetricsEndpoint string
 	InspectorSource string
 }
@@ -115,6 +116,7 @@ func (s *Server) saveConfig() error {
 	ifZero(&s.Config.TimeoutRange, 500)
 	ifZero(&s.Config.DistinctLimit, 8192)
 	ifZero(&s.Config.BatchLimit, 100)
+	ifZero(&s.Config.CompressLimit, 10*1024)
 	if s.Config.ServerName == "" {
 		s.Config.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())
 	}

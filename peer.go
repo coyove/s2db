@@ -18,20 +18,21 @@ import (
 
 type endpoint struct {
 	mu     sync.RWMutex
+	index  int
 	client *redis.Client
 	config wire.RedisConfig
 	server *Server
 	job    sync.Once
-	jobq   chan *commandIn
+	jobq   chan *endpointCmd
 }
 
-type commandIn struct {
-	e *endpoint
+type endpointCmd struct {
 	redis.Cmder
-	wait chan *commandIn
+	ep  *endpoint
+	out chan *endpointCmd
 }
 
-func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {
+func (e *endpoint) Set(uri string) (changed bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if uri != e.config.URI {
@@ -46,12 +47,15 @@ func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {
 				old.Close()
 			}
 			e.job.Do(func() {
-				e.jobq = make(chan *commandIn, 1e3)
+				e.jobq = make(chan *endpointCmd, 1e3)
 				for i := 0; i < runtime.NumCPU()*5; i++ {
 					go e.work()
 				}
 			})
 		} else {
+			// We doesn't close 'jobq' here by calling e.Close() because following
+			// e.Set() may need it. e.Close() will only be called when e is not
+			// needed anymore (e.g. server close).
 			e.client.Close()
 			e.client = nil
 			e.config = wire.RedisConfig{}
@@ -73,11 +77,12 @@ func (e *endpoint) work() {
 			continue
 		}
 
+		pstart := future.UnixNano()
 		cmd, ok := <-e.jobq
 		if !ok {
 			return
 		}
-		commands := []*commandIn{cmd}
+		commands := []*endpointCmd{cmd}
 
 	MORE:
 		select {
@@ -96,7 +101,7 @@ func (e *endpoint) work() {
 		if cli == nil {
 			for _, cmd := range commands {
 				cmd.SetErr(redis.ErrClosed)
-				cmd.wait <- cmd
+				cmd.out <- cmd
 			}
 			time.Sleep(time.Second)
 			continue
@@ -108,9 +113,10 @@ func (e *endpoint) work() {
 		}
 		p.Exec(ctx)
 		for _, cmd := range commands {
-			cmd.wait <- cmd
+			cmd.out <- cmd
 		}
 		e.server.Survey.PeerBatchSize.Incr(int64(len(commands)))
+		e.server.Survey.PeerBatchLatency.Incr((future.UnixNano() - pstart) / 1e6)
 	}
 }
 
@@ -175,17 +181,18 @@ func (s *Server) ForeachPeerSendCmd(
 	resp func(redis.Cmder) bool,
 ) (sent, success int) {
 	pstart := future.UnixNano()
+	pcmd := req()
 
-	out := make(chan *commandIn, len(s.Peers))
+	out := make(chan *endpointCmd, future.Channels)
 	total := 0
 	for i := 0; i < len(s.Peers); i++ {
 		p := s.Peers[i]
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
 			select {
-			case p.jobq <- &commandIn{e: p, Cmder: req(), wait: out}:
+			case p.jobq <- &endpointCmd{ep: p, Cmder: req(), out: out}:
 				sent++
 			case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
-				logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
+				logrus.Errorf("failed to send peer job (%s), queue is full", p.Config().Addr)
 			}
 			total++
 		}
@@ -205,10 +212,12 @@ func (s *Server) ForeachPeerSendCmd(
 		goal = (total+1)/2 + 1 - 1
 	}
 
+	var ackList [future.Channels]bool
 MORE:
 	select {
 	case res := <-out:
-		addr := res.e.Config().Addr
+		ackList[res.ep.index] = true
+		addr := res.ep.Config().Addr
 		x, _ := s.Survey.PeerLatency.LoadOrStore(addr, new(s2.Survey))
 		x.(*s2.Survey).Incr((future.UnixNano() - pstart) / 1e6)
 
@@ -231,7 +240,14 @@ MORE:
 		}
 	case <-time.After(w):
 		_, fn, ln, _ := runtime.Caller(1)
-		logrus.Errorf("%s:%d failed to request peer, timed out (%d/%d)", filepath.Base(fn), ln, recv, sent)
+		var remains []string
+		s.ForeachPeer(func(i int, ep *endpoint, cli *redis.Client) {
+			if !ackList[i] {
+				remains = append(remains, ep.config.Addr)
+			}
+		})
+		logrus.Errorf("[%s] %s:%d timed out to request all peers (%d/%d), remains: %v",
+			strings.ToUpper(pcmd.Name()), filepath.Base(fn), ln, recv, sent, remains)
 	}
 	return
 }

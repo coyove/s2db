@@ -65,6 +65,7 @@ type ServerSurvey struct {
 	AppendExpire     s2.Survey
 	RangeDistinct    s2.Survey
 	PeerBatchSize    s2.Survey
+	PeerBatchLatency s2.Survey
 	HashMerger       s2.Survey
 	HashSyncer       s2.Survey
 	TTLOnce          s2.Survey `metrics:"mean"`
@@ -136,7 +137,7 @@ func (s *Server) saveConfig() error {
 
 	for i := range s.Peers {
 		x := reflect.ValueOf(s.Config).FieldByName("Peer" + strconv.Itoa(i)).String()
-		if changed, err := s.Peers[i].CreateRedis(x); err != nil {
+		if changed, err := s.Peers[i].Set(x); err != nil {
 			return err
 		} else if changed {
 			log.Infof("peer #%d created/removed with: %q", i, x)

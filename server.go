@@ -91,7 +91,7 @@ func Open(dbPath string) (s *Server, err error) {
 
 	// s.DB.DeleteRange([]byte("h"), []byte("i"), pebble.Sync)
 	for i := range s.Peers {
-		s.Peers[i] = &endpoint{server: s}
+		s.Peers[i] = &endpoint{server: s, index: i}
 	}
 	if err := s.loadConfig(); err != nil {
 		return nil, err

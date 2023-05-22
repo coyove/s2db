@@ -41,18 +41,26 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 		n = -n
 		flag = flag | client.DESC
 	}
+	all := false
 	for _, el := range args {
 		switch el {
 		case "distinct":
 			flag = flag | client.DISTINCT
 		case "all":
-			flag = flag | client.ALL
+			all = true
 		}
 	}
 
 	a := client.Begin(r)
 	p, err := a.Select(context.TODO(), key, start, n, flag)
 	s2pkg.PanicErr(err)
+	if all {
+		for _, p := range p {
+			if !p.Q {
+				panic("Q: not all peers respond")
+			}
+		}
+	}
 	return p
 }
 
@@ -497,7 +505,7 @@ func TestHashSet(t *testing.T) {
 
 	data1, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil, true)
 	s2.test.Fail = true
-	data2, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil, true)
+	data2, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil, false)
 
 	for k, v := range data1 {
 		if data2[k] != v {

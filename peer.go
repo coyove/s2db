@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,8 +28,7 @@ type endpoint struct {
 type commandIn struct {
 	e *endpoint
 	redis.Cmder
-	wait   chan *commandIn
-	pstart int64
+	wait chan *commandIn
 }
 
 func (e *endpoint) CreateRedis(uri string) (changed bool, err error) {
@@ -164,62 +164,83 @@ func (s *Server) ForeachPeer(f func(i int, p *endpoint, c *redis.Client)) {
 	}
 }
 
-func (s *Server) ForeachPeerSendCmd(f func() redis.Cmder) (int, <-chan *commandIn) {
-	recv := 0
-	out := make(chan *commandIn, len(s.Peers))
-	s.ForeachPeer(func(_ int, p *endpoint, cli *redis.Client) {
-		select {
-		case p.jobq <- &commandIn{e: p, Cmder: f(), wait: out, pstart: future.UnixNano()}:
-			recv++
-		case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
-			logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
-		}
-	})
-	return recv, out
+type SendCmdOptions struct {
+	LongWait bool // some commands (APPEND) may require longer waits
+	Quorum   bool // return immediately upon receiving enough acknowledgements
 }
 
-func (s *Server) ProcessPeerResponse(longWait bool, recv int, out <-chan *commandIn, f func(redis.Cmder) bool) (success int) {
-	if recv == 0 {
+func (s *Server) ForeachPeerSendCmd(
+	opts SendCmdOptions,
+	req func() redis.Cmder,
+	resp func(redis.Cmder) bool,
+) (sent, success int) {
+	pstart := future.UnixNano()
+
+	out := make(chan *commandIn, len(s.Peers))
+	total := 0
+	for i := 0; i < len(s.Peers); i++ {
+		p := s.Peers[i]
+		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
+			select {
+			case p.jobq <- &commandIn{e: p, Cmder: req(), wait: out}:
+				sent++
+			case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
+				logrus.Errorf("failed to send peer job (%s), timed out", p.Config().Addr)
+			}
+			total++
+		}
+	}
+	if sent == 0 {
 		return
 	}
 
 	w := time.Duration(s.Config.TimeoutPeer) * time.Millisecond
-	if longWait {
-		// Some commands (APPEND) may require longer waits.
+	if opts.LongWait {
 		w = time.Duration(s.Config.TimeoutPeerLong) * time.Millisecond
 	}
+
+	recv := 0
+	goal := sent
+	if opts.Quorum {
+		goal = (total+1)/2 + 1 - 1
+	}
+
 MORE:
 	select {
 	case res := <-out:
-		x, _ := s.Survey.PeerLatency.LoadOrStore(res.e.Config().Addr, new(s2.Survey))
-		x.(*s2.Survey).Incr((future.UnixNano() - res.pstart) / 1e6)
+		addr := res.e.Config().Addr
+		x, _ := s.Survey.PeerLatency.LoadOrStore(addr, new(s2.Survey))
+		x.(*s2.Survey).Incr((future.UnixNano() - pstart) / 1e6)
 
 		if err := res.Cmder.Err(); err != nil {
-			uri := res.e.Config().URI
-			if !s.errThrot.Throttle(uri, err) {
-				logrus.Errorf("[%s] failed to request %s: %v", res.Cmder.Name(), uri, err)
+			if !s.errThrot.Throttle(addr, err) {
+				logrus.Errorf("[%s] failed to request %s: %v", strings.ToUpper(res.Cmder.Name()), addr, err)
 			}
 		} else {
-			if f(res.Cmder) {
+			if resp == nil {
+				success++
+			} else if resp(res.Cmder) {
 				success++
 			}
+			if success >= goal {
+				break
+			}
 		}
-		if recv--; recv > 0 {
+		if recv++; recv < sent {
 			goto MORE
 		}
 	case <-time.After(w):
 		_, fn, ln, _ := runtime.Caller(1)
-		logrus.Errorf("%s:%d failed to request peer, timed out, remains: %v", filepath.Base(fn), ln, recv)
+		logrus.Errorf("%s:%d failed to request peer, timed out (%d/%d)", filepath.Base(fn), ln, recv, sent)
 	}
 	return
 }
 
 func (s *Server) requireQuorum(hexIds [][]byte, f func() redis.Cmder) [][]byte {
 	if s.HasOtherPeers() {
-		recv, out := s.ForeachPeerSendCmd(f)
-		success := s.ProcessPeerResponse(true, recv, out, func(redis.Cmder) bool { return true })
+		sent, success := s.ForeachPeerSendCmd(SendCmdOptions{LongWait: true, Quorum: true}, f, nil)
 		hexIds = append([][]byte{
-			strconv.AppendInt(nil, int64(recv)+1, 10),
+			strconv.AppendInt(nil, int64(sent)+1, 10),
 			strconv.AppendInt(nil, int64(success)+1, 10),
 		}, hexIds...)
 	} else {

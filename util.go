@@ -82,7 +82,7 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait, quorum b
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw, all bool, flag int) {
+func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw bool, flag int) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
@@ -90,7 +90,6 @@ func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw, all bo
 		desc = desc || K.StrEqFold(i, "desc")
 		distinct = distinct || K.StrEqFold(i, "distinct")
 		raw = raw || K.StrEqFold(i, "raw")
-		all = all || K.StrEqFold(i, "all")
 	}
 	if desc {
 		flag |= RangeDesc

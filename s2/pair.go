@@ -20,15 +20,20 @@ const (
 type Pair struct {
 	ID   []byte
 	Data []byte
-	C    bool
+	C, Q bool
 }
 
 func (p Pair) UnixMilli() int64 {
 	ns := p.UnixNano()
 	ts := ns / 1e6 / 10 * 10
+	var x int64
 	if p.C {
-		ts += 1
+		x |= 1
 	}
+	if p.Q {
+		x |= 2
+	}
+	ts += x
 	return ts
 }
 
@@ -71,12 +76,17 @@ func (p Pair) DataForDistinct() string {
 	return v
 }
 
-func (p Pair) String() string {
+func (p Pair) String() (s string) {
 	id := fmt.Sprintf("%016x_%016x", p.ID[:8], p.ID[8:16])
 	if p.C {
-		return fmt.Sprintf("[[%s:%q]]", id, p.Data)
+		s = fmt.Sprintf("[%s:%q]", id, p.Data)
+	} else {
+		s = fmt.Sprintf("<%s:%q>", id, p.Data)
 	}
-	return fmt.Sprintf("<%s:%q>", id, p.Data)
+	if p.Q {
+		s = "[" + s + "]"
+	}
+	return
 }
 
 func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {

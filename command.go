@@ -98,7 +98,7 @@ func (s *Server) Append(key string, ids, data [][]byte, ttlSec int64, wait bool)
 			binary.BigEndian.PutUint64(idx[:], uint64(id))
 			copy(idx[8:12], kh[:])
 			rand.Read(idx[12:13])
-			idx[13] = 0 // shard index, not used by now
+			idx[13] = 0 // reserved
 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
 			idx[15] = 0 // extra
 
@@ -515,7 +515,7 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 			idx := s2.ConvertFutureTo16B(maxID)
 			copy(idx[8:12], kh[:])
 			rand.Read(idx[12:13])
-			idx[13] = 0 // shard index, not used by now
+			idx[13] = 0 // reserved
 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdHSet
 			idx[15] = 0 // extra
 			kk = append(kk, idx[:])
@@ -577,11 +577,11 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, incl
 		if inclKey {
 			res = append(res, d.key)
 		}
+		if inclTime {
+			res = append(res, strconv.AppendInt(nil, d.ts/1e6, 10))
+		}
 		if inclValue {
 			res = append(res, d.data)
-		}
-		if inclTime {
-			res = append(res, strconv.AppendInt(nil, d.ts/1e6/10*10, 10))
 		}
 		return true
 	}); err != nil {

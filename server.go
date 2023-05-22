@@ -403,8 +403,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			a = append(a, p.ID, p.Data)
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] [ALL] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, localOnly, desc, distinct, raw, all, flag := parseSELECT(K)
+	case "SELECT": // key start count [ASC|DESC] [LOCAL] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		n, localOnly, desc, distinct, raw, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
 		origN := n
 		if !testFlag {
@@ -417,11 +417,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		if !s.HasOtherPeers() || localOnly || raw {
-			return s.convertPairs(w, data, origN)
+			return s.convertPairs(w, data, origN, true)
 		}
 		if s2.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, origN)
+			return s.convertPairs(w, data, origN, true)
 		}
 
 		if partial {
@@ -434,31 +434,21 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			n = len(data)
 		}
 
+		origData := append([]s2.Pair{}, data...)
+
 		var lowest []byte
 		if desc && len(data) > 0 && len(data) == n {
 			lowest = data[len(data)-1].ID
 		}
-		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
 			return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest)
-		})
-		if recv == 0 {
-			if all {
-				return w.WriteError("no peer respond")
-			}
-			return s.convertPairs(w, data, origN)
-		}
-
-		origData := append([]s2.Pair{}, data...)
-		success := s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
+		}, func(cmd redis.Cmder) bool {
 			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
 				_ = v[i][15]
 				data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
 			}
 			return true
 		})
-		if all && success != s.OtherPeersCount() {
-			return w.WriteError(fmt.Sprintf("not all peers respond: %d/%d", success, s.OtherPeersCount()))
-		}
 
 		data = sortPairs(data, !desc)
 		if distinct {
@@ -475,7 +465,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
 			len(data) < n && desc,
 		)
-		return s.convertPairs(w, data, origN)
+		return s.convertPairs(w, data, origN, (success+1) >= (s.OtherPeersCount()+1)/2+1)
 	case "LOOKUP": // id [LOCAL]
 		var data []byte
 		var err error
@@ -500,10 +490,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteBulks([][]byte{add, del})
 		}
 		if s.HasOtherPeers() {
-			recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
+			s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
 				return redis.NewStringSliceCmd(context.TODO(), cmd, key, "HLL")
-			})
-			s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
+			}, func(cmd redis.Cmder) bool {
 				v := cmd.(*redis.StringSliceCmd).Val()
 				add.Merge(s2.HyperLogLog(v[0]))
 				del.Merge(s2.HyperLogLog(v[1]))

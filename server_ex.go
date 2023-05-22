@@ -13,7 +13,6 @@ import (
 	"net/http/pprof"
 	"net/url"
 	"os"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -345,20 +344,19 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 		return data, nil
 	}
 
-	recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-		return redis.NewStringCmd(context.TODO(), "LOOKUP", id, "LOCAL")
-	})
-	if recv == 0 {
-		return data, nil
-	}
 	var m string
-	s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
+	sent, _ := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
+		return redis.NewStringCmd(context.TODO(), "LOOKUP", id, "LOCAL")
+	}, func(cmd redis.Cmder) bool {
 		m0 := cmd.(*redis.StringCmd).Val()
 		if m0 != "" {
 			m = m0
 		}
 		return true
 	})
+	if sent == 0 {
+		return data, nil
+	}
 	return []byte(m), nil
 }
 
@@ -379,19 +377,18 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 		if err != nil {
 			return err
 		}
-		recv, out := s.ForeachPeerSendCmd(func() redis.Cmder {
-			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
-		})
-		if recv == 0 {
-			return fmt.Errorf("no peer respond")
-		}
 
 		var pres [][]byte
-		s.ProcessPeerResponse(false, recv, out, func(cmd redis.Cmder) bool {
+		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
+			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
+		}, func(cmd redis.Cmder) bool {
 			p, _ := cmd.(*redis.StringCmd).Bytes()
 			pres = append(pres, p)
 			return true
 		})
+		if success == 0 {
+			return fmt.Errorf("no peer respond")
+		}
 
 		bkLive := skp(key)
 		tx := s.DB.NewBatch()
@@ -407,7 +404,6 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 		if err := tx.Commit(pebble.Sync); err != nil {
 			return err
 		}
-		runtime.KeepAlive(pres)
 		return nil
 	}
 
@@ -425,13 +421,14 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 	return nil
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {
+func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int, q bool) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
 	var maxFuture future.Future
 	for _, p := range p {
+		p.Q = q
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)

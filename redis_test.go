@@ -25,6 +25,7 @@ func init() {
 	dbLogger = log.New()
 	testFlag = true
 	rand.Seed(future.UnixNano())
+	future.StartWatcher(func(error) {})
 }
 
 func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {

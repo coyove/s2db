@@ -77,7 +77,6 @@ func (e *endpoint) work() {
 			continue
 		}
 
-		pstart := future.UnixNano()
 		cmd, ok := <-e.jobq
 		if !ok {
 			return
@@ -116,7 +115,6 @@ func (e *endpoint) work() {
 			cmd.out <- cmd
 		}
 		e.server.Survey.PeerBatchSize.Incr(int64(len(commands)))
-		e.server.Survey.PeerBatchLatency.Incr((future.UnixNano() - pstart) / 1e6)
 	}
 }
 
@@ -209,7 +207,8 @@ func (s *Server) ForeachPeerSendCmd(
 	recv := 0
 	goal := sent
 	if opts.Quorum {
-		goal = (total+1)/2 + 1 - 1
+		goal = (total+1)/2 + 1
+		goal-- // exclude self
 	}
 
 	var ackList [future.Channels]bool
@@ -248,6 +247,7 @@ MORE:
 		})
 		logrus.Errorf("[%s] %s:%d timed out to request all peers (%d/%d), remains: %v",
 			strings.ToUpper(pcmd.Name()), filepath.Base(fn), ln, recv, sent, remains)
+		s.Survey.PeerTimeout.Incr(1)
 	}
 	return
 }

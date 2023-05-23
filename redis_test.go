@@ -39,28 +39,20 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 	flag := 0
 	if n < 0 {
 		n = -n
-		flag = flag | client.DESC
+		flag = flag | client.S_DESC
 	}
-	all := false
 	for _, el := range args {
 		switch el {
 		case "distinct":
-			flag = flag | client.DISTINCT
+			flag = flag | client.S_DISTINCT
 		case "all":
-			all = true
+			flag = flag | client.S_QUORUM
 		}
 	}
 
 	a := client.Begin(r)
 	p, err := a.Select(context.TODO(), key, start, n, flag)
 	s2pkg.PanicErr(err)
-	if all {
-		for _, p := range p {
-			if !p.Q {
-				panic("Q: not all peers respond")
-			}
-		}
-	}
 	return p
 }
 
@@ -407,7 +399,7 @@ func TestQuorum(t *testing.T) {
 	ctx := context.TODO()
 	var ids []string
 	for i := 0; i < 20; i++ {
-		id := rdb1.Do(ctx, "APPEND", "a", i, "QUORUM").Val().([]any)[2].(string)
+		id := rdb1.Do(ctx, "APPENDQ", "a", i).Val().([]any)[2].(string)
 		ids = append(ids, id)
 		time.Sleep(150 * time.Millisecond)
 	}
@@ -419,7 +411,7 @@ func TestQuorum(t *testing.T) {
 		}
 	}
 
-	rdb1.Do(ctx, "APPEND", "a", 100, "QUORUM", "TTL", 1)
+	rdb1.Do(ctx, "APPENDQ", "a", 100, "TTL", 1)
 	data2 := doRange(rdb2, "a", "0", 100)
 	if len(data2) >= len(data) {
 		t.Fatal(data2)
@@ -525,7 +517,7 @@ func TestHashSet(t *testing.T) {
 		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), "v16", "WAIT")
 	}
 
-	data3 := rdb2.Do(ctx, "HGETALL", "h", "SYNC", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
+	data3 := rdb2.Do(ctx, "HGETALLQ", "h", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
 	if len(data3) != 10 {
 		t.Fatal(data3)
 	}

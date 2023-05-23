@@ -66,7 +66,7 @@ func (a *Session) AppendQuorum(ctx context.Context, key string, ttlSec int64, da
 func (a *Session) doAppend(ctx context.Context, key string, q bool, ttlSec int64, data ...any) (Result, error) {
 	args := []any{"APPEND", key, data[0], "TTL", ttlSec}
 	if q {
-		args = append(args, "QUORUM")
+		args[0] = "APPENDQ"
 	}
 	for i := 1; i < len(data); i++ {
 		args = append(args, "AND", data[i])
@@ -94,26 +94,26 @@ func (a *Session) Close() {
 }
 
 const (
-	DESC     = 1  // select in desc order
-	ASC      = 2  // select in asc order
-	DISTINCT = 4  // distinct data
-	LOCAL    = 8  // select local peer data
-	RAW      = 16 // select raw Pairs
+	S_DESC     = 1 // select in desc order
+	S_ASC      = 2 // select in asc order
+	S_DISTINCT = 4 // distinct data
+	S_QUORUM   = 8
+	S_RAW      = 16 // select raw Pairs
 )
 
 func (a *Session) Select(ctx context.Context, key string, cursor string, n int, flag int) (p []s2.Pair, err error) {
 	args := []any{"SELECT", key, cursor, n}
-	if flag&DESC > 0 {
+	if flag&S_DESC > 0 {
 		args = append(args, "DESC")
 	}
-	if flag&DISTINCT > 0 {
+	if flag&S_DISTINCT > 0 {
 		args = append(args, "DISTINCT")
 	}
-	if flag&LOCAL > 0 {
-		args = append(args, "LOCAL")
-	}
-	if flag&RAW > 0 {
+	if flag&S_RAW > 0 {
 		args = append(args, "RAW")
+	}
+	if flag&S_QUORUM > 0 {
+		args[0] = "SELECTQ"
 	}
 	cmd := redis.NewStringSliceCmd(ctx, args...)
 
@@ -137,31 +137,6 @@ func (a *Session) Select(ctx context.Context, key string, cursor string, n int, 
 		return
 	}
 
-	return
-}
-
-func (a *Session) Set(ctx context.Context, key string, data any) (string, error) {
-	ids, err := a.doAppend(ctx, key, false, 1, data)
-	if err != nil {
-		return "", err
-	}
-	return ids.KeyIDs[0], nil
-}
-
-func (a *Session) SetQuorum(ctx context.Context, key string, data any) (Result, error) {
-	return a.doAppend(ctx, key, true, 1, data)
-}
-
-func (a *Session) Get(ctx context.Context, key string) (data []byte, err error) {
-	cmd := redis.NewStringCmd(ctx, "SELECT", key, "RECENT", 1, "DESC")
-	for _, db := range a.rdb {
-		db.Process(ctx, cmd)
-		err = cmd.Err()
-		if err != nil {
-			continue
-		}
-		return cmd.Bytes()
-	}
 	return
 }
 
@@ -190,7 +165,7 @@ func (a *Session) HSetQuorum(ctx context.Context, key string, kvs ...any) (Resul
 func (a *Session) doHSet(ctx context.Context, key string, q bool, kvs []any) (Result, error) {
 	args := []any{"HSET", key, kvs[0], kvs[1]}
 	if q {
-		args = append(args, "QUORUM")
+		args[0] = "HSETQ"
 	}
 	for i := 2; i < len(kvs); i += 2 {
 		args = append(args, "SET", kvs[i], kvs[i+1])
@@ -232,10 +207,10 @@ func (a *Session) send(ctx context.Context, cmd *redis.StringSliceCmd, q bool) (
 	return r, err
 }
 
-func (a *Session) HGetAll(ctx context.Context, key string, match []byte, sync bool) (data map[string]string, err error) {
+func (a *Session) HGetAll(ctx context.Context, key string, match []byte, q bool) (data map[string]string, err error) {
 	args := []any{"HGETALL", key}
-	if sync {
-		args = append(args, "SYNC")
+	if q {
+		args[0] = "HGETALLQ"
 	}
 	if match != nil {
 		args = append(args, "MATCH", match)

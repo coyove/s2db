@@ -33,6 +33,7 @@ var (
 		"PSELECT":     true,
 		"PHGETALL":    true,
 		"SELECT":      true,
+		"SELECTQ":     true,
 		"SELECTCOUNT": true,
 		"LOOKUP":      true,
 		"SCAN":        true,
@@ -40,10 +41,16 @@ var (
 		"HGET":        true,
 		"HGETALL":     true,
 		"HKEYS":       true,
+		"HLENQ":       true,
+		"HGETQ":       true,
+		"HGETALLQ":    true,
+		"HKEYSQ":      true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND": true,
-		"HSET":   true,
+		"APPEND":  true,
+		"APPENDQ": true,
+		"HSET":    true,
+		"HSETQ":   true,
 	}
 
 	//go:embed scripts/index.html
@@ -360,14 +367,14 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	return []byte(m), nil
 }
 
-func (s *Server) syncHashmap(key string, syncWork bool) error {
+func (s *Server) syncHashmap(key string, q bool) error {
 	if !s.HasOtherPeers() {
 		return nil
 	}
 
 	work := func() error {
 		defer func(start time.Time) {
-			if !syncWork {
+			if !q {
 				s.hashSyncOnce.unlock(key)
 			}
 			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
@@ -379,15 +386,15 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 		}
 
 		var pres [][]byte
-		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
+		_, success := s.ForeachPeerSendCmd(SendCmdOptions{Quorum: q}, func() redis.Cmder {
 			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
 		}, func(cmd redis.Cmder) bool {
 			p, _ := cmd.(*redis.StringCmd).Bytes()
 			pres = append(pres, p)
 			return true
 		})
-		if success == 0 {
-			return fmt.Errorf("no peer respond")
+		if q && success+1 < (s.OtherPeersCount()+1)/2+1 {
+			return fmt.Errorf("quorum not met %d/%d", success+1, s.OtherPeersCount()+1)
 		}
 
 		bkLive := skp(key)
@@ -407,7 +414,7 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 		return nil
 	}
 
-	if syncWork {
+	if q {
 		return work()
 	}
 	if s.hashSyncOnce.lock(key) {
@@ -421,14 +428,13 @@ func (s *Server) syncHashmap(key string, syncWork bool) error {
 	return nil
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int, q bool) (err error) {
+func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
 	var maxFuture future.Future
 	for _, p := range p {
-		p.Q = q
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)

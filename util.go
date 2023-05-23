@@ -61,7 +61,7 @@ func distinctPairsData(p []s2.Pair) []s2.Pair {
 	return p
 }
 
-func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait, quorum bool) {
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait bool) {
 	data = [][]byte{K.BytesRef(2)}
 	for i := 3; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "ttl") {
@@ -69,8 +69,6 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait, quorum b
 			i++
 		} else if K.StrEqFold(i, "wait") {
 			wait = true
-		} else if K.StrEqFold(i, "quorum") {
-			quorum = true
 		} else if K.StrEqFold(i, "and") {
 			data = append(data, K.BytesRef(i+1))
 			i++
@@ -82,11 +80,10 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait, quorum b
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw bool, flag int) {
+func parseSELECT(K *wire.Command) (n int, desc, distinct, raw bool, flag int) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
-		localOnly = localOnly || K.StrEqFold(i, "local")
 		desc = desc || K.StrEqFold(i, "desc")
 		distinct = distinct || K.StrEqFold(i, "distinct")
 		raw = raw || K.StrEqFold(i, "raw")
@@ -103,7 +100,7 @@ func parseSELECT(K *wire.Command) (n int, localOnly, desc, distinct, raw bool, f
 	return
 }
 
-func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait, quorum bool) {
+func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait bool) {
 	kvs = [][]byte{K.BytesRef(2), K.BytesRef(3)}
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "set") {
@@ -114,15 +111,13 @@ func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait, quorum bool) {
 			break
 		} else {
 			wait = wait || K.StrEqFold(i, "wait")
-			quorum = quorum || K.StrEqFold(i, "quorum")
 		}
 	}
 	return
 }
 
-func parseHGETALL(K *wire.Command) (sync, noCompress, ts bool, match []byte) {
+func parseHGETALL(K *wire.Command) (noCompress, ts bool, match []byte) {
 	for i := 2; i < K.ArgCount(); i++ {
-		sync = sync || K.StrEqFold(i, "sync")
 		noCompress = noCompress || K.StrEqFold(i, "nocompress")
 		ts = ts || K.StrEqFold(i, "timestamp")
 		if K.StrEqFold(i, "match") {
@@ -133,9 +128,8 @@ func parseHGETALL(K *wire.Command) (sync, noCompress, ts bool, match []byte) {
 	return
 }
 
-func parseHGET(K *wire.Command) (sync, ts bool) {
+func parseHGET(K *wire.Command) (ts bool) {
 	for i := 3; i < K.ArgCount(); i++ {
-		sync = sync || K.StrEqFold(i, "sync")
 		ts = ts || K.StrEqFold(i, "timestamp")
 	}
 	return

@@ -65,7 +65,7 @@ type ServerSurvey struct {
 	AppendExpire     s2.Survey
 	RangeDistinct    s2.Survey
 	PeerBatchSize    s2.Survey
-	PeerBatchLatency s2.Survey
+	PeerTimeout      s2.Survey `metrics:"qps"`
 	HashMerger       s2.Survey
 	HashSyncer       s2.Survey
 	TTLOnce          s2.Survey `metrics:"mean"`

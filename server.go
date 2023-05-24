@@ -50,7 +50,7 @@ type Server struct {
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
 	ttlOnce      keyLock
-	delOnce      keyLock
+	distinctOnce keyLock
 	hashSyncOnce keyLock
 	errThrot     s2.ErrorThrottler
 
@@ -391,12 +391,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			s.Survey.SelectCacheHits.Incr(1)
 			return w.WriteBulks([][]byte{}) // no nil
 		}
-		data, partial, err := s.Range(key, start, K.Int(3), flag)
+		data, err := s.Range(key, start, K.Int(3), flag)
 		if err != nil {
 			return w.WriteError(err.Error())
-		}
-		if partial {
-			return w.WriteError("SELECT partial data")
 		}
 		a := make([][]byte, 0, 2*len(data))
 		for _, p := range data {
@@ -408,30 +405,20 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		start := s.translateCursor(K.BytesRef(2), desc)
 		origN := n
 		if !testFlag {
-			// Caller wants N elements, we actually fetch more than that.
+			// Caller wants N Pairs, we actually fetch more than that to consolidate them better (hopefully).
 			// Special case: n=1 is still n=1.
 			n = int(float64(n) * (1 + rand.Float64()))
 		}
-		data, partial, err := s.Range(key, start, n, flag)
+		data, err := s.Range(key, start, n, flag)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		if !s.HasOtherPeers() || raw {
-			return s.convertPairs(w, data, origN)
+			return s.convertPairs(w, data, origN, true)
 		}
 		if s2.AllPairsConsolidated(data) {
 			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, origN)
-		}
-
-		if partial {
-			if len(data) == 0 {
-				return w.WriteBulks([][]byte{})
-			}
-			// Range() has exited before we collected enough Pairs. Say 'n' is 10 and we have 2 Pairs, if
-			// another peer returns 8 Pairs to us, we will have 10 Pairs which meet the SELECT criteria,
-			// thus incorrectly insert consolidation marks into the database.
-			n = len(data)
+			return s.convertPairs(w, data, origN, true)
 		}
 
 		origData := append([]s2.Pair{}, data...)
@@ -450,7 +437,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 				}
 				return true
 			})
-		if cmd == "SELECTQ" && success+1 < (s.OtherPeersCount()+1)/2+1 {
+		q := success+1 >= (s.OtherPeersCount()+1)/2+1
+		if cmd == "SELECTQ" && !q {
 			return w.WriteError(fmt.Sprintf("quorum not met %d/%d", success+1, s.OtherPeersCount()+1))
 		}
 
@@ -469,7 +457,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
 			len(data) < n && desc,
 		)
-		return s.convertPairs(w, data, origN)
+		return s.convertPairs(w, data, origN, q)
 	case "LOOKUP": // id [LOCAL]
 		var data []byte
 		var err error
@@ -575,12 +563,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteInt64(time / 1e6 / 10 * 10)
 		}
 		return w.WriteBulk(res)
-	case "HGETALL", "HKEYS", "HGETALLQ", "HKEYSQ": // key [MATCH match] [NOCOMPRESS] [TIMESTAMP]
-		noCompress, ts, match := parseHGETALL(K)
-		if err := s.syncHashmap(key, cmd == "HGETALLQ" || cmd == "HKEYSQ"); err != nil {
+	case "HGETALL", "HGETALLQ": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
+		noCompress, ts, keysOnly, match := parseHGETALL(K)
+		if err := s.syncHashmap(key, cmd == "HGETALLQ"); err != nil {
 			return w.WriteError(err.Error())
 		}
-		res, err := s.HGetAll(key, match, true, strings.HasPrefix(cmd, "HGETALL"), ts)
+		res, err := s.HGetAll(key, match, true, !keysOnly, ts)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

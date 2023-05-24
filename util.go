@@ -116,10 +116,11 @@ func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait bool) {
 	return
 }
 
-func parseHGETALL(K *wire.Command) (noCompress, ts bool, match []byte) {
+func parseHGETALL(K *wire.Command) (noCompress, ts, keysOnly bool, match []byte) {
 	for i := 2; i < K.ArgCount(); i++ {
 		noCompress = noCompress || K.StrEqFold(i, "nocompress")
 		ts = ts || K.StrEqFold(i, "timestamp")
+		keysOnly = keysOnly || K.StrEqFold(i, "keysonly")
 		if K.StrEqFold(i, "match") {
 			match = K.BytesRef(i + 1)
 			i++

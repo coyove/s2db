@@ -38,13 +38,11 @@ var (
 		"LOOKUP":      true,
 		"SCAN":        true,
 		"HLEN":        true,
-		"HGET":        true,
-		"HGETALL":     true,
-		"HKEYS":       true,
 		"HLENQ":       true,
+		"HGET":        true,
 		"HGETQ":       true,
+		"HGETALL":     true,
 		"HGETALLQ":    true,
-		"HKEYSQ":      true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND":  true,
@@ -102,7 +100,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 			fmt.Sprintf("ttl_once:%v", s.ttlOnce.count()),
-			fmt.Sprintf("del_once:%v", s.delOnce.count()),
+			fmt.Sprintf("del_once:%v", s.distinctOnce.count()),
 			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.count()),
 			"")
 	}
@@ -374,9 +372,6 @@ func (s *Server) syncHashmap(key string, q bool) error {
 
 	work := func() error {
 		defer func(start time.Time) {
-			if !q {
-				s.hashSyncOnce.unlock(key)
-			}
 			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
 		}(time.Now())
 
@@ -420,6 +415,7 @@ func (s *Server) syncHashmap(key string, q bool) error {
 	if s.hashSyncOnce.lock(key) {
 		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.count())
 		time.AfterFunc(time.Second, func() {
+			defer s.hashSyncOnce.unlock(key)
 			if err := work(); err != nil {
 				logrus.Errorf("hashmap sync error: %v", err)
 			}
@@ -428,13 +424,14 @@ func (s *Server) syncHashmap(key string, q bool) error {
 	return nil
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int) (err error) {
+func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int, q bool) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
 	var maxFuture future.Future
 	for _, p := range p {
+		p.Q = q
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)

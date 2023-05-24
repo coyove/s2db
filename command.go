@@ -280,7 +280,7 @@ const (
 	RangeRaw      = 4
 )
 
-func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pair, partial bool, err error) {
+func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
 	bkPrefix := kkp(key)
 
 	c := newPrefixIter(s.DB, bkPrefix)
@@ -327,15 +327,15 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	var hllAdd, hllDel s2.HyperLogLog
 
 	if flag&RangeDistinct > 0 {
-		if s.delOnce.lock(key) {
-			s.Survey.DistinctOnce.Incr(s.delOnce.count())
+		if s.distinctOnce.lock(key) {
+			s.Survey.DistinctOnce.Incr(s.distinctOnce.count())
 			dedupTx = s.DB.NewBatch()
 			defer dedupTx.Close()
-			defer s.delOnce.unlock(key)
+			defer s.distinctOnce.unlock(key)
 
 			hllAdd, hllDel, err = s.getHLL(key)
 			if err != nil {
-				return nil, false, err
+				return nil, err
 			}
 		}
 	}
@@ -361,11 +361,13 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 					break
 				}
 			} else {
-				return nil, false, fmt.Errorf("invalid mark: %x", v)
+				return nil, fmt.Errorf("invalid mark: %x", v)
 			}
 		} else {
 			if dedupTx != nil && dedup[p.DataForDistinct()] {
-				s.deleteElement(dedupTx, bkPrefix, c.Key(), hllDel)
+				if dedupTx.Count() < uint32(s.Config.DistinctLimit) {
+					s.deleteElement(dedupTx, bkPrefix, c.Key(), hllDel)
+				}
 				goto NEXT
 			}
 
@@ -392,15 +394,7 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 		}
 
 		if future.UnixNano()-ns > int64(s.Config.TimeoutRange)*1e6 {
-			// Iterating timed out
-			partial = true
-			break
-		}
-
-		if dedupTx != nil && dedupTx.Count() > uint32(s.Config.DistinctLimit) {
-			// Too many deletions in one request.
-			partial = true
-			break
+			return nil, fmt.Errorf("range timed out")
 		}
 
 		moveIter(c, desc)

@@ -2,6 +2,7 @@ package s2
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -110,6 +111,17 @@ func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {
 
 	sort.Slice(t, func(i, j int) bool { return t[i].Less(t[j]) })
 	return t
+}
+
+func AllPairsKeyHashUnordered(p []Pair) []byte {
+	var x [20]byte
+	for _, p := range p {
+		y := sha1.Sum(p.ID)
+		for i := range x {
+			x[i] ^= y[i]
+		}
+	}
+	return x[:]
 }
 
 func AllPairsConsolidated(p []Pair) bool {

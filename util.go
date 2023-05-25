@@ -61,14 +61,12 @@ func distinctPairsData(p []s2.Pair) []s2.Pair {
 	return p
 }
 
-func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait bool) {
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, sync, wait bool) {
 	data = [][]byte{K.BytesRef(2)}
 	for i := 3; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "ttl") {
 			ttl = K.Int64(i + 1)
 			i++
-		} else if K.StrEqFold(i, "wait") {
-			wait = true
 		} else if K.StrEqFold(i, "and") {
 			data = append(data, K.BytesRef(i+1))
 			i++
@@ -76,6 +74,8 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, wait bool) {
 			ids = K.Argv[i+1:]
 			break
 		}
+		wait = wait || K.StrEqFold(i, "wait")
+		sync = sync || K.StrEqFold(i, "sync")
 	}
 	return
 }
@@ -100,7 +100,7 @@ func parseSELECT(K *wire.Command) (n int, desc, distinct, raw bool, flag int) {
 	return
 }
 
-func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait bool) {
+func parseHSET(K *wire.Command) (kvs, ids [][]byte, sync, wait bool) {
 	kvs = [][]byte{K.BytesRef(2), K.BytesRef(3)}
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "set") {
@@ -111,6 +111,7 @@ func parseHSET(K *wire.Command) (kvs, ids [][]byte, wait bool) {
 			break
 		} else {
 			wait = wait || K.StrEqFold(i, "wait")
+			sync = sync || K.StrEqFold(i, "sync")
 		}
 	}
 	return
@@ -228,7 +229,7 @@ func hexEncodeBulks(ids [][]byte) [][]byte {
 func bbany(b [][]byte) []any {
 	res := make([]any, len(b))
 	for i := range res {
-		res[i] = b[i]
+		res[i] = s2.Bytes(b[i])
 	}
 	return res
 }

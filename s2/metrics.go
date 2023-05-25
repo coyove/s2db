@@ -126,12 +126,6 @@ func (s *Survey) Metrics() (m metrics) {
 	return
 }
 
-type GroupedMetrics struct {
-	Name      string
-	Timestamp []int64 // seconds
-	Value     []float64
-}
-
 type P99SurveyMinute struct {
 	mu      sync.Mutex
 	tdigest *tdigest.TDigest

@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,13 +16,13 @@ import (
 )
 
 type endpoint struct {
-	mu     sync.RWMutex
-	index  int
-	client *redis.Client
-	config wire.RedisConfig
-	server *Server
-	job    sync.Once
-	jobq   chan *endpointCmd
+	mu      sync.RWMutex
+	index   int
+	client  *redis.Client
+	config  wire.RedisConfig
+	server  *Server
+	jobOnce sync.Once
+	jobq    chan *endpointCmd
 }
 
 type endpointCmd struct {
@@ -46,7 +45,7 @@ func (e *endpoint) Set(uri string) (changed bool, err error) {
 			if old != nil {
 				old.Close()
 			}
-			e.job.Do(func() {
+			e.jobOnce.Do(func() {
 				e.jobq = make(chan *endpointCmd, 1e3)
 				for i := 0; i < runtime.NumCPU()*5; i++ {
 					go e.work()
@@ -170,7 +169,7 @@ func (s *Server) ForeachPeer(f func(i int, p *endpoint, c *redis.Client)) {
 
 type SendCmdOptions struct {
 	LongWait bool // some commands (APPEND) may require longer waits
-	Quorum   bool // return immediately upon receiving enough acknowledgements
+	Async    bool // send without waiting for responses
 }
 
 func (s *Server) ForeachPeerSendCmd(
@@ -195,7 +194,7 @@ func (s *Server) ForeachPeerSendCmd(
 			total++
 		}
 	}
-	if sent == 0 {
+	if sent == 0 || opts.Async {
 		return
 	}
 
@@ -205,11 +204,6 @@ func (s *Server) ForeachPeerSendCmd(
 	}
 
 	recv := 0
-	goal := sent
-	if opts.Quorum {
-		goal = (total+1)/2 + 1
-		goal-- // exclude self
-	}
 
 	var ackList [future.Channels]bool
 MORE:
@@ -230,9 +224,6 @@ MORE:
 			} else if resp(res.Cmder) {
 				success++
 			}
-			if success >= goal {
-				break
-			}
 		}
 		if recv++; recv < sent {
 			goto MORE
@@ -250,17 +241,4 @@ MORE:
 		s.Survey.PeerTimeout.Incr(1)
 	}
 	return
-}
-
-func (s *Server) requireQuorum(hexIds [][]byte, f func() redis.Cmder) [][]byte {
-	if s.HasOtherPeers() {
-		sent, success := s.ForeachPeerSendCmd(SendCmdOptions{LongWait: true, Quorum: true}, f, nil)
-		hexIds = append([][]byte{
-			strconv.AppendInt(nil, int64(sent)+1, 10),
-			strconv.AppendInt(nil, int64(success)+1, 10),
-		}, hexIds...)
-	} else {
-		hexIds = append([][]byte{[]byte("1"), []byte("1")}, hexIds...)
-	}
-	return hexIds
 }

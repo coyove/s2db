@@ -2,7 +2,6 @@ package s2
 
 import (
 	"bytes"
-	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -113,15 +112,38 @@ func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {
 	return t
 }
 
-func AllPairsKeyHashUnordered(p []Pair) []byte {
-	var x [20]byte
-	for _, p := range p {
-		y := sha1.Sum(p.ID)
-		for i := range x {
-			x[i] ^= y[i]
-		}
+func KeyHashPack(p []Pair) (x []byte) {
+	if len(p) == 0 {
+		return nil
 	}
-	return x[:]
+	sort.Slice(p, func(i, j int) bool { return bytes.Compare(p[i].ID, p[j].ID) < 0 })
+	x = binary.BigEndian.AppendUint64(x, binary.BigEndian.Uint64(p[0].ID[:8]))
+	for i := 1; i < len(p); i++ {
+		pi := binary.BigEndian.Uint64(p[i].ID[:8])
+		pj := binary.BigEndian.Uint64(p[i-1].ID[:8])
+		x = binary.AppendUvarint(x, pi-pj)
+	}
+	return
+}
+
+func KeyHashUnpack(x []byte) []uint64 {
+	if len(x) == 0 {
+		return nil
+	}
+	y := []uint64{binary.BigEndian.Uint64(x)}
+	x = x[8:]
+	for len(x) > 0 {
+		v, n := binary.Uvarint(x)
+		x = x[n:]
+		y = append(y, y[len(y)-1]+v)
+	}
+	return y
+}
+
+func KeyHashContains(x []uint64, id []byte) bool {
+	y := binary.BigEndian.Uint64(id)
+	idx := sort.Search(len(x), func(i int) bool { return x[i] >= y })
+	return idx < len(x) && x[idx] == y
 }
 
 func AllPairsConsolidated(p []Pair) bool {

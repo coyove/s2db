@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"flag"
-	"fmt"
 	"math"
 	"math/rand"
 	"net/url"
@@ -32,6 +31,12 @@ var (
 type metricsPair struct {
 	Member string
 	Score  float64
+}
+
+type metricsGrouped struct {
+	Name      string
+	Timestamp []int64 // seconds
+	Value     []float64
 }
 
 func (s *Server) appendMetricsPairs(ttl time.Duration) error {
@@ -111,11 +116,11 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 			defer b.Close()
 			for _, mp := range pairs {
 				key := []byte("metrics_" + mp.Member + "\x00")
-				if err := b.Set(appendUint(key, uint64(now)), s2.FloatToBytes(mp.Score), pebble.Sync); err != nil {
+				if err := b.Set(binary.BigEndian.AppendUint64(key, uint64(now)), s2.FloatToBytes(mp.Score), pebble.Sync); err != nil {
 					return err
 				}
 				if rand.Float64() <= 0.01 {
-					if err := b.DeleteRange(key, appendUint(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
+					if err := b.DeleteRange(key, binary.BigEndian.AppendUint64(key, uint64(now)-uint64(ttl)), pebble.Sync); err != nil {
 						return err
 					}
 				}
@@ -172,63 +177,41 @@ func (s *Server) ListMetricsNames() (names []string) {
 	return
 }
 
-func (s *Server) GetMetricsPairs(startNano, endNano int64, names ...string) (m []s2.GroupedMetrics, err error) {
+func (s *Server) GetMetrics(names []string, startNano, endNano int64) (m []metricsGrouped) {
 	if endNano == 0 && startNano == 0 {
 		startNano, endNano = future.UnixNano()-int64(time.Hour), future.UnixNano()
 	}
-	res := map[string]s2.GroupedMetrics{}
-	getter := func(f string) {
+	for _, f := range names {
+		tm := map[int64]float64{}
 		key := []byte("metrics_" + f + "\x00")
-		c := newPrefixIter(s.DB, key)
+		c := s.DB.NewIter(&pebble.IterOptions{
+			LowerBound: binary.BigEndian.AppendUint64(s2.Bytes(key), uint64(startNano)),
+			UpperBound: binary.BigEndian.AppendUint64(s2.Bytes(key), uint64(endNano)),
+		})
 		defer c.Close()
 
-		for c.First(); c.Valid() && bytes.HasPrefix(c.Key(), key); c.Next() {
+		for c.First(); c.Valid(); c.Next() {
 			ts := int64(binary.BigEndian.Uint64(c.Key()[len(key):]))
-			if ts >= startNano && ts <= endNano {
-				a := res[f]
-				a.Name = f
-				vf := s2.BytesToFloat(c.Value())
-				if math.IsNaN(vf) {
-					vf = 0
-				}
-				tsMin := ts / 1e9 / 60 * 60
-				if len(a.Timestamp) > 0 && a.Timestamp[len(a.Timestamp)-1] == tsMin {
-					a.Value[len(a.Value)-1] = vf
-				} else {
-					a.Value = append(a.Value, vf)
-					a.Timestamp = append(a.Timestamp, tsMin)
-				}
-				res[f] = a
+			vf := s2.BytesToFloat(c.Value())
+			if math.IsNaN(vf) {
+				vf = 0
 			}
-			if ts > endNano {
-				break
+			min := ts / 1e9 / 60 * 60
+			if vold, ok := tm[min]; ok {
+				tm[min] = (vf + vold) / 2
+			} else {
+				tm[min] = vf
 			}
 		}
-	}
-	for _, n := range names {
-		getter(n)
-	}
-	return fillMetricsHoles(res, names, startNano, endNano), err
-}
 
-func fillMetricsHoles(res map[string]s2.GroupedMetrics, names []string, startNano, endNano int64) (m []s2.GroupedMetrics) {
-	mints, maxts := startNano/1e9/60*60, endNano/1e9/60*60
-	fmt.Println(len(m))
-	for _, name := range names {
-		p := res[name]
-		for c, ts := 0, mints; ts <= maxts; ts += 60 {
-			if c >= len(p.Timestamp) {
-				p.Timestamp = append(p.Timestamp, ts)
-				p.Value = append(p.Value, 0)
-			} else if p.Timestamp[c] != ts {
-				p.Timestamp = append(p.Timestamp[:c], append([]int64{ts}, p.Timestamp[c:]...)...)
-				p.Value = append(p.Value[:c], append([]float64{0}, p.Value[c:]...)...)
-			}
-			c++
+		var g metricsGrouped
+		g.Name = f
+		for min := startNano / 1e9 / 60 * 60; min <= endNano/1e9/60*60; min += 60 {
+			g.Timestamp = append(g.Timestamp, min)
+			g.Value = append(g.Value, tm[min])
 		}
-		m = append(m, p)
+		m = append(m, g)
 	}
-	fmt.Println(len(m))
 	return m
 }
 
@@ -236,7 +219,7 @@ func (s *Server) DeleteMetrics(name string) error {
 	return s.DB.DeleteRange([]byte("metrics_"+name+"\x00"), []byte("metrics_"+name+"\x01"), pebble.Sync)
 }
 
-func (s *Server) getMetrics(key string) interface{} {
+func (s *Server) getMetricsCommand(key string) interface{} {
 	var sv *s2.Survey
 	if rv := reflect.ValueOf(&s.Survey).Elem().FieldByName(key); rv.IsValid() {
 		switch v := rv.Addr().Interface().(type) {
@@ -305,8 +288,4 @@ func getInfluxDB1Client(endpoint string) (*client.Client, string, error) {
 		return nil, "", err
 	}
 	return c, db, err
-}
-
-func appendUint(b []byte, v uint64) []byte {
-	return append(s2.Bytes(b), s2.Uint64ToBytes(v)...)
 }

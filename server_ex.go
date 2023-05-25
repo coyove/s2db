@@ -30,25 +30,22 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"PSELECT":     true,
-		"PHGETALL":    true,
-		"SELECT":      true,
-		"SELECTQ":     true,
-		"SELECTCOUNT": true,
-		"LOOKUP":      true,
-		"SCAN":        true,
-		"HLEN":        true,
-		"HLENQ":       true,
-		"HGET":        true,
-		"HGETQ":       true,
-		"HGETALL":     true,
-		"HGETALLQ":    true,
+		"PSELECT":  true,
+		"PHGETALL": true,
+		"SELECT":   true,
+		"COUNT":    true,
+		"LOOKUP":   true,
+		"SCAN":     true,
+		"HLEN":     true,
+		"HLENS":    true,
+		"HGET":     true,
+		"HGETS":    true,
+		"HGETALL":  true,
+		"HGETALLS": true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND":  true,
-		"APPENDQ": true,
-		"HSET":    true,
-		"HSETQ":   true,
+		"APPEND": true,
+		"HSET":   true,
 	}
 
 	//go:embed scripts/index.html
@@ -181,7 +178,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	}
 	if strings.HasPrefix(section, "=") {
 		data = append(data, "# metrics "+section[1:])
-		switch v := s.getMetrics(section[1:]).(type) {
+		switch v := s.getMetricsCommand(section[1:]).(type) {
 		case *s2.Survey:
 			m := v.Metrics()
 			data = append(data, fmt.Sprintf("qps1:%f", m.QPS[0]), fmt.Sprintf("qps5:%f", m.QPS[1]), fmt.Sprintf("qps:%f", m.QPS[2]))
@@ -198,6 +195,9 @@ func (s *Server) InfoCommand(section string) (data []string) {
 func makeHTMLStat(s string) template.HTML {
 	var a, b, c float64
 	if n, _ := fmt.Sscanf(s, "%f %f %f", &a, &b, &c); n != 3 {
+		if strings.HasPrefix(s, "http://") {
+			return template.HTML(fmt.Sprintf("<a href='%s'>%s</a>", s, s))
+		}
 		return template.HTML(s)
 	}
 	return template.HTML(fmt.Sprintf("%s&nbsp;&nbsp;%s&nbsp;&nbsp;%s",
@@ -278,7 +278,7 @@ func (s *Server) httpServer() {
 		}
 		startTs, endTs := s2.MustParseInt64(r.URL.Query().Get("start")), s2.MustParseInt64(r.URL.Query().Get("end"))
 		w.Header().Add("Content-Type", "text/json")
-		data, _ := s.GetMetricsPairs(int64(startTs)*1e6, int64(endTs)*1e6, chartSources...)
+		data := s.GetMetrics(chartSources, int64(startTs)*1e6, int64(endTs)*1e6)
 		if len(data) == 0 {
 			w.Write([]byte("[]"))
 			return
@@ -365,7 +365,7 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	return []byte(m), nil
 }
 
-func (s *Server) syncHashmap(key string, q bool) error {
+func (s *Server) syncHashmap(key string, sync bool) error {
 	if !s.HasOtherPeers() {
 		return nil
 	}
@@ -381,15 +381,15 @@ func (s *Server) syncHashmap(key string, q bool) error {
 		}
 
 		var pres [][]byte
-		_, success := s.ForeachPeerSendCmd(SendCmdOptions{Quorum: q}, func() redis.Cmder {
+		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
 			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
 		}, func(cmd redis.Cmder) bool {
 			p, _ := cmd.(*redis.StringCmd).Bytes()
 			pres = append(pres, p)
 			return true
 		})
-		if q && success+1 < (s.OtherPeersCount()+1)/2+1 {
-			return fmt.Errorf("quorum not met %d/%d", success+1, s.OtherPeersCount()+1)
+		if sync && success != s.OtherPeersCount() {
+			return fmt.Errorf("sync failed")
 		}
 
 		bkLive := skp(key)
@@ -409,7 +409,7 @@ func (s *Server) syncHashmap(key string, q bool) error {
 		return nil
 	}
 
-	if q {
+	if sync {
 		return work()
 	}
 	if s.hashSyncOnce.lock(key) {
@@ -460,7 +460,7 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 		if len(x) == 32 || len(x) == 33 {
 			start = hexDecode(buf)
 		} else if len(x) == 16 {
-			start = buf
+			start = s2.Bytes(buf)
 		} else if desc {
 			start = make([]byte, 16)
 			binary.BigEndian.PutUint64(start, uint64(s2.MustParseFloat(x)*1e9+1e9-1))

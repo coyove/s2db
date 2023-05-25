@@ -478,3 +478,25 @@ func TestLRUMem(t *testing.T) {
 	runtime.ReadMemStats(&mem)
 	fmt.Println(mem.HeapAlloc, len(m), l.Len())
 }
+
+func TestXor(t *testing.T) {
+	rand.Seed(future.UnixNano())
+	var a []Pair
+	for i := 0; i < 1e2; i++ {
+		v := uint64(1666666666+rand.Uint32()%864000)<<32 | uint64(rand.Uint32())
+		// v = rand.Uint64()
+		a = append(a, Pair{ID: Uint64ToBytes(v)})
+	}
+	x := KeyHashPack(a)
+	fmt.Println(len(x))
+
+	y := KeyHashUnpack(x)
+	for _, p := range a {
+		if !KeyHashContains(y, p.ID) {
+			t.Fatal(y)
+		}
+		if KeyHashContains(y, IncBytesInplace(p.ID)) {
+			t.Fatal(y)
+		}
+	}
+}

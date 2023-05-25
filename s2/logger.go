@@ -17,7 +17,6 @@ import (
 
 type LogFormatter struct {
 	simple   bool
-	last     string
 	listener struct {
 		sync.RWMutex
 		idx int
@@ -92,10 +91,6 @@ func (f *LogFormatter) LogFork(w io.WriteCloser) (err error) {
 }
 
 func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
-	if strings.HasPrefix(entry.Message, "[M]") && f.last == entry.Message {
-		return nil, nil
-	}
-
 	buf := bytes.Buffer{}
 	if f.simple {
 		ts := entry.Time.UTC()
@@ -127,9 +122,6 @@ func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	buf.WriteString("\t")
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
-	if strings.HasPrefix(entry.Message, "[M]") {
-		f.last = entry.Message
-	}
 	select {
 	case f.in <- buf.Bytes():
 	default:

@@ -42,18 +42,26 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 		n = -n
 		flag = flag | client.S_DESC
 	}
+	all := false
 	for _, el := range args {
 		switch el {
 		case "distinct":
 			flag = flag | client.S_DISTINCT
 		case "all":
-			flag = flag | client.S_QUORUM
+			all = true
 		}
 	}
 
 	a := client.Begin(r)
 	p, err := a.Select(context.TODO(), key, start, n, flag)
 	s2pkg.PanicErr(err)
+	if all {
+		for _, p := range p {
+			if !p.Q {
+				panic("not all peers respond")
+			}
+		}
+	}
 	return p
 }
 
@@ -380,7 +388,7 @@ func TestTTL(t *testing.T) {
 		t.Fatal(string(res))
 	}
 
-	fmt.Println(expired, rdb1.Do(ctx, "SELECTCOUNT", "a").Val())
+	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
 
 	data = doRange(rdb1, "a", "0", 100, "raw")
 	fmt.Println(data)
@@ -400,7 +408,7 @@ func TestQuorum(t *testing.T) {
 	ctx := context.TODO()
 	var ids []string
 	for i := 0; i < 20; i++ {
-		id := rdb1.Do(ctx, "APPENDQ", "a", i).Val().([]any)[2].(string)
+		id := rdb1.Do(ctx, "APPEND", "a", i, "SYNC").Val().([]any)[0].(string)
 		ids = append(ids, id)
 		time.Sleep(150 * time.Millisecond)
 	}
@@ -412,7 +420,7 @@ func TestQuorum(t *testing.T) {
 		}
 	}
 
-	rdb1.Do(ctx, "APPENDQ", "a", 100, "TTL", 1)
+	rdb1.Do(ctx, "APPEND", "a", 100, "TTL", 1, "SYNC")
 	data2 := doRange(rdb2, "a", "0", 100)
 	if len(data2) >= len(data) {
 		t.Fatal(data2)
@@ -496,9 +504,9 @@ func TestHashSet(t *testing.T) {
 		rdb2.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), fmt.Sprintf("v%d", i*2), "WAIT")
 	}
 
-	data1, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil, true)
+	data1, _ := client.Begin(rdb1).MustHGetAll(ctx, "h", nil)
 	s2.test.Fail = true
-	data2, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil, false)
+	data2, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil)
 
 	for k, v := range data1 {
 		if data2[k] != v {
@@ -507,7 +515,7 @@ func TestHashSet(t *testing.T) {
 	}
 
 	s2.test.Fail = false
-	data2, _ = client.Begin(rdb2).HGetAll(ctx, "h", nil, true)
+	data2, _ = client.Begin(rdb2).MustHGetAll(ctx, "h", nil)
 	for k, v := range data1 {
 		if data2[k] != v {
 			t.Fatal(data1, data2)
@@ -518,7 +526,7 @@ func TestHashSet(t *testing.T) {
 		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), "v16", "WAIT")
 	}
 
-	data3 := rdb2.Do(ctx, "HGETALLQ", "h", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
+	data3 := rdb2.Do(ctx, "HGETALLS", "h", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
 	if len(data3) != 10 {
 		t.Fatal(data3)
 	}
@@ -540,7 +548,7 @@ func TestHashSet(t *testing.T) {
 	dedup := map[string]bool{}
 	for i := 0; i < len(staticLZ4); i += 2 {
 		id, id2 := staticLZ4[i], staticLZ4[i+1]
-		q, _ := client.Begin(rdb1).HSetQuorum(ctx, "t", id, "1", id2, 1)
+		q, _ := client.Begin(rdb1).HSetSync(ctx, "t", id, "1", id2, 1)
 		fmt.Println(q)
 		dedup[id] = true
 		dedup[id2] = true

@@ -54,8 +54,8 @@ type ServerSurvey struct {
 	SysWrite         s2.Survey
 	SysWriteP99Micro s2.P99SurveyMinute
 	SlowLogs         s2.Survey
-	AppendQuorumN    s2.Survey `metrics:"mean"`
-	HSetQuorumN      s2.Survey `metrics:"mean"`
+	AppendSyncN      s2.Survey `metrics:"mean"`
+	HSetSyncN        s2.Survey `metrics:"mean"`
 	PeerOnMissingN   s2.Survey `metrics:"mean"`
 	PeerOnMissing    s2.Survey
 	PeerOnOK         s2.Survey `metrics:"qps"`
@@ -71,6 +71,7 @@ type ServerSurvey struct {
 	TTLOnce          s2.Survey `metrics:"mean"`
 	DistinctOnce     s2.Survey `metrics:"mean"`
 	HashSyncOnce     s2.Survey `metrics:"mean"`
+	KeyHashRatio     s2.Survey `metrics:"mean"`
 	PeerLatency      sync.Map
 	Command          sync.Map
 }

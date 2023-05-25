@@ -34,8 +34,9 @@ var (
 		"PHGETALL": true,
 		"SELECT":   true,
 		"COUNT":    true,
-		"LOOKUP":   true,
 		"SCAN":     true,
+		"LOOKUP":   true,
+		"LOOKUPS":  true,
 		"HLEN":     true,
 		"HLENS":    true,
 		"HGET":     true,
@@ -348,21 +349,18 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	if len(data) > 0 || !s.HasOtherPeers() {
 		return data, nil
 	}
-
-	var m string
-	sent, _ := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
-		return redis.NewStringCmd(context.TODO(), "LOOKUP", id, "LOCAL")
+	var m []byte
+	s.ForeachPeerSendCmd(SendCmdOptions{Oneshot: true}, func() redis.Cmder {
+		return redis.NewStringCmd(context.TODO(), "LOOKUP", id)
 	}, func(cmd redis.Cmder) bool {
-		m0 := cmd.(*redis.StringCmd).Val()
-		if m0 != "" {
+		m0, _ := cmd.(*redis.StringCmd).Bytes()
+		if len(m0) > 0 {
 			m = m0
+			return true
 		}
-		return true
+		return false
 	})
-	if sent == 0 {
-		return data, nil
-	}
-	return []byte(m), nil
+	return m, nil
 }
 
 func (s *Server) syncHashmap(key string, sync bool) error {

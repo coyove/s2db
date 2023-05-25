@@ -27,8 +27,9 @@ type endpoint struct {
 
 type endpointCmd struct {
 	redis.Cmder
-	ep  *endpoint
-	out chan *endpointCmd
+	ep    *endpoint
+	out   chan *endpointCmd
+	async bool
 }
 
 func (e *endpoint) Set(uri string) (changed bool, err error) {
@@ -111,7 +112,14 @@ func (e *endpoint) work() {
 		}
 		p.Exec(ctx)
 		for _, cmd := range commands {
-			cmd.out <- cmd
+			if cmd.async {
+				if err := cmd.Err(); err != nil {
+					// if !cmd.ep.server.errThrot.Throttle
+					logrus.Errorf("async command error: %v", err)
+				}
+			} else {
+				cmd.out <- cmd
+			}
 		}
 		e.server.Survey.PeerBatchSize.Incr(int64(len(commands)))
 	}
@@ -168,8 +176,8 @@ func (s *Server) ForeachPeer(f func(i int, p *endpoint, c *redis.Client)) {
 }
 
 type SendCmdOptions struct {
-	LongWait bool // some commands (APPEND) may require longer waits
-	Async    bool // send without waiting for responses
+	Oneshot bool // exit when first resp() == true
+	Async   bool
 }
 
 func (s *Server) ForeachPeerSendCmd(
@@ -186,7 +194,7 @@ func (s *Server) ForeachPeerSendCmd(
 		p := s.Peers[i]
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
 			select {
-			case p.jobq <- &endpointCmd{ep: p, Cmder: req(), out: out}:
+			case p.jobq <- &endpointCmd{ep: p, Cmder: req(), out: out, async: opts.Async}:
 				sent++
 			case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
 				logrus.Errorf("failed to send peer job (%s), queue is full", p.Config().Addr)
@@ -194,15 +202,12 @@ func (s *Server) ForeachPeerSendCmd(
 			total++
 		}
 	}
+
 	if sent == 0 || opts.Async {
 		return
 	}
 
 	w := time.Duration(s.Config.TimeoutPeer) * time.Millisecond
-	if opts.LongWait {
-		w = time.Duration(s.Config.TimeoutPeerLong) * time.Millisecond
-	}
-
 	recv := 0
 
 	var ackList [future.Channels]bool
@@ -221,8 +226,14 @@ MORE:
 		} else {
 			if resp == nil {
 				success++
+				if opts.Oneshot {
+					return
+				}
 			} else if resp(res.Cmder) {
 				success++
+				if opts.Oneshot {
+					return
+				}
 			}
 		}
 		if recv++; recv < sent {

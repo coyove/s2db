@@ -81,6 +81,10 @@ func (w *Writer) WriteBulk(val []byte) error {
 		_, err := w.Write(nilBulk)
 		return err
 	}
+	return w.WriteBulkNoNil(val)
+}
+
+func (w *Writer) WriteBulkNoNil(val []byte) error {
 	if _, err := w.Write(dollar); err != nil {
 		return err
 	}

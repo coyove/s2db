@@ -412,6 +412,7 @@ func TestQuorum(t *testing.T) {
 		ids = append(ids, id)
 		time.Sleep(150 * time.Millisecond)
 	}
+	time.Sleep(time.Second)
 
 	data := doRange(rdb2, "a", "0", 100)
 	for i := range ids {
@@ -421,6 +422,8 @@ func TestQuorum(t *testing.T) {
 	}
 
 	rdb1.Do(ctx, "APPEND", "a", 100, "TTL", 1, "SYNC")
+	time.Sleep(time.Second)
+
 	data2 := doRange(rdb2, "a", "0", 100)
 	if len(data2) >= len(data) {
 		t.Fatal(data2)

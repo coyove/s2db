@@ -458,21 +458,18 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			len(data) < n && desc,
 		)
 		return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
-	case "LOOKUP": // id [LOCAL]
-		var data []byte
-		var err error
-		if K.StrEqFold(2, "local") {
-			data, _, err = s.LookupID(s.translateCursor(K.BytesRef(1), false))
-		} else {
-			data, err = s.wrapLookup(s.translateCursor(K.Bytes(1), false))
-		}
+	case "LOOKUP":
+		data, _, err := s.LookupID(s.translateCursor(K.BytesRef(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if data == nil {
-			data = []byte{}
+		return w.WriteBulkNoNil(data)
+	case "LOOKUPS":
+		data, err := s.wrapLookup(s.translateCursor(K.Bytes(1), false))
+		if err != nil {
+			return w.WriteError(err.Error())
 		}
-		return w.WriteBulk(data)
+		return w.WriteBulkNoNil(data)
 	case "COUNT":
 		add, del, err := s.getHLL(key)
 		if err != nil {
@@ -537,10 +534,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
 			data = []byte{}
 		}
-		if data == nil {
-			data = []byte{} // no nil
-		}
-		return w.WriteBulk(data)
+		return w.WriteBulkNoNil(data)
 	case "HLEN", "HLENS": // key
 		if err := s.syncHashmap(key, cmd == "HLENS"); err != nil {
 			return w.WriteError(err.Error())

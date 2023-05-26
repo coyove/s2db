@@ -13,7 +13,6 @@ import (
 	"net/http/pprof"
 	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -32,17 +31,15 @@ var (
 	isReadCommand = map[string]bool{
 		"PSELECT":  true,
 		"PHGETALL": true,
+		"PLOOKUP":  true,
 		"SELECT":   true,
+		"LOOKUP":   true,
 		"COUNT":    true,
 		"SCAN":     true,
-		"LOOKUP":   true,
-		"LOOKUPS":  true,
+		"HSYNC":    true,
 		"HLEN":     true,
-		"HLENS":    true,
 		"HGET":     true,
-		"HGETS":    true,
 		"HGETALL":  true,
-		"HGETALLS": true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
@@ -55,6 +52,7 @@ var (
 
 func (s *Server) InfoCommand(section string) (data []string) {
 	if section == "" || strings.EqualFold(section, "server") {
+		cwd, _ := os.Getwd()
 		data = append(data, "# server",
 			fmt.Sprintf("version:%v", Version),
 			fmt.Sprintf("servername:%v", s.Config.ServerName),
@@ -64,6 +62,8 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("future_clock:%v", time.Unix(0, future.UnixNano()).Format("15:04:05.000000000")),
 			fmt.Sprintf("readonly:%v", s.ReadOnly),
 			fmt.Sprintf("connections:%v", s.Survey.Connections),
+			fmt.Sprintf("cwd:%v", cwd),
+			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
 		)
 		if ntp := future.Chrony.Load(); ntp != nil {
 			data = append(data,
@@ -82,10 +82,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		iDisk, _ := s.DB.EstimateDiskUsage([]byte{'z'}, []byte{'z' + 1})
 		HDisk, _ := s.DB.EstimateDiskUsage([]byte("H"), []byte("I"))
 		hDisk, _ := s.DB.EstimateDiskUsage([]byte("h"), []byte("i"))
-		cwd, _ := os.Getwd()
 		data = append(data, "# server_misc",
-			fmt.Sprintf("cwd:%v", cwd),
-			fmt.Sprintf("args:%v", strings.Join(os.Args, " ")),
 			fmt.Sprintf("data_files:%d", len(dataFiles)),
 			fmt.Sprintf("data_size:%d", dataSize),
 			fmt.Sprintf("data_size_mb:%.2f", float64(dataSize)/1024/1024),
@@ -98,7 +95,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 			fmt.Sprintf("ttl_once:%v", s.ttlOnce.count()),
-			fmt.Sprintf("del_once:%v", s.distinctOnce.count()),
+			fmt.Sprintf("distinct_once:%v", s.distinctOnce.count()),
 			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.count()),
 			"")
 	}
@@ -110,6 +107,10 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			addr.Port++
 			data = append(data, fmt.Sprintf("peer%d:%s", i, p.Config().URI))
 			data = append(data, fmt.Sprintf("peer%d_console:http://%s", i, addr.String()))
+			if m, ok := s.Survey.PeerLatency.Load(p.Config().Addr); ok {
+				data = append(data, fmt.Sprintf("peer%d_qps:%v", i, m.(*s2.Survey).QPSString()))
+				data = append(data, fmt.Sprintf("peer%d_lat:%v", i, m.(*s2.Survey).MeanString()))
+			}
 		})
 		data = append(data, "")
 	}
@@ -123,25 +124,21 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("slow_logs_avg_lat:%v", s.Survey.SlowLogs.MeanString()),
 			"")
 	}
-	if section == "" || strings.EqualFold(section, "command_qps") || strings.EqualFold(section, "command_avg_lat") {
-		var keys []string
-		s.Survey.Command.Range(func(k, v interface{}) bool { keys = append(keys, k.(string)); return true })
-		sort.Strings(keys)
-		add := func(f func(*s2.Survey) string) (res []string) {
-			for _, k := range keys {
-				v, _ := s.Survey.Command.Load(k)
-				res = append(res, fmt.Sprintf("%v:%v", k, f(v.(*s2.Survey))))
-			}
-			return append(res, "")
-		}
-		if section == "" || section == "command_avg_lat" {
-			data = append(data, "# command_avg_lat")
-			data = append(data, add(func(s *s2.Survey) string { return s.MeanString() })...)
-		}
-		if section == "" || section == "command_qps" {
-			data = append(data, "# command_qps")
-			data = append(data, add(func(s *s2.Survey) string { return s.QPSString() })...)
-		}
+	if section == "" || strings.EqualFold(section, "command_qps") {
+		data = append(data, "# command_qps")
+		s.Survey.Command.Range(func(k, v interface{}) bool {
+			data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2.Survey).QPSString()))
+			return true
+		})
+		data = append(data, "")
+	}
+	if section == "" || strings.EqualFold(section, "command_lat") {
+		data = append(data, "# command_lat")
+		s.Survey.Command.Range(func(k, v interface{}) bool {
+			data = append(data, fmt.Sprintf("%v:%v", k, v.(*s2.Survey).MeanString()))
+			return true
+		})
+		data = append(data, "")
 	}
 	if strings.HasPrefix(section, ":") {
 		key := section[1:]
@@ -267,7 +264,7 @@ func (s *Server) httpServer() {
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
 			"s": s, "start": start,
 			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{"server", "server_misc", "sys_rw_stats", "peers", "command_qps", "command_avg_lat"},
+			"Sections": []string{"server", "server_misc", "sys_rw_stats", "peers", "command_qps", "command_lat"},
 		})
 	})
 	mux.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
@@ -351,7 +348,7 @@ func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
 	}
 	var m []byte
 	s.ForeachPeerSendCmd(SendCmdOptions{Oneshot: true}, func() redis.Cmder {
-		return redis.NewStringCmd(context.TODO(), "LOOKUP", id)
+		return redis.NewStringCmd(context.TODO(), "PLOOKUP", id)
 	}, func(cmd redis.Cmder) bool {
 		m0, _ := cmd.(*redis.StringCmd).Bytes()
 		if len(m0) > 0 {

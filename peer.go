@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coyove/s2db/s2"
@@ -16,13 +17,18 @@ import (
 )
 
 type endpoint struct {
-	mu      sync.RWMutex
-	index   int
-	client  *redis.Client
-	config  wire.RedisConfig
-	server  *Server
-	jobOnce sync.Once
-	jobq    chan *endpointCmd
+	mu     sync.RWMutex
+	index  int
+	client *redis.Client
+	config wire.RedisConfig
+	server *Server
+
+	job struct {
+		once   sync.Once
+		q      chan *endpointCmd
+		closed atomic.Bool
+		wait   sync.WaitGroup
+	}
 }
 
 type endpointCmd struct {
@@ -46,16 +52,16 @@ func (e *endpoint) Set(uri string) (changed bool, err error) {
 			if old != nil {
 				old.Close()
 			}
-			e.jobOnce.Do(func() {
-				e.jobq = make(chan *endpointCmd, 1e3)
+			e.job.once.Do(func() {
+				e.job.q = make(chan *endpointCmd, 1e3)
 				for i := 0; i < runtime.NumCPU()*5; i++ {
+					e.job.wait.Add(1)
 					go e.work()
 				}
 			})
 		} else {
-			// We doesn't close 'jobq' here by calling e.Close() because following
-			// e.Set() may need it. e.Close() will only be called when e is not
-			// needed anymore (e.g. server close).
+			// We don't call e.Close() because following e.Set() may exist and reset a new redis.
+			// e.Close() will only be called when 'e' is not needed anymore (e.g. server close).
 			e.client.Close()
 			e.client = nil
 			e.config = wire.RedisConfig{}
@@ -67,17 +73,18 @@ func (e *endpoint) Set(uri string) (changed bool, err error) {
 
 func (e *endpoint) work() {
 	defer func() {
-		logrus.Debugf("%s worker exited", e.Config().URI)
+		e.job.wait.Done()
+		logrus.Debugf("%s worker exited", e.Config().Addr)
 	}()
 
 	ctx := context.TODO()
-	for {
+	for !e.job.closed.Load() {
 		if e.Redis() == nil {
 			time.Sleep(time.Second)
 			continue
 		}
 
-		cmd, ok := <-e.jobq
+		cmd, ok := <-e.job.q
 		if !ok {
 			return
 		}
@@ -85,9 +92,9 @@ func (e *endpoint) work() {
 
 	MORE:
 		select {
-		case cmd, ok := <-e.jobq:
+		case cmd, ok := <-e.job.q:
 			if !ok {
-				return
+				break
 			}
 			commands = append(commands, cmd)
 			if len(commands) < e.server.Config.BatchLimit {
@@ -140,8 +147,10 @@ func (e *endpoint) Config() wire.RedisConfig {
 func (e *endpoint) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.jobq != nil {
-		close(e.jobq)
+	e.job.closed.Store(true)
+	if e.job.q != nil {
+		close(e.job.q)
+		e.job.wait.Wait()
 	}
 	if e.client != nil {
 		return e.client.Close()
@@ -194,7 +203,7 @@ func (s *Server) ForeachPeerSendCmd(
 		p := s.Peers[i]
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
 			select {
-			case p.jobq <- &endpointCmd{ep: p, Cmder: req(), out: out, async: opts.Async}:
+			case p.job.q <- &endpointCmd{ep: p, Cmder: req(), out: out, async: opts.Async}:
 				sent++
 			case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
 				logrus.Errorf("failed to send peer job (%s), queue is full", p.Config().Addr)

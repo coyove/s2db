@@ -458,13 +458,13 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			len(data) < n && desc,
 		)
 		return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
-	case "LOOKUP":
+	case "PLOOKUP":
 		data, _, err := s.LookupID(s.translateCursor(K.BytesRef(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulkNoNil(data)
-	case "LOOKUPS":
+	case "LOOKUP":
 		data, err := s.wrapLookup(s.translateCursor(K.Bytes(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -525,43 +525,45 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "PHGETALL": // key checksum
 		data, rd, err := s.DB.Get(skp(key))
 		if err == pebble.ErrNotFound {
-			return w.WriteBulk([]byte{})
+			return w.WriteBulkNoNil(nil)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		defer rd.Close()
 		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
-			data = []byte{}
+			data = nil
 		}
 		return w.WriteBulkNoNil(data)
-	case "HLEN", "HLENS": // key
-		if err := s.syncHashmap(key, cmd == "HLENS"); err != nil {
+	case "HSYNC":
+		if err := s.syncHashmap(key, true); err != nil {
 			return w.WriteError(err.Error())
 		}
+		return w.WriteSimpleString("OK")
+	case "HLEN": // key
+		s.syncHashmap(key, false)
 		res, err := s.HLen(key)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt64(int64(res))
-	case "HGET", "HGETS": // key member [TIMESTAMP]
+	case "HGET": // key member [TIMESTAMP]
 		ts := parseHGET(K)
-		if err := s.syncHashmap(key, cmd == "HGETS"); err != nil {
-			return w.WriteError(err.Error())
-		}
+		s.syncHashmap(key, false)
 		res, time, err := s.HGet(key, K.BytesRef(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		if ts {
-			return w.WriteInt64(time / 1e6 / 10 * 10)
+			return w.WriteBulks([][]byte{
+				res,
+				strconv.AppendInt(nil, time/1e6/10*10, 10),
+			})
 		}
-		return w.WriteBulk(res)
-	case "HGETALL", "HGETALLS": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
+		return w.WriteBulkNoNil(res)
+	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
 		noCompress, ts, keysOnly, match := parseHGETALL(K)
-		if err := s.syncHashmap(key, cmd == "HGETALLS"); err != nil {
-			return w.WriteError(err.Error())
-		}
+		s.syncHashmap(key, false)
 		res, err := s.HGetAll(key, match, true, !keysOnly, ts)
 		if err != nil {
 			return w.WriteError(err.Error())

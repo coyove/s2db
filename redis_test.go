@@ -527,9 +527,11 @@ func TestHashSet(t *testing.T) {
 
 	for i := 0; i < 10; i += 3 {
 		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("k%d", i), "v16", "WAIT")
+		rdb1.Do(ctx, "HSET", "h", fmt.Sprintf("m%d", i), fmt.Sprintf("m%d", i*2), "WAIT")
 	}
 
-	data3 := rdb2.Do(ctx, "HGETALLS", "h", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
+	rdb2.Do(ctx, "HSYNC", "h")
+	data3 := rdb2.Do(ctx, "HGETALL", "h", "MATCH", "v16", "NOCOMPRESS").Val().([]any)
 	if len(data3) != 10 {
 		t.Fatal(data3)
 	}
@@ -542,6 +544,11 @@ func TestHashSet(t *testing.T) {
 		if ki%3 != 0 {
 			t.Fatal(data3)
 		}
+	}
+
+	data4 := rdb2.Do(ctx, "HGETALL", "h", "MATCH", "m1?", "NOCOMPRESS").Val().([]any)
+	if len(data4) != 4 || !(data4[0].(string) == "m6" || data4[2].(string) == "m6") {
+		t.Fatal(data4)
 	}
 
 	if v := rdb1.HGet(ctx, "h", "k2").Val(); v != "v4" {

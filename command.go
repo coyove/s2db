@@ -561,9 +561,16 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, incl
 	defer rd.Close()
 
 	var max int64
+	var mErr error
 	if err := hashmapMergerIter(buf, func(d hashmapData) bool {
-		if matchValue != nil && !bytes.Equal(matchValue, d.data) {
-			return true
+		if matched := false; matchValue != nil {
+			matched, mErr = s2.GlobBytes(matchValue, d.data)
+			if err != nil {
+				return true
+			}
+			if !matched {
+				return true
+			}
 		}
 		if d.ts > max {
 			max = d.ts
@@ -580,6 +587,9 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, incl
 		return true
 	}); err != nil {
 		return nil, err
+	}
+	if mErr != nil {
+		return nil, mErr
 	}
 
 	future.Future(max).Wait()

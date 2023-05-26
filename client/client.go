@@ -184,14 +184,16 @@ func (a *Session) MustHGetAll(ctx context.Context, key string, match []byte) (da
 
 func (a *Session) doHGetAll(ctx context.Context, key string, match []byte, sync bool) (data map[string]string, err error) {
 	args := []any{"HGETALL", key}
-	if sync {
-		args[0] = "HGETALLS"
-	}
 	if match != nil {
 		args = append(args, "MATCH", match)
 	}
 
 	for _, db := range a.rdb {
+		if sync {
+			if err := db.Do(ctx, "HSYNC", key).Err(); err != nil {
+				continue
+			}
+		}
 		v, err := db.Do(ctx, args...).Result()
 		if err != nil {
 			continue

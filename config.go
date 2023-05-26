@@ -36,7 +36,6 @@ type ServerConfig struct {
 	WMCacheSize     int
 	SlowLimit       int // ms
 	TimeoutPeer     int // ms
-	TimeoutPeerLong int // ms
 	TimeoutRange    int // ms
 	DistinctLimit   int
 	BatchLimit      int
@@ -107,15 +106,14 @@ func (s *Server) loadConfig() error {
 	}); err != nil {
 		return err
 	}
-	return s.saveConfig()
+	return s.saveConfig("load")
 }
 
-func (s *Server) saveConfig() error {
+func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.FillCacheSize, 100000)
 	ifZero(&s.Config.WMCacheSize, 1024*1024)
 	ifZero(&s.Config.SlowLimit, 500)
 	ifZero(&s.Config.TimeoutPeer, 50)
-	ifZero(&s.Config.TimeoutPeerLong, 1000)
 	ifZero(&s.Config.TimeoutRange, 500)
 	ifZero(&s.Config.DistinctLimit, 8192)
 	ifZero(&s.Config.BatchLimit, 100)
@@ -141,7 +139,7 @@ func (s *Server) saveConfig() error {
 		if changed, err := s.Peers[i].Set(x); err != nil {
 			return err
 		} else if changed {
-			log.Infof("peer #%d created/removed with: %q", i, x)
+			log.Infof("[%s] peer #%d created/removed with %q", source, i, x)
 		}
 	}
 
@@ -182,7 +180,7 @@ func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
 		return nil
 	})
 	if found {
-		if err := s.saveConfig(); err != nil {
+		if err := s.saveConfig("update"); err != nil {
 			s.Config = old
 			return false, err
 		}
@@ -251,7 +249,7 @@ func (s *Server) CopyConfig(remoteAddr, key string) (finalErr error) {
 
 	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
 		switch rf.Name {
-		case "ServerName", "MarkMaster", "Slave", "Passthrough":
+		case "ServerName":
 			return nil
 		}
 		if key != "" && !strings.EqualFold(rf.Name, key) {

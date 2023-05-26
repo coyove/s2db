@@ -39,6 +39,7 @@ var (
 		"HSYNC":    true,
 		"HLEN":     true,
 		"HGET":     true,
+		"HTIME":    true,
 		"HGETALL":  true,
 	}
 	isWriteCommand = map[string]bool{

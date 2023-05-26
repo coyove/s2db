@@ -39,6 +39,8 @@ github.com/coreos/go-etcd v2.0.0+incompatible/go.mod h1:Jez6KQU2B/sWsbdaef3ED8Nz
 github.com/coreos/go-semver v0.2.0/go.mod h1:nnelYz7RCh+5ahJtPPxZlU+153eP4D4r3EedlOD2RNk=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db h1:eQaGKwwenv6kAnPH7LcC543XdWuJ6rT0XqlamVh/3zw=
 github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
+github.com/coyove/nj v0.0.0-20221110084952-c7f8db1065c3 h1:dEcdiA5LbCNOAAsliFQPYlneuziX3plT6CQVUaqbv+w=
+github.com/coyove/nj v0.0.0-20221110084952-c7f8db1065c3/go.mod h1:UHnTyuIh+Vhy8dMfu9z9O4+RB059hGQTXhNZpoD6oMc=
 github.com/coyove/sdss v0.0.0-20230523113413-30422880d2d1 h1:sQU5J0EWbJVATQtC9nV6ZN48WJ8/xm0KNzuagawHegE=
 github.com/coyove/sdss v0.0.0-20230523113413-30422880d2d1/go.mod h1:bzoYTl9sjbxriYfKDeA4QUDET34M2d9dzfgkt/Zirq8=
 github.com/cpuguy83/go-md2man v1.0.10/go.mod h1:SmD6nW6nTyfqj6ABTjUi3V3JVMnlJmwcJI5acqYI6dE=

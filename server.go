@@ -547,18 +547,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt64(int64(res))
-	case "HGET": // key member [TIMESTAMP]
-		ts := parseHGET(K)
+	case "HGET", "HTIME": // key member
 		s.syncHashmap(key, false)
 		res, time, err := s.HGet(key, K.BytesRef(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		if ts {
-			return w.WriteBulks([][]byte{
-				res,
-				strconv.AppendInt(nil, time/1e6/10*10, 10),
-			})
+		if cmd == "HTIME" {
+			return w.WriteInt64(time / 1e6 / 10 * 10)
 		}
 		return w.WriteBulkNoNil(res)
 	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]

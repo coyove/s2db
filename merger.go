@@ -27,6 +27,8 @@ func hashmapMergerIter(p []byte, f func(d hashmapData) bool) (err error) {
 	if p[0] != 0x01 {
 		return fmt.Errorf("setMerger: invalid opcode %x", p)
 	}
+
+	// count := binary.BigEndian.Uint32(p[1:])
 	rd := bufio.NewReader(bytes.NewReader(p[1+4:]))
 	for {
 		// ts (8b) + keylen + key + valuelen + value
@@ -88,14 +90,19 @@ func (s *hashmapMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
 func hashmapMergerBytes(m map[string]hashmapData) []byte {
 	tmp := make([]byte, 0, len(m)*32)
 	tmp = append(tmp, 0x01)
-	tmp = binary.BigEndian.AppendUint32(tmp, uint32(len(m)))
+	tmp = binary.BigEndian.AppendUint32(tmp, 0)
+	count := 0
 	for k, v := range m {
 		tmp = binary.BigEndian.AppendUint64(tmp, uint64(v.ts))
 		tmp = binary.AppendUvarint(tmp, uint64(len(k)))
 		tmp = append(tmp, k...)
 		tmp = binary.AppendUvarint(tmp, uint64(len(v.data)))
 		tmp = append(tmp, v.data...)
+		if len(v.data) > 0 {
+			count++
+		}
 	}
+	binary.BigEndian.PutUint32(tmp[1:], uint32(count))
 	return tmp
 }
 

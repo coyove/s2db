@@ -130,13 +130,6 @@ func parseHGETALL(K *wire.Command) (noCompress, ts, keysOnly bool, match []byte)
 	return
 }
 
-func parseHGET(K *wire.Command) (ts bool) {
-	for i := 3; i < K.ArgCount(); i++ {
-		ts = ts || K.StrEqFold(i, "timestamp")
-	}
-	return
-}
-
 func parseSCAN(K *wire.Command) (hash, index bool, count int) {
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "count") {

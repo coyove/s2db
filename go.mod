@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/cockroachdb/errors v1.8.1
 	github.com/cockroachdb/pebble v0.0.0-20220506213004-f8897076324b
-	github.com/coyove/nj v0.0.0-20221101120758-232c440bb4db
+	github.com/coyove/nj v0.0.0-20221110084952-c7f8db1065c3
 	github.com/coyove/sdss v0.0.0-20230523113413-30422880d2d1
 	github.com/go-redis/redis/v8 v8.11.0
 	github.com/influxdata/influxdb1-client v0.0.0-20220302092344-a9ab5670611c

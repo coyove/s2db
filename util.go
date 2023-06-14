@@ -77,6 +77,11 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, sync, wait boo
 		wait = wait || K.StrEqFold(i, "wait")
 		sync = sync || K.StrEqFold(i, "sync")
 	}
+	for i := len(data) - 1; i >= 0; i-- {
+		if len(data[i]) == 0 {
+			data = append(data[:i], data[i+1:]...)
+		}
+	}
 	return
 }
 

@@ -140,6 +140,32 @@ func TestAppend(t *testing.T) {
 	fmt.Println(data)
 }
 
+func TestAppendEmpty(t *testing.T) {
+	rdb1, rdb2, s1, s2 := prepareServers()
+	defer s1.Close()
+	defer s2.Close()
+
+	ctx := context.TODO()
+	for i := 0; i < 10; i++ {
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+		time.Sleep(time.Millisecond * 200)
+	}
+
+	data1 := doRange(rdb2, "a", "now", -100)
+	for i := range data1 {
+		if future.UnixNano()-data1[i].UnixNano() > 1e9 {
+			data1 = data1[:i]
+			break
+		}
+	}
+	s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
+
+	data2 := doRange(rdb2, "a", "now", -100)
+	if len(data2) != len(data1) {
+		t.Fatal(data1, data2)
+	}
+}
+
 func TestConsolidation(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()
 	defer s1.Close()

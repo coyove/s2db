@@ -363,7 +363,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		}
 		hexIds := hexEncodeBulks(ids)
 		if sync && s.HasOtherPeers() {
-			args := []any{"APPEND", key, s2.Bytes(data[0]), "TTL", ttl}
+			args := []any{"APPEND", key}
+			if len(data) > 0 {
+				args = append(args, s2.Bytes(data[0]), "TTL", ttl)
+			} else {
+				args = append(args, "", "TTL", ttl)
+			}
 			for i := 1; i < len(data); i++ {
 				args = append(args, "AND", s2.Bytes(data[i]))
 			}

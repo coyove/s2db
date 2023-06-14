@@ -237,6 +237,7 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 				}
 				count++
 			}
+
 			if count > 0 {
 				idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
 				if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {

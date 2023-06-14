@@ -48,7 +48,12 @@ func (a *Session) AppendTTLSync(ctx context.Context, key string, ttlSec int64, d
 }
 
 func (a *Session) doAppend(ctx context.Context, key string, q bool, ttlSec int64, data ...any) ([]string, error) {
-	args := []any{"APPEND", key, data[0], "TTL", ttlSec}
+	args := []any{"APPEND", key}
+	if len(data) > 0 {
+		args = append(args, data[0], "TTL", ttlSec)
+	} else {
+		args = append(args, "", "TTL", ttlSec)
+	}
 	if q {
 		args = append(args, "SYNC")
 	}

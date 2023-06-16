@@ -250,7 +250,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 
 	if isWriteCommand[cmd] {
 		if key == "" || strings.Contains(key, "\x00") {
-			return w.WriteError("invalid key name")
+			return w.WriteError(fmt.Sprintf("invalid key name: %q", key))
 		}
 		if err := s.checkWritable(); err != nil {
 			return w.WriteError(err.Error())

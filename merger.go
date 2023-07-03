@@ -6,10 +6,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"math"
+	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
+	"github.com/sirupsen/logrus"
 )
 
 type hashmapData struct {
@@ -128,4 +132,132 @@ func (s *Server) createMerger() *pebble.Merger {
 
 		Name: "pebble.concatenate", // keep the name same as the default one for data backward compatibilities
 	}
+}
+
+func (s *Server) walkL6Tables() {
+	ttl := int64(s.Config.ExpireHardTTL)
+	if ttl <= 0 {
+		return
+	}
+
+	log := logrus.WithField("shard", "l6worker")
+	log.Infof("start walking")
+
+	tables, err := s.DB.SSTables()
+	if err != nil {
+		log.Errorf("list sstables: %v", err)
+		return
+	}
+
+	for _, t := range tables[6] {
+		if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
+			continue
+		}
+		if bytes.Compare(t.Smallest.UserKey, []byte("m")) >= 0 {
+			continue
+		}
+		k := tkp(uint64(t.FileNum))
+		timestamp, err := s.GetInt64(k)
+		if err != nil {
+			log.Errorf("failed to get stored timestamp: %v", err)
+			return
+		}
+
+		kkpRev := func(prefix []byte) (key []byte) {
+			if bytes.HasPrefix(prefix, []byte("l")) {
+				return prefix[1:bytes.IndexByte(prefix, 0)]
+			}
+			return prefix
+		}
+
+		if timestamp == 0 {
+			minTimestamp, deletes, err := s.purgeSSTable(log, t, ttl)
+			if err != nil {
+				log.Errorf("[%d] delete range: %v", t.FileNum, err)
+			} else {
+				err := s.SetInt64(k, minTimestamp)
+				log.Infof("[%d] update min timestamp: %v (%v), deletes %d in [%q, %q]",
+					t.FileNum, minTimestamp, err, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+			}
+			time.Sleep(time.Second / 2)
+		} else if timestamp < future.UnixNano()-ttl*1e9 {
+			_, deletes, err := s.purgeSSTable(log, t, ttl)
+			if err != nil {
+				log.Errorf("[%d] delete range: %v", t.FileNum, err)
+			} else {
+				log.Infof("[%d] purge %d in [%q, %q]",
+					t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+			}
+			time.Sleep(time.Second)
+		} else {
+			time.Sleep(time.Millisecond * 100)
+		}
+	}
+
+	log.Infof("finish walking")
+}
+
+func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
+	ss := s.DB.NewSnapshot()
+	defer ss.Close()
+	iter := ss.NewIter(&pebble.IterOptions{
+		LowerBound: t.Smallest.UserKey,
+		UpperBound: s2.IncBytes(t.Largest.UserKey),
+	})
+	defer iter.Close()
+	var tmp []byte
+	var minTimestamp int64 = math.MaxInt64
+	var deletes int
+
+	tx := s.DB.NewBatch()
+	defer func() {
+		tx.Close()
+	}()
+
+	// startKey, _ := s.Get(trkp(uint64(t.FileNum)))
+	// if len(startKey) > 0 {
+	// 	log.Infof("[%d] found start key: %q", t.FileNum, startKey)
+	// 	iter.SeekGE(startKey)
+	// } else {
+	iter.First()
+	// }
+
+	for iter.Valid() {
+		k := iter.Key()
+		if bytes.Compare(k, []byte("l")) < 0 {
+			iter.Next()
+			continue
+		}
+		if bytes.Compare(k, []byte("m")) >= 0 {
+			break
+		}
+
+		ts := int64(s2.Convert16BToFuture(k[bytes.IndexByte(k, 0)+1:]))
+		if ts < minTimestamp {
+			minTimestamp = ts
+		}
+
+		if ddl := future.UnixNano() - ttl*1e9; ts < ddl {
+			deletes++
+			key := string(k[1:bytes.IndexByte(k, 0)])
+			idx := s2.ConvertFutureTo16B(future.Future(ddl))
+			if err := tx.DeleteRange(k, append(kkp(key), idx[:]...), pebble.NoSync); err != nil {
+				return 0, 0, err
+			}
+			if tx.Count() >= uint32(s.Config.ExpireTxLimit) {
+				// log.Infof("[%d] switch tx: %d %q", t.FileNum, deletes, iter.Key())
+				// tx.Set(trkp(uint64(t.FileNum)), iter.Key(), pebble.NoSync)
+				if err := tx.Commit(pebble.NoSync); err != nil {
+					return 0, 0, err
+				}
+				tx.Close()
+				time.Sleep(time.Second)
+				tx = s.DB.NewBatch()
+			}
+		}
+
+		tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
+		iter.SeekGE(append(tmp, 1))
+	}
+	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
 }

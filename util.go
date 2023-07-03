@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 
@@ -165,6 +166,16 @@ func kkp(key string) (prefix []byte) {
 
 func skp(key string) (prefix []byte) {
 	prefix = append(append(make([]byte, 64)[:0], "h"...), key...)
+	return
+}
+
+func tkp(id uint64) (prefix []byte) {
+	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t"...), id, 10)
+	return
+}
+
+func trkp(id uint64) (prefix []byte) {
+	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t\x00"...), id, 10)
 	return
 }
 

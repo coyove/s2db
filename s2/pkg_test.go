@@ -500,3 +500,10 @@ func TestXor(t *testing.T) {
 		}
 	}
 }
+
+func TestCSVPrefix(t *testing.T) {
+	a := SortCSVPrefix("")
+	fmt.Println(a, SearchCSVPrefix(a, "a"))
+	a = SortCSVPrefix("a,1,ab,2")
+	fmt.Println(a, SearchCSVPrefix(a, "abc"))
+}

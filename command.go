@@ -239,10 +239,10 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 			}
 
 			if count > 0 {
-				idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
-				if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-					return 0, err
-				}
+				// idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
+				// if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
+				// 	return 0, err
+				// }
 			}
 			s.Survey.AppendExpire.Incr(int64(count))
 		}

@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -326,4 +327,49 @@ func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
 		}
 	}
 	return false
+}
+
+func SortCSVPrefix(pattern string) string {
+	parts := strings.Split(pattern, ",")
+	if len(parts)%2 != 0 {
+		parts = append(parts, "")
+	}
+	var s [][2]string
+	*(*[3]int)(unsafe.Pointer(&s)) = [3]int{
+		*(*int)(unsafe.Pointer(&parts)),
+		len(parts) / 2,
+		len(parts) / 2,
+	}
+	sort.Slice(s, func(i, j int) bool {
+		if len(s[i][0]) == len(s[j][0]) {
+			return s[i][0] > s[j][0]
+		}
+		return len(s[i][0]) > len(s[j][0])
+	})
+	return strings.Join(parts, ",")
+}
+
+func SearchCSVPrefix(pattern string, key string) int {
+	for len(pattern) > 0 {
+		idx := strings.IndexByte(pattern, ',')
+		if idx == -1 {
+			break
+		}
+		idx2 := strings.IndexByte(pattern[idx+1:], ',')
+		if idx2 == -1 {
+			break
+		}
+		idx2 += idx + 1
+		k := pattern[:idx]
+		v := pattern[idx+1 : idx2]
+		pattern = pattern[idx2+1:]
+		if k == "" {
+			continue
+		}
+		if strings.HasPrefix(key, k) {
+			v, _ := strconv.Atoi(v)
+			return v
+		}
+	}
+	return 0
 }

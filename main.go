@@ -44,6 +44,7 @@ var (
 	logRuntimeConfig   = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig      = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig        = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
+	logDebug           = flag.Bool("log.debug", false, "[log] debug level output")
 	netTCPWbufSize     = flag.Int("tcp.wbufsiz", 0, "[tcp] TCP write buffer size")
 	blacklistIPsFlag   = flag.String("ip.blacklist", "", "")
 
@@ -70,6 +71,10 @@ func main() {
 
 	log.SetReportCaller(true)
 	s2.SetLogger(log.StandardLogger(), *logRuntimeConfig, false)
+
+	if *logDebug {
+		log.SetLevel(log.DebugLevel)
+	}
 
 	if *channel < 0 || *channel >= future.Channels {
 		errorExit("invalid channel")

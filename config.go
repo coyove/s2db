@@ -73,6 +73,7 @@ type ServerSurvey struct {
 	DistinctOnce     s2.Survey `metrics:"mean"`
 	HashSyncOnce     s2.Survey `metrics:"mean"`
 	KeyHashRatio     s2.Survey `metrics:"mean"`
+	PurgerDeletes    s2.Survey
 	PeerLatency      sync.Map
 	Command          sync.Map
 }
@@ -121,7 +122,7 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.CompressLimit, 10*1024)
 	if s.Config.ExpireTx == "" {
-		s.Config.ExpireTx = "100,100"
+		s.Config.ExpireTx = "5000,1000"
 	}
 	if s.Config.ServerName == "" {
 		s.Config.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())

@@ -176,23 +176,20 @@ func (s *Server) walkL6Tables() {
 			return prefix
 		}
 
-		if timestamp == 0 {
-			minTimestamp, deletes, err := s.purgeSSTable(log, t, ttl)
+		if timestamp < future.UnixNano()-ttl*1e9 {
+			minTimestamp, deletes, err := s.purgeSSTable(log, timestamp, t, ttl)
 			if err != nil {
-				log.Errorf("[%d] delete range: %v", t.FileNum, err)
+				log.Errorf("[%d] purge: %v", t.FileNum, err)
 			} else {
-				err := s.SetInt64(k, minTimestamp)
-				log.Infof("[%d] update min timestamp: %v (%v), deletes %d in [%q, %q]",
-					t.FileNum, minTimestamp, err, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
-			}
-			time.Sleep(time.Second / 2)
-		} else if timestamp < future.UnixNano()-ttl*1e9 {
-			_, deletes, err := s.purgeSSTable(log, t, ttl)
-			if err != nil {
-				log.Errorf("[%d] delete range: %v", t.FileNum, err)
-			} else {
-				log.Infof("[%d] purge %d in [%q, %q]",
-					t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+				if timestamp == 0 {
+					log.Debugf("[%d] new sst: %v", t.FileNum, minTimestamp)
+				} else if minTimestamp == math.MaxInt64 {
+					log.Debugf("[%d] sst all purged", t.FileNum)
+				} else {
+					log.Debugf("[%d] timestamp: %v -> %v (+%d)", t.FileNum, timestamp, minTimestamp, (minTimestamp-timestamp)/1e9)
+				}
+				log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+				s.Survey.PurgerDeletes.Incr(int64(deletes))
 			}
 			time.Sleep(time.Second)
 		} else {
@@ -203,7 +200,7 @@ func (s *Server) walkL6Tables() {
 	logrus.Infof("finish L6 walking in %v", time.Since(start))
 }
 
-func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
+func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
 	var wait, maxTx int
 	fmt.Sscanf(s.Config.ExpireTx, "%d,%d", &maxTx, &wait)
 	if wait == 0 || maxTx == 0 {
@@ -219,16 +216,10 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64
 		time.Sleep(time.Second * 10)
 	}
 
-	var tmp []byte
 	var minTimestamp int64 = math.MaxInt64
-	var deletes []string
+	var deletes int
+	var tmp []byte
 	ddl := future.UnixNano() - ttl*1e9
-	idx := s2.ConvertFutureTo16B(future.Future(ddl))
-
-	// iter := s.DB.NewIter(&pebble.IterOptions{
-	// 	LowerBound: t.Smallest.UserKey,
-	// 	UpperBound: s2.IncBytes(t.Largest.UserKey),
-	// })
 
 	buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
 	if err != nil {
@@ -246,6 +237,11 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64
 	}
 	defer iter.Close()
 
+	tx := s.DB.NewBatch()
+	defer func() {
+		tx.Close()
+	}()
+
 	for ik, _ := iter.First(); ik != nil; {
 		k := ik.UserKey
 		if bytes.Compare(k, []byte("l")) < 0 {
@@ -257,37 +253,34 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64
 		}
 
 		ts := int64(s2.Convert16BToFuture(k[bytes.IndexByte(k, 0)+1:]))
-		if ts < minTimestamp {
-			minTimestamp = ts
+		if ts <= startTimestamp {
+			ik, _ = iter.Next()
+			continue
 		}
 
-		if ts < ddl {
-			key := string(k[1:bytes.IndexByte(k, 0)])
-			deletes = append(deletes, key)
-		}
-
-		tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
-		ik, _ = iter.SeekGE(append(tmp, 1), true)
-	}
-
-	for i := 0; i < len(deletes); i += maxTx {
-		end := i + maxTx
-		if end > len(deletes) {
-			end = len(deletes)
-		}
-		tx := s.DB.NewBatch()
-		defer tx.Close()
-		for j := i; j < end; j++ {
-			k := kkp(deletes[j])
-			if err := tx.DeleteRange(k, append(k, idx[:]...), pebble.NoSync); err != nil {
-				return 0, 0, err
+		if ts <= ddl {
+			deletes++
+			tx.Delete(k, pebble.NoSync)
+			if tx.Count() >= uint32(maxTx) {
+				if err := tx.Commit(pebble.NoSync); err != nil {
+					return 0, 0, err
+				}
+				tx.Close()
+				time.Sleep(time.Duration(wait) * time.Millisecond)
+				tx = s.DB.NewBatch()
 			}
+			ik, _ = iter.Next()
+		} else {
+			if ts < minTimestamp {
+				minTimestamp = ts
+			}
+
+			tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
+			ik, _ = iter.SeekGE(append(tmp, 1), true)
 		}
-		if err := tx.Commit(pebble.NoSync); err != nil {
-			return 0, 0, err
-		}
-		time.Sleep(time.Duration(wait) * time.Millisecond)
 	}
 
-	return minTimestamp, len(deletes), nil
+	tx.Set(tkp(uint64(t.FileNum)), s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
+
+	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
 }

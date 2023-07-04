@@ -6,11 +6,14 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
+	"math/rand"
 	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/cockroachdb/pebble/sstable"
 	"github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
@@ -140,16 +143,19 @@ func (s *Server) walkL6Tables() {
 		return
 	}
 
-	log := logrus.WithField("shard", "l6worker")
-	log.Infof("start walking")
+	logrus.Infof("start L6 walking")
+	start := time.Now()
 
 	tables, err := s.DB.SSTables()
 	if err != nil {
-		log.Errorf("list sstables: %v", err)
+		logrus.Errorf("walkL6: list sstables: %v", err)
 		return
 	}
 
-	for _, t := range tables[6] {
+	for ii, i := range rand.Perm(len(tables[6])) {
+		t := tables[6][i]
+		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", ii, len(tables[6])))
+
 		if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
 			continue
 		}
@@ -194,38 +200,56 @@ func (s *Server) walkL6Tables() {
 		}
 	}
 
-	log.Infof("finish walking")
+	logrus.Infof("finish L6 walking in %v", time.Since(start))
 }
 
 func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
-	ss := s.DB.NewSnapshot()
-	defer ss.Close()
-	iter := ss.NewIter(&pebble.IterOptions{
-		LowerBound: t.Smallest.UserKey,
-		UpperBound: s2.IncBytes(t.Largest.UserKey),
-	})
-	defer iter.Close()
+	var wait, maxTx int
+	fmt.Sscanf(s.Config.ExpireTx, "%d,%d", &maxTx, &wait)
+	if wait == 0 || maxTx == 0 {
+		return 0, 0, fmt.Errorf("invalid config")
+	}
+
+	for {
+		c := s.DB.Metrics().Compact
+		if c.NumInProgress == 0 {
+			break
+		}
+		log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
+		time.Sleep(time.Second * 10)
+	}
+
 	var tmp []byte
 	var minTimestamp int64 = math.MaxInt64
-	var deletes int
+	var deletes []string
+	ddl := future.UnixNano() - ttl*1e9
+	idx := s2.ConvertFutureTo16B(future.Future(ddl))
 
-	tx := s.DB.NewBatch()
-	defer func() {
-		tx.Close()
-	}()
+	// iter := s.DB.NewIter(&pebble.IterOptions{
+	// 	LowerBound: t.Smallest.UserKey,
+	// 	UpperBound: s2.IncBytes(t.Largest.UserKey),
+	// })
 
-	// startKey, _ := s.Get(trkp(uint64(t.FileNum)))
-	// if len(startKey) > 0 {
-	// 	log.Infof("[%d] found start key: %q", t.FileNum, startKey)
-	// 	iter.SeekGE(startKey)
-	// } else {
-	iter.First()
-	// }
+	buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
+	if err != nil {
+		return 0, 0, fmt.Errorf("open sst: %v", err)
+	}
+	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("read sst: %v", err)
+	}
+	defer rd.Close()
 
-	for iter.Valid() {
-		k := iter.Key()
+	iter, err := rd.NewIter(nil, s2.IncBytes(t.Largest.UserKey))
+	if err != nil {
+		return 0, 0, fmt.Errorf("sst new iter: %v", err)
+	}
+	defer iter.Close()
+
+	for ik, _ := iter.First(); ik != nil; {
+		k := ik.UserKey
 		if bytes.Compare(k, []byte("l")) < 0 {
-			iter.Next()
+			ik, _ = iter.Next()
 			continue
 		}
 		if bytes.Compare(k, []byte("m")) >= 0 {
@@ -237,27 +261,33 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo, ttl int64
 			minTimestamp = ts
 		}
 
-		if ddl := future.UnixNano() - ttl*1e9; ts < ddl {
-			deletes++
+		if ts < ddl {
 			key := string(k[1:bytes.IndexByte(k, 0)])
-			idx := s2.ConvertFutureTo16B(future.Future(ddl))
-			if err := tx.DeleteRange(k, append(kkp(key), idx[:]...), pebble.NoSync); err != nil {
-				return 0, 0, err
-			}
-			if tx.Count() >= uint32(s.Config.ExpireTxLimit) {
-				// log.Infof("[%d] switch tx: %d %q", t.FileNum, deletes, iter.Key())
-				// tx.Set(trkp(uint64(t.FileNum)), iter.Key(), pebble.NoSync)
-				if err := tx.Commit(pebble.NoSync); err != nil {
-					return 0, 0, err
-				}
-				tx.Close()
-				time.Sleep(time.Second)
-				tx = s.DB.NewBatch()
-			}
+			deletes = append(deletes, key)
 		}
 
 		tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
-		iter.SeekGE(append(tmp, 1))
+		ik, _ = iter.SeekGE(append(tmp, 1), true)
 	}
-	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
+
+	for i := 0; i < len(deletes); i += maxTx {
+		end := i + maxTx
+		if end > len(deletes) {
+			end = len(deletes)
+		}
+		tx := s.DB.NewBatch()
+		defer tx.Close()
+		for j := i; j < end; j++ {
+			k := kkp(deletes[j])
+			if err := tx.DeleteRange(k, append(k, idx[:]...), pebble.NoSync); err != nil {
+				return 0, 0, err
+			}
+		}
+		if err := tx.Commit(pebble.NoSync); err != nil {
+			return 0, 0, err
+		}
+		time.Sleep(time.Duration(wait) * time.Millisecond)
+	}
+
+	return minTimestamp, len(deletes), nil
 }

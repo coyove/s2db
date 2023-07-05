@@ -139,12 +139,24 @@ func (s *Server) createMerger() *pebble.Merger {
 
 func (s *Server) walkL6Tables() {
 	ttl := int64(s.Config.ExpireHardTTL)
+
+	defer func(start time.Time) {
+		if ttl <= 0 {
+			time.AfterFunc(time.Second*10, func() { s.walkL6Tables() })
+			return
+		}
+
+		w := time.Hour
+		logrus.Infof("finish L6 walking in %v, next scheduled at %v",
+			time.Since(start), time.Now().UTC().Add(w).Format(time.Stamp))
+		time.AfterFunc(w, func() { s.walkL6Tables() })
+	}(time.Now())
+
 	if ttl <= 0 {
 		return
 	}
 
 	logrus.Infof("start L6 walking")
-	start := time.Now()
 
 	tables, err := s.DB.SSTables()
 	if err != nil {
@@ -196,8 +208,6 @@ func (s *Server) walkL6Tables() {
 			time.Sleep(time.Millisecond * 100)
 		}
 	}
-
-	logrus.Infof("finish L6 walking in %v", time.Since(start))
 }
 
 func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.SSTableInfo, ttl int64) (int64, int, error) {

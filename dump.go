@@ -30,24 +30,20 @@ func (s *Server) startCronjobs() {
 		if s.Closed {
 			return
 		}
+		time.AfterFunc(d, func() { run(d, m) })
 		switch m {
 		case 1:
-			time.AfterFunc(d, func() { run(d, m) })
 			if err := s.appendMetricsPairs(time.Hour * 24 * 30); err != nil {
 				log.Error("AppendMetricsPairs: ", err)
 			}
-		case 2:
-			s.walkL6Tables()
-			time.AfterFunc(d, func() { run(d, m) })
 		default:
-			time.AfterFunc(d, func() { run(d, m) })
 			s.runScriptFunc("cronjob" + strconv.Itoa(int(d.Seconds())))
 		}
 	}
 	run(time.Second*30, 0)
 	run(time.Second*60, 0)
 	run(time.Second*60, 1)
-	run(time.Second*300, 2)
+	s.walkL6Tables()
 }
 
 func (s *Server) DumpWire(dest string) {

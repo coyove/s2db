@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"math"
 	"math/rand"
+	"os"
 	"time"
 	"unsafe"
 
@@ -233,6 +234,9 @@ func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.
 
 	buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return minTimestamp, 0, nil
+		}
 		return 0, 0, fmt.Errorf("open sst: %v", err)
 	}
 	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})

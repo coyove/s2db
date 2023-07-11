@@ -193,7 +193,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}()
 
 	parser := wire.NewParser(conn)
-	writer := wire.NewWriter(conn, log.StandardLogger())
+	writer := wire.NewWriter(conn)
 	var ew error
 	for auth := false; ; {
 		command, err := parser.ReadCommand()
@@ -239,7 +239,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src net.IP, K *wire.Command) (outErr error) {
+func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, src net.IP, K *wire.Command) (outErr error) {
 	key := K.Str(1)
 
 	for _, nw := range blacklistIPs {
@@ -302,8 +302,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		os.Exit(0)
 	case "AUTH": // AUTH command is processed before runComamnd, so always return OK here
 		return w.WriteSimpleString("OK")
-	case "EVAL":
-		return w.WriteValue(s.mustRunCode(key, K.Argv[2:]...))
+	// case "EVAL":
+	// 	return w.WriteValue(s.mustRunCode(key, K.Argv[2:]...))
 	case "PING":
 		if key == "" {
 			return w.WriteSimpleString("PONG " + s.Config.ServerName + " " + Version)
@@ -312,8 +312,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "CONFIG":
 		switch strings.ToUpper(key) {
 		case "GET":
-			v, _ := s.GetConfig(K.Str(2))
-			return w.WriteBulkStrings([]string{K.Str(2), v})
+			v, _ := s.GetConfig(K.StrRef(2))
+			return w.WriteBulks([]string{K.StrRef(2), v})
 		case "SET":
 			found, err := s.UpdateConfig(K.Str(2), K.Str(3), false)
 			if err != nil {
@@ -328,11 +328,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 			}
 			return w.WriteSimpleString("OK")
 		default:
-			return w.WriteBulkStrings(s.listConfigCommand())
+			return w.WriteBulks(s.listConfigCommand())
 		}
 	case "INFO":
 		info := s.InfoCommand(key)
-		return w.WriteBulkString(strings.Join(info, "\r\n"))
+		return w.WriteBulk(strings.Join(info, "\r\n"))
 	case "DUMPDB":
 		go func(start time.Time) {
 			log.Infof("start dumping to %s", key)
@@ -347,11 +347,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return slowLogger.Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return dbLogger.Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*s2.LogFormatter).LogFork(w.Conn.(net.Conn))
+		return log.StandardLogger().Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
 	}
 
 	switch cmd {
@@ -468,13 +468,13 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulkNoNil(data)
+		return w.WriteBulk(data)
 	case "LOOKUP":
 		data, err := s.wrapLookup(s.translateCursor(K.Bytes(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulkNoNil(data)
+		return w.WriteBulk(data)
 	case "COUNT":
 		add, del, err := s.getHLL(key)
 		if err != nil {
@@ -501,12 +501,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
 		hash, index, count := parseSCAN(K)
 		if hash {
-			return w.WriteObjects(s.ScanHash(K.StrRef(1), count))
+			return w.WriteBulkBulks(s.ScanHash(K.StrRef(1), count))
 		}
 		if index {
-			return w.WriteObjects(s.ScanIndex(K.StrRef(1), count))
+			return w.WriteBulkBulks(s.ScanIndex(K.StrRef(1), count))
 		}
-		return w.WriteObjects(s.Scan(K.StrRef(1), count))
+		return w.WriteBulkBulks(s.Scan(K.StrRef(1), count))
 	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]] [SETID ...]
 		kvs, ids, sync, wait := parseHSET(K)
 		ids, err := s.HSet(key, wait, kvs, ids)
@@ -530,7 +530,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 	case "PHGETALL": // key checksum
 		data, rd, err := s.DB.Get(skp(key))
 		if err == pebble.ErrNotFound {
-			return w.WriteBulkNoNil(nil)
+			return w.WriteBulk(nil)
 		}
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -539,7 +539,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
 			data = nil
 		}
-		return w.WriteBulkNoNil(data)
+		return w.WriteBulk(data)
 	case "HSYNC":
 		if err := s.syncHashmap(key, true); err != nil {
 			return w.WriteError(err.Error())
@@ -561,7 +561,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w *wire.Writer, src
 		if cmd == "HTIME" {
 			return w.WriteInt64(time / 1e6 / 10 * 10)
 		}
-		return w.WriteBulkNoNil(res)
+		return w.WriteBulk(res)
 	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
 		noCompress, ts, keysOnly, match := parseHGETALL(K)
 		s.syncHashmap(key, false)

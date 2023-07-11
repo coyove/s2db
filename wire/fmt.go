@@ -5,9 +5,7 @@ import (
 )
 
 var (
-	newLine  = []byte{'\r', '\n'}
-	nilBulk  = []byte{'$', '-', '1', '\r', '\n'}
-	nilArray = []byte{'*', '-', '1', '\r', '\n'}
+	newLine = []byte{'\r', '\n'}
 )
 
 func itob(val int64) []byte {

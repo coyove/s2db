@@ -420,7 +420,7 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	return nil
 }
 
-func (s *Server) convertPairs(w *wire.Writer, p []s2.Pair, max int, q bool) (err error) {
+func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, q bool) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}

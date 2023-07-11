@@ -41,8 +41,10 @@ func (p *ProtocolError) Error() string {
 }
 
 type Command struct {
-	Argv [][]byte
-	last bool
+	Argv   [][]byte
+	last   bool
+	itf    bool
+	values []any
 }
 
 func (c *Command) Bytes(index int) []byte {
@@ -52,9 +54,8 @@ func (c *Command) Bytes(index int) []byte {
 func (c *Command) BytesRef(index int) []byte {
 	if index >= 0 && index < len(c.Argv) {
 		return c.Argv[index]
-	} else {
-		return nil
 	}
+	return nil
 }
 
 func (c *Command) Str(index int) string {
@@ -71,27 +72,12 @@ func (c *Command) Int(index int) int {
 	return int(c.Int64(index))
 }
 
-func (c *Command) MaybeInt64(index int) int64 {
-	i, _ := strconv.ParseInt(c.StrRef(index), 10, 64)
-	return i
-}
-
 func (c *Command) Int64(index int) int64 {
 	i, err := strconv.ParseInt(c.StrRef(index), 10, 64)
-	c.panicNumber(err, index)
-	return i
-}
-
-func (c *Command) Float64(index int) float64 {
-	v, err := strconv.ParseFloat(c.StrRef(index), 64)
-	c.panicNumber(err, index)
-	return v
-}
-
-func (c *Command) panicNumber(err error, index int) {
 	if err != nil {
 		panic(fmt.Errorf("invalid number %q at #%d: %v", c.BytesRef(index), index, err))
 	}
+	return i
 }
 
 func (c *Command) StrEqFold(index int, v string) bool {
@@ -104,14 +90,6 @@ func (c *Command) ArgCount() int {
 
 func (c *Command) IsLast() bool {
 	return c.last
-}
-
-func (c *Command) ArgsRef() []interface{} {
-	a := make([]interface{}, len(c.Argv))
-	for i := range c.Argv {
-		a[i] = c.Argv[i]
-	}
-	return a
 }
 
 func (c *Command) String() string {

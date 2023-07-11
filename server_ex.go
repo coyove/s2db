@@ -410,12 +410,12 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	}
 	if s.hashSyncOnce.lock(key) {
 		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.count())
-		time.AfterFunc(time.Second, func() {
-			defer s.hashSyncOnce.unlock(key)
+		go func() {
 			if err := work(); err != nil {
 				logrus.Errorf("hashmap sync error: %v", err)
 			}
-		})
+			time.AfterFunc(time.Second, func() { s.hashSyncOnce.unlock(key) })
+		}()
 	}
 	return nil
 }

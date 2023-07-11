@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"runtime"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -13,16 +14,9 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	star   = []byte{'*'}
-	colon  = []byte{':'}
-	dollar = []byte{'$'}
-	plus   = []byte{'+'}
-	subs   = []byte{'-'}
-)
-
 type Writer struct {
 	conn   io.Writer
+	tmp    []byte
 	ppMode bool
 	ppBuf  *bytes.Buffer
 }
@@ -72,48 +66,52 @@ func (w *Writer) Flush() error {
 	return nil
 }
 
-func (w *Writer) WriteInt64(val int64) error {
-	w.Write(colon)
-	w.Write(itob(val))
-	_, err := w.Write(newLine)
-	return err
-}
-
-func (w *Writer) writeString(s string) error {
+func (w *Writer) _writeString(s string) error {
 	var b []byte
-	x := (*struct {
-		a string
-		b int
-	})(unsafe.Pointer(&b))
-	x.a, x.b = s, len(s)
+	*(*struct {
+		a   string
+		cap int
+	})(unsafe.Pointer(&b)) = struct {
+		a   string
+		cap int
+	}{s, len(s)}
 	_, err := w.Write(b)
 	runtime.KeepAlive(s)
 	return err
 }
 
-func (w *Writer) WriteBulk(val any) error {
-	if _, err := w.Write(dollar); err != nil {
-		return err
-	}
-	if b, ok := val.([]byte); ok {
-		w.Write(itob(int64(len(b))))
-		w.Write(newLine)
-		w.Write(b)
-	} else {
-		s := val.(string)
-		w.Write(itob(int64(len(s))))
-		w.Write(newLine)
-		w.writeString(s)
-	}
+func (w *Writer) _writeInt(v int64) error {
+	w.tmp = strconv.AppendInt(w.tmp[:0], v, 10)
+	_, err := w.Write(w.tmp)
+	return err
+}
+
+func (w *Writer) WriteInt64(val int64) error {
+	w._writeString(":")
+	w._writeInt(val)
 	_, err := w.Write(newLine)
 	return err
 }
 
+func (w *Writer) WriteBulk(val any) error {
+	w._writeString("$")
+	if b, ok := val.([]byte); ok {
+		w._writeInt(int64(len(b)))
+		w._writeString("\r\n")
+		w.Write(b)
+	} else {
+		s := val.(string)
+		w._writeInt(int64(len(s)))
+		w._writeString("\r\n")
+		w._writeString(s)
+	}
+	return w._writeString("\r\n")
+}
+
 func (w *Writer) WriteSimpleString(s string) error {
-	w.Write(plus)
-	w.writeString(s)
-	_, err := w.Write(newLine)
-	return err
+	w._writeString("+")
+	w._writeString(s)
+	return w._writeString("\r\n")
 }
 
 func (w *Writer) WriteError(s string) error {
@@ -126,16 +124,15 @@ func (w *Writer) WriteError(s string) error {
 	}
 	s = strings.Replace(s, "\n", " ", -1)
 	s = strings.Replace(s, "\r", " ", -1)
-	w.Write(subs)
-	w.Write([]byte(s))
-	_, err := w.Write(newLine)
-	return err
+	w._writeString("-")
+	w._writeString(s)
+	return w._writeString("\r\n")
 }
 
 func (w *Writer) WriteBulkBulks(a any, b any) error {
-	w.Write(star)
-	w.Write(itob(2))
-	w.Write(newLine)
+	w._writeString("*")
+	w._writeInt(2)
+	w._writeString("\r\n")
 	if err := w.WriteBulk(a); err != nil {
 		return err
 	}
@@ -159,19 +156,12 @@ func (w *Writer) WriteBulks(value any) error {
 		defer func() { runtime.KeepAlive(value) }()
 	}
 
-	if _, err := w.Write(star); err != nil {
-		return err
-	}
-	numElement := len(bulks)
-	if _, err := w.Write(itob(int64(numElement))); err != nil {
-		return err
-	}
-	if _, err := w.Write(newLine); err != nil {
-		return err
-	}
+	w._writeString("*")
+	w._writeInt(int64(len(bulks)))
+	w._writeString("\r\n")
 
-	for i := 0; i < numElement; i++ {
-		if err := w.WriteBulk(bulks[i]); err != nil {
+	for _, b := range bulks {
+		if err := w.WriteBulk(b); err != nil {
 			return err
 		}
 	}

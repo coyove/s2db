@@ -2,37 +2,18 @@ package wire
 
 import (
 	"bytes"
+	"io/ioutil"
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 func TestWriter_Write(t *testing.T) {
 	buff := bytes.NewBuffer(nil)
-	w := NewWriter(buff, logrus.StandardLogger())
-	w.WriteBulkString("hello")
+	w := NewWriter(buff)
+	w.WriteBulk("hello")
 	if buff.String() != "$5\r\nhello\r\n" {
 		t.Errorf("Unexpected WriteBulkString")
-	}
-}
-
-func TestWriter_WriteSlice(t *testing.T) {
-	buff := bytes.NewBuffer(nil)
-	w := NewWriter(buff, logrus.StandardLogger())
-	w.WriteObjectsSlice(nil)
-	if buff.String() != "*-1\r\n" {
-		t.Errorf("Unexpected WriteObjectsSlice")
-	}
-}
-
-func TestWriter_WriteSlice2(t *testing.T) {
-	buff := bytes.NewBuffer(nil)
-	w := NewWriter(buff, logrus.StandardLogger())
-	w.WriteObjectsSlice([]interface{}{1})
-	if buff.String() != "*1\r\n:1\r\n" {
-		t.Errorf("Unexpected WriteObjectsSlice, got %s", buff.String())
 	}
 }
 
@@ -44,5 +25,19 @@ func TestConnString(t *testing.T) {
 
 	if !(reflect.DeepEqual([]interface{}{"a", "b", "c d", int64(10), 0.5}, SplitCmdLine("a b \"c d\" 10 0.5"))) {
 		t.Fail()
+	}
+}
+
+func BenchmarkWriteString(b *testing.B) {
+	w := NewWriter(ioutil.Discard)
+	for i := 0; i < b.N; i++ {
+		w._writeString(":")
+	}
+}
+
+func BenchmarkWriteStringBytes(b *testing.B) {
+	w := NewWriter(ioutil.Discard)
+	for i := 0; i < b.N; i++ {
+		w.Write([]byte(":"))
 	}
 }

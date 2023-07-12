@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -47,7 +47,7 @@ var (
 		"HSET":   true,
 	}
 
-	//go:embed scripts/index.html
+	//go:embed index.html
 	webuiHTML string
 )
 

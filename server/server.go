@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -24,11 +24,14 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/s2/filelock"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
 )
+
+var Version string
 
 type Server struct {
 	DB          *pebble.DB
@@ -53,17 +56,37 @@ type Server struct {
 	distinctOnce keyLock
 	hashSyncOnce keyLock
 	errThrot     s2.ErrorThrottler
+	dbFile       *os.File
 
-	test struct {
+	TestFlags struct {
 		Fail         bool
 		NoSetMissing bool
 		IRangeCache  bool
 	}
 }
 
-func Open(dbPath string) (s *Server, err error) {
+func Open(dbPath string, channel int64) (s *Server, err error) {
+	if channel < 0 || channel >= future.Channels {
+		return nil, fmt.Errorf("invalid channel")
+	}
 	if err := os.MkdirAll(dbPath, 0777); err != nil {
 		return nil, err
+	}
+
+	dbFile, err := os.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	lockCh := make(chan error)
+	go func() { lockCh <- filelock.Lock(dbFile) }()
+	select {
+	case err := <-lockCh:
+		if err != nil {
+			return nil, err
+		}
+	case <-time.After(time.Second * 3):
+		return nil, fmt.Errorf("timed out to lock data")
 	}
 
 	s = &Server{
@@ -74,6 +97,8 @@ func Open(dbPath string) (s *Server, err error) {
 			MemTableSize: *pebbleMemtableSize << 20,
 			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
+		Channel: channel,
+		dbFile:  dbFile,
 	}
 	s.DBOptions.FS = &VFS{
 		FS:       s.DBOptions.FS,
@@ -115,6 +140,7 @@ func (s *Server) Close() (err error) {
 	s.ReadOnly = true
 	s.DBOptions.Cache.Unref()
 
+	err = errors.CombineErrors(err, filelock.Unlock(s.dbFile))
 	err = errors.CombineErrors(err, s.lnRESP.Close())
 	err = errors.CombineErrors(err, s.lnHTTP.Close())
 	for _, p := range s.Peers {
@@ -221,7 +247,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				writer.Flush()
 				continue
 			}
-			if s.test.Fail {
+			if s.TestFlags.Fail {
 				ew = writer.WriteError("test: failed on purpose")
 			} else {
 				startTime := time.Now()
@@ -241,12 +267,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, src net.IP, K *wire.Command) (outErr error) {
 	key := K.Str(1)
-
-	for _, nw := range blacklistIPs {
-		if nw.Contains(src) {
-			return w.WriteError(wire.ErrBlacklistedIP.Error() + src.String())
-		}
-	}
 
 	if isWriteCommand[cmd] {
 		if key == "" || strings.Contains(key, "\x00") {
@@ -347,11 +367,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
+		return slowLogger.Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
+		return dbLogger.Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*s2.LogFormatter).LogFork(w.GetWriter().(net.Conn))
+		return log.StandardLogger().Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
 	}
 
 	switch cmd {
@@ -388,7 +408,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 				s.Survey.SelectCacheHits.Incr(1)
 				return w.WriteBulks([][]byte{}) // no nil
 			}
-			if s.test.IRangeCache {
+			if s.TestFlags.IRangeCache {
 				panic("test: PSELECT should use watermark cache")
 			}
 		}

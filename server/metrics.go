@@ -1,9 +1,8 @@
-package main
+package server
 
 import (
 	"bytes"
 	"encoding/binary"
-	"flag"
 	"math"
 	"math/rand"
 	"net/url"
@@ -20,13 +19,10 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-var (
-	influxdb1MetricsEndpoint = flag.String("metrics.influxdb1", "", "")
-	influxdb1Client          struct {
-		*client.Client
-		Database string
-	}
-)
+var influxdb1Client struct {
+	*client.Client
+	Database string
+}
 
 type metricsPair struct {
 	Member string
@@ -249,10 +245,16 @@ func rvToFloat64(v reflect.Value) float64 {
 	return 0
 }
 
-func getInfluxDB1Client(endpoint string) (*client.Client, string, error) {
+func initInfluxDB1Client() {
+	endpoint := *influxdb1MetricsEndpoint
+	if endpoint == "" {
+		return
+	}
+
 	end, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, "", err
+		log.Errorf("invalid influxdb endpoint %q: %v", endpoint, err)
+		return
 	}
 
 	var db string = "s2db"
@@ -274,18 +276,17 @@ func getInfluxDB1Client(endpoint string) (*client.Client, string, error) {
 		db = to
 	}
 
-	c, err := client.NewClient(client.Config{
+	c, _ := client.NewClient(client.Config{
 		URL:      *end,
 		Username: username,
 		Password: password,
 		Timeout:  timeout,
 	})
-	if err != nil {
-		return nil, "", err
+	if _, _, err := c.Ping(); err != nil {
+		log.Errorf("failed to ping influxdb: %v", err)
+		return
 	}
 
-	if _, _, err := c.Ping(); err != nil {
-		return nil, "", err
-	}
-	return c, db, err
+	influxdb1Client.Client, influxdb1Client.Database = c, db
+	return
 }

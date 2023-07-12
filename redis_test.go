@@ -15,15 +15,14 @@ import (
 
 	"github.com/coyove/s2db/client"
 	s2pkg "github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/server"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
-	log "github.com/sirupsen/logrus"
 )
 
 func init() {
-	slowLogger = log.New()
-	dbLogger = log.New()
-	testFlag = true
+	server.InitLogger(false, "0,0,0,", "0,0,0,", "0,0,0,")
+	server.EnableTest()
 	rand.Seed(future.UnixNano())
 	future.StartWatcher(func(error) {})
 }
@@ -76,18 +75,16 @@ func catchPanic(f func()) (err error) {
 	return
 }
 
-func prepareServers() (*redis.Client, *redis.Client, *Server, *Server) {
+func prepareServers() (*redis.Client, *redis.Client, *server.Server, *server.Server) {
 	os.RemoveAll("test/6666")
 	os.RemoveAll("test/7777")
 
-	s1, err := Open("test/6666")
+	s1, err := server.Open("test/6666", 1)
 	s2pkg.PanicErr(err)
-	s1.Channel = 1
 	go s1.Serve(":6666")
 
-	s2, err := Open("test/7777")
+	s2, err := server.Open("test/7777", 2)
 	s2pkg.PanicErr(err)
-	s2.Channel = 2
 	go s2.Serve(":7777")
 
 	time.Sleep(time.Second)
@@ -186,7 +183,7 @@ func TestConsolidation(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 20, "AND", 21, "AND", 22).Err())
 
-	s2.test.Fail = true
+	s2.TestFlags.Fail = true
 
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
@@ -197,7 +194,7 @@ func TestConsolidation(t *testing.T) {
 			t.Fatal(data)
 		}
 	}
-	s2.test.Fail = false
+	s2.TestFlags.Fail = false
 
 	data = doRange(rdb1, "a", "+inf", -20)
 
@@ -225,20 +222,20 @@ func TestConsolidation(t *testing.T) {
 
 	id3 := string(data[2].IDHex())
 
-	s1.test.Fail = true
+	s1.TestFlags.Fail = true
 	if x := doRange(rdb2, "a", id3, 1, "all"); !x[0].Equal(data[2]) {
 		t.Fatal(x)
 	}
 	if x := catchPanic(func() { doRange(rdb2, "a", id3, 2, "all") }); x == nil {
 		t.Fatal("should fail")
 	}
-	s1.test.Fail = false
+	s1.TestFlags.Fail = false
 
 	doRange(rdb2, "a", id3, 5) // returns [[3]], 4, 10, 11, 12
 
-	s1.test.Fail = true
+	s1.TestFlags.Fail = true
 	data = doRange(rdb2, "a", id3, 3) // returns [[3]], [[4]], [[10]]
-	s1.test.Fail = false
+	s1.TestFlags.Fail = false
 
 	if !s2pkg.AllPairsConsolidated(data) {
 		t.Fatal(data)
@@ -266,9 +263,9 @@ func TestConsolidation2(t *testing.T) {
 
 	doRange(rdb1, "a", "0", 6) // returns 0, 1, 2, 3, 4, 5
 
-	s1.test.NoSetMissing = true
+	s1.TestFlags.NoSetMissing = true
 	doRange(rdb1, "a", "0", 6) // returns 0, 1, 2, 3, 4, 5
-	s1.test.NoSetMissing = false
+	s1.TestFlags.NoSetMissing = false
 
 	data := doRange(rdb1, "a", "+inf", -7) // returns 15, 14, 13, 12, 11, 10, 9
 	if string(data[3].Data) != "12" {
@@ -277,7 +274,7 @@ func TestConsolidation2(t *testing.T) {
 
 	id12 := hex.EncodeToString(data[3].ID)
 
-	s2.test.Fail = true
+	s2.TestFlags.Fail = true
 	data = doRange(rdb1, "a", id12, -3, "all") // returns 12, 11, 10
 
 	if len(data) != 3 || string(data[1].Data) != "11" {
@@ -312,7 +309,7 @@ func TestWatermark(t *testing.T) {
 
 	doRange(rdb2, "b", "recent", -4)
 
-	s1.test.IRangeCache = true
+	s1.TestFlags.IRangeCache = true
 
 	data := doRange(rdb2, "b", "recent", -4, "all")
 	if string(data[3].Data) != "1" {
@@ -347,24 +344,24 @@ func TestDistinct(t *testing.T) {
 		time.Sleep(150 * time.Millisecond)
 	}
 
-	s2.test.Fail = true
+	s2.TestFlags.Fail = true
 	data := doRange(rdb1, "a", "+Inf", -100)
 	if len(data) != 20 {
 		t.Fatal(data)
 	}
-	s2.test.Fail = false
+	s2.TestFlags.Fail = false
 
 	data = doRange(rdb1, "a", "+Inf", -100, "distinct")
 	if len(data) != 11 || string(data[10].Data) != "0" {
 		t.Fatal(data)
 	}
 
-	s1.test.Fail = true
+	s1.TestFlags.Fail = true
 	data = doRange(rdb2, "a", "0", 100)
 	if len(data) != 6 || string(data[0].Data) != "1" {
 		t.Fatal(data)
 	}
-	s1.test.Fail = false
+	s1.TestFlags.Fail = false
 
 	for i := 0; i < 10; i++ {
 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "b", i).Err())
@@ -462,16 +459,16 @@ func TestFuzzy1(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
-	ss := []*Server{s1, s2}
+	ss := []*server.Server{s1, s2}
 
 	const N = 500
 	rand.Seed(future.UnixNano())
 	for i := 0; i < 5; i++ {
 		s := ss[rand.Intn(len(ss))]
-		s.test.Fail = true
+		s.TestFlags.Fail = true
 		go func() {
 			time.Sleep(time.Duration(rand.Intn(400)+500) * time.Millisecond)
-			s.test.Fail = false
+			s.TestFlags.Fail = false
 		}()
 
 		wg := sync.WaitGroup{}
@@ -488,12 +485,12 @@ func TestFuzzy1(t *testing.T) {
 		wg.Wait()
 	}
 
-	s1.test.Fail = false
-	s2.test.Fail = true
+	s1.TestFlags.Fail = false
+	s2.TestFlags.Fail = true
 	data1 := doRange(rdb1, "a", "recent", -N)
 
-	s1.test.Fail = true
-	s2.test.Fail = false
+	s1.TestFlags.Fail = true
+	s2.TestFlags.Fail = false
 	data2 := doRange(rdb2, "a", "recent", -N)
 
 	if len(data1)+len(data2) != N {
@@ -501,8 +498,8 @@ func TestFuzzy1(t *testing.T) {
 	}
 	fmt.Println(len(data1), len(data2))
 
-	s1.test.Fail = false
-	s2.test.Fail = false
+	s1.TestFlags.Fail = false
+	s2.TestFlags.Fail = false
 	data := doRange(rdb1, "a", "recent", -N)
 
 	m := map[string]bool{}
@@ -534,7 +531,7 @@ func TestHashSet(t *testing.T) {
 	}
 
 	data1, _ := client.Begin(rdb1).MustHGetAll(ctx, "h", nil)
-	s2.test.Fail = true
+	s2.TestFlags.Fail = true
 	data2, _ := client.Begin(rdb1).HGetAll(ctx, "h", nil)
 
 	for k, v := range data1 {
@@ -543,7 +540,7 @@ func TestHashSet(t *testing.T) {
 		}
 	}
 
-	s2.test.Fail = false
+	s2.TestFlags.Fail = false
 	data2, _ = client.Begin(rdb2).MustHGetAll(ctx, "h", nil)
 	for k, v := range data1 {
 		if data2[k] != v {
@@ -596,7 +593,7 @@ func TestHashSet(t *testing.T) {
 		t.Fatal(len(dedup), c)
 	}
 
-	s1.test.Fail = true
+	s1.TestFlags.Fail = true
 	if c := rdb2.HLen(ctx, "t").Val(); c != int64(len(dedup)) {
 		t.Fatal(len(dedup), c)
 	}

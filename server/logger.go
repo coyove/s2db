@@ -1,4 +1,4 @@
-package s2
+package server
 
 import (
 	"bytes"
@@ -11,11 +11,37 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-type LogFormatter struct {
+var slowLogger *log.Logger
+var dbLogger *log.Logger
+
+func InitLogger(debug bool, runtime, slow, db string) {
+	log.SetReportCaller(true)
+	setLogger(log.StandardLogger(), runtime, false)
+
+	if debug {
+		log.SetLevel(log.DebugLevel)
+	}
+
+	slowLogger = log.New()
+	setLogger(slowLogger, slow, true)
+
+	dbLogger = log.New()
+	setLogger(dbLogger, db, true)
+
+	initInfluxDB1Client()
+
+	go future.StartWatcher(func(err error) {
+		log.Errorf("future NTP watcher: %v", err)
+	})
+}
+
+type logf struct {
 	simple   bool
 	listener struct {
 		sync.RWMutex
@@ -25,8 +51,8 @@ type LogFormatter struct {
 	in chan []byte
 }
 
-func SetLogger(log *logrus.Logger, output string, simple bool) {
-	lf := &LogFormatter{
+func setLogger(log *logrus.Logger, output string, simple bool) {
+	lf := &logf{
 		simple: simple,
 		in:     make(chan []byte, 16),
 	}
@@ -67,7 +93,7 @@ func SetLogger(log *logrus.Logger, output string, simple bool) {
 	fmt.Printf("logger created: %q, max size: %d, max backups: %d, max age: %d\n", string(fn), maxSize, maxBackups, maxAge)
 }
 
-func (f *LogFormatter) LogFork(w io.WriteCloser) (err error) {
+func (f *logf) LogFork(w io.WriteCloser) (err error) {
 	c := make(chan []byte)
 	f.listener.Lock()
 	f.listener.idx++
@@ -90,7 +116,7 @@ func (f *LogFormatter) LogFork(w io.WriteCloser) (err error) {
 	return
 }
 
-func (f *LogFormatter) Format(entry *logrus.Entry) ([]byte, error) {
+func (f *logf) Format(entry *logrus.Entry) ([]byte, error) {
 	buf := bytes.Buffer{}
 	if f.simple {
 		ts := entry.Time.UTC()

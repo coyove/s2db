@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -164,7 +164,7 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 		return nil
 	}
 
-	if s.test.NoSetMissing {
+	if s.TestFlags.NoSetMissing {
 		panic("test: no set missing")
 	}
 
@@ -231,7 +231,7 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 			defer iter.Close()
 
 			count := 0
-			for iter.First(); iter.Valid() && count < *ttlEvictLimit; iter.Next() {
+			for iter.First(); iter.Valid() && count < s.Config.TTLEvictLimit; iter.Next() {
 				if err := s.deleteElement(tx, bkPrefix, iter.Key(), del); err != nil {
 					return 0, err
 				}

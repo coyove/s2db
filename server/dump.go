@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -124,13 +124,13 @@ func (s *Server) DumpWire(dest string) {
 	log.Infof("DUMPWIRE all cleared in %v", time.Since(start))
 }
 
-func dumpReceiver(dest string) {
+func StartDumpReceiver(listen, dest string) error {
 	if files, _ := os.ReadDir(dest); len(files) > 0 {
-		errorExit(dest + " is not empty")
+		return fmt.Errorf("%q is not empty", dest)
 	}
 
 	if err := os.MkdirAll(dest, 0666); err != nil {
-		errorExit(err.Error())
+		return err
 	}
 
 	log := log.WithField("shard", "dump")
@@ -195,8 +195,8 @@ func dumpReceiver(dest string) {
 
 		w.WriteHeader(200)
 	})
-	log.Infof("dump-receiver listen: %v -> %v, waiting...", *listenAddr, dest)
-	http.ListenAndServe(*listenAddr, nil)
+	log.Infof("dump-receiver listen: %v -> %v, waiting...", listen, dest)
+	return http.ListenAndServe(listen, nil)
 }
 
 type VFS struct {

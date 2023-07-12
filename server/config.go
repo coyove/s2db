@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -41,6 +41,7 @@ type ServerConfig struct {
 	BatchLimit      int
 	CompressLimit   int
 	ExpireHardTTL   int
+	TTLEvictLimit   int
 	ExpireTx        string
 	MetricsEndpoint string
 	InspectorSource string
@@ -121,6 +122,7 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.DistinctLimit, 8192)
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.CompressLimit, 10*1024)
+	ifZero(&s.Config.TTLEvictLimit, 1024)
 	if s.Config.ExpireTx == "" {
 		s.Config.ExpireTx = "5000,1000"
 	}

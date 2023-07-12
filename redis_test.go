@@ -54,6 +54,7 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 	a := client.Begin(r)
 	p, err := a.Select(context.TODO(), key, start, n, flag)
 	s2pkg.PanicErr(err)
+
 	if all {
 		for _, p := range p {
 			if !p.Q {
@@ -107,11 +108,11 @@ func TestAppend(t *testing.T) {
 	ctx := context.TODO()
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
-		r := rdb1
 		if rand.Intn(2) == 1 {
-			r = rdb2
+			s2.Interop.Append("Wait", "a", []byte(fmt.Sprintf("%d", count)))
+		} else {
+			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "WAIT").Err())
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", count, "WAIT").Err())
 	}
 
 	fmt.Println("count:", count)
@@ -155,7 +156,8 @@ func TestAppendEmpty(t *testing.T) {
 			break
 		}
 	}
-	s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
+	// s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
+	s2.Interop.Append("Ttl=1Sync", "a", nil)
 
 	data2 := doRange(rdb2, "a", "now", -100)
 	if len(data2) != len(data1) {
@@ -188,7 +190,7 @@ func TestConsolidation(t *testing.T) {
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
 
-	data = doRange(rdb1, "a", "+inf", -10)
+	data, _ = s1.Interop.Select("DESC", "a", []byte("+inf"), 10)
 	for _, d := range data {
 		if d.C {
 			t.Fatal(data)
@@ -569,8 +571,9 @@ func TestHashSet(t *testing.T) {
 		}
 	}
 
-	data4 := rdb2.Do(ctx, "HGETALL", "h", "MATCH", "m1?", "NOCOMPRESS").Val().([]any)
-	if len(data4) != 4 || !(data4[0].(string) == "m6" || data4[2].(string) == "m6") {
+	// data4 := rdb2.Do(ctx, "HGETALL", "h", "MATCH", "m1?", "NOCOMPRESS").Val().([]any)
+	data4, _ := s2.Interop.HGetAll("h", "m1?")
+	if len(data4) != 4 || !(string(data4[0]) == "m6" || string(data4[2]) == "m6") {
 		t.Fatal(data4)
 	}
 
@@ -602,6 +605,8 @@ func TestHashSet(t *testing.T) {
 	for _, l := range bb {
 		fmt.Println(string(l))
 	}
+
+	fmt.Println(s1.Interop.ScanHash("", 100))
 }
 
 var staticLZ4 = []string{

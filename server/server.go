@@ -34,6 +34,7 @@ import (
 var Version string
 
 type Server struct {
+	Interop     interop
 	DB          *pebble.DB
 	Peers       [future.Channels]*endpoint
 	DBPath      string
@@ -52,9 +53,9 @@ type Server struct {
 	rdbCache     *s2.LRUCache[string, *redis.Client]
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
-	ttlOnce      keyLock
-	distinctOnce keyLock
-	hashSyncOnce keyLock
+	ttlOnce      s2.KeyLock
+	distinctOnce s2.KeyLock
+	hashSyncOnce s2.KeyLock
 	errThrot     s2.ErrorThrottler
 	dbFile       *os.File
 
@@ -277,43 +278,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 	}
 
-	defer func(start time.Time) {
-		if r := recover(); r != nil {
-			if testFlag || os.Getenv("PRINT_STACK") != "" {
-				fmt.Println(r, string(debug.Stack()))
-			}
-			var fn string
-			var ln int
-			for i := 1; ; i++ {
-				if _, fn, ln, _ = runtime.Caller(i); ln == 0 {
-					fn = "<unknown>"
-					break
-				} else if strings.Contains(fn, "s2db") {
-					break
-				}
-			}
-			outErr = w.WriteError(fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r))
-			s.Survey.FatalError.Incr(1)
-		} else {
-			diff := time.Since(start)
-			if diff > time.Duration(s.Config.SlowLimit)*time.Millisecond {
-				slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
-				s.Survey.SlowLogs.Incr(diff.Milliseconds())
-			}
-			if isWriteCommand[cmd] {
-				s.Survey.SysWrite.Incr(diff.Milliseconds())
-				s.Survey.SysWriteP99Micro.Incr(diff.Microseconds())
-			}
-			if isReadCommand[cmd] {
-				s.Survey.SysRead.Incr(diff.Milliseconds())
-				s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
-			}
-			if isWriteCommand[cmd] || isReadCommand[cmd] {
-				x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2.Survey))
-				x.(*s2.Survey).Incr(diff.Milliseconds())
-			}
-		}
-	}(startTime)
+	defer s.recoverLogger(startTime, cmd, w, func(diff time.Duration) {
+		slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
+	})
 
 	// General commands
 	switch cmd {
@@ -377,29 +344,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	switch cmd {
 	case "APPEND": // key data_0 [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
 		data, ids, ttl, sync, wait := parseAPPEND(K)
-		ids, err := s.Append(key, ids, data, ttl, wait)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		hexIds := hexEncodeBulks(ids)
-		if sync && s.HasOtherPeers() {
-			args := []any{"APPEND", key}
-			if len(data) > 0 {
-				args = append(args, s2.Bytes(data[0]), "TTL", ttl)
-			} else {
-				args = append(args, "", "TTL", ttl)
-			}
-			for i := 1; i < len(data); i++ {
-				args = append(args, "AND", s2.Bytes(data[i]))
-			}
-			args = append(args, "SETID")
-			args = append(args, bbany(ids)...)
-			s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
-				return redis.NewStringSliceCmd(context.TODO(), args...)
-			}, nil)
-			s.Survey.AppendSyncN.Incr(int64(len(ids)))
-		}
-		return w.WriteBulks(hexIds)
+		return s.execAPPEND(w, key, ids, data, ttl, sync, wait)
 	case "PSELECT": // key raw_start count flag lowest key_hash => [ID 0, DATA 0, ...]
 		start, flag, okh := K.BytesRef(2), K.Int(4), s2.KeyHashUnpack(K.BytesRef(6))
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -416,7 +361,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			s.Survey.SelectCacheHits.Incr(1)
 			return w.WriteBulks([][]byte{}) // no nil
 		}
-		data, err := s.Range(key, start, K.Int(3), flag)
+		data, err := s.implRange(key, start, K.Int(3), flag)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -428,63 +373,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulks(a)
 	case "SELECT": // key start count [ASC|DESC] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, desc, distinct, raw, flag := parseSELECT(K)
+		n, desc, _, _, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
-		origN := n
-		if !testFlag {
-			// Caller wants N Pairs, we actually fetch more than that to consolidate them better (hopefully).
-			// Special case: n=1 is still n=1.
-			n = int(float64(n) * (1 + rand.Float64()))
-		}
-		data, err := s.Range(key, start, n, flag)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		if !s.HasOtherPeers() || raw {
-			return s.convertPairs(w, data, origN, true)
-		}
-		if s2.AllPairsConsolidated(data) {
-			s.Survey.AllConsolidated.Incr(1)
-			return s.convertPairs(w, data, origN, true)
-		}
-
-		origData := append([]s2.Pair{}, data...)
-
-		var lowest []byte
-		if desc && len(data) > 0 && len(data) == n {
-			lowest = data[len(data)-1].ID
-		}
-		kh := s2.KeyHashPack(data)
-		s.Survey.KeyHashRatio.Incr(int64(len(kh) * 1000 / (len(data)*8 + 1)))
-		_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
-			func() redis.Cmder {
-				return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest, kh)
-			}, func(cmd redis.Cmder) bool {
-				for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
-					_ = v[i][15]
-					data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
-				}
-				return true
-			})
-
-		data = sortPairs(data, !desc)
-		if distinct {
-			data = distinctPairsData(data)
-		}
-		if len(data) > n {
-			data = data[:n]
-		}
-		s.setMissing(key, origData, data,
-			// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
-			success == s.OtherPeersCount(),
-			// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
-			*(*string)(unsafe.Pointer(&start)) == minCursor && !desc,
-			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
-			len(data) < n && desc,
-		)
-		return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
+		return s.execSELECT(w, key, start, n, flag)
 	case "PLOOKUP":
-		data, _, err := s.LookupID(s.translateCursor(K.BytesRef(1), false))
+		data, _, err := s.implLookupID(s.translateCursor(K.BytesRef(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -524,31 +417,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			return w.WriteBulkBulks(s.ScanHash(K.StrRef(1), count))
 		}
 		if index {
-			return w.WriteBulkBulks(s.ScanIndex(K.StrRef(1), count))
+			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
-		return w.WriteBulkBulks(s.Scan(K.StrRef(1), count))
+		return w.WriteBulkBulks(s.ScanList(K.StrRef(1), count))
 	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]] [SETID ...]
 		kvs, ids, sync, wait := parseHSET(K)
-		ids, err := s.HSet(key, wait, kvs, ids)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		hexIds := hexEncodeBulks(ids)
-		if sync && s.HasOtherPeers() {
-			args := []any{"HSET", key, s2.Bytes(kvs[0]), s2.Bytes(kvs[1])}
-			for i := 2; i < len(kvs); i += 2 {
-				args = append(args, "SET", s2.Bytes(kvs[i]), s2.Bytes(kvs[i+1]))
-			}
-			args = append(args, "SETID")
-			args = append(args, bbany(ids)...)
-			s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
-				return redis.NewStringSliceCmd(context.TODO(), args...)
-			}, nil)
-			s.Survey.HSetSyncN.Incr(int64(len(ids)))
-		}
-		return w.WriteBulks(hexIds)
+		return s.execHSET(w, key, ids, kvs, sync, wait)
 	case "PHGETALL": // key checksum
-		data, rd, err := s.DB.Get(skp(key))
+		data, rd, err := s.DB.Get(makeHashSetKey(key))
 		if err == pebble.ErrNotFound {
 			return w.WriteBulk(nil)
 		}
@@ -567,14 +443,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteSimpleString("OK")
 	case "HLEN": // key
 		s.syncHashmap(key, false)
-		res, err := s.HLen(key)
+		res, err := s.implHLen(key)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteInt64(int64(res))
 	case "HGET", "HTIME": // key member
 		s.syncHashmap(key, false)
-		res, time, err := s.HGet(key, K.BytesRef(2))
+		res, time, err := s.implHGet(key, K.BytesRef(2))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
@@ -584,15 +460,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteBulk(res)
 	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
 		noCompress, ts, keysOnly, match := parseHGETALL(K)
-		s.syncHashmap(key, false)
-		res, err := s.HGetAll(key, match, true, !keysOnly, ts)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
-			return w.WriteBulk(s2.CompressBulks(res))
-		}
-		return w.WriteBulks(res)
+		return s.execHGETALL(w, key, noCompress, ts, keysOnly, match)
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -605,4 +473,163 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	}
 
 	return w.WriteError(wire.ErrUnknownCommand.Error())
+}
+
+func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration)) {
+	if r := recover(); r != nil {
+		if testFlag || os.Getenv("PRINT_STACK") != "" {
+			fmt.Println(r, string(debug.Stack()))
+		}
+		var fn string
+		var ln int
+		for i := 1; ; i++ {
+			if _, fn, ln, _ = runtime.Caller(i); ln == 0 {
+				fn = "<unknown>"
+				break
+			} else if strings.Contains(fn, "s2db") {
+				break
+			}
+		}
+		w.WriteError(fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r))
+		s.Survey.FatalError.Incr(1)
+	} else {
+		diff := time.Since(start)
+		if diff > time.Duration(s.Config.SlowLimit)*time.Millisecond {
+			if onSlow != nil {
+				onSlow(diff)
+			} else {
+				slowLogger.Infof("%s\t% 4.3f\tinterop\t%v", cmd, diff.Seconds(), cmd)
+			}
+			s.Survey.SlowLogs.Incr(diff.Milliseconds())
+		}
+		if isWriteCommand[cmd] {
+			s.Survey.SysWrite.Incr(diff.Milliseconds())
+			s.Survey.SysWriteP99Micro.Incr(diff.Microseconds())
+		}
+		if isReadCommand[cmd] {
+			s.Survey.SysRead.Incr(diff.Milliseconds())
+			s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
+		}
+		if isWriteCommand[cmd] || isReadCommand[cmd] {
+			x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2.Survey))
+			x.(*s2.Survey).Incr(diff.Milliseconds())
+		}
+	}
+}
+
+func (s *Server) execAPPEND(w wire.WriterImpl, key string, ids [][]byte, data [][]byte, ttl int64, sync, wait bool) error {
+	ids, err := s.implAppend(key, ids, data, ttl, wait)
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	hexIds := hexEncodeBulks(ids)
+	if sync && s.HasOtherPeers() {
+		args := []any{"APPEND", key}
+		if len(data) > 0 {
+			args = append(args, s2.Bytes(data[0]), "TTL", ttl)
+		} else {
+			args = append(args, "", "TTL", ttl)
+		}
+		for i := 1; i < len(data); i++ {
+			args = append(args, "AND", s2.Bytes(data[i]))
+		}
+		args = append(args, "SETID")
+		args = append(args, bbany(ids)...)
+		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
+			return redis.NewStringSliceCmd(context.TODO(), args...)
+		}, nil)
+		s.Survey.AppendSyncN.Incr(int64(len(ids)))
+	}
+	return w.WriteBulks(hexIds)
+}
+
+func (s *Server) execHSET(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
+	ids, err := s.implHSet(key, wait, kvs, ids)
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	hexIds := hexEncodeBulks(ids)
+	if sync && s.HasOtherPeers() {
+		args := []any{"HSET", key, s2.Bytes(kvs[0]), s2.Bytes(kvs[1])}
+		for i := 2; i < len(kvs); i += 2 {
+			args = append(args, "SET", s2.Bytes(kvs[i]), s2.Bytes(kvs[i+1]))
+		}
+		args = append(args, "SETID")
+		args = append(args, bbany(ids)...)
+		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
+			return redis.NewStringSliceCmd(context.TODO(), args...)
+		}, nil)
+		s.Survey.HSetSyncN.Incr(int64(len(ids)))
+	}
+	return w.WriteBulks(hexIds)
+
+}
+
+func (s *Server) execHGETALL(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
+	s.syncHashmap(key, false)
+	res, err := s.implHGetAll(key, match, true, !keysOnly, ts)
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
+		return w.WriteBulk(s2.CompressBulks(res))
+	}
+	return w.WriteBulks(res)
+}
+
+func (s *Server) execSELECT(w wire.WriterImpl, key string, start []byte, n int, flag int) error {
+	origN := n
+	if !testFlag {
+		// Caller wants N Pairs, we actually fetch more than that to consolidate them better (hopefully).
+		// Special case: n=1 is still n=1.
+		n = int(float64(n) * (1 + rand.Float64()))
+	}
+	data, err := s.implRange(key, start, n, flag)
+	if err != nil {
+		return w.WriteError(err.Error())
+	}
+	if !s.HasOtherPeers() || flag&RangeRaw > 0 {
+		return s.convertPairs(w, data, origN, true)
+	}
+	if s2.AllPairsConsolidated(data) {
+		s.Survey.AllConsolidated.Incr(1)
+		return s.convertPairs(w, data, origN, true)
+	}
+
+	origData := append([]s2.Pair{}, data...)
+
+	var lowest []byte
+	if flag&RangeDesc > 0 && len(data) > 0 && len(data) == n {
+		lowest = data[len(data)-1].ID
+	}
+	kh := s2.KeyHashPack(data)
+	s.Survey.KeyHashRatio.Incr(int64(len(kh) * 1000 / (len(data)*8 + 1)))
+	_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
+		func() redis.Cmder {
+			return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest, kh)
+		}, func(cmd redis.Cmder) bool {
+			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
+				_ = v[i][15]
+				data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
+			}
+			return true
+		})
+
+	desc := flag&RangeDesc > 0
+	data = sortPairs(data, !desc)
+	if flag&RangeDistinct > 0 {
+		data = distinctPairsData(data)
+	}
+	if len(data) > n {
+		data = data[:n]
+	}
+	s.setMissing(key, origData, data,
+		// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
+		success == s.OtherPeersCount(),
+		// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
+		*(*string)(unsafe.Pointer(&start)) == minCursor && !desc,
+		// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
+		len(data) < n && desc,
+	)
+	return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
 }

@@ -1,1 +1,0 @@
-cat log/slow.log | awk '{a[$6] += 1}END{for(i in a)print i ": " a[i];}'

@@ -1,20 +1,15 @@
 package server
 
 import (
-	"encoding/binary"
 	"encoding/hex"
-	"io"
+	"reflect"
 	"sort"
 	"strconv"
-	"sync"
-	"sync/atomic"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/wire"
 )
-
-const lockShards = 32
 
 func hexEncode(k []byte) []byte {
 	_ = k[15]
@@ -164,18 +159,13 @@ func kkp(key string) (prefix []byte) {
 	return
 }
 
-func skp(key string) (prefix []byte) {
+func makeHashSetKey(key string) (prefix []byte) {
 	prefix = append(append(make([]byte, 64)[:0], "h"...), key...)
 	return
 }
 
-func tkp(id uint64) (prefix []byte) {
+func makeSSTableWMKey(id uint64) (prefix []byte) {
 	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t"...), id, 10)
-	return
-}
-
-func trkp(id uint64) (prefix []byte) {
-	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t\x00"...), id, 10)
 	return
 }
 
@@ -186,51 +176,18 @@ func newPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
 	})
 }
 
-func readBytes(r io.Reader) (out []byte, err error) {
-	var n uint16
-	if err := binary.Read(r, binary.BigEndian, &n); err != nil {
-		return nil, err
-	}
-	out = make([]byte, n)
-	_, err = io.ReadFull(r, out)
-	return
-}
-
-type keyLock struct {
-	m [lockShards]sync.Map
-	c [lockShards]atomic.Int64
-}
-
-func (kl *keyLock) lock(key string) bool {
-	i := s2.HashStr(key) % lockShards
-	_, loaded := kl.m[i].LoadOrStore(key, 1)
-	if !loaded {
-		kl.c[i].Add(1)
-		return true
-	}
-	return false
-}
-
-func (kl *keyLock) unlock(key string) {
-	i := s2.HashStr(key) % lockShards
-	_, loaded := kl.m[i].LoadAndDelete(key)
-	if !loaded {
-		panic("unlock non-existed key: shouldn't happen")
-	}
-	kl.c[i].Add(-1)
-}
-
-func (kl *keyLock) count() (c int64) {
-	for i := range kl.c {
-		c += kl.c[i].Load()
-	}
-	return
-}
-
 func hexEncodeBulks(ids [][]byte) [][]byte {
 	hexIds := make([][]byte, len(ids))
 	for i := range hexIds {
 		hexIds[i] = hexEncode(ids[i])
+	}
+	return hexIds
+}
+
+func hexDecodeBulks(ids [][]byte) [][]byte {
+	hexIds := make([][]byte, len(ids))
+	for i := range hexIds {
+		hexIds[i] = hexDecode(ids[i])
 	}
 	return hexIds
 }
@@ -241,4 +198,14 @@ func bbany(b [][]byte) []any {
 		res[i] = s2.Bytes(b[i])
 	}
 	return res
+}
+
+func rvToFloat64(v reflect.Value) float64 {
+	if v.Kind() >= reflect.Int && v.Kind() <= reflect.Int64 {
+		return float64(v.Int())
+	}
+	if v.Kind() >= reflect.Uint && v.Kind() <= reflect.Uint64 {
+		return float64(v.Uint())
+	}
+	return 0
 }

@@ -89,8 +89,7 @@ func (w *Writer) _writeInt(v int64) error {
 func (w *Writer) WriteInt64(val int64) error {
 	w._writeString(":")
 	w._writeInt(val)
-	_, err := w.Write(newLine)
-	return err
+	return w._writeString("\r\n")
 }
 
 func (w *Writer) WriteBulk(val any) error {

@@ -95,9 +95,9 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
-			fmt.Sprintf("ttl_once:%v", s.ttlOnce.count()),
-			fmt.Sprintf("distinct_once:%v", s.distinctOnce.count()),
-			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.count()),
+			fmt.Sprintf("ttl_once:%v", s.ttlOnce.Count()),
+			fmt.Sprintf("distinct_once:%v", s.distinctOnce.Count()),
+			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.Count()),
 			"")
 	}
 	if section == "" || strings.EqualFold(section, "peers") {
@@ -160,14 +160,14 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	if strings.HasPrefix(section, "*") {
 		data = append(data, "# id "+section[1:])
 		id := s.translateCursor([]byte(section[1:]), false)
-		v, key, _ := s.LookupID(id)
+		v, key, _ := s.implLookupID(id)
 		data = append(data, fmt.Sprintf("hash:%08x", id[8:12]))
 		data = append(data, fmt.Sprintf("key:%s", key))
 		data = append(data, fmt.Sprintf("data_size:%d", len(v)))
 		data = append(data, "")
 	}
 	if strings.HasPrefix(section, "#") {
-		count, _ := s.HLen(section[1:])
+		count, _ := s.implHLen(section[1:])
 		hash, size, _ := s.hChecksum(section[1:])
 		data = append(data, "# hashmap "+section[1:])
 		data = append(data, fmt.Sprintf("size:%d", size))
@@ -340,7 +340,7 @@ func (s *Server) checkWritable() error {
 }
 
 func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
-	data, _, err = s.LookupID(id)
+	data, _, err = s.implLookupID(id)
 	if err != nil {
 		return nil, err
 	}
@@ -388,7 +388,7 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 			return fmt.Errorf("sync failed")
 		}
 
-		bkLive := skp(key)
+		bkLive := makeHashSetKey(key)
 		tx := s.DB.NewBatch()
 		defer tx.Close()
 		for _, p := range pres {
@@ -408,13 +408,13 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	if sync {
 		return work()
 	}
-	if s.hashSyncOnce.lock(key) {
-		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.count())
+	if s.hashSyncOnce.Lock(key) {
+		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.Count())
 		go func() {
 			if err := work(); err != nil {
 				logrus.Errorf("hashmap sync error: %v", err)
 			}
-			time.AfterFunc(time.Second, func() { s.hashSyncOnce.unlock(key) })
+			time.AfterFunc(time.Second, func() { s.hashSyncOnce.Unlock(key) })
 		}()
 	}
 	return nil

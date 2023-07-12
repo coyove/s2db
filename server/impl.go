@@ -67,7 +67,7 @@ func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2
 	return nil
 }
 
-func (s *Server) Append(key string, ids, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
+func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
 	if key == "" {
 		return nil, fmt.Errorf("append to null key")
 	}
@@ -218,9 +218,9 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 	}
 
 	if ttlSec > 0 {
-		if s.ttlOnce.lock(key) {
-			defer s.ttlOnce.unlock(key)
-			s.Survey.TTLOnce.Incr(s.ttlOnce.count())
+		if s.ttlOnce.Lock(key) {
+			defer s.ttlOnce.Unlock(key)
+			s.Survey.TTLOnce.Incr(s.ttlOnce.Count())
 
 			f := future.Future(future.UnixNano() - ttlSec*1e9)
 			idx := s2.ConvertFutureTo16B(f)
@@ -254,7 +254,7 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 	return int(tx.Count()), tx.Commit(pebble.Sync)
 }
 
-func (s *Server) LookupID(id []byte) (data []byte, key string, err error) {
+func (s *Server) implLookupID(id []byte) (data []byte, key string, err error) {
 	_ = id[15]
 	iter := newPrefixIter(s.DB, append([]byte{'z'}, id[8:12]...))
 	defer iter.Close()
@@ -281,7 +281,7 @@ const (
 	RangeRaw      = 4
 )
 
-func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
+func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
 	bkPrefix := kkp(key)
 
 	c := newPrefixIter(s.DB, bkPrefix)
@@ -328,11 +328,11 @@ func (s *Server) Range(key string, start []byte, n int, flag int) (data []s2.Pai
 	var hllAdd, hllDel s2.HyperLogLog
 
 	if flag&RangeDistinct > 0 {
-		if s.distinctOnce.lock(key) {
-			s.Survey.DistinctOnce.Incr(s.distinctOnce.count())
+		if s.distinctOnce.Lock(key) {
+			s.Survey.DistinctOnce.Incr(s.distinctOnce.Count())
 			dedupTx = s.DB.NewBatch()
 			defer dedupTx.Close()
-			defer s.distinctOnce.unlock(key)
+			defer s.distinctOnce.Unlock(key)
 
 			hllAdd, hllDel, err = s.getHLL(key)
 			if err != nil {
@@ -429,7 +429,7 @@ func (s *Server) ScanHash(cursor string, count int) (nextCursor string, keys []s
 	iter := newPrefixIter(s.DB, []byte("h"))
 	defer iter.Close()
 
-	for iter.SeekGE(skp(cursor)); iter.Valid(); iter.Next() {
+	for iter.SeekGE(makeHashSetKey(cursor)); iter.Valid(); iter.Next() {
 		keys = append(keys, string(iter.Key()[1:]))
 		if len(keys) >= count {
 			if iter.Next() {
@@ -441,7 +441,7 @@ func (s *Server) ScanHash(cursor string, count int) (nextCursor string, keys []s
 	return
 }
 
-func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []string) {
+func (s *Server) ScanLookupIndex(cursor string, count int) (nextCursor string, keys []string) {
 	iter := newPrefixIter(s.DB, []byte("z"))
 	defer iter.Close()
 
@@ -460,7 +460,7 @@ func (s *Server) ScanIndex(cursor string, count int) (nextCursor string, keys []
 	return
 }
 
-func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []string) {
+func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []string) {
 	iter := newPrefixIter(s.DB, []byte("l"))
 	defer iter.Close()
 
@@ -485,7 +485,7 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error) {
+func (s *Server) implHSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error) {
 	if len(kvs) == 0 {
 		return nil, nil
 	}
@@ -518,7 +518,7 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
 	}
 
-	if err := s.DB.Merge(skp(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
+	if err := s.DB.Merge(makeHashSetKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
 		return nil, err
 	}
 	if wait {
@@ -527,8 +527,8 @@ func (s *Server) HSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error
 	return kk, nil
 }
 
-func (s *Server) HGet(key string, member []byte) (res []byte, ts int64, err error) {
-	buf, rd, err := s.DB.Get(skp(key))
+func (s *Server) implHGet(key string, member []byte) (res []byte, ts int64, err error) {
+	buf, rd, err := s.DB.Get(makeHashSetKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return nil, 0, nil
@@ -551,8 +551,8 @@ func (s *Server) HGet(key string, member []byte) (res []byte, ts int64, err erro
 	return
 }
 
-func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
-	buf, rd, err := s.DB.Get(skp(key))
+func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
+	buf, rd, err := s.DB.Get(makeHashSetKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return nil, nil
@@ -597,8 +597,8 @@ func (s *Server) HGetAll(key string, matchValue []byte, inclKey, inclValue, incl
 	return
 }
 
-func (s *Server) HLen(key string) (count int, err error) {
-	buf, rd, err := s.DB.Get(skp(key))
+func (s *Server) implHLen(key string) (count int, err error) {
+	buf, rd, err := s.DB.Get(makeHashSetKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return 0, nil
@@ -611,7 +611,7 @@ func (s *Server) HLen(key string) (count int, err error) {
 }
 
 func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
-	buf, rd, err := s.DB.Get(skp(key))
+	buf, rd, err := s.DB.Get(makeHashSetKey(key))
 	if err == pebble.ErrNotFound {
 	} else if err != nil {
 		return v, 0, err

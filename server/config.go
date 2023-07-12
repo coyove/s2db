@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/errors"
@@ -45,38 +43,6 @@ type ServerConfig struct {
 	ExpireTx        string
 	MetricsEndpoint string
 	InspectorSource string
-}
-
-type ServerSurvey struct {
-	StartAt          time.Time
-	Connections      int64
-	FatalError       s2.Survey `metrics:"qps"`
-	SysRead          s2.Survey
-	SysReadP99Micro  s2.P99SurveyMinute
-	SysWrite         s2.Survey
-	SysWriteP99Micro s2.P99SurveyMinute
-	SlowLogs         s2.Survey
-	AppendSyncN      s2.Survey `metrics:"mean"`
-	HSetSyncN        s2.Survey `metrics:"mean"`
-	PeerOnMissingN   s2.Survey `metrics:"mean"`
-	PeerOnMissing    s2.Survey
-	PeerOnOK         s2.Survey `metrics:"qps"`
-	AllConsolidated  s2.Survey `metrics:"qps"`
-	SelectCacheHits  s2.Survey `metrics:"qps"`
-	HIterCacheHits   s2.Survey `metrics:"qps"`
-	AppendExpire     s2.Survey
-	RangeDistinct    s2.Survey
-	PeerBatchSize    s2.Survey
-	PeerTimeout      s2.Survey `metrics:"qps"`
-	HashMerger       s2.Survey
-	HashSyncer       s2.Survey
-	TTLOnce          s2.Survey `metrics:"mean"`
-	DistinctOnce     s2.Survey `metrics:"mean"`
-	HashSyncOnce     s2.Survey `metrics:"mean"`
-	KeyHashRatio     s2.Survey `metrics:"mean"`
-	PurgerDeletes    s2.Survey
-	PeerLatency      sync.Map
-	Command          sync.Map
 }
 
 func init() {

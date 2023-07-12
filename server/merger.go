@@ -175,7 +175,7 @@ func (s *Server) walkL6Tables() {
 		if bytes.Compare(t.Smallest.UserKey, []byte("m")) >= 0 {
 			continue
 		}
-		k := tkp(uint64(t.FileNum))
+		k := makeSSTableWMKey(uint64(t.FileNum))
 		timestamp, err := s.GetInt64(k)
 		if err != nil {
 			log.Errorf("failed to get stored timestamp: %v", err)
@@ -294,7 +294,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.
 		}
 	}
 
-	tx.Set(tkp(uint64(t.FileNum)), s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
+	tx.Set(makeSSTableWMKey(uint64(t.FileNum)), s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
 
 	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
 }

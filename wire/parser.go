@@ -15,14 +15,12 @@ var (
 	ExpectNewLine  = &ProtocolError{"Expect Newline"}
 	ExpectTypeChar = &ProtocolError{"Expect TypeChar"}
 
-	ErrInvalidNumArg    = errors.New("too many arguments")
-	ErrInvalidBulkSize  = errors.New("invalid bulk size")
-	ErrLineTooLong      = errors.New("line too long")
-	ErrUnknownCommand   = errors.New("unknown command")
-	ErrServerReadonly   = errors.New("server is readonly")
-	ErrRejectedByMaster = errors.New("rejected by master")
-	ErrBlacklistedIP    = errors.New("blacklisted IP address: ")
-	ErrNoAuth           = errors.New("NOAUTH")
+	ErrInvalidNumArg   = errors.New("too many arguments")
+	ErrInvalidBulkSize = errors.New("invalid bulk size")
+	ErrLineTooLong     = errors.New("line too long")
+	ErrUnknownCommand  = errors.New("unknown command")
+	ErrServerReadonly  = errors.New("server is readonly")
+	ErrNoAuth          = errors.New("NOAUTH")
 
 	ReadBufferInitSize = 1 << 16
 	MaxNumArg          = 20000

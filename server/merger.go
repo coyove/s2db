@@ -144,7 +144,7 @@ func (s *Server) walkL6Tables() {
 		return
 	}
 
-	ttl := int64(s.Config.ExpireHardTTL)
+	ttl := int64(s.Config.ListRetentionTTL)
 	closed := false
 
 	defer func(start time.Time) {
@@ -238,7 +238,7 @@ func (s *Server) walkL6Tables() {
 				}
 
 				log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
-				s.Survey.PurgerDeletes.Incr(int64(deletes))
+				s.Survey.L6TTLDeletes.Incr(int64(deletes))
 			}
 			time.Sleep(time.Second)
 		} else {
@@ -406,8 +406,8 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 
 	if globalCounter > 0 {
 		log.Debugf("dedup sst %d, purged %d out of %d", t.FileNum, globalDeletes, globalCounter)
-		s.Survey.DistinctBefore.Incr(int64(globalCounter))
-		s.Survey.DistinctDeletes.Incr(int64(globalDeletes))
+		s.Survey.L6DedupBefore.Incr(int64(globalCounter))
+		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
 	}
 	return tx.Commit(pebble.NoSync)
 }

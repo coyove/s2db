@@ -327,7 +327,3 @@ func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
 	}
 	return false
 }
-
-func FoldIndex(a, b string) bool {
-	return strings.Index(strings.ToLower(a), strings.ToLower(b)) >= 0
-}

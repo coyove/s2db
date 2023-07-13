@@ -122,7 +122,9 @@ func (e *endpoint) work() {
 			if cmd.async {
 				if err := cmd.Err(); err != nil {
 					// if !cmd.ep.server.errThrot.Throttle
-					logrus.Errorf("async command error: %v", err)
+					if !strings.Contains(err.Error(), "failed on purpose") {
+						logrus.Errorf("async command error: %v", err)
+					}
 				}
 			} else {
 				cmd.out <- cmd

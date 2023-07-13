@@ -1,9 +1,6 @@
 package server
 
 import (
-	"fmt"
-	"math"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -15,48 +12,7 @@ type interop struct{}
 
 func (i *interop) s() *Server { return (*Server)(unsafe.Pointer(i)) }
 
-func findKV(a, b string) float64 {
-	for len(a) > 0 {
-		eq := strings.IndexByte(a, '=')
-		if eq == -1 {
-			break
-		}
-		start := eq - len(b)
-		if start >= 0 && strings.EqualFold(a[start:eq], b) {
-			var x float64
-			var neg bool
-			var deci int
-			for a := a[eq+1:]; len(a) > 0; a = a[1:] {
-				if a[0] >= '0' && a[0] <= '9' {
-					x = x*10 + float64(a[0]-'0')
-					if deci > 0 {
-						deci++
-					}
-				} else if a[0] == '-' {
-					neg = true
-				} else if a[0] == '.' {
-					if deci > 0 {
-						break
-					}
-					deci++
-				} else {
-					break
-				}
-			}
-			if deci > 0 {
-				x = x / math.Pow10(deci-1)
-			}
-			if neg {
-				return -x
-			}
-			return x
-		}
-		a = a[eq+1:]
-	}
-	return 0
-}
-
-func (i *interop) Append(flag string, key string, data []byte, more ...[]byte) ([][]byte, error) {
+func (i *interop) Append(wait bool, key string, data []byte, more ...[]byte) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "APPEND", out, nil)
 	var v [][]byte
@@ -64,7 +20,7 @@ func (i *interop) Append(flag string, key string, data []byte, more ...[]byte) (
 		v = append(v, data)
 	}
 	v = append(v, more...)
-	i.s().execAppend(out, key, nil, v, int64(findKV(flag, "ttl")), true, s2.FoldIndex(flag, "wait"))
+	i.s().execAppend(out, key, nil, v, true, wait)
 
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -72,21 +28,12 @@ func (i *interop) Append(flag string, key string, data []byte, more ...[]byte) (
 	return hexDecodeBulks(out.Val().([][]byte)), nil
 }
 
-func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pair, error) {
+func (i *interop) Select(key string, start []byte, n int, flag int) ([]s2.Pair, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "SELECT", out, nil)
 
-	var fi int
-	var desc bool
-	if s2.FoldIndex(flag, "raw") {
-		fi |= RangeRaw
-	}
-	if s2.FoldIndex(flag, "desc") {
-		fi |= RangeDesc
-		desc = true
-	}
-	all := s2.FoldIndex(flag, "allpeers")
-	i.s().execSelect(out, key, i.s().translateCursor(start, desc), n, fi)
+	desc := flag&RangeDesc > 0
+	i.s().execSelect(out, key, i.s().translateCursor(start, desc), n, flag)
 	if err := out.Err(); err != nil {
 		return nil, err
 	}
@@ -99,18 +46,15 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 		t := s2.ParseUint64(string(buf[i+1])) % 10
 		x.Con = t&1 > 0
 		x.All = t&2 > 0
-		if all && !x.All {
-			return nil, fmt.Errorf("not all peers respond")
-		}
 		res = append(res, x)
 	}
 	return res, nil
 }
 
-func (i *interop) HSet(flag string, key string, member, value []byte, more ...[]byte) error {
+func (i *interop) HSet(wait bool, key string, member, value []byte, more ...[]byte) error {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "HSET", out, nil)
-	i.s().execHSet(out, key, nil, append([][]byte{member, value}, more...), true, s2.FoldIndex(flag, "wait"))
+	i.s().execHSet(out, key, nil, append([][]byte{member, value}, more...), true, wait)
 
 	if err := out.Err(); err != nil {
 		return err

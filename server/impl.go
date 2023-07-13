@@ -36,38 +36,7 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	})
 }
 
-func (s *Server) getHLL(key string) (s2.HyperLogLog, s2.HyperLogLog, error) {
-	v, err := s.Get(append([]byte("H"), key...))
-	if err != nil {
-		return nil, nil, err
-	}
-	switch len(v) {
-	case s2.HLLSize * 2:
-		return v[:s2.HLLSize], v[s2.HLLSize:], nil
-	case s2.HLLSize:
-		return v, nil, nil
-	case 0:
-		return nil, nil, nil
-	}
-	return nil, nil, fmt.Errorf("invalid HLL size %d of %q", len(v), key)
-}
-
-func (s *Server) setHLL(tx *pebble.Batch, key string, add, del s2.HyperLogLog) error {
-	return tx.Set(append([]byte("H"), key...), append(add, del...), pebble.Sync)
-}
-
-func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2.HyperLogLog) error {
-	if err := tx.Delete(key, pebble.Sync); err != nil {
-		return err
-	}
-
-	idx := bytes.TrimPrefix(key, bkPrefix)
-	hllDel.Add(uint32(s2.HashBytes(idx)))
-
-	return nil
-}
-
-func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64) ([][]byte, future.Future, error) {
+func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Future, error) {
 	if key == "" {
 		return nil, 0, fmt.Errorf("append to null key")
 	}
@@ -108,7 +77,7 @@ func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64) ([][]b
 		}
 	}
 
-	if _, err := s.rawSet(key, p, ttlSec, nil); err != nil {
+	if _, err := s.rawSet(key, p, nil); err != nil {
 		return nil, 0, err
 	}
 
@@ -167,7 +136,7 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 
 	start := time.Now()
 
-	count, err := s.rawSet(key, missing, 0, func(tx *pebble.Batch) {
+	count, err := s.rawSet(key, missing, func(tx *pebble.Batch) {
 		if consolidate {
 			con(tx)
 		}
@@ -181,13 +150,8 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 	return nil
 }
 
-func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble.Batch)) (int, error) {
+func (s *Server) rawSet(key string, data []s2.Pair, f func(*pebble.Batch)) (int, error) {
 	bkPrefix := kkp(key)
-
-	add, del, err := s.getHLL(key)
-	if err != nil {
-		return 0, err
-	}
 
 	ck := s2.HashStr128(key)
 	tx := s.DB.NewBatch()
@@ -202,7 +166,6 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 		}
 		s.fillCache.Add(kv.ID, struct{}{})
 		s.updateWatermarkCache(ck, kv.ID)
-		add.Add(uint32(s2.HashBytes(kv.ID)))
 	}
 
 	kh := sha1.Sum([]byte(key))
@@ -212,41 +175,6 @@ func (s *Server) rawSet(key string, data []s2.Pair, ttlSec int64, f func(*pebble
 
 	if f != nil {
 		f(tx)
-	}
-
-	if ttlSec > 0 {
-		if s.ttlOnce.Lock(key) {
-			defer s.ttlOnce.Unlock(key)
-			s.Survey.TTLOnce.Incr(s.ttlOnce.Count())
-
-			f := future.Future(future.UnixNano() - ttlSec*1e9)
-			idx := s2.ConvertFutureTo16B(f)
-			iter := s.DB.NewIter(&pebble.IterOptions{
-				LowerBound: bkPrefix,
-				UpperBound: append(bkPrefix, idx[:]...),
-			})
-			defer iter.Close()
-
-			count := 0
-			for iter.First(); iter.Valid() && count < s.Config.TTLEvictLimit; iter.Next() {
-				if err := s.deleteElement(tx, bkPrefix, iter.Key(), del); err != nil {
-					return 0, err
-				}
-				count++
-			}
-
-			if count > 0 {
-				// idx = s2.ConvertFutureTo16B(f.ToCookie(eolMark))
-				// if err := tx.Set(append(bkPrefix, idx[:]...), nil, pebble.Sync); err != nil {
-				// 	return 0, err
-				// }
-			}
-			s.Survey.AppendExpire.Incr(int64(count))
-		}
-	}
-
-	if err := s.setHLL(tx, key, add, del); err != nil {
-		return 0, err
 	}
 	return int(tx.Count()), tx.Commit(pebble.Sync)
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"math/rand"
@@ -44,8 +43,6 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 	all := false
 	for _, el := range args {
 		switch el {
-		case "distinct":
-			flag = flag | client.S_DISTINCT
 		case "all":
 			all = true
 		}
@@ -109,7 +106,7 @@ func TestAppend(t *testing.T) {
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
 		if rand.Intn(2) == 1 {
-			s2.Interop.Append("Wait", "a", []byte(fmt.Sprintf("%d", count)))
+			s2.Interop.Append(true, "a", []byte(fmt.Sprintf("%d", count)))
 		} else {
 			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "WAIT").Err())
 		}
@@ -138,32 +135,32 @@ func TestAppend(t *testing.T) {
 	fmt.Println(data)
 }
 
-func TestAppendEmpty(t *testing.T) {
-	rdb1, rdb2, s1, s2 := prepareServers()
-	defer s1.Close()
-	defer s2.Close()
-
-	ctx := context.TODO()
-	for i := 0; i < 10; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
-		time.Sleep(time.Millisecond * 200)
-	}
-
-	data1 := doRange(rdb2, "a", "now", -100)
-	for i := range data1 {
-		if future.UnixNano()-data1[i].UnixNano() > 1e9 {
-			data1 = data1[:i]
-			break
-		}
-	}
-	// s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
-	s2.Interop.Append("Ttl=1Sync", "a", nil)
-
-	data2 := doRange(rdb2, "a", "now", -100)
-	if len(data2) != len(data1) {
-		t.Fatal(data1, data2)
-	}
-}
+// func TestAppendEmpty(t *testing.T) {
+// 	rdb1, rdb2, s1, s2 := prepareServers()
+// 	defer s1.Close()
+// 	defer s2.Close()
+//
+// 	ctx := context.TODO()
+// 	for i := 0; i < 10; i++ {
+// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+// 		time.Sleep(time.Millisecond * 200)
+// 	}
+//
+// 	data1 := doRange(rdb2, "a", "now", -100)
+// 	for i := range data1 {
+// 		if future.UnixNano()-data1[i].UnixNano() > 1e9 {
+// 			data1 = data1[:i]
+// 			break
+// 		}
+// 	}
+// 	// s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
+// 	s2.Interop.Append("Ttl=1Sync", "a", nil)
+//
+// 	data2 := doRange(rdb2, "a", "now", -100)
+// 	if len(data2) != len(data1) {
+// 		t.Fatal(data1, data2)
+// 	}
+// }
 
 func TestConsolidation(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()
@@ -190,7 +187,7 @@ func TestConsolidation(t *testing.T) {
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
 
-	data, _ = s1.Interop.Select("DESC", "a", []byte("+inf"), 10)
+	data, _ = s1.Interop.Select("a", []byte("+inf"), 10, server.RangeDesc)
 	for _, d := range data {
 		if d.Con {
 			t.Fatal(data)
@@ -376,84 +373,84 @@ func TestWatermark(t *testing.T) {
 // 	}
 // }
 
-func TestTTL(t *testing.T) {
-	rdb1, rdb2, s1, s2 := prepareServers()
-	defer s1.Close()
-	defer s2.Close()
+// func TestTTL(t *testing.T) {
+// 	rdb1, rdb2, s1, s2 := prepareServers()
+// 	defer s1.Close()
+// 	defer s2.Close()
+//
+// 	ctx := context.TODO()
+// 	var ids []string
+// 	for i := 0; i <= 20; i++ {
+// 		id := rdb2.Do(ctx, "APPEND", "a", i, "TTL", 1).Val().([]any)[0].(string)
+// 		ids = append(ids, id)
+// 		time.Sleep(time.Duration(rand.Intn(100)+200) * time.Millisecond)
+// 	}
+//
+// 	var expired []string
+// 	for i := range ids {
+// 		buf, _ := hex.DecodeString(ids[i])
+// 		sec := int64(binary.BigEndian.Uint64(buf) / 1e9)
+// 		if sec >= future.UnixNano()/1e9-1 {
+// 			expired = ids[:i]
+// 			ids = ids[i:]
+// 			break
+// 		}
+// 	}
+//
+// 	data := doRange(rdb1, "a", "0", 100)
+//
+// 	for i := 0; i < len(data) && i < len(ids); i++ {
+// 		if string(data[len(data)-1-i].IDHex()) != ids[len(ids)-1-i] {
+// 			t.Fatal(data, ids)
+// 		}
+// 	}
+//
+// 	res, _ := client.Begin(rdb1).Lookup(context.TODO(), ids[len(ids)-1])
+// 	if string(res) != "20" {
+// 		t.Fatal(string(res))
+// 	}
+//
+// 	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
+//
+// 	data = doRange(rdb1, "a", "0", 100, "raw")
+// 	fmt.Println(data)
+// 	// for _, ex := range expired {
+// 	// 	v := (rdb1.Get(ctx, ex).Val())
+// 	// 	if v != "" {
+// 	// 		t.Fatal(v, ex)
+// 	// 	}
+// 	// }
+// }
 
-	ctx := context.TODO()
-	var ids []string
-	for i := 0; i <= 20; i++ {
-		id := rdb2.Do(ctx, "APPEND", "a", i, "TTL", 1).Val().([]any)[0].(string)
-		ids = append(ids, id)
-		time.Sleep(time.Duration(rand.Intn(100)+200) * time.Millisecond)
-	}
-
-	var expired []string
-	for i := range ids {
-		buf, _ := hex.DecodeString(ids[i])
-		sec := int64(binary.BigEndian.Uint64(buf) / 1e9)
-		if sec >= future.UnixNano()/1e9-1 {
-			expired = ids[:i]
-			ids = ids[i:]
-			break
-		}
-	}
-
-	data := doRange(rdb1, "a", "0", 100)
-
-	for i := 0; i < len(data) && i < len(ids); i++ {
-		if string(data[len(data)-1-i].IDHex()) != ids[len(ids)-1-i] {
-			t.Fatal(data, ids)
-		}
-	}
-
-	res, _ := client.Begin(rdb1).Lookup(context.TODO(), ids[len(ids)-1])
-	if string(res) != "20" {
-		t.Fatal(string(res))
-	}
-
-	fmt.Println(expired, rdb1.Do(ctx, "COUNT", "a").Val())
-
-	data = doRange(rdb1, "a", "0", 100, "raw")
-	fmt.Println(data)
-	// for _, ex := range expired {
-	// 	v := (rdb1.Get(ctx, ex).Val())
-	// 	if v != "" {
-	// 		t.Fatal(v, ex)
-	// 	}
-	// }
-}
-
-func TestQuorum(t *testing.T) {
-	rdb1, rdb2, s1, s2 := prepareServers()
-	defer s1.Close()
-	defer s2.Close()
-
-	ctx := context.TODO()
-	var ids []string
-	for i := 0; i < 20; i++ {
-		id := rdb1.Do(ctx, "APPEND", "a", i, "SYNC").Val().([]any)[0].(string)
-		ids = append(ids, id)
-		time.Sleep(150 * time.Millisecond)
-	}
-	time.Sleep(time.Second)
-
-	data := doRange(rdb2, "a", "0", 100)
-	for i := range ids {
-		if string(data[i].IDHex()) != ids[i] {
-			t.Fatal(data, ids)
-		}
-	}
-
-	rdb1.Do(ctx, "APPEND", "a", 100, "TTL", 1, "SYNC")
-	time.Sleep(time.Second)
-
-	data2 := doRange(rdb2, "a", "0", 100)
-	if len(data2) >= len(data) {
-		t.Fatal(data2)
-	}
-}
+// func TestQuorum(t *testing.T) {
+// 	rdb1, rdb2, s1, s2 := prepareServers()
+// 	defer s1.Close()
+// 	defer s2.Close()
+//
+// 	ctx := context.TODO()
+// 	var ids []string
+// 	for i := 0; i < 20; i++ {
+// 		id := rdb1.Do(ctx, "APPEND", "a", i, "SYNC").Val().([]any)[0].(string)
+// 		ids = append(ids, id)
+// 		time.Sleep(150 * time.Millisecond)
+// 	}
+// 	time.Sleep(time.Second)
+//
+// 	data := doRange(rdb2, "a", "0", 100)
+// 	for i := range ids {
+// 		if string(data[i].IDHex()) != ids[i] {
+// 			t.Fatal(data, ids)
+// 		}
+// 	}
+//
+// 	rdb1.Do(ctx, "APPEND", "a", 100, "TTL", 1, "SYNC")
+// 	time.Sleep(time.Second)
+//
+// 	data2 := doRange(rdb2, "a", "0", 100)
+// 	if len(data2) >= len(data) {
+// 		t.Fatal(data2)
+// 	}
+// }
 
 func TestFuzzy1(t *testing.T) {
 	rdb1, rdb2, s1, s2 := prepareServers()

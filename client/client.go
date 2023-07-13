@@ -29,30 +29,17 @@ func Begin(peers ...*redis.Client) *Session {
 }
 
 func (a *Session) ShuffleServers() *Session {
+	a.rdb = append([]*redis.Client{}, a.rdb...)
 	rand.Shuffle(len(a.rdb), func(i, j int) {
 		a.rdb[i], a.rdb[j] = a.rdb[j], a.rdb[i]
 	})
 	return a
 }
 
-func (a *Session) Append(ctx context.Context, key string, data ...any) ([]string, error) {
-	return a.doAppend(ctx, key, 0, data...)
-}
-
-func (a *Session) AppendTTL(ctx context.Context, key string, ttlSec int64, data ...any) ([]string, error) {
-	return a.doAppend(ctx, key, ttlSec, data...)
-}
-
-func (a *Session) doAppend(ctx context.Context, key string, ttlSec int64, data ...any) ([]string, error) {
-	args := []any{"APPEND", key}
-	if len(data) > 0 {
-		args = append(args, data[0], "TTL", ttlSec)
-	} else {
-		args = append(args, "", "TTL", ttlSec)
-	}
-	args = append(args, "SYNC")
-	for i := 1; i < len(data); i++ {
-		args = append(args, "AND", data[i])
+func (a *Session) Append(ctx context.Context, key string, data any, more ...any) ([]string, error) {
+	args := []any{"APPEND", key, data, "SYNC"}
+	for _, d := range more {
+		args = append(args, "AND", d)
 	}
 	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))
 }
@@ -77,19 +64,15 @@ func (a *Session) Close() {
 }
 
 const (
-	S_DESC     = 1  // select in desc order
-	S_ASC      = 2  // select in asc order
-	S_DISTINCT = 4  // distinct data
-	S_RAW      = 16 // select raw Pairs
+	S_DESC = 1  // select in desc order
+	S_ASC  = 2  // select in asc order
+	S_RAW  = 16 // select raw Pairs
 )
 
 func (a *Session) Select(ctx context.Context, key string, cursor string, n int, flag int) (p []s2.Pair, err error) {
 	args := []any{"SELECT", key, cursor, n}
 	if flag&S_DESC > 0 {
 		args = append(args, "DESC")
-	}
-	if flag&S_DISTINCT > 0 {
-		args = append(args, "DISTINCT")
 	}
 	if flag&S_RAW > 0 {
 		args = append(args, "RAW")
@@ -132,10 +115,9 @@ func (a *Session) Lookup(ctx context.Context, id string) (data []byte, err error
 	return
 }
 
-func (a *Session) HSet(ctx context.Context, key string, kvs ...any) ([]string, error) {
-	args := []any{"HSET", key, kvs[0], kvs[1]}
-	args = append(args, "SYNC")
-	for i := 2; i < len(kvs); i += 2 {
+func (a *Session) HSet(ctx context.Context, key string, member, value any, kvs ...any) ([]string, error) {
+	args := []any{"HSET", key, member, value, "SYNC"}
+	for i := 0; i < len(kvs); i += 2 {
 		args = append(args, "SET", kvs[i], kvs[i+1])
 	}
 	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))

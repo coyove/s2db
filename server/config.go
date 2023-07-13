@@ -22,27 +22,23 @@ import (
 )
 
 type ServerConfig struct {
-	ServerName      string
-	Password        string
-	Peer0, Peer1    string
-	Peer2, Peer3    string
-	Peer4, Peer5    string
-	Peer6, Peer7    string
-	Peer8, Peer9    string
-	Peer10, Peer11  string
-	FillCacheSize   int
-	WMCacheSize     int
-	SlowLimit       int // ms
-	TimeoutPeer     int // ms
-	TimeoutRange    int // ms
-	DistinctLimit   int
-	BatchLimit      int
-	CompressLimit   int
-	ExpireHardTTL   int
-	TTLEvictLimit   int
-	L6WorkerMaxTx   string
-	MetricsEndpoint string
-	InspectorSource string
+	ServerName             string
+	Password               string
+	Peer0, Peer1, Peer2    string
+	Peer3, Peer4, Peer5    string
+	Peer6, Peer7, Peer8    string
+	Peer9, Peer10, Peer11  string
+	ListFillCacheSize      int
+	ListWatermarkCacheSize int
+	ListRetentionTTL       int
+	SlowLimit              int // ms
+	TimeoutPeer            int // ms
+	TimeoutRange           int // ms
+	BatchLimit             int
+	CompressLimit          int
+	L6WorkerMaxTx          string
+	MetricsEndpoint        string
+	InspectorSource        string
 }
 
 func init() {
@@ -80,15 +76,13 @@ func (s *Server) loadConfig() error {
 }
 
 func (s *Server) saveConfig(source string) error {
-	ifZero(&s.Config.FillCacheSize, 100000)
-	ifZero(&s.Config.WMCacheSize, 1024*1024)
+	ifZero(&s.Config.ListFillCacheSize, 100000)
+	ifZero(&s.Config.ListWatermarkCacheSize, 1024*1024)
 	ifZero(&s.Config.SlowLimit, 500)
 	ifZero(&s.Config.TimeoutPeer, 50)
 	ifZero(&s.Config.TimeoutRange, 500)
-	ifZero(&s.Config.DistinctLimit, 8192)
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.CompressLimit, 10*1024)
-	ifZero(&s.Config.TTLEvictLimit, 1024)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
 	}
@@ -96,8 +90,8 @@ func (s *Server) saveConfig(source string) error {
 		s.Config.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())
 	}
 
-	s.fillCache = s2.NewLRUShardCache[struct{}](s.Config.FillCacheSize)
-	s.wmCache = s2.NewLRUShardCache[[16]byte](s.Config.WMCacheSize)
+	s.fillCache = s2.NewLRUShardCache[struct{}](s.Config.ListFillCacheSize)
+	s.wmCache = s2.NewLRUShardCache[[16]byte](s.Config.ListWatermarkCacheSize)
 
 	p, err := nj.LoadString(strings.Replace(s.Config.InspectorSource, "\r", "", -1), s.getScriptEnviron())
 	if err != nil {

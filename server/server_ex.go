@@ -95,7 +95,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
-			fmt.Sprintf("ttl_once:%v", s.ttlOnce.Count()),
 			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.Count()),
 			"")
 	}
@@ -142,7 +141,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 	}
 	if strings.HasPrefix(section, ":") {
 		key := section[1:]
-		add, del, _ := s.getHLL(key)
 		startKey := kkp(key)
 		disk, _ := s.DB.EstimateDiskUsage(startKey, s2.IncBytes(startKey))
 		data = append(data, "# key "+key)
@@ -152,8 +150,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		} else {
 			data = append(data, "watermark:miss")
 		}
-		data = append(data, fmt.Sprintf("hll_add:%d", add.Count()))
-		data = append(data, fmt.Sprintf("hll_del:%d", del.Count()))
 		data = append(data, "")
 	}
 	if strings.HasPrefix(section, "*") {
@@ -338,7 +334,7 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-func (s *Server) wrapLookup(id []byte) (data []byte, err error) {
+func (s *Server) execLookup(id []byte) (data []byte, err error) {
 	data, _, err = s.implLookupID(id)
 	if err != nil {
 		return nil, err

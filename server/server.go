@@ -53,7 +53,6 @@ type Server struct {
 	rdbCache     *s2.LRUCache[string, *redis.Client]
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
-	ttlOnce      s2.KeyLock
 	hashSyncOnce s2.KeyLock
 	errThrot     s2.ErrorThrottler
 	dbFile       *os.File
@@ -342,8 +341,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 
 	switch cmd {
 	case "APPEND": // key data_0 [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
-		data, ids, ttl, sync, wait := parseAPPEND(K)
-		return s.execAppend(w, key, ids, data, ttl, sync, wait)
+		data, ids, _, sync, wait := parseAPPEND(K)
+		return s.execAppend(w, key, ids, data, sync, wait)
 	case "PSELECT": // key raw_start count flag lowest key_hash => [ID 0, DATA 0, ...]
 		start, flag, okh := K.BytesRef(2), K.Int(4), s2.KeyHashUnpack(K.BytesRef(6))
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -382,34 +381,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulk(data)
 	case "LOOKUP":
-		data, err := s.wrapLookup(s.translateCursor(K.Bytes(1), false))
+		data, err := s.execLookup(s.translateCursor(K.Bytes(1), false))
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(data)
-	case "COUNT":
-		add, del, err := s.getHLL(key)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		if K.StrEqFold(2, "hll") {
-			return w.WriteBulks([][]byte{add, del})
-		}
-		if s.HasOtherPeers() {
-			s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
-				return redis.NewStringSliceCmd(context.TODO(), "COUNT", key, "HLL")
-			}, func(cmd redis.Cmder) bool {
-				v := cmd.(*redis.StringSliceCmd).Val()
-				add.Merge(s2.HyperLogLog(v[0]))
-				del.Merge(s2.HyperLogLog(v[1]))
-				return true
-			})
-		}
-		x := int64(add.Count()) - int64(del.Count())
-		if x < 0 {
-			x = 0
-		}
-		return w.WriteInt64(x)
 	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
 		hash, index, count := parseSCAN(K)
 		if hash {
@@ -516,19 +492,14 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 	}
 }
 
-func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, ttl int64, sync, wait bool) error {
-	ids, maxID, err := s.implAppend(key, ids, data, ttl)
+func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, sync, wait bool) error {
+	ids, maxID, err := s.implAppend(key, ids, data)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	hexIds := hexEncodeBulks(ids)
 	if sync && s.HasOtherPeers() {
-		args := []any{"APPEND", key}
-		if len(data) > 0 {
-			args = append(args, s2.Bytes(data[0]), "TTL", ttl)
-		} else {
-			args = append(args, "", "TTL", ttl)
-		}
+		args := []any{"APPEND", key, s2.Bytes(data[0])}
 		for i := 1; i < len(data); i++ {
 			args = append(args, "AND", s2.Bytes(data[i]))
 		}

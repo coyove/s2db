@@ -30,7 +30,7 @@ type ServerConfig struct {
 	Peer9, Peer10, Peer11  string
 	ListFillCacheSize      int
 	ListWatermarkCacheSize int
-	ListRetentionTTL       int
+	ListRetentionDays      int // day
 	SlowLimit              int // ms
 	TimeoutPeer            int // ms
 	TimeoutRange           int // ms

@@ -18,6 +18,37 @@ import (
 	"github.com/coyove/sdss/future"
 )
 
+func TestNZ(t *testing.T) {
+	test := func(a []byte) {
+		e := NZEncode(nil, a)
+		d := NZDecode(nil, e)
+		if !bytes.Equal(a, d) {
+			t.Fatal(a, d)
+		}
+	}
+	test([]byte{0, 1, 2, 3})
+	test([]byte{0, 1, 2, 254})
+	test([]byte{0, 1, 2, 255})
+	test([]byte{0})
+	test([]byte{255})
+	test([]byte{255, 1})
+
+	rand.Seed(future.UnixNano())
+	for i := 0; i < 1e6; i++ {
+		a := make([]byte, 4+rand.Intn(10))
+		b := make([]byte, 4+rand.Intn(10))
+		rand.Read(a)
+		rand.Read(b)
+		anz := NZEncode(nil, a)
+		bnz := NZEncode(nil, b)
+		less := bytes.Compare(a, b)
+		lessnz := bytes.Compare(anz, bnz)
+		if less != lessnz {
+			t.Fatal(a, b, " <=> ", anz, bnz)
+		}
+	}
+}
+
 func TestThrottler(t *testing.T) {
 	e := ErrorThrottler{}
 	wg := sync.WaitGroup{}
@@ -499,11 +530,4 @@ func TestXor(t *testing.T) {
 			t.Fatal(y)
 		}
 	}
-}
-
-func TestCSVPrefix(t *testing.T) {
-	a := SortCSVPrefix("")
-	fmt.Println(a, SearchCSVPrefix(a, "a"))
-	a = SortCSVPrefix("a,1,ab,2")
-	fmt.Println(a, SearchCSVPrefix(a, "abc"))
 }

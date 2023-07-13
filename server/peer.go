@@ -35,6 +35,7 @@ type endpointCmd struct {
 	redis.Cmder
 	ep    *endpoint
 	out   chan *endpointCmd
+	start int64
 	async bool
 }
 
@@ -129,6 +130,8 @@ func (e *endpoint) work() {
 			} else {
 				cmd.out <- cmd
 			}
+			x, _ := cmd.ep.server.Survey.PeerLatency.LoadOrStore(cmd.ep.config.Addr, new(s2.Survey))
+			x.(*s2.Survey).Incr((future.UnixNano() - cmd.start) / 1e6)
 		}
 		e.server.Survey.PeerBatchSize.Incr(int64(len(commands)))
 	}
@@ -205,7 +208,13 @@ func (s *Server) ForeachPeerSendCmd(
 		p := s.Peers[i]
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
 			select {
-			case p.job.q <- &endpointCmd{ep: p, Cmder: req(), out: out, async: opts.Async}:
+			case p.job.q <- &endpointCmd{
+				ep:    p,
+				start: pstart,
+				Cmder: req(),
+				out:   out,
+				async: opts.Async,
+			}:
 				sent++
 			case <-time.After(time.Duration(s.Config.TimeoutPeer) * time.Millisecond):
 				logrus.Errorf("failed to send peer job (%s), queue is full", p.Config().Addr)
@@ -227,8 +236,6 @@ MORE:
 	case res := <-out:
 		ackList[res.ep.index] = true
 		addr := res.ep.Config().Addr
-		x, _ := s.Survey.PeerLatency.LoadOrStore(addr, new(s2.Survey))
-		x.(*s2.Survey).Incr((future.UnixNano() - pstart) / 1e6)
 
 		if err := res.Cmder.Err(); err != nil {
 			if !s.errThrot.Throttle(addr, err) {

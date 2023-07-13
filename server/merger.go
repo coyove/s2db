@@ -144,7 +144,7 @@ func (s *Server) walkL6Tables() {
 		return
 	}
 
-	ttl := int64(s.Config.ListRetentionTTL)
+	ttl := int64(s.Config.ListRetentionDays) * 86400 * 1e9
 	closed := false
 
 	defer func(start time.Time) {
@@ -217,7 +217,7 @@ func (s *Server) walkL6Tables() {
 			return
 		}
 
-		if ttl > 0 && timestamp < future.UnixNano()-ttl*1e9 {
+		if ttl > 0 && timestamp < future.UnixNano()-ttl {
 			minTimestamp, deletes, err := s.purgeSSTable(log, buf, timestamp, t, ttl)
 			if err != nil {
 				log.Errorf("[%d] purge: %v", t.FileNum, err)
@@ -257,7 +257,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int6
 	var minTimestamp int64 = math.MaxInt64
 	var deletes int
 	var tmp []byte
-	ddl := future.UnixNano() - ttl*1e9
+	ddl := future.UnixNano() - ttl
 
 	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
 	if err != nil {

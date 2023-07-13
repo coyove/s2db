@@ -327,3 +327,11 @@ func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
 	}
 	return false
 }
+
+func NZEncode(out, in []byte) []byte {
+	return in
+}
+
+func NZDecode(out, in []byte) []byte {
+	return in
+}

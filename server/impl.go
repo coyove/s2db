@@ -67,9 +67,9 @@ func (s *Server) deleteElement(tx *pebble.Batch, bkPrefix, key []byte, hllDel s2
 	return nil
 }
 
-func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64, wait bool) ([][]byte, error) {
+func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64) ([][]byte, future.Future, error) {
 	if key == "" {
-		return nil, fmt.Errorf("append to null key")
+		return nil, 0, fmt.Errorf("append to null key")
 	}
 	kh := sha1.Sum([]byte(key))
 
@@ -79,7 +79,7 @@ func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64, wait b
 
 	for i := 0; i < len(data); i++ {
 		if len(data[i]) == 0 {
-			return nil, fmt.Errorf("can't append null data")
+			return nil, 0, fmt.Errorf("can't append null data")
 		}
 
 		if len(ids) == len(data) {
@@ -109,13 +109,10 @@ func (s *Server) implAppend(key string, ids, data [][]byte, ttlSec int64, wait b
 	}
 
 	if _, err := s.rawSet(key, p, ttlSec, nil); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
-	if wait && id > 0 {
-		id.Wait()
-	}
-	return kk, nil
+	return kk, id, nil
 }
 
 func (s *Server) setMissing(key string, before, after []s2.Pair,
@@ -393,7 +390,7 @@ func (s *Server) ScanHash(cursor string, count int) (nextCursor string, keys []s
 	iter := newPrefixIter(s.DB, []byte("h"))
 	defer iter.Close()
 
-	for iter.SeekGE(makeHashSetKey(cursor)); iter.Valid(); iter.Next() {
+	for iter.SeekGE(makeHashmapKey(cursor)); iter.Valid(); iter.Next() {
 		keys = append(keys, string(iter.Key()[1:]))
 		if len(keys) >= count {
 			if iter.Next() {
@@ -449,9 +446,9 @@ func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []s
 	return
 }
 
-func (s *Server) implHSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, error) {
+func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Future, error) {
 	if len(kvs) == 0 {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	kh := sha1.Sum([]byte(key))
@@ -463,7 +460,7 @@ func (s *Server) implHSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, e
 		k := *(*string)(unsafe.Pointer(&kvs[i]))
 		v := kvs[i+1]
 		if len(k) == 0 || len(v) == 0 {
-			return nil, fmt.Errorf("HSet: member and value can't be null")
+			return nil, 0, fmt.Errorf("hashmap: member and value can't be null")
 		}
 		if len(ids) > 0 {
 			id := ids[i/2]
@@ -482,17 +479,14 @@ func (s *Server) implHSet(key string, wait bool, kvs, ids [][]byte) ([][]byte, e
 		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
 	}
 
-	if err := s.DB.Merge(makeHashSetKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
-		return nil, err
+	if err := s.DB.Merge(makeHashmapKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
+		return nil, 0, err
 	}
-	if wait {
-		future.Future(maxID).Wait()
-	}
-	return kk, nil
+	return kk, maxID, nil
 }
 
 func (s *Server) implHGet(key string, member []byte) (res []byte, ts int64, err error) {
-	buf, rd, err := s.DB.Get(makeHashSetKey(key))
+	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return nil, 0, nil
@@ -516,7 +510,7 @@ func (s *Server) implHGet(key string, member []byte) (res []byte, ts int64, err 
 }
 
 func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
-	buf, rd, err := s.DB.Get(makeHashSetKey(key))
+	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return nil, nil
@@ -562,7 +556,7 @@ func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, 
 }
 
 func (s *Server) implHLen(key string) (count int, err error) {
-	buf, rd, err := s.DB.Get(makeHashSetKey(key))
+	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
 			return 0, nil
@@ -575,7 +569,7 @@ func (s *Server) implHLen(key string) (count int, err error) {
 }
 
 func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
-	buf, rd, err := s.DB.Get(makeHashSetKey(key))
+	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err == pebble.ErrNotFound {
 	} else if err != nil {
 		return v, 0, err

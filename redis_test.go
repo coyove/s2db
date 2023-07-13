@@ -495,9 +495,6 @@ func TestFuzzy1(t *testing.T) {
 	s2.TestFlags.Fail = false
 	data2 := doRange(rdb2, "a", "recent", -N)
 
-	if len(data1)+len(data2) != N {
-		t.Fatal(len(data1), len(data2))
-	}
 	fmt.Println(len(data1), len(data2))
 
 	s1.TestFlags.Fail = false

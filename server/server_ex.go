@@ -387,7 +387,7 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 			return fmt.Errorf("sync failed")
 		}
 
-		bkLive := makeHashSetKey(key)
+		bkLive := makeHashmapKey(key)
 		tx := s.DB.NewBatch()
 		defer tx.Close()
 		for _, p := range pres {
@@ -444,11 +444,8 @@ func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, all bool)
 
 func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 	switch x := *(*string)(unsafe.Pointer(&buf)); x {
-	case "+", "+inf", "+INF", "+Inf":
+	case "+", "+inf", "+INF", "+Inf", "recent", "RECENT", "now", "NOW":
 		start = []byte(maxCursor)
-	case "recent", "RECENT", "now", "NOW":
-		tmp := s2.ConvertFutureTo16B(future.Future(future.UnixNano()))
-		start = tmp[:]
 	case "0", "":
 		start = make([]byte, 16)
 	default:

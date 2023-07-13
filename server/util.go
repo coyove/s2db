@@ -142,7 +142,7 @@ func kkp(key string) (prefix []byte) {
 	return
 }
 
-func makeHashSetKey(key string) (prefix []byte) {
+func makeHashmapKey(key string) (prefix []byte) {
 	prefix = append(append(make([]byte, 64)[:0], "h"...), key...)
 	return
 }

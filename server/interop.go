@@ -64,7 +64,7 @@ func (i *interop) Append(flag string, key string, data []byte, more ...[]byte) (
 		v = append(v, data)
 	}
 	v = append(v, more...)
-	i.s().execAPPEND(out, key, nil, v, int64(findKV(flag, "ttl")), true, s2.FoldIndex(flag, "wait"))
+	i.s().execAppend(out, key, nil, v, int64(findKV(flag, "ttl")), true, s2.FoldIndex(flag, "wait"))
 
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 		desc = true
 	}
 	all := s2.FoldIndex(flag, "allpeers")
-	i.s().execSELECT(out, key, i.s().translateCursor(start, desc), n, fi)
+	i.s().execSelect(out, key, i.s().translateCursor(start, desc), n, fi)
 	if err := out.Err(); err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 func (i *interop) HSet(flag string, key string, member, value []byte, more ...[]byte) error {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "HSET", out, nil)
-	i.s().execHSET(out, key, nil, append([][]byte{member, value}, more...), true, s2.FoldIndex(flag, "wait"))
+	i.s().execHSet(out, key, nil, append([][]byte{member, value}, more...), true, s2.FoldIndex(flag, "wait"))
 
 	if err := out.Err(); err != nil {
 		return err
@@ -122,7 +122,7 @@ func (i *interop) HGetAll(key string, match string) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "HGETALL", out, nil)
 
-	i.s().execHGETALL(out, key, true, false, false, []byte(match))
+	i.s().execHGetAll(out, key, true, false, false, []byte(match))
 	if err := out.Err(); err != nil {
 		return nil, err
 	}

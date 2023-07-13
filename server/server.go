@@ -343,7 +343,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	switch cmd {
 	case "APPEND": // key data_0 [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
 		data, ids, ttl, sync, wait := parseAPPEND(K)
-		return s.execAPPEND(w, key, ids, data, ttl, sync, wait)
+		return s.execAppend(w, key, ids, data, ttl, sync, wait)
 	case "PSELECT": // key raw_start count flag lowest key_hash => [ID 0, DATA 0, ...]
 		start, flag, okh := K.BytesRef(2), K.Int(4), s2.KeyHashUnpack(K.BytesRef(6))
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -374,7 +374,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	case "SELECT": // key start count [ASC|DESC] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n, desc, _, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
-		return s.execSELECT(w, key, start, n, flag)
+		return s.execSelect(w, key, start, n, flag)
 	case "PLOOKUP":
 		data, _, err := s.implLookupID(s.translateCursor(K.BytesRef(1), false))
 		if err != nil {
@@ -421,9 +421,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteBulkBulks(s.ScanList(K.StrRef(1), count))
 	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]] [SETID ...]
 		kvs, ids, sync, wait := parseHSET(K)
-		return s.execHSET(w, key, ids, kvs, sync, wait)
+		return s.execHSet(w, key, ids, kvs, sync, wait)
 	case "PHGETALL": // key checksum
-		data, rd, err := s.DB.Get(makeHashSetKey(key))
+		data, rd, err := s.DB.Get(makeHashmapKey(key))
 		if err == pebble.ErrNotFound {
 			return w.WriteBulk(nil)
 		}
@@ -459,7 +459,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteBulk(res)
 	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
 		noCompress, ts, keysOnly, match := parseHGETALL(K)
-		return s.execHGETALL(w, key, noCompress, ts, keysOnly, match)
+		return s.execHGetAll(w, key, noCompress, ts, keysOnly, match)
 	case "WAIT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -516,8 +516,8 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 	}
 }
 
-func (s *Server) execAPPEND(w wire.WriterImpl, key string, ids [][]byte, data [][]byte, ttl int64, sync, wait bool) error {
-	ids, err := s.implAppend(key, ids, data, ttl, wait)
+func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, ttl int64, sync, wait bool) error {
+	ids, maxID, err := s.implAppend(key, ids, data, ttl)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -539,11 +539,14 @@ func (s *Server) execAPPEND(w wire.WriterImpl, key string, ids [][]byte, data []
 		}, nil)
 		s.Survey.AppendSyncN.Incr(int64(len(ids)))
 	}
+	if wait {
+		maxID.Wait()
+	}
 	return w.WriteBulks(hexIds)
 }
 
-func (s *Server) execHSET(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
-	ids, err := s.implHSet(key, wait, kvs, ids)
+func (s *Server) execHSet(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
+	ids, maxID, err := s.implHSet(key, kvs, ids)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
@@ -560,11 +563,14 @@ func (s *Server) execHSET(w wire.WriterImpl, key string, ids, kvs [][]byte, sync
 		}, nil)
 		s.Survey.HSetSyncN.Incr(int64(len(ids)))
 	}
+	if wait {
+		maxID.Wait()
+	}
 	return w.WriteBulks(hexIds)
 
 }
 
-func (s *Server) execHGETALL(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
+func (s *Server) execHGetAll(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
 	s.syncHashmap(key, false)
 	res, err := s.implHGetAll(key, match, true, !keysOnly, ts)
 	if err != nil {
@@ -576,7 +582,7 @@ func (s *Server) execHGETALL(w wire.WriterImpl, key string, noCompress, ts, keys
 	return w.WriteBulks(res)
 }
 
-func (s *Server) execSELECT(w wire.WriterImpl, key string, start []byte, n int, flag int) error {
+func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, flag int) error {
 	origN := n
 	if !testFlag {
 		// Caller wants N Pairs, we actually fetch more than that to extend the range,

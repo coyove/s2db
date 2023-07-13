@@ -36,31 +36,25 @@ func (a *Session) ShuffleServers() *Session {
 }
 
 func (a *Session) Append(ctx context.Context, key string, data ...any) ([]string, error) {
-	return a.doAppend(ctx, key, false, 0, data...)
+	return a.doAppend(ctx, key, 0, data...)
 }
 
 func (a *Session) AppendTTL(ctx context.Context, key string, ttlSec int64, data ...any) ([]string, error) {
-	return a.doAppend(ctx, key, false, ttlSec, data...)
+	return a.doAppend(ctx, key, ttlSec, data...)
 }
 
-func (a *Session) AppendTTLSync(ctx context.Context, key string, ttlSec int64, data ...any) ([]string, error) {
-	return a.doAppend(ctx, key, true, ttlSec, data...)
-}
-
-func (a *Session) doAppend(ctx context.Context, key string, q bool, ttlSec int64, data ...any) ([]string, error) {
+func (a *Session) doAppend(ctx context.Context, key string, ttlSec int64, data ...any) ([]string, error) {
 	args := []any{"APPEND", key}
 	if len(data) > 0 {
 		args = append(args, data[0], "TTL", ttlSec)
 	} else {
 		args = append(args, "", "TTL", ttlSec)
 	}
-	if q {
-		args = append(args, "SYNC")
-	}
+	args = append(args, "SYNC")
 	for i := 1; i < len(data); i++ {
 		args = append(args, "AND", data[i])
 	}
-	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...), q)
+	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))
 }
 
 func (a *Session) Close() {
@@ -115,8 +109,8 @@ func (a *Session) Select(ctx context.Context, key string, cursor string, n int, 
 			x.ID, _ = hex.DecodeString(res[i])
 			x.Data = []byte(res[i+2])
 			t := s2.ParseUint64(res[i+1]) % 10
-			x.C = t&1 > 0
-			x.Q = t&2 > 0
+			x.Con = t&1 > 0
+			x.All = t&2 > 0
 			p = append(p, x)
 		}
 		return
@@ -138,27 +132,16 @@ func (a *Session) Lookup(ctx context.Context, id string) (data []byte, err error
 	return
 }
 
-func (a *Session) HSet(ctx context.Context, key string, kvs ...any) error {
-	_, err := a.doHSet(ctx, key, false, kvs)
-	return err
-}
-
-func (a *Session) HSetSync(ctx context.Context, key string, kvs ...any) ([]string, error) {
-	return a.doHSet(ctx, key, true, kvs)
-}
-
-func (a *Session) doHSet(ctx context.Context, key string, q bool, kvs []any) ([]string, error) {
+func (a *Session) HSet(ctx context.Context, key string, kvs ...any) ([]string, error) {
 	args := []any{"HSET", key, kvs[0], kvs[1]}
-	if q {
-		args = append(args, "SYNC")
-	}
+	args = append(args, "SYNC")
 	for i := 2; i < len(kvs); i += 2 {
 		args = append(args, "SET", kvs[i], kvs[i+1])
 	}
-	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...), q)
+	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))
 }
 
-func (a *Session) send(ctx context.Context, cmd *redis.StringSliceCmd, q bool) ([]string, error) {
+func (a *Session) send(ctx context.Context, cmd *redis.StringSliceCmd) ([]string, error) {
 	err := fmt.Errorf("all failed")
 	for _, db := range a.rdb {
 		db.Process(ctx, cmd)

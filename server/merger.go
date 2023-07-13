@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -139,9 +140,15 @@ func (s *Server) createMerger() *pebble.Merger {
 }
 
 func (s *Server) walkL6Tables() {
+	if testFlag {
+		return
+	}
+
 	ttl := int64(s.Config.ExpireHardTTL)
+	closed := false
 
 	defer func(start time.Time) {
+		closed = true
 		if ttl <= 0 {
 			time.AfterFunc(time.Second*10, func() { s.walkL6Tables() })
 			return
@@ -153,10 +160,6 @@ func (s *Server) walkL6Tables() {
 		time.AfterFunc(w, func() { s.walkL6Tables() })
 	}(time.Now())
 
-	if ttl <= 0 {
-		return
-	}
-
 	logrus.Infof("start L6 walking")
 
 	tables, err := s.DB.SSTables()
@@ -165,7 +168,16 @@ func (s *Server) walkL6Tables() {
 		return
 	}
 
-	for ii, i := range rand.Perm(len(tables[6])) {
+	var ii, i int
+	go func() {
+		for range time.Tick(time.Second) {
+			if closed {
+				return
+			}
+			s.Survey.L6WorkerProgress.Incr(int64(ii + 1))
+		}
+	}()
+	for ii, i = range rand.Perm(len(tables[6])) {
 		t := tables[6][i]
 		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", ii, len(tables[6])))
 
@@ -175,22 +187,38 @@ func (s *Server) walkL6Tables() {
 		if bytes.Compare(t.Smallest.UserKey, []byte("m")) >= 0 {
 			continue
 		}
-		k := makeSSTableWMKey(uint64(t.FileNum))
-		timestamp, err := s.GetInt64(k)
+
+		for {
+			c := s.DB.Metrics().Compact
+			if c.NumInProgress == 0 {
+				break
+			}
+			log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
+			time.Sleep(time.Second * 10)
+		}
+
+		buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			log.Errorf("open sst %d: %v", t.FileNum, err)
+			continue
+		}
+
+		if err := s.dedupSSTable(log, buf, t); err != nil {
+			log.Errorf("failed to dedup sst: %v", err)
+			return
+		}
+
+		timestamp, err := s.GetInt64(makeSSTableWMKey(uint64(t.FileNum)))
 		if err != nil {
 			log.Errorf("failed to get stored timestamp: %v", err)
 			return
 		}
 
-		kkpRev := func(prefix []byte) (key []byte) {
-			if bytes.HasPrefix(prefix, []byte("l")) {
-				return prefix[1:bytes.IndexByte(prefix, 0)]
-			}
-			return prefix
-		}
-
-		if timestamp < future.UnixNano()-ttl*1e9 {
-			minTimestamp, deletes, err := s.purgeSSTable(log, timestamp, t, ttl)
+		if ttl > 0 && timestamp < future.UnixNano()-ttl*1e9 {
+			minTimestamp, deletes, err := s.purgeSSTable(log, buf, timestamp, t, ttl)
 			if err != nil {
 				log.Errorf("[%d] purge: %v", t.FileNum, err)
 			} else {
@@ -201,6 +229,14 @@ func (s *Server) walkL6Tables() {
 				} else {
 					log.Debugf("[%d] timestamp: %v -> %v (+%d)", t.FileNum, timestamp, minTimestamp, (minTimestamp-timestamp)/1e9)
 				}
+
+				kkpRev := func(prefix []byte) (key []byte) {
+					if bytes.HasPrefix(prefix, []byte("l")) {
+						return prefix[1:bytes.IndexByte(prefix, 0)]
+					}
+					return prefix
+				}
+
 				log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
 				s.Survey.PurgerDeletes.Incr(int64(deletes))
 			}
@@ -211,20 +247,11 @@ func (s *Server) walkL6Tables() {
 	}
 }
 
-func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
+func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int64, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
 	var wait, maxTx int
-	fmt.Sscanf(s.Config.ExpireTx, "%d,%d", &maxTx, &wait)
+	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
 	if wait == 0 || maxTx == 0 {
 		return 0, 0, fmt.Errorf("invalid config")
-	}
-
-	for {
-		c := s.DB.Metrics().Compact
-		if c.NumInProgress == 0 {
-			break
-		}
-		log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
-		time.Sleep(time.Second * 10)
 	}
 
 	var minTimestamp int64 = math.MaxInt64
@@ -232,13 +259,6 @@ func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.
 	var tmp []byte
 	ddl := future.UnixNano() - ttl*1e9
 
-	buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return minTimestamp, 0, nil
-		}
-		return 0, 0, fmt.Errorf("open sst: %v", err)
-	}
 	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
 	if err != nil {
 		return 0, 0, fmt.Errorf("read sst: %v", err)
@@ -297,4 +317,97 @@ func (s *Server) purgeSSTable(log *logrus.Entry, startTimestamp int64, t pebble.
 	tx.Set(makeSSTableWMKey(uint64(t.FileNum)), s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
 
 	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
+}
+
+func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {
+	mark, err := s.GetInt64(makeSSTableDedupKey(uint64(t.FileNum)))
+	if err != nil {
+		return err
+	}
+	if mark != 0 {
+		return nil
+	}
+
+	var wait, maxTx int
+	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
+	if wait == 0 || maxTx == 0 {
+		return fmt.Errorf("invalid config")
+	}
+
+	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	if err != nil {
+		return fmt.Errorf("read sst: %v", err)
+	}
+	defer rd.Close()
+
+	tx := s.DB.NewBatch()
+	defer func() {
+		tx.Close()
+	}()
+
+	iter, err := rd.NewIter(nil, nil)
+	if err != nil {
+		return fmt.Errorf("sst new iter: %v", err)
+	}
+	defer iter.Close()
+
+	var lastKey string
+	var lastCounter int
+	var globalCounter int
+	var globalDeletes int
+
+	dedup := map[[sha1.Size]byte]struct{}{}
+	for ik, iv := iter.Last(); ik != nil; ik, iv = iter.Prev() {
+		k := ik.UserKey
+		if len(iv) == 0 || len(k) == 0 {
+			continue
+		}
+		if k[0] < 'l' {
+			break
+		}
+		if k[0] >= 'm' {
+			continue
+		}
+		if iv[0] != 0 {
+			continue
+		}
+
+		key := k[1:bytes.IndexByte(k, 0)]
+		if *(*string)(unsafe.Pointer(&key)) != lastKey {
+			log.Debugf("purge %q, remains %d keys, before %d", key, len(dedup), lastCounter)
+			for k := range dedup {
+				delete(dedup, k)
+			}
+			lastCounter = 0
+			lastKey = string(key)
+		}
+
+		lastCounter++
+		globalCounter++
+
+		d := s2.Pair{Data: iv}.DataDistinctHash()
+		if _, ok := dedup[d]; !ok {
+			dedup[d] = struct{}{}
+			continue
+		}
+
+		tx.Delete(k, pebble.NoSync)
+		if tx.Count() >= uint32(maxTx) {
+			if err := tx.Commit(pebble.NoSync); err != nil {
+				return err
+			}
+			tx.Close()
+			time.Sleep(time.Duration(wait) * time.Millisecond)
+			tx = s.DB.NewBatch()
+		}
+		globalDeletes++
+	}
+	tx.Set(makeSSTableDedupKey(uint64(t.FileNum)), s2.Uint64ToBytes(1), pebble.NoSync)
+
+	if globalCounter > 0 {
+		log.Debugf("dedup sst %d, purged %d out of %d", t.FileNum, globalDeletes, globalCounter)
+		s.Survey.DistinctBefore.Incr(int64(globalCounter))
+		s.Survey.DistinctDeletes.Incr(int64(globalDeletes))
+	}
+	return tx.Commit(pebble.NoSync)
 }

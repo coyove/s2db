@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"math"
 	"strings"
 	"time"
@@ -63,10 +64,7 @@ func (i *interop) Append(flag string, key string, data []byte, more ...[]byte) (
 		v = append(v, data)
 	}
 	v = append(v, more...)
-	i.s().execAPPEND(out, key, nil, v,
-		int64(findKV(flag, "ttl")),
-		s2.FoldIndex(flag, "sync"),
-		s2.FoldIndex(flag, "wait"))
+	i.s().execAPPEND(out, key, nil, v, int64(findKV(flag, "ttl")), true, s2.FoldIndex(flag, "wait"))
 
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -87,9 +85,7 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 		fi |= RangeDesc
 		desc = true
 	}
-	if s2.FoldIndex(flag, "distinct") {
-		fi |= RangeDistinct
-	}
+	all := s2.FoldIndex(flag, "allpeers")
 	i.s().execSELECT(out, key, i.s().translateCursor(start, desc), n, fi)
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -101,8 +97,11 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 		x.ID = hexDecode(buf[i])
 		x.Data = buf[i+2]
 		t := s2.ParseUint64(string(buf[i+1])) % 10
-		x.C = t&1 > 0
-		x.Q = t&2 > 0
+		x.Con = t&1 > 0
+		x.All = t&2 > 0
+		if all && !x.All {
+			return nil, fmt.Errorf("not all peers respond")
+		}
 		res = append(res, x)
 	}
 	return res, nil
@@ -111,9 +110,7 @@ func (i *interop) Select(flag string, key string, start []byte, n int) ([]s2.Pai
 func (i *interop) HSet(flag string, key string, member, value []byte, more ...[]byte) error {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "HSET", out, nil)
-	i.s().execHSET(out, key, nil, append([][]byte{member, value}, more...),
-		s2.FoldIndex(flag, "sync"),
-		s2.FoldIndex(flag, "wait"))
+	i.s().execHSET(out, key, nil, append([][]byte{member, value}, more...), true, s2.FoldIndex(flag, "wait"))
 
 	if err := out.Err(); err != nil {
 		return err

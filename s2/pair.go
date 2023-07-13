@@ -2,12 +2,12 @@ package s2
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"sort"
 	"strconv"
-	"unsafe"
 
 	"github.com/coyove/sdss/future"
 )
@@ -20,17 +20,18 @@ const (
 type Pair struct {
 	ID   []byte
 	Data []byte
-	C, Q bool
+	Con  bool
+	All  bool
 }
 
 func (p Pair) UnixMilli() int64 {
 	ns := p.UnixNano()
 	ts := ns / 1e6 / 10 * 10
 	var x int64
-	if p.C {
+	if p.Con {
 		x |= 1
 	}
-	if p.Q {
+	if p.All {
 		x |= 2
 	}
 	ts += x
@@ -68,22 +69,22 @@ func (p Pair) Cmd() int {
 	return int(p.ID[14] & 0xf)
 }
 
-func (p Pair) DataForDistinct() string {
-	v := *(*string)(unsafe.Pointer(&p.Data))
+func (p Pair) DataDistinctHash() [sha1.Size]byte {
+	v := p.Data
 	if len(p.Data) >= 2 && p.Data[0] == 0 {
-		return v[2 : 2+v[1]]
+		return sha1.Sum(v[2 : 2+v[1]])
 	}
-	return v
+	return sha1.Sum(v)
 }
 
 func (p Pair) String() (s string) {
 	id := fmt.Sprintf("%016x_%016x", p.ID[:8], p.ID[8:16])
-	if p.C {
+	if p.Con {
 		s = fmt.Sprintf("[%s:%q]", id, p.Data)
 	} else {
 		s = fmt.Sprintf("<%s:%q>", id, p.Data)
 	}
-	if p.Q {
+	if p.All {
 		s = "[" + s + "]"
 	}
 	return
@@ -151,7 +152,7 @@ func AllPairsConsolidated(p []Pair) bool {
 		return false
 	}
 	for _, p := range p {
-		if !p.C {
+		if !p.Con {
 			return false
 		}
 	}

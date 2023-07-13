@@ -37,21 +37,8 @@ func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
 
 	for i := len(p) - 1; i > 0; i-- {
 		if p[i].Equal(p[i-1]) {
-			p[i-1].C = p[i-1].C || p[i].C // inherit the consolidation mark if any
+			p[i-1].Con = p[i-1].Con || p[i].Con // inherit the consolidation mark if any
 			p = append(p[:i], p[i+1:]...)
-		}
-	}
-	return p
-}
-
-func distinctPairsData(p []s2.Pair) []s2.Pair {
-	m := map[string]bool{}
-	for i := 0; i < len(p); {
-		if m[p[i].DataForDistinct()] {
-			p = append(p[:i], p[i+1:]...)
-		} else {
-			m[p[i].DataForDistinct()] = true
-			i++
 		}
 	}
 	return p
@@ -81,19 +68,15 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, sync, wait boo
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, desc, distinct, raw bool, flag int) {
+func parseSELECT(K *wire.Command) (n int, desc, raw bool, flag int) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
 		desc = desc || K.StrEqFold(i, "desc")
-		distinct = distinct || K.StrEqFold(i, "distinct")
 		raw = raw || K.StrEqFold(i, "raw")
 	}
 	if desc {
 		flag |= RangeDesc
-	}
-	if distinct {
-		flag |= RangeDistinct
 	}
 	if raw {
 		flag |= RangeRaw
@@ -166,6 +149,11 @@ func makeHashSetKey(key string) (prefix []byte) {
 
 func makeSSTableWMKey(id uint64) (prefix []byte) {
 	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t"...), id, 10)
+	return
+}
+
+func makeSSTableDedupKey(id uint64) (prefix []byte) {
+	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "td"...), id, 10)
 	return
 }
 

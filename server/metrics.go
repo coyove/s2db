@@ -53,6 +53,9 @@ type ServerSurvey struct {
 	HashSyncOnce     s2.Survey `metrics:"mean"`
 	KeyHashRatio     s2.Survey `metrics:"mean"`
 	PurgerDeletes    s2.Survey
+	DistinctDeletes  s2.Survey
+	DistinctBefore   s2.Survey
+	L6WorkerProgress s2.Survey `metrics:"mean"`
 	PeerLatency      sync.Map
 	Command          sync.Map
 }

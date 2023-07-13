@@ -54,7 +54,6 @@ type Server struct {
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
 	ttlOnce      s2.KeyLock
-	distinctOnce s2.KeyLock
 	hashSyncOnce s2.KeyLock
 	errThrot     s2.ErrorThrottler
 	dbFile       *os.File
@@ -373,7 +372,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulks(a)
 	case "SELECT": // key start count [ASC|DESC] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, desc, _, _, flag := parseSELECT(K)
+		n, desc, _, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
 		return s.execSELECT(w, key, start, n, flag)
 	case "PLOOKUP":
@@ -580,7 +579,8 @@ func (s *Server) execHGETALL(w wire.WriterImpl, key string, noCompress, ts, keys
 func (s *Server) execSELECT(w wire.WriterImpl, key string, start []byte, n int, flag int) error {
 	origN := n
 	if !testFlag {
-		// Caller wants N Pairs, we actually fetch more than that to consolidate them better (hopefully).
+		// Caller wants N Pairs, we actually fetch more than that to extend the range,
+		// and (hopefully) consolidate more Pairs.
 		// Special case: n=1 is still n=1.
 		n = int(float64(n) * (1 + rand.Float64()))
 	}
@@ -617,9 +617,6 @@ func (s *Server) execSELECT(w wire.WriterImpl, key string, start []byte, n int, 
 
 	desc := flag&RangeDesc > 0
 	data = sortPairs(data, !desc)
-	if flag&RangeDistinct > 0 {
-		data = distinctPairsData(data)
-	}
 	if len(data) > n {
 		data = data[:n]
 	}

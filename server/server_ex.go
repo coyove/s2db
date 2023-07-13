@@ -96,7 +96,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
 			fmt.Sprintf("ttl_once:%v", s.ttlOnce.Count()),
-			fmt.Sprintf("distinct_once:%v", s.distinctOnce.Count()),
 			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.Count()),
 			"")
 	}
@@ -420,14 +419,14 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	return nil
 }
 
-func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, q bool) (err error) {
+func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, all bool) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
 	var maxFuture future.Future
 	for _, p := range p {
-		p.Q = q
+		p.All = all
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)

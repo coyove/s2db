@@ -125,7 +125,7 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 	con := func(tx *pebble.Batch) {
 		m := map[future.Future]bool{}
 		for _, p := range s2.TrimPairsForConsolidation(after, !consolidateLeft, !consolidateRight) {
-			if p.C {
+			if p.Con {
 				continue
 			}
 			cid := p.Future().ToCookie(consolidatedMark)
@@ -276,9 +276,8 @@ func (s *Server) implLookupID(id []byte) (data []byte, key string, err error) {
 }
 
 const (
-	RangeDesc     = 1
-	RangeDistinct = 2
-	RangeRaw      = 4
+	RangeDesc = 1
+	RangeRaw  = 4
 )
 
 func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
@@ -323,23 +322,6 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 	}
 
 	cm := map[future.Future]bool{}
-	dedup := map[string]bool{}
-	var dedupTx *pebble.Batch
-	var hllAdd, hllDel s2.HyperLogLog
-
-	if flag&RangeDistinct > 0 {
-		if s.distinctOnce.Lock(key) {
-			s.Survey.DistinctOnce.Incr(s.distinctOnce.Count())
-			dedupTx = s.DB.NewBatch()
-			defer dedupTx.Close()
-			defer s.distinctOnce.Unlock(key)
-
-			hllAdd, hllDel, err = s.getHLL(key)
-			if err != nil {
-				return nil, err
-			}
-		}
-	}
 
 	ns := future.UnixNano()
 	rangeAll := flag&RangeRaw > 0
@@ -365,22 +347,14 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 				return nil, fmt.Errorf("invalid mark: %x", v)
 			}
 		} else {
-			if dedupTx != nil && dedup[p.DataForDistinct()] {
-				if dedupTx.Count() < uint32(s.Config.DistinctLimit) {
-					s.deleteElement(dedupTx, bkPrefix, c.Key(), hllDel)
-				}
-				goto NEXT
-			}
 
 			if desc {
 				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
 					data = append(data, p)
-					dedup[p.DataForDistinct()] = true
 				}
 			} else {
 				data = append(data, p)
-				dedup[p.DataForDistinct()] = true
 			}
 		}
 
@@ -408,20 +382,10 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 	for i, p := range data {
 		cid := p.Future().ToCookie(consolidatedMark)
 		if cm[cid] {
-			data[i].C = true
+			data[i].Con = true
 		}
 	}
 
-	if dedupTx != nil && dedupTx.Count() > 0 {
-		s.Survey.RangeDistinct.Incr(int64(dedupTx.Count()))
-		s.setHLL(dedupTx, key, hllAdd, hllDel)
-
-		// Use NoSync here because loss of deletions is okay.
-		// They will be eventually deleted again next time we call Range().
-		if err := dedupTx.Commit(pebble.NoSync); err != nil {
-			logrus.Errorf("range distinct commit failed: %v", err)
-		}
-	}
 	return
 }
 

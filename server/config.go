@@ -40,7 +40,7 @@ type ServerConfig struct {
 	CompressLimit   int
 	ExpireHardTTL   int
 	TTLEvictLimit   int
-	ExpireTx        string
+	L6WorkerMaxTx   string
 	MetricsEndpoint string
 	InspectorSource string
 }
@@ -89,8 +89,8 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.CompressLimit, 10*1024)
 	ifZero(&s.Config.TTLEvictLimit, 1024)
-	if s.Config.ExpireTx == "" {
-		s.Config.ExpireTx = "5000,1000"
+	if s.Config.L6WorkerMaxTx == "" {
+		s.Config.L6WorkerMaxTx = "5000,1000"
 	}
 	if s.Config.ServerName == "" {
 		s.Config.ServerName = fmt.Sprintf("UNNAMED_%x", future.UnixNano())

@@ -292,11 +292,26 @@ func CompressBulks(m [][]byte) []byte {
 	var tmp []byte
 	for _, v := range m {
 		tmp = binary.AppendUvarint(tmp[:0], uint64(len(v)))
-		tmp = append(tmp, v...)
 		w.Write(tmp)
+		w.Write(v)
 	}
 	w.Flush()
 	return p.Bytes()
+}
+
+type stringReader string
+
+func (r *stringReader) Read(b []byte) (n int, err error) {
+	n = copy(b, *r)
+	*r = (*r)[n:]
+	if n == 0 {
+		err = io.EOF
+	}
+	return
+}
+
+func DecompressBulksString(in string) (bulks [][]byte, err error) {
+	return DecompressBulks((*stringReader)(&in))
 }
 
 func DecompressBulks(r io.Reader) (bulks [][]byte, err error) {
@@ -329,9 +344,65 @@ func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
 }
 
 func NZEncode(out, in []byte) []byte {
-	return in
+	for i := 0; i < len(in); i += 8 {
+		var x uint64
+		for j := i; j < i+7; j++ {
+			x = x << 9
+			if j < len(in) {
+				x = x + 256 + uint64(in[j])
+			}
+		}
+		x = x << 1
+		if j := i + 8; j < len(in) {
+			y := 256 + uint64(in[j])
+			x += y >> 8
+			out = binary.BigEndian.AppendUint64(out, x)
+			out = append(out, byte(y))
+		} else {
+			out = binary.BigEndian.AppendUint64(out, x)
+		}
+	}
+	out = bytes.TrimRight(out, "\x00")
+	return out
 }
 
 func NZDecode(out, in []byte) []byte {
-	return in
+	for i := 0; i < len(in); i += 9 {
+		end := i + 9
+		if end > len(in) {
+			w := (len(in) - i) * 8 / 9
+			if len(in) == 1 {
+				w = 1
+			}
+			var x uint64
+			for j := i; j < i+8; j++ {
+				x = x << 8
+				if j < len(in) {
+					x += uint64(in[j])
+				}
+			}
+			for j := 55; j >= 1 && w > 0; j -= 9 {
+				v := (x >> j) & 0x1ff
+				if v == 0 {
+					break
+				}
+				out = append(out, byte(v-256))
+				w--
+			}
+		} else {
+			x := binary.BigEndian.Uint64(in[i:])
+			for j := 55; j >= 1; j -= 9 {
+				v := (x >> j) & 0x1ff
+				if v == 0 {
+					break
+				}
+				out = append(out, byte(v-256))
+			}
+			v := (uint64(in[i+8]) + uint64(x&1)<<8)
+			if v > 0 {
+				out = append(out, byte(v-256))
+			}
+		}
+	}
+	return out
 }

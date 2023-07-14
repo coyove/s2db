@@ -23,8 +23,9 @@ func TestNZ(t *testing.T) {
 		e := NZEncode(nil, a)
 		d := NZDecode(nil, e)
 		if !bytes.Equal(a, d) {
-			t.Fatal(a, d)
+			t.Fatal(a, d, fmt.Sprintf("%08b", e))
 		}
+		fmt.Println(a, "->", e)
 	}
 	test([]byte{0, 1, 2, 3})
 	test([]byte{0, 1, 2, 254})
@@ -34,9 +35,18 @@ func TestNZ(t *testing.T) {
 	test([]byte{255, 1})
 
 	rand.Seed(future.UnixNano())
+	for i := 0; i < 256; i++ {
+		for j := i + 1; j < 256; j++ {
+			anz := NZEncode(nil, []byte{byte(i)})
+			bnz := NZEncode(nil, []byte{byte(j)})
+			if bytes.Compare(anz, bnz) != -1 {
+				t.Fatal(i, j, " <=> ", anz, bnz)
+			}
+		}
+	}
 	for i := 0; i < 1e6; i++ {
-		a := make([]byte, 4+rand.Intn(10))
-		b := make([]byte, 4+rand.Intn(10))
+		a := make([]byte, 5+rand.Intn(12))
+		b := make([]byte, 5+rand.Intn(12))
 		rand.Read(a)
 		rand.Read(b)
 		anz := NZEncode(nil, a)

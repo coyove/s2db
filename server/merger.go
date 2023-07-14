@@ -34,7 +34,7 @@ type hashmapMerger struct {
 
 func hashmapMergerIter(p []byte, f func(d hashmapData) bool) (err error) {
 	if p[0] != 0x01 {
-		return fmt.Errorf("setMerger: invalid opcode %x", p)
+		return fmt.Errorf("hashmapMerger: invalid opcode %x", p)
 	}
 
 	// count := binary.BigEndian.Uint32(p[1:])

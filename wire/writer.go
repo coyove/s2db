@@ -15,7 +15,7 @@ import (
 )
 
 type Writer struct {
-	conn   io.Writer
+	Sink   io.Writer
 	tmp    []byte
 	ppMode bool
 	ppBuf  *bytes.Buffer
@@ -28,12 +28,11 @@ type WriterImpl interface {
 	WriteBulk(val any) error
 	WriteBulks(value any) error
 	WriteBulkBulks(a any, b any) error
-	GetWriter() io.Writer
 }
 
 func NewWriter(w io.Writer) *Writer {
 	return &Writer{
-		conn: w,
+		Sink: w,
 	}
 }
 
@@ -43,7 +42,7 @@ func (w *Writer) EnablePipelineMode() {
 
 func (w *Writer) Write(data []byte) (int, error) {
 	if !w.ppMode {
-		return w.conn.Write(data)
+		return w.Sink.Write(data)
 	}
 	if w.ppBuf == nil {
 		w.ppBuf = &bytes.Buffer{}
@@ -56,11 +55,11 @@ func (w *Writer) Flush() error {
 		if w.ppBuf == nil {
 			return nil
 		}
-		_, err := w.conn.Write(w.ppBuf.Bytes())
+		_, err := w.Sink.Write(w.ppBuf.Bytes())
 		w.ppBuf.Reset()
 		return err
 	}
-	if f, ok := w.conn.(*bufio.Writer); ok {
+	if f, ok := w.Sink.(*bufio.Writer); ok {
 		return f.Flush()
 	}
 	return nil
@@ -143,7 +142,9 @@ func (w *Writer) WriteBulkBulks(a any, b any) error {
 
 func (w *Writer) WriteBulks(value any) error {
 	bulks, ok := value.([][]byte)
-	if !ok {
+	if value == nil {
+		// bulks = nil
+	} else if !ok {
 		bulks = make([][]byte, len(value.([]string)))
 		for i, v := range value.([]string) {
 			x := (*struct {
@@ -152,7 +153,6 @@ func (w *Writer) WriteBulks(value any) error {
 			})(unsafe.Pointer(&bulks[i]))
 			x.a, x.b = v, len(v)
 		}
-		defer func() { runtime.KeepAlive(value) }()
 	}
 
 	w._writeString("*")
@@ -164,11 +164,8 @@ func (w *Writer) WriteBulks(value any) error {
 			return err
 		}
 	}
+	runtime.KeepAlive(value)
 	return nil
-}
-
-func (w *Writer) GetWriter() io.Writer {
-	return w.conn
 }
 
 type DummySink struct {
@@ -181,7 +178,6 @@ func (w *DummySink) WriteInt64(val int64) error        { w.val = val; return nil
 func (w *DummySink) WriteBulk(val any) error           { w.val = val; return nil }
 func (w *DummySink) WriteBulks(val any) error          { w.val = val; return nil }
 func (w *DummySink) WriteBulkBulks(a any, b any) error { w.val = []any{a, b}; return nil }
-func (w *DummySink) GetWriter() io.Writer              { panic("DummySink has no writer") }
 
 func (w *DummySink) Err() error {
 	if err, ok := w.val.(error); ok {
@@ -192,11 +188,4 @@ func (w *DummySink) Err() error {
 
 func (w *DummySink) Val() any {
 	return w.val
-}
-
-func (w *DummySink) Bytes() []byte {
-	if b, ok := w.val.([]byte); ok {
-		return b
-	}
-	return []byte(w.val.(string))
 }

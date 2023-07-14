@@ -406,10 +406,11 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	if s.hashSyncOnce.Lock(key) {
 		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.Count())
 		go func() {
+			defer s.hashSyncOnce.Unlock(key)
 			if err := work(); err != nil {
 				logrus.Errorf("hashmap sync error: %v", err)
 			}
-			time.AfterFunc(time.Second, func() { s.hashSyncOnce.Unlock(key) })
+			time.Sleep(time.Duration(s.Config.HashmapSyncWait) * time.Millisecond)
 		}()
 	}
 	return nil

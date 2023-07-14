@@ -313,7 +313,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			}
 			return w.WriteSimpleString("OK")
 		default:
-			return w.WriteBulks(s.listConfigCommand())
+			return w.WriteBulks(s.execListConfig())
 		}
 	case "INFO":
 		info := s.InfoCommand(key)
@@ -332,11 +332,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
+		return slowLogger.Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
+		return dbLogger.Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*logf).LogFork(w.GetWriter().(net.Conn))
+		return log.StandardLogger().Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
 	}
 
 	switch cmd {
@@ -349,7 +349,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		if lowest := K.BytesRef(5); len(lowest) == 16 {
 			if wmok && bytes.Compare(wm[:], lowest) <= 0 {
 				s.Survey.SelectCacheHits.Incr(1)
-				return w.WriteBulks([][]byte{}) // no nil
+				return w.WriteBulks(nil)
 			}
 			if s.TestFlags.IRangeCache {
 				panic("test: PSELECT should use watermark cache")
@@ -357,7 +357,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		if flag&RangeDesc == 0 && wmok && bytes.Compare(wm[:], start) < 0 {
 			s.Survey.SelectCacheHits.Incr(1)
-			return w.WriteBulks([][]byte{}) // no nil
+			return w.WriteBulks(nil)
 		}
 		data, err := s.implRange(key, start, K.Int(3), flag)
 		if err != nil {

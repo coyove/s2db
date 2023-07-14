@@ -36,6 +36,7 @@ type ServerConfig struct {
 	TimeoutRange           int // ms
 	BatchLimit             int
 	CompressLimit          int
+	HashmapSyncWait        int // ms
 	L6WorkerMaxTx          string
 	MetricsEndpoint        string
 	InspectorSource        string
@@ -83,6 +84,7 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.TimeoutRange, 500)
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.CompressLimit, 10*1024)
+	ifZero(&s.Config.HashmapSyncWait, 50)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
 	}
@@ -173,7 +175,7 @@ func (s *Server) GetConfig(key string) (v string, ok bool) {
 	return
 }
 
-func (s *Server) listConfigCommand() (list []string) {
+func (s *Server) execListConfig() (list []string) {
 	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.HasPrefix(f.Name, "Peer") {
 			if fv.String() != "" {

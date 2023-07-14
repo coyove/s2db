@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/sha1"
 	"encoding/binary"
@@ -27,46 +26,44 @@ type hashmapData struct {
 	data []byte
 }
 
+func (d hashmapData) clone() hashmapData {
+	d.key = s2.Bytes(d.key)
+	d.data = s2.Bytes(d.data)
+	return d
+}
+
+func (d hashmapData) keystr() string {
+	return *(*string)(unsafe.Pointer(&d.key))
+}
+
 type hashmapMerger struct {
 	s *Server
 	m map[string]hashmapData
 }
 
-func hashmapMergerIter(p []byte, f func(d hashmapData) bool) (err error) {
+func hashmapIterBytes(p []byte, f func(d hashmapData) bool) (err error) {
 	if p[0] != 0x01 {
-		return fmt.Errorf("hashmapMerger: invalid opcode %x", p)
+		return fmt.Errorf("hashmapIterBytes: invalid opcode %x", p)
 	}
 
 	// count := binary.BigEndian.Uint32(p[1:])
-	rd := bufio.NewReader(bytes.NewReader(p[1+4:]))
-	for {
+	rd := p[1+4:]
+	for len(rd) > 0 {
 		// ts (8b) + keylen + key + valuelen + value
-		var ts int64
-		if err := binary.Read(rd, binary.BigEndian, &ts); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return err
-		}
+		ts := int64(binary.BigEndian.Uint64(rd))
+		rd = rd[8:]
 
-		kl, err := binary.ReadUvarint(rd)
-		if err != nil {
-			return err
-		}
-		k := make([]byte, kl)
-		if _, err := io.ReadFull(rd, k); err != nil {
-			return err
-		}
+		kl, n := binary.Uvarint(rd)
+		rd = rd[n:]
 
-		vl, err := binary.ReadUvarint(rd)
-		if err != nil {
-			return err
-		}
+		k := rd[:kl]
+		rd = rd[kl:]
 
-		v := make([]byte, vl)
-		if _, err := io.ReadFull(rd, v); err != nil {
-			return err
-		}
+		vl, n := binary.Uvarint(rd)
+		rd = rd[n:]
+
+		v := rd[:vl]
+		rd = rd[vl:]
 
 		if !f(hashmapData{ts, k, v}) {
 			break
@@ -80,10 +77,10 @@ func (a *hashmapMerger) MergeNewer(value []byte) error {
 }
 
 func (s *hashmapMerger) MergeOlder(value []byte) error {
-	return hashmapMergerIter(value, func(d hashmapData) bool {
-		k := *(*string)(unsafe.Pointer(&d.key))
-		if d.ts > s.m[k].ts {
-			s.m[k] = d
+	return hashmapIterBytes(value, func(d hashmapData) bool {
+		if d.ts > s.m[d.keystr()].ts {
+			d = d.clone()
+			s.m[d.keystr()] = d
 		}
 		return true
 	})
@@ -126,8 +123,9 @@ func (s *Server) createMerger() *pebble.Merger {
 				res := &hashmapMerger{}
 				res.s = s
 				res.m = map[string]hashmapData{}
-				err := hashmapMergerIter(value, func(d hashmapData) bool {
-					res.m[*(*string)(unsafe.Pointer(&d.key))] = d
+				err := hashmapIterBytes(value, func(d hashmapData) bool {
+					d = d.clone()
+					res.m[d.keystr()] = d
 					return true
 				})
 				return res, err
@@ -145,10 +143,10 @@ func (s *Server) walkL6Tables() {
 	}
 
 	ttl := int64(s.Config.ListRetentionDays) * 86400 * 1e9
-	closed := false
+	finished := false
 
 	defer func(start time.Time) {
-		closed = true
+		finished = true
 		if ttl <= 0 {
 			time.AfterFunc(time.Second*10, func() { s.walkL6Tables() })
 			return
@@ -171,7 +169,7 @@ func (s *Server) walkL6Tables() {
 	var ii, i int
 	go func() {
 		for range time.Tick(time.Second) {
-			if closed {
+			if finished {
 				return
 			}
 			s.Survey.L6WorkerProgress.Incr(int64(ii + 1))

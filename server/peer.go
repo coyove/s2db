@@ -120,17 +120,19 @@ func (e *endpoint) work() {
 		}
 		p.Exec(ctx)
 		for _, cmd := range commands {
+			addr := cmd.ep.config.Addr
 			if cmd.async {
 				if err := cmd.Err(); err != nil {
-					// if !cmd.ep.server.errThrot.Throttle
-					if !strings.Contains(err.Error(), "failed on purpose") {
-						logrus.Errorf("async command error: %v", err)
+					if !cmd.ep.server.errThrot.Throttle(addr, err) {
+						if !strings.Contains(err.Error(), "failed on purpose") {
+							logrus.Errorf("async command error: %v", err)
+						}
 					}
 				}
 			} else {
 				cmd.out <- cmd
 			}
-			x, _ := cmd.ep.server.Survey.PeerLatency.LoadOrStore(cmd.ep.config.Addr, new(s2.Survey))
+			x, _ := cmd.ep.server.Survey.PeerLatency.LoadOrStore(addr, new(s2.Survey))
 			x.(*s2.Survey).Incr((future.UnixNano() - cmd.start) / 1e6)
 		}
 		e.server.Survey.PeerBatchSize.Incr(int64(len(commands)))

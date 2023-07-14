@@ -425,7 +425,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteInt64(int64(res))
 	case "HGET", "HTIME": // key member
 		s.syncHashmap(key, false)
-		res, time, err := s.implHGet(key, K.BytesRef(2))
+		res, time, err := s.implHGet(key, K.BytesRef(2), cmd == "HTIME")
 		if err != nil {
 			return w.WriteError(err.Error())
 		}

@@ -38,7 +38,7 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 
 func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Future, error) {
 	if key == "" {
-		return nil, 0, fmt.Errorf("append to null key")
+		return nil, 0, fmt.Errorf("empty key")
 	}
 	kh := sha1.Sum([]byte(key))
 
@@ -48,7 +48,7 @@ func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Fu
 
 	for i := 0; i < len(data); i++ {
 		if len(data[i]) == 0 {
-			return nil, 0, fmt.Errorf("can't append null data")
+			return nil, 0, fmt.Errorf("can't append empty data")
 		}
 
 		if len(ids) == len(data) {
@@ -375,6 +375,9 @@ func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []s
 }
 
 func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Future, error) {
+	if key == "" {
+		return nil, 0, fmt.Errorf("empty key")
+	}
 	if len(kvs) == 0 {
 		return nil, 0, nil
 	}
@@ -388,7 +391,7 @@ func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Futur
 		k := *(*string)(unsafe.Pointer(&kvs[i]))
 		v := kvs[i+1]
 		if len(k) == 0 || len(v) == 0 {
-			return nil, 0, fmt.Errorf("hashmap: member and value can't be null")
+			return nil, 0, fmt.Errorf("hashmap: member and value can't be empty")
 		}
 		if len(ids) > 0 {
 			id := ids[i/2]
@@ -413,7 +416,7 @@ func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Futur
 	return kk, maxID, nil
 }
 
-func (s *Server) implHGet(key string, member []byte) (res []byte, ts int64, err error) {
+func (s *Server) implHGet(key string, member []byte, tsOnly bool) (res []byte, ts int64, err error) {
 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err != nil {
 		if err == pebble.ErrNotFound {
@@ -423,10 +426,12 @@ func (s *Server) implHGet(key string, member []byte) (res []byte, ts int64, err 
 	}
 	defer rd.Close()
 
-	if err := hashmapMergerIter(buf, func(d hashmapData) bool {
+	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
 		if bytes.Equal(d.key, member) {
 			future.Future(d.ts).Wait()
-			res = d.data
+			if !tsOnly {
+				res = d.clone().data
+			}
 			ts = d.ts
 			return false
 		}
@@ -449,7 +454,7 @@ func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, 
 
 	var max int64
 	var mErr error
-	if err := hashmapMergerIter(buf, func(d hashmapData) bool {
+	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
 		if matched := false; matchValue != nil {
 			matched, mErr = s2.GlobBytes(matchValue, d.data)
 			if err != nil {
@@ -463,13 +468,13 @@ func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, 
 			max = d.ts
 		}
 		if inclKey {
-			res = append(res, d.key)
+			res = append(res, s2.Bytes(d.key))
 		}
 		if inclTime {
 			res = append(res, strconv.AppendInt(nil, d.ts/1e6, 10))
 		}
 		if inclValue {
-			res = append(res, d.data)
+			res = append(res, s2.Bytes(d.data))
 		}
 		return true
 	}); err != nil {
@@ -499,6 +504,7 @@ func (s *Server) implHLen(key string) (count int, err error) {
 func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
 	if err == pebble.ErrNotFound {
+		// Pass, calc sha1 empty buffer
 	} else if err != nil {
 		return v, 0, err
 	} else {

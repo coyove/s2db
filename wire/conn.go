@@ -45,9 +45,12 @@ func ParseConnString(addr string) (cfg RedisConfig, err error) {
 		if len(vs) == 0 {
 			continue
 		}
-		if f := rv.FieldByName(k); f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
-			v, _ := strconv.ParseFloat(vs[0], 64)
-			f.SetInt(int64(v))
+		if f := rv.FieldByName(k); f.Type() == reflect.TypeOf(time.Duration(0)) {
+			v, _ := strconv.ParseInt(vs[0], 10, 64)
+			f.SetInt(v * 1e6)
+		} else if f.Kind() >= reflect.Int && f.Kind() <= reflect.Int64 {
+			v, _ := strconv.ParseInt(vs[0], 10, 64)
+			f.SetInt(v)
 		} else {
 			logrus.Infof("invalid option field %q in %s", k, addr)
 		}

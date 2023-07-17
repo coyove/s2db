@@ -51,15 +51,19 @@ func (i *interop) Select(key string, start []byte, n int, flag int) ([]s2.Pair, 
 	return res, nil
 }
 
-func (i *interop) HSet(wait bool, key string, member, value []byte, more ...[]byte) error {
+func (i *interop) HSet(wait bool, key string, kvs ...[]byte) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "HSET", out, nil)
-	i.s().execHSet(out, key, nil, append([][]byte{member, value}, more...), true, wait)
+	i.s().execHSet(out, key, nil, kvs, true, wait)
 
 	if err := out.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+	res := out.Val().([][]byte)
+	for i := range res {
+		res[i] = hexDecode(res[i])
+	}
+	return res, nil
 }
 
 func (i *interop) HGetAll(key string, match string) ([][]byte, error) {

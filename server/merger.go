@@ -148,7 +148,7 @@ func (s *Server) walkL6Tables() {
 	defer func(start time.Time) {
 		finished = true
 		if ttl <= 0 {
-			time.AfterFunc(time.Second*10, func() { s.walkL6Tables() })
+			time.AfterFunc(time.Minute, func() { s.walkL6Tables() })
 			return
 		}
 

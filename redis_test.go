@@ -578,8 +578,13 @@ func TestHashSet(t *testing.T) {
 	dedup := map[string]bool{}
 	for i := 0; i < len(staticLZ4); i += 2 {
 		id, id2 := staticLZ4[i], staticLZ4[i+1]
-		q, _ := client.Begin(rdb1).HSet(ctx, "t", id, "1", id2, 1)
-		fmt.Println(q)
+		if rand.Intn(2) == 1 {
+			q, _ := s1.Interop.HSet(true, "t", []byte(id), []byte("1"), []byte(id2), []byte("1"))
+			fmt.Println(q)
+		} else {
+			q, _ := client.Begin(rdb1).HSet(ctx, "t", id, "1", id2, 1)
+			fmt.Println(q)
+		}
 		dedup[id] = true
 		dedup[id2] = true
 	}

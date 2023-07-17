@@ -360,9 +360,6 @@ func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []s
 		k = k[:bytes.IndexByte(k, 0)]
 		keys = append(keys, string(k[1:]))
 
-		tmp = append(append(tmp[:0], k...), 1)
-		iter.SeekGE(tmp)
-
 		if len(keys) == count {
 			if iter.Next() {
 				x := iter.Key()
@@ -370,6 +367,9 @@ func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []s
 			}
 			break
 		}
+
+		tmp = append(append(tmp[:0], k...), 1)
+		iter.SeekGE(tmp)
 	}
 	return
 }

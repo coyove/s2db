@@ -176,8 +176,8 @@
                     <button onclick="addChartSource()">+</button>&emsp;
                     <input type="date" id="chart-start" name="chart-start"> -
                     <input type="date" id="chart-end" name="chart-end">
-                    <button disabled onclick="loadChart()">View</button>&emsp;
-                    <button disabled onclick="loadChart(true)">Reset</button>
+                    <button onclick="loadChart()">View</button>&emsp;
+                    <button onclick="loadChart(true)">Reset</button>
                     <script>
                         document.getElementById('chart-start').valueAsDate = new Date();
                         document.getElementById('chart-end').valueAsDate = new Date(new Date().getTime() + 86400000);
@@ -198,6 +198,7 @@
         </div>
     </div>
 
+    <script src='https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js' type="text/javascript" charset="utf-8"></script>
     <div class=section style='border-width: 1px; text-align: center; line-height: 3em; font-size: 80%'>
         s2db console in {{(timeSince .start).Seconds}}s
     </div>
@@ -260,14 +261,6 @@
                     const folds = JSON.parse(localStorage.getItem('folds') || '{}');
                     if (el.getAttribute('fold') == 'fold') {
                         delete folds[el.id];
-                        if (el.id == 's_chart' && !el.SCRIPT) {
-                            el.SCRIPT = document.createElement('script');
-                            el.SCRIPT.src = 'https://cdn.jsdelivr.net/npm/uplot@1.6.7/dist/uPlot.iife.min.js';
-                            el.SCRIPT.onload = function() {
-                                document.querySelectorAll('#chart-ctrl [disabled]').forEach((el) => el.removeAttribute('disabled'));
-                            }
-                            document.body.appendChild(el.SCRIPT);
-                        }
                         el.removeAttribute('fold');
                     } else {
                         el.setAttribute('fold', 'fold');

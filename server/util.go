@@ -54,16 +54,12 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, sync, wait boo
 			data = append(data, K.BytesRef(i+1))
 			i++
 		} else if K.StrEqFold(i, "setid") {
-			ids = K.Argv[i+1:]
-			break
+			ids = K.Argv[i+1 : i+1+len(data)]
+			i += len(data)
 		}
+
 		wait = wait || K.StrEqFold(i, "wait")
 		sync = sync || K.StrEqFold(i, "sync")
-	}
-	for i := len(data) - 1; i >= 0; i-- {
-		if len(data[i]) == 0 {
-			data = append(data[:i], data[i+1:]...)
-		}
 	}
 	return
 }

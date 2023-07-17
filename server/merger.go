@@ -366,7 +366,9 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		if k[0] >= 'm' {
 			continue
 		}
-		if iv[0] != 0 {
+
+		dh, ok := s2.Pair{Data: iv}.DataDistinctHash()
+		if !ok {
 			continue
 		}
 
@@ -383,9 +385,8 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		lastCounter++
 		globalCounter++
 
-		d := s2.Pair{Data: iv}.DataDistinctHash()
-		if _, ok := dedup[d]; !ok {
-			dedup[d] = struct{}{}
+		if _, ok := dedup[dh]; !ok {
+			dedup[dh] = struct{}{}
 			continue
 		}
 

@@ -69,12 +69,14 @@ func (p Pair) Cmd() int {
 	return int(p.ID[14] & 0xf)
 }
 
-func (p Pair) DataDistinctHash() [sha1.Size]byte {
+func (p Pair) DataDistinctHash() ([sha1.Size]byte, bool) {
 	v := p.Data
-	if len(p.Data) >= 2 && p.Data[0] == 0 {
-		return sha1.Sum(v[2 : 2+v[1]])
+	if len(p.Data) >= 2 && p.Data[0] == 0 && p.Data[1] > 0 && p.Data[1] < 128 {
+		if 2+int(v[1]) <= len(v) {
+			return sha1.Sum(v[2 : 2+v[1]]), true
+		}
 	}
-	return sha1.Sum(v)
+	return [sha1.Size]byte{}, false
 }
 
 func (p Pair) String() (s string) {

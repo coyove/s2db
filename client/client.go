@@ -36,8 +36,8 @@ func (a *Session) ShuffleServers() *Session {
 	return a
 }
 
-func (a *Session) Append(ctx context.Context, key string, data any, more ...any) ([]string, error) {
-	args := []any{"APPEND", key, data, "SYNC"}
+func (a *Session) Append(ctx context.Context, key string, dpLen byte, data any, more ...any) ([]string, error) {
+	args := []any{"APPEND", key, data, "SYNC", "DP", int(dpLen)}
 	for _, d := range more {
 		args = append(args, "AND", d)
 	}

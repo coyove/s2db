@@ -106,7 +106,7 @@ func TestAppend(t *testing.T) {
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
 		if rand.Intn(2) == 1 {
-			s2.Interop.Append(true, "a", []byte(fmt.Sprintf("%d", count)))
+			s2.Interop.Append(true, "a", 0, fmt.Sprintf("%d", count))
 		} else {
 			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "WAIT").Err())
 		}
@@ -477,7 +477,7 @@ func TestFuzzy1(t *testing.T) {
 				defer wg.Done()
 				time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
 				a := client.Begin(rdb1, rdb2)
-				a.Append(ctx, "a", i)
+				a.Append(ctx, "a", 0, i)
 				a.Close()
 			}(i*100 + j)
 		}

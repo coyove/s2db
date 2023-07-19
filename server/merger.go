@@ -201,7 +201,7 @@ func (s *Server) walkL6Tables() {
 			time.Sleep(time.Second * 10)
 		}
 
-		buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%d.sst", s.DBPath, t.FileNum))
+		buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%06d.sst", s.DBPath, t.FileNum))
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -373,10 +373,15 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 			continue
 		}
 
-		dh, ok := s2.Pair{Data: iv}.DataDistinctHash()
-		if !ok {
+		id := k[bytes.IndexByte(k, 0)+1:]
+		if ok := id[13] > 0 && (s2.Pair{ID: id}).Cmd() == s2.PairCmdAppend; !ok {
 			continue
 		}
+		if int(id[13]) > len(iv) {
+			log.Errorf("fatal: %v %d and %q", id, id[13], iv)
+			continue
+		}
+		dh := sha1.Sum(iv[:id[13]])
 
 		key := k[1:bytes.IndexByte(k, 0)]
 		if *(*string)(unsafe.Pointer(&key)) != lastKey {

@@ -341,8 +341,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 
 	switch cmd {
 	case "APPEND": // key data_0 [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
-		data, ids, _, sync, wait := parseAPPEND(K)
-		return s.execAppend(w, key, ids, data, sync, wait)
+		data, ids, dpLen, sync, wait := parseAPPEND(K)
+		return s.execAppend(w, key, dpLen, ids, data, sync, wait)
 	case "PSELECT": // key raw_start count flag lowest key_hash => [ID 0, DATA 0, ...]
 		start, flag, okh := K.BytesRef(2), K.Int(4), s2.KeyHashUnpack(K.BytesRef(6))
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -492,8 +492,8 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 	}
 }
 
-func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, sync, wait bool) error {
-	ids, maxID, err := s.implAppend(key, ids, data)
+func (s *Server) execAppend(w wire.WriterImpl, key string, dpLen byte, ids, data [][]byte, sync, wait bool) error {
+	ids, maxID, err := s.implAppend(key, dpLen, ids, data)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}

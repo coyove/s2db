@@ -1,6 +1,9 @@
 package server
 
 import (
+	"fmt"
+	"reflect"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -12,15 +15,15 @@ type interop struct{}
 
 func (i *interop) s() *Server { return (*Server)(unsafe.Pointer(i)) }
 
-func (i *interop) Append(wait bool, key string, data []byte, more ...[]byte) ([][]byte, error) {
+func (i *interop) Append(wait bool, key string, dpLen byte, data ...any) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "APPEND", out, nil)
-	var v [][]byte
-	if len(data) > 0 {
-		v = append(v, data)
+
+	v := make([][]byte, len(data))
+	for i := range data {
+		v[i] = toBytes(data[i])
 	}
-	v = append(v, more...)
-	i.s().execAppend(out, key, nil, v, true, wait)
+	i.s().execAppend(out, key, dpLen, nil, v, true, wait)
 
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -87,4 +90,21 @@ func (i *interop) ScanLookupIndex(cursor string, count int) (string, []string) {
 
 func (i *interop) ScanList(cursor string, count int) (string, []string) {
 	return i.s().ScanList(cursor, count)
+}
+
+func toBytes(v any) []byte {
+	switch v := v.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	case int, int8, int16, int32, int64:
+		return strconv.AppendInt(nil, reflect.ValueOf(v).Int(), 10)
+	case uint, uint8, uint16, uint32, uint64, uintptr:
+		return strconv.AppendUint(nil, reflect.ValueOf(v).Uint(), 10)
+	case float32, float64:
+		return strconv.AppendFloat(nil, reflect.ValueOf(v).Float(), 'f', -1, 64)
+	default:
+		return fmt.Append(nil, v)
+	}
 }

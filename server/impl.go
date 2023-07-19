@@ -36,7 +36,7 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	})
 }
 
-func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Future, error) {
+func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte) ([][]byte, future.Future, error) {
 	if key == "" {
 		return nil, 0, fmt.Errorf("empty key")
 	}
@@ -49,6 +49,9 @@ func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Fu
 	for i := 0; i < len(data); i++ {
 		if len(data[i]) == 0 {
 			return nil, 0, fmt.Errorf("can't append empty data")
+		}
+		if int(dpLen) > len(data[i]) {
+			return nil, 0, fmt.Errorf("dpLen exceeds data length")
 		}
 
 		if len(ids) == len(data) {
@@ -63,11 +66,11 @@ func (s *Server) implAppend(key string, ids, data [][]byte) ([][]byte, future.Fu
 				}
 			}
 
-			var idx [16]byte // id(8b) + keyhash(4b) + random(1b) + shard(1b) + cmd(1b) + extra(1b)
+			var idx [16]byte // id(8b) + keyhash(4b) + random(1b) + dplen(1b) + cmd(1b) + extra(1b)
 			binary.BigEndian.PutUint64(idx[:], uint64(id))
 			copy(idx[8:12], kh[:])
 			rand.Read(idx[12:13])
-			idx[13] = 0 // reserved
+			idx[13] = dpLen
 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
 			idx[15] = 0 // extra
 

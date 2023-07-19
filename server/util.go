@@ -44,18 +44,18 @@ func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
 	return p
 }
 
-func parseAPPEND(K *wire.Command) (data, ids [][]byte, ttl int64, sync, wait bool) {
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync, wait bool) {
 	data = [][]byte{K.BytesRef(2)}
 	for i := 3; i < K.ArgCount(); i++ {
-		if K.StrEqFold(i, "ttl") {
-			ttl = K.Int64(i + 1)
-			i++
-		} else if K.StrEqFold(i, "and") {
+		if K.StrEqFold(i, "and") {
 			data = append(data, K.BytesRef(i+1))
 			i++
 		} else if K.StrEqFold(i, "setid") {
 			ids = K.Argv[i+1 : i+1+len(data)]
 			i += len(data)
+		} else if K.StrEqFold(i, "dp") {
+			dpLen = byte(K.Int64(i + 1))
+			i++
 		}
 
 		wait = wait || K.StrEqFold(i, "wait")

@@ -147,18 +147,16 @@ func (s *Server) walkL6Tables() {
 
 	defer func(start time.Time) {
 		finished = true
-		if ttl <= 0 {
-			time.AfterFunc(time.Minute, func() { s.walkL6Tables() })
-			return
-		}
+		// if ttl <= 0 {
+		// 	time.AfterFunc(time.Minute, func() { s.walkL6Tables() })
+		// 	return
+		// }
 
 		w := time.Hour
 		logrus.Infof("finish L6 walking in %v, next scheduled at %v",
 			time.Since(start), time.Now().UTC().Add(w).Format(time.Stamp))
 		time.AfterFunc(w, func() { s.walkL6Tables() })
 	}(time.Now())
-
-	logrus.Infof("start L6 walking")
 
 	tables, err := s.DB.SSTables()
 	if err != nil {
@@ -175,9 +173,17 @@ func (s *Server) walkL6Tables() {
 			s.Survey.L6WorkerProgress.Incr(int64(ii + 1))
 		}
 	}()
-	for ii, i = range rand.Perm(len(tables[6])) {
-		t := tables[6][i]
-		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", ii, len(tables[6])))
+
+	level := tables[6]
+	for i := 5; len(level) < 100 && i >= 0; i-- {
+		level = append(level, tables[i]...)
+		logrus.Infof("walkL6: add more sst from level %d: %d", i, len(tables[i]))
+	}
+	logrus.Infof("walkL6: start walking %d sst", len(level))
+
+	for ii, i = range rand.Perm(len(level)) {
+		t := level[i]
+		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", ii, len(level)))
 
 		if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
 			continue

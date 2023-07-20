@@ -204,8 +204,9 @@ func (s *Server) implLookupID(id []byte) (data []byte, key string, err error) {
 }
 
 const (
-	RangeDesc = 1
-	RangeRaw  = 4
+	RangeDesc  = 1
+	RangeAsync = 2
+	RangeRaw   = 4
 )
 
 func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
@@ -352,28 +353,26 @@ func (s *Server) ScanLookupIndex(cursor string, count int) (nextCursor string, k
 	return
 }
 
-func (s *Server) ScanList(cursor string, count int) (nextCursor string, keys []string) {
+func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []string) {
 	iter := newPrefixIter(s.DB, []byte("l"))
 	defer iter.Close()
 
-	cPrefix := kkp(cursor)
 	var tmp []byte
-	for iter.SeekGE(cPrefix); iter.Valid(); {
+	for iter.SeekGE(kkp(cursor)); iter.Valid(); {
 		k := iter.Key()
 		k = k[:bytes.IndexByte(k, 0)]
 		keys = append(keys, string(k[1:]))
 
-		if len(keys) == count {
-			if iter.Next() {
-				x := iter.Key()
-				nextCursor = string(x[:bytes.IndexByte(x, 0)][1:])
-			}
+		if len(keys) == count+1 {
+			nextCursor = keys[count]
+			keys = keys[:count]
 			break
 		}
 
 		tmp = append(append(tmp[:0], k...), 1)
 		iter.SeekGE(tmp)
 	}
+
 	return
 }
 

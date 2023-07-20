@@ -106,9 +106,9 @@ func TestAppend(t *testing.T) {
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
 		if rand.Intn(2) == 1 {
-			s2.Interop.Append(true, "a", 0, fmt.Sprintf("%d", count))
+			s2.Interop.AppendEffect("a", 0, fmt.Sprintf("%d", count))
 		} else {
-			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "WAIT").Err())
+			s2pkg.PanicErr(rdb1.Do(ctx, "APPENDEFFECT", "a", count).Err())
 		}
 	}
 
@@ -298,12 +298,12 @@ func TestWatermark(t *testing.T) {
 		if i%2 == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i, "WAIT").Err())
+		s2pkg.PanicErr(r.Do(ctx, "APPENDEFFECT", "a", i).Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
 	for i := 0; i < 5; i++ {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i, "WAIT").Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPENDEFFECT", "b", i).Err())
 	}
 
 	doRange(rdb2, "b", "recent", -4)
@@ -320,15 +320,17 @@ func TestWatermark(t *testing.T) {
 		t.Fatal(data)
 	}
 
-	id1 := rdb2.Do(ctx, "APPEND", "c", 0, "AND", 1, "WAIT").Val().([]any)[1].(string)
+	id1 := rdb2.Do(ctx, "APPENDEFFECT", "c", 0, "AND", 1).Val().([]any)[1].(string)
 
 	for i := 2; i <= 5; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "c", i, "WAIT").Err())
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPENDEFFECT", "c", i).Err())
 	}
 	data = doRange(rdb1, "c", id1, 3) // returns 1, 2, 3
 	if len(data) != 3 || string(data[2].Data) != "3" {
 		t.Fatal(data)
 	}
+
+	fmt.Println(s1.Interop.Scan("", 100, false))
 }
 
 // func TestDistinct(t *testing.T) {
@@ -604,8 +606,6 @@ func TestHashSet(t *testing.T) {
 	for _, l := range bb {
 		fmt.Println(string(l))
 	}
-
-	fmt.Println(s1.Interop.ScanHash("", 100))
 }
 
 var staticLZ4 = []string{

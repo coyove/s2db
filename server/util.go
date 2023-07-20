@@ -44,7 +44,7 @@ func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
 	return p
 }
 
-func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync, wait bool) {
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync bool) {
 	data = [][]byte{K.BytesRef(2)}
 	for i := 3; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "and") {
@@ -58,24 +58,27 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync, wait bo
 			i++
 		}
 
-		wait = wait || K.StrEqFold(i, "wait")
 		sync = sync || K.StrEqFold(i, "sync")
 	}
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, desc, raw bool, flag int) {
+func parseSELECT(K *wire.Command) (n int, desc, raw, async bool, flag int) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
 		desc = desc || K.StrEqFold(i, "desc")
 		raw = raw || K.StrEqFold(i, "raw")
+		async = async || K.StrEqFold(i, "async")
 	}
 	if desc {
 		flag |= RangeDesc
 	}
 	if raw {
 		flag |= RangeRaw
+	}
+	if async {
+		flag |= RangeAsync
 	}
 	return
 }
@@ -110,7 +113,7 @@ func parseHGETALL(K *wire.Command) (noCompress, ts, keysOnly bool, match []byte)
 	return
 }
 
-func parseSCAN(K *wire.Command) (hash, index bool, count int) {
+func parseSCAN(K *wire.Command) (hash, index, local bool, count int) {
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "count") {
 			count = K.Int(i + 1)
@@ -118,6 +121,7 @@ func parseSCAN(K *wire.Command) (hash, index bool, count int) {
 		} else {
 			index = index || K.StrEqFold(i, "index")
 			hash = hash || K.StrEqFold(i, "hash")
+			local = local || K.StrEqFold(i, "local")
 		}
 	}
 	if count > 65536 {

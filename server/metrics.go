@@ -45,7 +45,7 @@ type ServerSurvey struct {
 	PeerTimeout      s2.Survey `metrics:"qps"`
 	HashMerger       s2.Survey
 	HashSyncer       s2.Survey
-	HashSyncOnce     s2.Survey `metrics:"mean"`
+	AsyncOnce        s2.Survey `metrics:"mean"`
 	KeyHashRatio     s2.Survey `metrics:"mean"`
 	L6TTLDeletes     s2.Survey
 	L6DedupDeletes   s2.Survey `metrics:"mean"`

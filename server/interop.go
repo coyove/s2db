@@ -15,7 +15,15 @@ type interop struct{}
 
 func (i *interop) s() *Server { return (*Server)(unsafe.Pointer(i)) }
 
-func (i *interop) Append(wait bool, key string, dpLen byte, data ...any) ([][]byte, error) {
+func (i *interop) Append(key string, dpLen byte, data ...any) ([][]byte, error) {
+	return i.append(false, key, dpLen, data...)
+}
+
+func (i *interop) AppendEffect(key string, dpLen byte, data ...any) ([][]byte, error) {
+	return i.append(true, key, dpLen, data...)
+}
+
+func (i *interop) append(wait bool, key string, dpLen byte, data ...any) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "APPEND", out, nil)
 
@@ -80,16 +88,13 @@ func (i *interop) HGetAll(key string, match string) ([][]byte, error) {
 	return out.Val().([][]byte), nil
 }
 
-func (i *interop) ScanHash(cursor string, count int) (string, []string) {
-	return i.s().ScanHash(cursor, count)
-}
+func (i *interop) Scan(cursor string, count int, local bool) (string, []string) {
+	out := &wire.DummySink{}
+	defer i.s().recoverLogger(time.Now(), "SCAN", out, nil)
 
-func (i *interop) ScanLookupIndex(cursor string, count int) (string, []string) {
-	return i.s().ScanLookupIndex(cursor, count)
-}
-
-func (i *interop) ScanList(cursor string, count int) (string, []string) {
-	return i.s().ScanList(cursor, count)
+	i.s().execScan(out, cursor, count, local)
+	res := out.Val().([]any)
+	return res[0].(string), res[1].([]string)
 }
 
 func toBytes(v any) []byte {

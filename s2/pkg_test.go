@@ -18,6 +18,10 @@ import (
 	"github.com/coyove/sdss/future"
 )
 
+func TestRetention(t *testing.T) {
+	fmt.Println(ParseRetentionTable("a:1d,bb:+12,aa:2d"))
+}
+
 func TestNZ(t *testing.T) {
 	test := func(a []byte) {
 		e := NZEncode(nil, a)

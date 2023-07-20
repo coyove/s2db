@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +54,7 @@ type Server struct {
 	rdbCache     *s2.LRUCache[string, *redis.Client]
 	fillCache    *s2.LRUShard[struct{}]
 	wmCache      *s2.LRUShard[[16]byte]
-	hashSyncOnce s2.KeyLock
+	asyncOnce    s2.KeyLock
 	errThrot     s2.ErrorThrottler
 	dbFile       *os.File
 
@@ -340,9 +341,9 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	}
 
 	switch cmd {
-	case "APPEND": // key data_0 [WAIT] [TTL seconds] [[AND data_1] ...] [SETID ...]
-		data, ids, dpLen, sync, wait := parseAPPEND(K)
-		return s.execAppend(w, key, dpLen, ids, data, sync, wait)
+	case "APPEND", "APPENDEFFECT": // key data_0 [DP dp_len] [[AND data_1] ...] [SETID ...]
+		data, ids, dpLen, sync := parseAPPEND(K)
+		return s.execAppend(w, key, dpLen, ids, data, sync, cmd == "APPENDEFFECT")
 	case "PSELECT": // key raw_start count flag lowest key_hash => [ID 0, DATA 0, ...]
 		start, flag, okh := K.BytesRef(2), K.Int(4), s2.KeyHashUnpack(K.BytesRef(6))
 		wm, wmok := s.wmCache.Get16(s2.HashStr128(key))
@@ -371,7 +372,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulks(a)
 	case "SELECT": // key start count [ASC|DESC] [DISTINCT] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, desc, _, flag := parseSELECT(K)
+		n, desc, _, _, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), desc)
 		return s.execSelect(w, key, start, n, flag)
 	case "PLOOKUP":
@@ -387,14 +388,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulk(data)
 	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
-		hash, index, count := parseSCAN(K)
+		hash, index, local, count := parseSCAN(K)
 		if hash {
 			return w.WriteBulkBulks(s.ScanHash(K.StrRef(1), count))
 		}
 		if index {
 			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
-		return w.WriteBulkBulks(s.ScanList(K.StrRef(1), count))
+		return s.execScan(w, K.StrRef(1), count, local)
 	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]] [SETID ...]
 		kvs, ids, sync, wait := parseHSET(K)
 		return s.execHSet(w, key, ids, kvs, sync, wait)
@@ -574,36 +575,81 @@ func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, 
 	}
 
 	origData := append([]s2.Pair{}, data...)
+	merge := func(async bool) error {
+		var lowest []byte
+		if flag&RangeDesc > 0 && len(data) > 0 && len(data) == n {
+			lowest = data[len(data)-1].ID
+		}
+		kh := s2.KeyHashPack(data)
+		s.Survey.KeyHashRatio.Incr(int64(len(kh) * 1000 / (len(data)*8 + 1)))
+		_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
+			func() redis.Cmder {
+				return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest, kh)
+			}, func(cmd redis.Cmder) bool {
+				for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
+					_ = v[i][15]
+					data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
+				}
+				return true
+			})
 
-	var lowest []byte
-	if flag&RangeDesc > 0 && len(data) > 0 && len(data) == n {
-		lowest = data[len(data)-1].ID
+		desc := flag&RangeDesc > 0
+		data = sortPairs(data, !desc)
+		if len(data) > n {
+			data = data[:n]
+		}
+		s.setMissing(key, origData, data,
+			// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
+			success == s.OtherPeersCount(),
+			// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
+			*(*string)(unsafe.Pointer(&start)) == minCursor && !desc,
+			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
+			len(data) < n && desc,
+		)
+		if async {
+			return nil
+		}
+		return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
 	}
-	kh := s2.KeyHashPack(data)
-	s.Survey.KeyHashRatio.Incr(int64(len(kh) * 1000 / (len(data)*8 + 1)))
-	_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
-		func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, flag, lowest, kh)
-		}, func(cmd redis.Cmder) bool {
-			for i, v := 0, cmd.(*redis.StringSliceCmd).Val(); i < len(v); i += 2 {
-				_ = v[i][15]
-				data = append(data, s2.Pair{ID: []byte(v[i]), Data: []byte(v[i+1])})
+
+	if flag&RangeAsync > 0 {
+		if s.asyncOnce.Lock(key) {
+			s.Survey.AsyncOnce.Incr(s.asyncOnce.Count())
+			go func() {
+				defer s.asyncOnce.Unlock(key)
+				merge(true)
+			}()
+		}
+		return s.convertPairs(w, origData, origN, true)
+	}
+	return merge(false)
+}
+
+func (s *Server) execScan(w wire.WriterImpl, cursor string, count int, local bool) error {
+	next, res := s.Scan(cursor, count)
+	if !local && s.HasOtherPeers() {
+		s.ForeachPeerSendCmd(SendCmdOptions{},
+			func() redis.Cmder {
+				return redis.NewCmd(context.TODO(), "SCAN", cursor, "COUNT", count, "LOCAL")
+			}, func(cmd redis.Cmder) bool {
+				v := cmd.(*redis.Cmd).Val().([]any)
+				for _, el := range v[1].([]any) {
+					if el.(string) <= next || next == "" {
+						res = append(res, el.(string))
+					}
+				}
+				return true
+			})
+		sort.Strings(res)
+		for i := len(res) - 1; i >= 1; i-- {
+			if res[i] == res[i-1] {
+				res = append(res[:i], res[i+1:]...)
 			}
-			return true
-		})
-
-	desc := flag&RangeDesc > 0
-	data = sortPairs(data, !desc)
-	if len(data) > n {
-		data = data[:n]
+		}
+		if len(res) >= count+1 {
+			next = res[count]
+			res = res[:count]
+		}
 	}
-	s.setMissing(key, origData, data,
-		// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
-		success == s.OtherPeersCount(),
-		// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
-		*(*string)(unsafe.Pointer(&start)) == minCursor && !desc,
-		// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
-		len(data) < n && desc,
-	)
-	return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
+	return w.WriteBulkBulks(next, res)
 }

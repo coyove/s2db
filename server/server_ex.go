@@ -43,8 +43,9 @@ var (
 		"HGETALL":  true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND": true,
-		"HSET":   true,
+		"APPEND":       true,
+		"APPENDEFFECT": true,
+		"HSET":         true,
 	}
 
 	//go:embed index.html
@@ -95,7 +96,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 			fmt.Sprintf("hll_size_mb:%.2f", float64(HDisk)/1024/1024),
 			fmt.Sprintf("fill_cache:%v", s.fillCache.Len()),
 			fmt.Sprintf("wm_cache:%v", s.wmCache.Len()),
-			fmt.Sprintf("hash_sync:%v", s.hashSyncOnce.Count()),
+			fmt.Sprintf("hash_sync:%v", s.asyncOnce.Count()),
 			"")
 	}
 	if section == "" || strings.EqualFold(section, "peers") {
@@ -403,10 +404,10 @@ func (s *Server) syncHashmap(key string, sync bool) error {
 	if sync {
 		return work()
 	}
-	if s.hashSyncOnce.Lock(key) {
-		s.Survey.HashSyncOnce.Incr(s.hashSyncOnce.Count())
+	if s.asyncOnce.Lock(key) {
+		s.Survey.AsyncOnce.Incr(s.asyncOnce.Count())
 		go func() {
-			defer s.hashSyncOnce.Unlock(key)
+			defer s.asyncOnce.Unlock(key)
 			if err := work(); err != nil {
 				logrus.Errorf("hashmap sync error: %v", err)
 			}

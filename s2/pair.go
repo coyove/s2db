@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/coyove/sdss/future"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -46,6 +47,18 @@ func (p Pair) IDHex() []byte {
 	k0 := make([]byte, len(k)*2)
 	hex.Encode(k0, k)
 	return k0
+}
+
+func (p Pair) DistinctPrefix() []byte {
+	dpLen := p.ID[13]
+	if ok := dpLen > 0 && p.Cmd() == PairCmdAppend; !ok {
+		return nil
+	}
+	if int(dpLen) > len(p.Data) {
+		logrus.Errorf("fatal distinct prefix: %v %q", p.ID, p.Data)
+		return nil
+	}
+	return p.Data[:dpLen]
 }
 
 func (p Pair) UnixNano() int64 {

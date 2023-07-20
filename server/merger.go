@@ -365,6 +365,13 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 	var curCMKey []byte
 	for ik, iv := iter.Last(); ik != nil; ik, iv = iter.Prev() {
 		k := ik.UserKey
+		if k[0] < 'l' {
+			break
+		}
+		if k[0] >= 'm' {
+			continue
+		}
+
 		id := k[bytes.IndexByte(k, 0)+1:]
 
 		cookie, ok := s2.Convert16BToFuture(id).Cookie()
@@ -383,21 +390,12 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		if len(iv) == 0 || len(k) == 0 {
 			continue
 		}
-		if k[0] < 'l' {
-			break
-		}
-		if k[0] >= 'm' {
-			continue
-		}
 
-		if ok := id[13] > 0 && (s2.Pair{ID: id}).Cmd() == s2.PairCmdAppend; !ok {
+		dp := s2.Pair{ID: id, Data: iv}.DistinctPrefix()
+		if dp == nil {
 			continue
 		}
-		if int(id[13]) > len(iv) {
-			log.Errorf("fatal: %v %d and %q", id, id[13], iv)
-			continue
-		}
-		dh := sha1.Sum(iv[:id[13]])
+		dh := sha1.Sum(dp)
 
 		key := k[1:bytes.IndexByte(k, 0)]
 		if *(*string)(unsafe.Pointer(&key)) != lastKey {

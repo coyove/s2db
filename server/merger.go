@@ -359,10 +359,27 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 	var lastCounter int
 	var globalCounter int
 	var globalDeletes int
+	var globalCMDeletes int
 
 	dedup := map[[sha1.Size]byte]struct{}{}
+	var curCMKey []byte
 	for ik, iv := iter.Last(); ik != nil; ik, iv = iter.Prev() {
 		k := ik.UserKey
+		id := k[bytes.IndexByte(k, 0)+1:]
+
+		cookie, ok := s2.Convert16BToFuture(id).Cookie()
+		if ok && cookie == consolidatedMark {
+			if len(curCMKey) > 0 {
+				// We are switching to the next block as 'curCMKey' changes.
+				// Note that 'curCMKey' is currently not empty, indicating all keys in this block have been dedup-ed,
+				// so 'curCMKey' itself can be deleted, which literally means this block is deleted.
+				tx.Delete(curCMKey, pebble.NoSync)
+				globalCMDeletes++
+			}
+			curCMKey = append(curCMKey[:0], k...)
+			globalCounter++
+			continue
+		}
 		if len(iv) == 0 || len(k) == 0 {
 			continue
 		}
@@ -373,7 +390,6 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 			continue
 		}
 
-		id := k[bytes.IndexByte(k, 0)+1:]
 		if ok := id[13] > 0 && (s2.Pair{ID: id}).Cmd() == s2.PairCmdAppend; !ok {
 			continue
 		}
@@ -398,6 +414,10 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 
 		if _, ok := dedup[dh]; !ok {
 			dedup[dh] = struct{}{}
+
+			// We are inside 'curCMKey' block and met a key that is not duplicated, which means this block
+			// will not be empty after dedup, thus clear 'curCMKey' to avoid deleting this block.
+			curCMKey = curCMKey[:0]
 			continue
 		}
 
@@ -415,9 +435,10 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 	tx.Set(makeSSTableDedupKey(uint64(t.FileNum)), s2.Uint64ToBytes(1), pebble.NoSync)
 
 	if globalCounter > 0 {
-		log.Debugf("dedup sst %d, purged %d out of %d", t.FileNum, globalDeletes, globalCounter)
+		log.Debugf("dedup sst %d, purged %d + %d out of %d", t.FileNum, globalDeletes, globalCMDeletes, globalCounter)
 		s.Survey.L6DedupBefore.Incr(int64(globalCounter))
 		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
+		s.Survey.L6DedupCMDeletes.Incr(int64(globalCMDeletes))
 	}
 	return tx.Commit(pebble.NoSync)
 }

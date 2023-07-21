@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"reflect"
 	"sort"
-	"strconv"
 
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/s2db/s2"
@@ -44,8 +43,9 @@ func sortPairs(p []s2.Pair, asc bool) []s2.Pair {
 	return p
 }
 
-func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync bool) {
+func parseAPPEND(K *wire.Command) (data, ids [][]byte, opts s2.AppendOptions) {
 	data = [][]byte{K.BytesRef(2)}
+	opts.NoSync = true
 	for i := 3; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "and") {
 			data = append(data, K.BytesRef(i+1))
@@ -54,31 +54,24 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, dpLen byte, sync bool) {
 			ids = K.Argv[i+1 : i+1+len(data)]
 			i += len(data)
 		} else if K.StrEqFold(i, "dp") {
-			dpLen = byte(K.Int64(i + 1))
+			opts.DPLen = byte(K.Int64(i + 1))
 			i++
+		} else if K.StrEqFold(i, "sync") {
+			opts.NoSync = false
 		}
-
-		sync = sync || K.StrEqFold(i, "sync")
+		opts.Effect = opts.Effect || K.StrEqFold(i, "effect")
+		opts.NoExpire = opts.NoExpire || K.StrEqFold(i, "noexp")
 	}
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, desc, raw, async bool, flag int) {
+func parseSELECT(K *wire.Command) (n int, flag s2.SelectOptions) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
-		desc = desc || K.StrEqFold(i, "desc")
-		raw = raw || K.StrEqFold(i, "raw")
-		async = async || K.StrEqFold(i, "async")
-	}
-	if desc {
-		flag |= RangeDesc
-	}
-	if raw {
-		flag |= RangeRaw
-	}
-	if async {
-		flag |= RangeAsync
+		flag.Desc = flag.Desc || K.StrEqFold(i, "desc")
+		flag.Raw = flag.Raw || K.StrEqFold(i, "raw")
+		flag.Async = flag.Async || K.StrEqFold(i, "async")
 	}
 	return
 }
@@ -113,14 +106,13 @@ func parseHGETALL(K *wire.Command) (noCompress, ts, keysOnly bool, match []byte)
 	return
 }
 
-func parseSCAN(K *wire.Command) (hash, index, local bool, count int) {
+func parseSCAN(K *wire.Command) (index, local bool, count int) {
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "count") {
 			count = K.Int(i + 1)
 			i++
 		} else {
 			index = index || K.StrEqFold(i, "index")
-			hash = hash || K.StrEqFold(i, "hash")
 			local = local || K.StrEqFold(i, "local")
 		}
 	}
@@ -144,16 +136,6 @@ func kkp(key string) (prefix []byte) {
 
 func makeHashmapKey(key string) (prefix []byte) {
 	prefix = append(append(make([]byte, 64)[:0], "h"...), key...)
-	return
-}
-
-func makeSSTableWMKey(id uint64) (prefix []byte) {
-	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "t"...), id, 10)
-	return
-}
-
-func makeSSTableDedupKey(id uint64) (prefix []byte) {
-	prefix = strconv.AppendUint(append(make([]byte, 64)[:0], "td"...), id, 10)
 	return
 }
 

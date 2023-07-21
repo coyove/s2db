@@ -36,7 +36,7 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	})
 }
 
-func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte) ([][]byte, future.Future, error) {
+func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte, noExpire bool) ([][]byte, future.Future, error) {
 	if key == "" {
 		return nil, 0, fmt.Errorf("empty key")
 	}
@@ -72,6 +72,9 @@ func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte) ([][]byt
 			rand.Read(idx[12:13])
 			idx[13] = dpLen
 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
+			if noExpire {
+				idx[14] |= s2.PairCmdAppendNoExpire
+			}
 			idx[15] = 0 // extra
 
 			k := s2.Bytes(idx[:])
@@ -203,13 +206,7 @@ func (s *Server) implLookupID(id []byte) (data []byte, key string, err error) {
 	return
 }
 
-const (
-	RangeDesc  = 1
-	RangeAsync = 2
-	RangeRaw   = 4
-)
-
-func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2.Pair, err error) {
+func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOptions) (data []s2.Pair, err error) {
 	bkPrefix := kkp(key)
 
 	c := newPrefixIter(s.DB, bkPrefix)
@@ -229,8 +226,7 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 		return old
 	})
 
-	desc := flag&RangeDesc > 0
-	if desc {
+	if opts.Desc {
 		// OLDER                            NEWER
 		//
 		//    blk 0   |     blk 1    |    blk 2
@@ -253,14 +249,13 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 	cm := map[future.Future]bool{}
 
 	ns := future.UnixNano()
-	rangeAll := flag&RangeRaw > 0
 	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
 		p := s2.Pair{
 			ID:   s2.Bytes(k),
 			Data: s2.Bytes(c.Value()),
 		}
-		if rangeAll {
+		if opts.Raw {
 			data = append(data, p)
 			goto NEXT
 		}
@@ -269,7 +264,7 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 			if v == consolidatedMark {
 				cm[p.Future()] = true
 			} else if v == eolMark {
-				if desc {
+				if opts.Desc {
 					break
 				}
 			} else {
@@ -277,7 +272,7 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 			}
 		} else {
 
-			if desc {
+			if opts.Desc {
 				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
 					data = append(data, p)
@@ -301,7 +296,7 @@ func (s *Server) implRange(key string, start []byte, n int, flag int) (data []s2
 			return nil, fmt.Errorf("range timed out")
 		}
 
-		moveIter(c, desc)
+		moveIter(c, opts.Desc)
 	}
 
 	if len(data) > n {

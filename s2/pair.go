@@ -2,6 +2,7 @@ package s2
 
 import (
 	"bytes"
+	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	PairCmdAppend = 1
-	PairCmdHSet   = 2
+	PairCmdAppend         = 1
+	PairCmdAppendNoExpire = 2
+	PairCmdHSet           = 2
 )
 
 type Pair struct {
@@ -51,7 +53,7 @@ func (p Pair) IDHex() []byte {
 
 func (p Pair) DistinctPrefix() []byte {
 	dpLen := p.ID[13]
-	if ok := dpLen > 0 && p.Cmd() == PairCmdAppend; !ok {
+	if ok := dpLen > 0 && p.Cmd()&PairCmdAppend > 0; !ok {
 		return nil
 	}
 	if int(dpLen) > len(p.Data) {
@@ -117,7 +119,7 @@ func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {
 	return t
 }
 
-func KeyHashPack(p []Pair) (x []byte) {
+func PackIDs(p []Pair) (x []byte) {
 	if len(p) == 0 {
 		return nil
 	}
@@ -131,24 +133,22 @@ func KeyHashPack(p []Pair) (x []byte) {
 	return
 }
 
-func KeyHashUnpack(x []byte) []uint64 {
+func UnpackIDs(x []byte) func(id []byte) bool {
 	if len(x) == 0 {
 		return nil
 	}
-	y := []uint64{binary.BigEndian.Uint64(x)}
+	ids := []uint64{binary.BigEndian.Uint64(x)}
 	x = x[8:]
 	for len(x) > 0 {
 		v, n := binary.Uvarint(x)
 		x = x[n:]
-		y = append(y, y[len(y)-1]+v)
+		ids = append(ids, ids[len(ids)-1]+v)
 	}
-	return y
-}
-
-func KeyHashContains(x []uint64, id []byte) bool {
-	y := binary.BigEndian.Uint64(id)
-	idx := sort.Search(len(x), func(i int) bool { return x[i] >= y })
-	return idx < len(x) && x[idx] == y
+	return func(id []byte) bool {
+		y := binary.BigEndian.Uint64(id)
+		idx := sort.Search(len(ids), func(i int) bool { return ids[i] >= y })
+		return idx < len(ids) && ids[idx] == y
+	}
 }
 
 func AllPairsConsolidated(p []Pair) bool {
@@ -172,4 +172,25 @@ func Convert16BToFuture(idx []byte) (f future.Future) {
 	_ = idx[15]
 	v := binary.BigEndian.Uint64(idx)
 	return future.Future(v)
+}
+
+func CreatePairDeduper() func([]Pair) []Pair {
+	dedup := map[[20]byte]future.Future{}
+	return func(p []Pair) (res []Pair) {
+		res = make([]Pair, 0, len(p))
+		for i := range p {
+			dpLen := int(p[i].ID[13])
+			if dpLen == 0 {
+				res = append(res, p[i])
+				continue
+			}
+			h := sha1.Sum(p[i].Data[:dpLen])
+			if p[i].Future() <= dedup[h] {
+				continue
+			}
+			dedup[h] = p[i].Future()
+			res = append(res, p[i])
+		}
+		return
+	}
 }

@@ -10,6 +10,7 @@ import (
 	"math"
 	"math/rand"
 	"os"
+	"strconv"
 	"time"
 	"unsafe"
 
@@ -215,14 +216,15 @@ func (s *Server) walkL6Tables() {
 			return
 		}
 
-		timestamp, err := s.GetInt64(makeSSTableWMKey(uint64(t.FileNum)))
+		tsKey := strconv.AppendUint([]byte("t"), uint64(t.FileNum), 10)
+		timestamp, err := s.GetInt64(tsKey)
 		if err != nil {
 			log.Errorf("failed to get stored timestamp: %v", err)
 			return
 		}
 
 		if ttl > 0 && timestamp < future.UnixNano()-ttl {
-			minTimestamp, deletes, err := s.purgeSSTable(log, buf, timestamp, t, ttl)
+			minTimestamp, deletes, err := s.purgeSSTable(log, tsKey, buf, timestamp, t, ttl)
 			if err != nil {
 				log.Errorf("[%d] purge: %v", t.FileNum, err)
 			} else {
@@ -251,7 +253,14 @@ func (s *Server) walkL6Tables() {
 	}
 }
 
-func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int64, t pebble.SSTableInfo, ttl int64) (int64, int, error) {
+func (s *Server) purgeSSTable(
+	log *logrus.Entry,
+	tsKey []byte,
+	buf []byte,
+	startTimestamp int64,
+	t pebble.SSTableInfo,
+	ttl int64) (int64, int, error) {
+
 	var wait, maxTx int
 	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
 	if wait == 0 || maxTx == 0 {
@@ -282,21 +291,25 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int6
 
 	for ik, _ := iter.First(); ik != nil; {
 		k := ik.UserKey
-		if bytes.Compare(k, []byte("l")) < 0 {
+		if k[0] < 'l' {
 			ik, _ = iter.Next()
 			continue
 		}
-		if bytes.Compare(k, []byte("m")) >= 0 {
+		if k[0] >= 'm' {
 			break
 		}
 
-		ts := int64(s2.Convert16BToFuture(k[bytes.IndexByte(k, 0)+1:]))
+		id := k[bytes.IndexByte(k, 0)+1:]
+		ts := int64(s2.Convert16BToFuture(id))
 		if ts <= startTimestamp {
 			ik, _ = iter.Next()
 			continue
 		}
 
 		if ts <= ddl {
+			if (s2.Pair{ID: id}).Cmd()&s2.PairCmdAppendNoExpire > 0 {
+				goto NOEXP
+			}
 			deletes++
 			tx.Delete(k, pebble.NoSync)
 			if tx.Count() >= uint32(maxTx) {
@@ -307,6 +320,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int6
 				time.Sleep(time.Duration(wait) * time.Millisecond)
 				tx = s.DB.NewBatch()
 			}
+		NOEXP:
 			ik, _ = iter.Next()
 		} else {
 			if ts < minTimestamp {
@@ -318,13 +332,14 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, startTimestamp int6
 		}
 	}
 
-	tx.Set(makeSSTableWMKey(uint64(t.FileNum)), s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
+	tx.Set(tsKey, s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
 
 	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
 }
 
 func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {
-	mark, err := s.GetInt64(makeSSTableDedupKey(uint64(t.FileNum)))
+	dedupMarkKey := strconv.AppendUint([]byte("td"), uint64(t.FileNum), 10)
+	mark, err := s.GetInt64(dedupMarkKey)
 	if err != nil {
 		return err
 	}
@@ -430,7 +445,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		}
 		globalDeletes++
 	}
-	tx.Set(makeSSTableDedupKey(uint64(t.FileNum)), s2.Uint64ToBytes(1), pebble.NoSync)
+	tx.Set(dedupMarkKey, s2.Uint64ToBytes(1), pebble.NoSync)
 
 	if globalCounter > 0 {
 		log.Debugf("dedup sst %d, purged %d + %d out of %d", t.FileNum, globalDeletes, globalCMDeletes, globalCounter)

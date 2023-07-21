@@ -1,9 +1,6 @@
 package server
 
 import (
-	"fmt"
-	"reflect"
-	"strconv"
 	"time"
 	"unsafe"
 
@@ -15,23 +12,19 @@ type interop struct{}
 
 func (i *interop) s() *Server { return (*Server)(unsafe.Pointer(i)) }
 
-func (i *interop) Append(key string, dpLen byte, data ...any) ([][]byte, error) {
-	return i.append(false, key, dpLen, data...)
-}
-
-func (i *interop) AppendEffect(key string, dpLen byte, data ...any) ([][]byte, error) {
-	return i.append(true, key, dpLen, data...)
-}
-
-func (i *interop) append(wait bool, key string, dpLen byte, data ...any) ([][]byte, error) {
+func (i *interop) Append(opts *s2.AppendOptions, key string, data ...any) ([][]byte, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "APPEND", out, nil)
 
+	if opts == nil {
+		opts = &s2.AppendOptions{}
+	}
+
 	v := make([][]byte, len(data))
 	for i := range data {
-		v[i] = toBytes(data[i])
+		v[i] = s2.ToBytes(data[i])
 	}
-	i.s().execAppend(out, key, dpLen, nil, v, true, wait)
+	i.s().execAppend(out, key, nil, v, *opts)
 
 	if err := out.Err(); err != nil {
 		return nil, err
@@ -39,12 +32,15 @@ func (i *interop) append(wait bool, key string, dpLen byte, data ...any) ([][]by
 	return hexDecodeBulks(out.Val().([][]byte)), nil
 }
 
-func (i *interop) Select(key string, start []byte, n int, flag int) ([]s2.Pair, error) {
+func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int) ([]s2.Pair, error) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "SELECT", out, nil)
 
-	desc := flag&RangeDesc > 0
-	i.s().execSelect(out, key, i.s().translateCursor(start, desc), n, flag)
+	if opts == nil {
+		opts = &s2.SelectOptions{}
+	}
+
+	i.s().execSelect(out, key, i.s().translateCursor(start, opts.Desc), n, *opts)
 	if err := out.Err(); err != nil {
 		return nil, err
 	}
@@ -95,21 +91,4 @@ func (i *interop) Scan(cursor string, count int, local bool) (string, []string) 
 	i.s().execScan(out, cursor, count, local)
 	res := out.Val().([]any)
 	return res[0].(string), res[1].([]string)
-}
-
-func toBytes(v any) []byte {
-	switch v := v.(type) {
-	case []byte:
-		return v
-	case string:
-		return []byte(v)
-	case int, int8, int16, int32, int64:
-		return strconv.AppendInt(nil, reflect.ValueOf(v).Int(), 10)
-	case uint, uint8, uint16, uint32, uint64, uintptr:
-		return strconv.AppendUint(nil, reflect.ValueOf(v).Uint(), 10)
-	case float32, float64:
-		return strconv.AppendFloat(nil, reflect.ValueOf(v).Float(), 'f', -1, 64)
-	default:
-		return fmt.Append(nil, v)
-	}
 }

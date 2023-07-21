@@ -7,6 +7,53 @@ import (
 	"strings"
 )
 
+type AppendOptions struct {
+	// Distinct prefix length.
+	DPLen byte
+
+	// Data will not be synced to other peers.
+	NoSync bool
+
+	// Wait for proper cause-effects.
+	Effect bool
+
+	// Data will not expire.
+	NoExpire bool
+}
+
+type SelectOptions struct {
+	// Select data in desc order.
+	Desc bool
+
+	// Select local data, merge peers asynchronously.
+	Async bool
+
+	// Select local data only, including special DB markers.
+	Raw bool
+}
+
+func (o SelectOptions) ToInt() (v int64) {
+	if o.Desc {
+		v |= 1
+	}
+	if o.Async {
+		v |= 2
+	}
+	if o.Raw {
+		v |= 4
+	}
+	return
+}
+
+func (o SelectOptions) FromInt(v int64) SelectOptions {
+	o.Desc = v&1 > 0
+	o.Async = v&2 > 0
+	o.Raw = v&4 > 0
+	return o
+}
+
+var SO_Desc = &SelectOptions{Desc: true}
+
 type RetentionConfig struct {
 	Prefix string
 	Value  int64

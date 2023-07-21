@@ -7,6 +7,7 @@ import (
 	"crypto/sha1"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"math"
@@ -405,4 +406,21 @@ func NZDecode(out, in []byte) []byte {
 		}
 	}
 	return out
+}
+
+func ToBytes(v any) []byte {
+	switch v := v.(type) {
+	case []byte:
+		return v
+	case string:
+		return []byte(v)
+	case int, int8, int16, int32, int64:
+		return strconv.AppendInt(nil, reflect.ValueOf(v).Int(), 10)
+	case uint, uint8, uint16, uint32, uint64, uintptr:
+		return strconv.AppendUint(nil, reflect.ValueOf(v).Uint(), 10)
+	case float32, float64:
+		return strconv.AppendFloat(nil, reflect.ValueOf(v).Float(), 'f', -1, 64)
+	default:
+		return fmt.Append(nil, v)
+	}
 }

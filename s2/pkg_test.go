@@ -532,10 +532,10 @@ func TestXor(t *testing.T) {
 		// v = rand.Uint64()
 		a = append(a, Pair{ID: Uint64ToBytes(v)})
 	}
-	x := KeyHashPack(a)
+	x := PackIDs(a)
 	fmt.Println(len(x))
 
-	y := KeyHashUnpack(x)
+	y := UnpackIDs(x)
 	for _, p := range a {
 		if !KeyHashContains(y, p.ID) {
 			t.Fatal(y)

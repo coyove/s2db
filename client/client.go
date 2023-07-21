@@ -36,26 +36,49 @@ func (a *Session) ShuffleServers() *Session {
 	return a
 }
 
-func (a *Session) Append(ctx context.Context, key string, dpLen byte, data any, more ...any) ([]string, error) {
-	return a.append(ctx, false, key, dpLen, data, more...)
-}
-
-func (a *Session) AppendEffect(ctx context.Context, key string, dpLen byte, data any, more ...any) ([]string, error) {
-	return a.append(ctx, true, key, dpLen, data, more...)
-}
-
-func (a *Session) append(ctx context.Context, wait bool, key string, dpLen byte, data any, more ...any) ([]string, error) {
-	args := []any{"APPEND", key, data, "SYNC", "DP", int(dpLen)}
-	if wait {
-		args[0] = "APPENDEFFECT"
+func (a *Session) AppendDistinct(ctx context.Context, opts *s2.AppendOptions, key string, prefix string, data any) (string, error) {
+	if opts == nil {
+		opts = &s2.AppendOptions{}
 	}
-	for _, d := range more {
-		args = append(args, "AND", d)
+	if len(prefix) > 255 {
+		return "", fmt.Errorf("distinct prefix %q exceeds 255 bytes", prefix)
+	}
+	opts.DPLen = byte(len(prefix))
+	res, err := a.Append(ctx, opts, key, append([]byte(prefix), s2.ToBytes(data)...))
+	if err != nil {
+		return "", err
+	}
+	return res[0], nil
+}
+
+func (a *Session) Append(ctx context.Context, opts *s2.AppendOptions, key string, data ...any) ([]string, error) {
+	if opts == nil {
+		opts = &s2.AppendOptions{}
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("can't append empty data")
+	}
+
+	args := []any{"APPEND", key, data[0]}
+	if !opts.NoSync {
+		args = append(args, "SYNC")
+	}
+	if opts.DPLen > 0 {
+		args = append(args, "DP", opts.DPLen)
+	}
+	if opts.Effect {
+		args = append(args, "EFFECT")
+	}
+	if opts.NoExpire {
+		args = append(args, "NOEXP")
+	}
+	for i := 1; i < len(data); i++ {
+		args = append(args, "AND", data[i])
 	}
 	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))
 }
 
-func (a *Session) Close() {
+func (a *Session) WaitEffect() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -74,19 +97,19 @@ func (a *Session) Close() {
 	future.Future(binary.BigEndian.Uint64(id)).Wait()
 }
 
-const (
-	S_DESC = 1  // select in desc order
-	S_ASC  = 2  // select in asc order
-	S_RAW  = 16 // select raw Pairs
-)
-
-func (a *Session) Select(ctx context.Context, key string, cursor string, n int, flag int) (p []s2.Pair, err error) {
+func (a *Session) Select(ctx context.Context, opts *s2.SelectOptions, key string, cursor string, n int) (p []s2.Pair, err error) {
+	if opts == nil {
+		opts = &s2.SelectOptions{}
+	}
 	args := []any{"SELECT", key, cursor, n}
-	if flag&S_DESC > 0 {
+	if opts.Desc {
 		args = append(args, "DESC")
 	}
-	if flag&S_RAW > 0 {
+	if opts.Raw {
 		args = append(args, "RAW")
+	}
+	if opts.Async {
+		args = append(args, "ASYNC")
 	}
 	cmd := redis.NewStringSliceCmd(ctx, args...)
 

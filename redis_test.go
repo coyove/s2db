@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/client"
+	"github.com/coyove/s2db/s2"
 	s2pkg "github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/server"
 	"github.com/coyove/sdss/future"
@@ -35,10 +36,10 @@ func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 }
 
 func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2pkg.Pair {
-	flag := 0
+	flag := s2.SelectOptions{}
 	if n < 0 {
 		n = -n
-		flag = flag | client.S_DESC
+		flag.Desc = true
 	}
 	all := false
 	for _, el := range args {
@@ -49,7 +50,7 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 	}
 
 	a := client.Begin(r)
-	p, err := a.Select(context.TODO(), key, start, n, flag)
+	p, err := a.Select(context.TODO(), &flag, key, start, n)
 	s2pkg.PanicErr(err)
 
 	if all {
@@ -106,9 +107,9 @@ func TestAppend(t *testing.T) {
 	count := 0
 	for start := time.Now(); count < 50 || time.Since(start).Seconds() < 5; count++ {
 		if rand.Intn(2) == 1 {
-			s2.Interop.AppendEffect("a", 0, fmt.Sprintf("%d", count))
+			s2.Interop.Append(&s2pkg.AppendOptions{Effect: true}, "a", fmt.Sprintf("%d", count))
 		} else {
-			s2pkg.PanicErr(rdb1.Do(ctx, "APPENDEFFECT", "a", count).Err())
+			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "EFFECT").Err())
 		}
 	}
 
@@ -187,7 +188,7 @@ func TestConsolidation(t *testing.T) {
 	data := doRange(rdb1, "a", "+inf", -10)
 	fmt.Println(data)
 
-	data, _ = s1.Interop.Select("a", []byte("+inf"), 10, server.RangeDesc)
+	data, _ = s1.Interop.Select(&s2pkg.SelectOptions{Desc: true}, "a", []byte("+inf"), 10)
 	for _, d := range data {
 		if d.Con {
 			t.Fatal(data)
@@ -298,12 +299,12 @@ func TestWatermark(t *testing.T) {
 		if i%2 == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPENDEFFECT", "a", i).Err())
+		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i, "EFFECT").Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
 	for i := 0; i < 5; i++ {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPENDEFFECT", "b", i).Err())
+		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i, "EFFECT").Err())
 	}
 
 	doRange(rdb2, "b", "recent", -4)
@@ -320,10 +321,10 @@ func TestWatermark(t *testing.T) {
 		t.Fatal(data)
 	}
 
-	id1 := rdb2.Do(ctx, "APPENDEFFECT", "c", 0, "AND", 1).Val().([]any)[1].(string)
+	id1 := rdb2.Do(ctx, "APPEND", "c", 0, "AND", 1, "EFFECT").Val().([]any)[1].(string)
 
 	for i := 2; i <= 5; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPENDEFFECT", "c", i).Err())
+		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "c", i, "EFFECT").Err())
 	}
 	data = doRange(rdb1, "c", id1, 3) // returns 1, 2, 3
 	if len(data) != 3 || string(data[2].Data) != "3" {
@@ -479,7 +480,7 @@ func TestFuzzy1(t *testing.T) {
 				defer wg.Done()
 				time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
 				a := client.Begin(rdb1, rdb2)
-				a.Append(ctx, "a", 0, i)
+				a.Append(ctx, nil, "a", i)
 				a.Close()
 			}(i*100 + j)
 		}

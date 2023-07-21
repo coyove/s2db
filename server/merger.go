@@ -143,7 +143,6 @@ func (s *Server) walkL6Tables() {
 		return
 	}
 
-	ttl := int64(s.Config.ListRetentionDays) * 86400 * 1e9
 	finished := false
 
 	defer func(start time.Time) {
@@ -212,59 +211,33 @@ func (s *Server) walkL6Tables() {
 		}
 
 		if err := s.dedupSSTable(log, buf, t); err != nil {
-			log.Errorf("failed to dedup sst: %v", err)
+			log.Errorf("[%d] failed to dedup sst: %v", t.FileNum, err)
 			return
 		}
 
-		tsKey := strconv.AppendUint([]byte("t"), uint64(t.FileNum), 10)
-		timestamp, err := s.GetInt64(tsKey)
-		if err != nil {
-			log.Errorf("failed to get stored timestamp: %v", err)
-			return
-		}
-
-		if ttl > 0 && timestamp < future.UnixNano()-ttl {
-			minTimestamp, deletes, err := s.purgeSSTable(log, tsKey, buf, timestamp, t, ttl)
-			if err != nil {
-				log.Errorf("[%d] purge: %v", t.FileNum, err)
-			} else {
-				if timestamp == 0 {
-					log.Debugf("[%d] new sst: %v", t.FileNum, minTimestamp)
-				} else if minTimestamp == math.MaxInt64 {
-					log.Debugf("[%d] sst all purged", t.FileNum)
-				} else {
-					log.Debugf("[%d] timestamp: %v -> %v (+%d)", t.FileNum, timestamp, minTimestamp, (minTimestamp-timestamp)/1e9)
-				}
-
-				kkpRev := func(prefix []byte) (key []byte) {
-					if bytes.HasPrefix(prefix, []byte("l")) {
-						return prefix[1:bytes.IndexByte(prefix, 0)]
-					}
-					return prefix
-				}
-
-				log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
-				s.Survey.L6TTLDeletes.Incr(int64(deletes))
-			}
-			time.Sleep(time.Second)
-		} else {
-			time.Sleep(time.Millisecond * 100)
+		if err := s.purgeSSTable(log, buf, t); err != nil {
+			log.Errorf("[%d] failed to ttl purge: %v", t.FileNum, err)
 		}
 	}
 }
 
-func (s *Server) purgeSSTable(
-	log *logrus.Entry,
-	tsKey []byte,
-	buf []byte,
-	startTimestamp int64,
-	t pebble.SSTableInfo,
-	ttl int64) (int64, int, error) {
+func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {
+	ttl := int64(s.Config.ListRetentionDays) * 86400 * 1e9
+	if ttl <= 0 {
+		time.Sleep(time.Millisecond * 100)
+		return nil
+	}
+
+	tsKey := strconv.AppendUint([]byte("t"), uint64(t.FileNum), 10)
+	startTimestamp, err := s.GetInt64(tsKey)
+	if err != nil {
+		return fmt.Errorf("failed to get stored timestamp: %v", err)
+	}
 
 	var wait, maxTx int
 	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
 	if wait == 0 || maxTx == 0 {
-		return 0, 0, fmt.Errorf("invalid config")
+		return fmt.Errorf("invalid config")
 	}
 
 	var minTimestamp int64 = math.MaxInt64
@@ -274,13 +247,13 @@ func (s *Server) purgeSSTable(
 
 	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
 	if err != nil {
-		return 0, 0, fmt.Errorf("read sst: %v", err)
+		return fmt.Errorf("read sst: %v", err)
 	}
 	defer rd.Close()
 
 	iter, err := rd.NewIter(nil, s2.IncBytes(t.Largest.UserKey))
 	if err != nil {
-		return 0, 0, fmt.Errorf("sst new iter: %v", err)
+		return fmt.Errorf("sst new iter: %v", err)
 	}
 	defer iter.Close()
 
@@ -314,7 +287,7 @@ func (s *Server) purgeSSTable(
 			tx.Delete(k, pebble.NoSync)
 			if tx.Count() >= uint32(maxTx) {
 				if err := tx.Commit(pebble.NoSync); err != nil {
-					return 0, 0, err
+					return err
 				}
 				tx.Close()
 				time.Sleep(time.Duration(wait) * time.Millisecond)
@@ -334,7 +307,25 @@ func (s *Server) purgeSSTable(
 
 	tx.Set(tsKey, s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
 
-	return minTimestamp, deletes, tx.Commit(pebble.NoSync)
+	if startTimestamp == 0 {
+		log.Infof("[%d] new sst: %v", t.FileNum, time.Unix(0, minTimestamp))
+	} else if minTimestamp == math.MaxInt64 {
+		log.Infof("[%d] sst all purged", t.FileNum)
+	} else {
+		log.Debugf("[%d] timestamp: %v -> %v", t.FileNum, time.Unix(0, startTimestamp), time.Unix(0, minTimestamp))
+	}
+
+	kkpRev := func(prefix []byte) (key []byte) {
+		if bytes.HasPrefix(prefix, []byte("l")) {
+			return prefix[1:bytes.IndexByte(prefix, 0)]
+		}
+		return prefix
+	}
+
+	log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+	s.Survey.L6TTLDeletes.Incr(int64(deletes))
+
+	return tx.Commit(pebble.NoSync)
 }
 
 func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {

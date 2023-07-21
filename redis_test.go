@@ -481,7 +481,7 @@ func TestFuzzy1(t *testing.T) {
 				time.Sleep(time.Duration(rand.Intn(1000)+500) * time.Millisecond)
 				a := client.Begin(rdb1, rdb2)
 				a.Append(ctx, nil, "a", i)
-				a.Close()
+				a.WaitEffect()
 			}(i*100 + j)
 		}
 		wg.Wait()

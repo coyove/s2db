@@ -34,10 +34,11 @@ type ServerSurvey struct {
 	SysWrite         s2.Survey
 	SysWriteP99Micro s2.P99SurveyMinute
 	SlowLogs         s2.Survey
+	Pipeline         s2.Survey
+	PipelineLat      s2.Survey `metrics:"mean"`
 	AppendSyncN      s2.Survey `metrics:"mean"`
 	HSetSyncN        s2.Survey `metrics:"mean"`
-	PeerOnMissingN   s2.Survey `metrics:"mean"`
-	PeerOnMissing    s2.Survey
+	PeerOnMissing    s2.Survey `metrics:"qps"`
 	PeerOnOK         s2.Survey `metrics:"qps"`
 	AllConsolidated  s2.Survey `metrics:"qps"`
 	SelectCacheHits  s2.Survey `metrics:"qps"`

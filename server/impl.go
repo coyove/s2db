@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
-	"strconv"
-	"time"
 	"unsafe"
 
 	"github.com/cockroachdb/pebble"
@@ -36,7 +34,7 @@ func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	})
 }
 
-func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte, noExpire bool) ([][]byte, future.Future, error) {
+func (s *Server) implAppend(key string, ids, data [][]byte, opts s2.AppendOptions) ([][]byte, future.Future, error) {
 	if key == "" {
 		return nil, 0, fmt.Errorf("empty key")
 	}
@@ -50,7 +48,7 @@ func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte, noExpire
 		if len(data[i]) == 0 {
 			return nil, 0, fmt.Errorf("can't append empty data")
 		}
-		if int(dpLen) > len(data[i]) {
+		if int(opts.DPLen) > len(data[i]) {
 			return nil, 0, fmt.Errorf("dpLen exceeds data length")
 		}
 
@@ -70,9 +68,9 @@ func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte, noExpire
 			binary.BigEndian.PutUint64(idx[:], uint64(id))
 			copy(idx[8:12], kh[:])
 			rand.Read(idx[12:13])
-			idx[13] = dpLen
+			idx[13] = opts.DPLen
 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdAppend
-			if noExpire {
+			if opts.NoExpire {
 				idx[14] |= s2.PairCmdAppendNoExpire
 			}
 			idx[15] = 0 // extra
@@ -83,7 +81,7 @@ func (s *Server) implAppend(key string, dpLen byte, ids, data [][]byte, noExpire
 		}
 	}
 
-	if _, err := s.rawSet(key, p, nil); err != nil {
+	if err := s.dbAppend(key, p, nil, opts.Defer); err != nil {
 		return nil, 0, err
 	}
 
@@ -140,49 +138,13 @@ func (s *Server) setMissing(key string, before, after []s2.Pair,
 		panic("test: no set missing")
 	}
 
-	start := time.Now()
-
-	count, err := s.rawSet(key, missing, func(tx *pebble.Batch) {
+	s.dbAppend(key, missing, func(tx *pebble.Batch) {
 		if consolidate {
 			con(tx)
 		}
-	})
-	s.Survey.PeerOnMissing.Incr(time.Since(start).Milliseconds())
-	if err != nil {
-		logrus.Errorf("setMissing: %v", err)
-		return err
-	}
-	s.Survey.PeerOnMissingN.Incr(int64(count))
+	}, true)
+	s.Survey.PeerOnMissing.Incr(1)
 	return nil
-}
-
-func (s *Server) rawSet(key string, data []s2.Pair, f func(*pebble.Batch)) (int, error) {
-	bkPrefix := kkp(key)
-
-	ck := s2.HashStr128(key)
-	tx := s.DB.NewBatch()
-	defer tx.Close()
-
-	for _, kv := range data {
-		if _, ok := s.fillCache.Get(kv.ID); ok {
-			continue
-		}
-		if err := tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync); err != nil {
-			return 0, err
-		}
-		s.fillCache.Add(kv.ID, struct{}{})
-		s.updateWatermarkCache(ck, kv.ID)
-	}
-
-	kh := sha1.Sum([]byte(key))
-	if err := tx.Set(append(append([]byte("z"), kh[:4]...), key...), nil, pebble.Sync); err != nil {
-		return 0, err
-	}
-
-	if f != nil {
-		f(tx)
-	}
-	return int(tx.Count()), tx.Commit(pebble.Sync)
 }
 
 func (s *Server) implLookupID(id []byte) (data []byte, key string, err error) {
@@ -371,141 +333,225 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	return
 }
 
-func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Future, error) {
-	if key == "" {
-		return nil, 0, fmt.Errorf("empty key")
-	}
-	if len(kvs) == 0 {
-		return nil, 0, nil
-	}
+// func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Future, error) {
+// 	if key == "" {
+// 		return nil, 0, fmt.Errorf("empty key")
+// 	}
+// 	if len(kvs) == 0 {
+// 		return nil, 0, nil
+// 	}
+//
+// 	kh := sha1.Sum([]byte(key))
+//
+// 	var maxID future.Future
+// 	var kk [][]byte
+// 	m := map[string]hashmapData{}
+// 	for i := 0; i < len(kvs); i += 2 {
+// 		k := *(*string)(unsafe.Pointer(&kvs[i]))
+// 		v := kvs[i+1]
+// 		if len(k) == 0 || len(v) == 0 {
+// 			return nil, 0, fmt.Errorf("hashmap: member and value can't be empty")
+// 		}
+// 		if len(ids) > 0 {
+// 			id := ids[i/2]
+// 			maxID = s2.Convert16BToFuture(id)
+// 			kk = append(kk, id)
+// 		} else {
+// 			maxID = future.Get(s.Channel)
+// 			idx := s2.ConvertFutureTo16B(maxID)
+// 			copy(idx[8:12], kh[:])
+// 			rand.Read(idx[12:13])
+// 			idx[13] = 0 // reserved
+// 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdHSet
+// 			idx[15] = 0 // extra
+// 			kk = append(kk, idx[:])
+// 		}
+// 		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
+// 	}
+//
+// 	if err := s.DB.Merge(makeHashmapKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
+// 		return nil, 0, err
+// 	}
+// 	return kk, maxID, nil
+// }
+//
+// func (s *Server) implHGet(key string, member []byte, tsOnly bool) (res []byte, ts int64, err error) {
+// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
+// 	if err != nil {
+// 		if err == pebble.ErrNotFound {
+// 			return nil, 0, nil
+// 		}
+// 		return nil, 0, err
+// 	}
+// 	defer rd.Close()
+//
+// 	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
+// 		if bytes.Equal(d.key, member) {
+// 			future.Future(d.ts).Wait()
+// 			if !tsOnly {
+// 				res = d.clone().data
+// 			}
+// 			ts = d.ts
+// 			return false
+// 		}
+// 		return true
+// 	}); err != nil {
+// 		return nil, 0, err
+// 	}
+// 	return
+// }
+//
+// func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
+// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
+// 	if err != nil {
+// 		if err == pebble.ErrNotFound {
+// 			return nil, nil
+// 		}
+// 		return nil, err
+// 	}
+// 	defer rd.Close()
+//
+// 	var max int64
+// 	var mErr error
+// 	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
+// 		if matched := false; matchValue != nil {
+// 			matched, mErr = s2.GlobBytes(matchValue, d.data)
+// 			if err != nil {
+// 				return true
+// 			}
+// 			if !matched {
+// 				return true
+// 			}
+// 		}
+// 		if d.ts > max {
+// 			max = d.ts
+// 		}
+// 		if inclKey {
+// 			res = append(res, s2.Bytes(d.key))
+// 		}
+// 		if inclTime {
+// 			res = append(res, strconv.AppendInt(nil, d.ts/1e6, 10))
+// 		}
+// 		if inclValue {
+// 			res = append(res, s2.Bytes(d.data))
+// 		}
+// 		return true
+// 	}); err != nil {
+// 		return nil, err
+// 	}
+// 	if mErr != nil {
+// 		return nil, mErr
+// 	}
+//
+// 	future.Future(max).Wait()
+// 	return
+// }
+//
+// func (s *Server) implHLen(key string) (count int, err error) {
+// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
+// 	if err != nil {
+// 		if err == pebble.ErrNotFound {
+// 			return 0, nil
+// 		}
+// 		return 0, err
+// 	}
+// 	defer rd.Close()
+// 	count = int(binary.BigEndian.Uint32(buf[1:]))
+// 	return
+// }
+//
+// func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
+// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
+// 	if err == pebble.ErrNotFound {
+// 		// Pass, calc sha1 empty buffer
+// 	} else if err != nil {
+// 		return v, 0, err
+// 	} else {
+// 		defer rd.Close()
+// 	}
+// 	return sha1.Sum(buf), len(buf), nil
+// }
 
-	kh := sha1.Sum([]byte(key))
-
-	var maxID future.Future
-	var kk [][]byte
-	m := map[string]hashmapData{}
-	for i := 0; i < len(kvs); i += 2 {
-		k := *(*string)(unsafe.Pointer(&kvs[i]))
-		v := kvs[i+1]
-		if len(k) == 0 || len(v) == 0 {
-			return nil, 0, fmt.Errorf("hashmap: member and value can't be empty")
-		}
-		if len(ids) > 0 {
-			id := ids[i/2]
-			maxID = s2.Convert16BToFuture(id)
-			kk = append(kk, id)
-		} else {
-			maxID = future.Get(s.Channel)
-			idx := s2.ConvertFutureTo16B(maxID)
-			copy(idx[8:12], kh[:])
-			rand.Read(idx[12:13])
-			idx[13] = 0 // reserved
-			idx[14] = byte(s.Channel)<<4 | s2.PairCmdHSet
-			idx[15] = 0 // extra
-			kk = append(kk, idx[:])
-		}
-		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
-	}
-
-	if err := s.DB.Merge(makeHashmapKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
-		return nil, 0, err
-	}
-	return kk, maxID, nil
+type dbPayload struct {
+	key  string
+	data []s2.Pair
+	ext  func(*pebble.Batch)
+	out  chan error
 }
 
-func (s *Server) implHGet(key string, member []byte, tsOnly bool) (res []byte, ts int64, err error) {
-	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, 0, nil
-		}
-		return nil, 0, err
+func (s *Server) dbAppend(key string, data []s2.Pair, ext func(*pebble.Batch), deferred bool) error {
+	x := &dbPayload{
+		key:  key,
+		data: data,
+		ext:  ext,
 	}
-	defer rd.Close()
+	if !deferred {
+		x.out = make(chan error, 1)
+	}
+	s.pipeline <- x
+	if deferred {
+		return nil
+	}
+	err := <-x.out
+	return err
+}
 
-	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
-		if bytes.Equal(d.key, member) {
-			future.Future(d.ts).Wait()
-			if !tsOnly {
-				res = d.clone().data
+func (s *Server) pipelineWorker() {
+	var payloads []*dbPayload
+	for {
+		p, ok := <-s.pipeline
+		if !ok {
+			break
+		}
+
+		payloads = append(payloads[:0], p)
+		for len(payloads) < s.Config.PipelineLimit {
+			select {
+			case p, ok := <-s.pipeline:
+				if !ok {
+					goto EXIT
+				}
+				payloads = append(payloads, p)
+			default:
+				goto EXIT
 			}
-			ts = d.ts
-			return false
 		}
-		return true
-	}); err != nil {
-		return nil, 0, err
-	}
-	return
-}
+	EXIT:
 
-func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
-	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer rd.Close()
+		s.Survey.Pipeline.Incr(int64(len(payloads)))
+		start := future.UnixNano()
 
-	var max int64
-	var mErr error
-	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
-		if matched := false; matchValue != nil {
-			matched, mErr = s2.GlobBytes(matchValue, d.data)
-			if err != nil {
-				return true
+		tx := s.DB.NewBatch()
+		for _, p := range payloads {
+			bkPrefix := kkp(p.key)
+			ck := s2.HashStr128(p.key)
+
+			for _, kv := range p.data {
+				if _, ok := s.fillCache.Get(kv.ID); ok {
+					continue
+				}
+				tx.Set(append(bkPrefix, kv.ID...), kv.Data, pebble.Sync)
+				s.fillCache.Add(kv.ID, struct{}{})
+				s.updateWatermarkCache(ck, kv.ID)
 			}
-			if !matched {
-				return true
+
+			kh := sha1.Sum([]byte(p.key))
+			tx.Set(append(append([]byte("z"), kh[:4]...), p.key...), nil, pebble.Sync)
+
+			if p.ext != nil {
+				p.ext(tx)
 			}
 		}
-		if d.ts > max {
-			max = d.ts
+		err := tx.Commit(pebble.Sync)
+		for _, p := range payloads {
+			if p.out != nil {
+				p.out <- err
+			}
 		}
-		if inclKey {
-			res = append(res, s2.Bytes(d.key))
+		if err != nil {
+			logrus.Errorf("pipeline commit: %v", err)
 		}
-		if inclTime {
-			res = append(res, strconv.AppendInt(nil, d.ts/1e6, 10))
-		}
-		if inclValue {
-			res = append(res, s2.Bytes(d.data))
-		}
-		return true
-	}); err != nil {
-		return nil, err
+		s.Survey.PipelineLat.Incr((future.UnixNano() - start) / 1e6)
+		tx.Close()
 	}
-	if mErr != nil {
-		return nil, mErr
-	}
-
-	future.Future(max).Wait()
-	return
-}
-
-func (s *Server) implHLen(key string) (count int, err error) {
-	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-	if err != nil {
-		if err == pebble.ErrNotFound {
-			return 0, nil
-		}
-		return 0, err
-	}
-	defer rd.Close()
-	count = int(binary.BigEndian.Uint32(buf[1:]))
-	return
-}
-
-func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
-	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-	if err == pebble.ErrNotFound {
-		// Pass, calc sha1 empty buffer
-	} else if err != nil {
-		return v, 0, err
-	} else {
-		defer rd.Close()
-	}
-	return sha1.Sum(buf), len(buf), nil
 }

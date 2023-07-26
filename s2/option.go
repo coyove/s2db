@@ -14,11 +14,15 @@ type AppendOptions struct {
 	// Data will not be synced to other peers.
 	NoSync bool
 
-	// Wait for proper cause-effects.
+	// Wait for proper cause-effect.
 	Effect bool
 
 	// Data will not expire.
 	NoExpire bool
+
+	// The operation will be deferred and executed sometime in the future.
+	// Returned IDs do not indicate the success/effect of this operation.
+	Defer bool
 }
 
 type SelectOptions struct {
@@ -45,7 +49,7 @@ func (o SelectOptions) ToInt() (v int64) {
 	return
 }
 
-func (o SelectOptions) FromInt(v int64) SelectOptions {
+func ParseSelectOptions(v int64) (o SelectOptions) {
 	o.Desc = v&1 > 0
 	o.Async = v&2 > 0
 	o.Raw = v&4 > 0

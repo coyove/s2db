@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -58,6 +57,7 @@ type Server struct {
 	asyncOnce    s2.KeyLock
 	errThrot     s2.ErrorThrottler
 	dbFile       *os.File
+	pipeline     chan *dbPayload
 
 	TestFlags struct {
 		Fail         bool
@@ -98,8 +98,9 @@ func Open(dbPath string, channel int64) (s *Server, err error) {
 			MemTableSize: *pebbleMemtableSize << 20,
 			MaxOpenFiles: *pebbleMaxOpenFiles,
 		}).EnsureDefaults(),
-		Channel: channel,
-		dbFile:  dbFile,
+		Channel:  channel,
+		dbFile:   dbFile,
+		pipeline: make(chan *dbPayload, 1e5),
 	}
 	s.DBOptions.FS = &VFS{
 		FS:       s.DBOptions.FS,
@@ -140,6 +141,8 @@ func (s *Server) Close() (err error) {
 	s.Closed = true
 	s.ReadOnly = true
 	s.DBOptions.Cache.Unref()
+
+	close(s.pipeline)
 
 	err = errors.CombineErrors(err, filelock.Unlock(s.dbFile))
 	err = errors.CombineErrors(err, s.lnRESP.Close())
@@ -198,6 +201,9 @@ func (s *Server) Serve(addr string) (err error) {
 
 	go s.startCronjobs()
 	go s.httpServer()
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go s.pipelineWorker()
+	}
 
 	for {
 		conn, err := s.lnRESP.Accept()
@@ -343,7 +349,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		data, ids, opts := parseAPPEND(K)
 		return s.execAppend(w, key, ids, data, opts)
 	case "PSELECT": // key raw_start count flag desc_lowest packed_ids => [ID 0, DATA 0, ...]
-		start, flag, contains := K.BytesRef(2), s2.SelectOptions{}.FromInt(K.Int64(4)), s2.UnpackIDs(K.BytesRef(6))
+		start, flag, contains := K.BytesRef(2), s2.ParseSelectOptions(K.Int64(4)), s2.UnpackIDs(K.BytesRef(6))
 		largest, ok := s.wmCache.Get16(s2.HashStr128(key))
 		if descLowest := K.BytesRef(5); len(descLowest) == 16 {
 			if ok && bytes.Compare(largest[:], descLowest) <= 0 {
@@ -385,53 +391,12 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(data)
-	case "SCAN": // cursor [COUNT count] [INDEX] [HASH]
+	case "SCAN": // cursor [COUNT count] [INDEX] [LOCAL]
 		index, local, count := parseSCAN(K)
 		if index {
 			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
 		return s.execScan(w, K.StrRef(1), count, local)
-	case "HSET": // key member value [WAIT] [SET member_2 value_2 [SET ...]] [SETID ...]
-		kvs, ids, sync, wait := parseHSET(K)
-		return s.execHSet(w, key, ids, kvs, sync, wait)
-	case "PHGETALL": // key checksum
-		data, rd, err := s.DB.Get(makeHashmapKey(key))
-		if err == pebble.ErrNotFound {
-			return w.WriteBulk(nil)
-		}
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		defer rd.Close()
-		if v := sha1.Sum(data); bytes.Equal(v[:], K.BytesRef(2)) {
-			data = nil
-		}
-		return w.WriteBulk(data)
-	case "HSYNC":
-		if err := s.syncHashmap(key, true); err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteSimpleString("OK")
-	case "HLEN": // key
-		s.syncHashmap(key, false)
-		res, err := s.implHLen(key)
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		return w.WriteInt64(int64(res))
-	case "HGET", "HTIME": // key member
-		s.syncHashmap(key, false)
-		res, time, err := s.implHGet(key, K.BytesRef(2), cmd == "HTIME")
-		if err != nil {
-			return w.WriteError(err.Error())
-		}
-		if cmd == "HTIME" {
-			return w.WriteInt64(time / 1e6 / 10 * 10)
-		}
-		return w.WriteBulk(res)
-	case "HGETALL": // key [KEYSONLY] [MATCH match] [NOCOMPRESS] [TIMESTAMP]
-		noCompress, ts, keysOnly, match := parseHGETALL(K)
-		return s.execHGetAll(w, key, noCompress, ts, keysOnly, match)
 	case "WAITEFFECT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -489,19 +454,19 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 }
 
 func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, opts s2.AppendOptions) error {
-	ids, maxID, err := s.implAppend(key, opts.DPLen, ids, data, opts.NoExpire)
+	ids, maxID, err := s.implAppend(key, ids, data, opts)
 	if err != nil {
 		return w.WriteError(err.Error())
 	}
 	hexIds := hexEncodeBulks(ids)
 	if !opts.NoSync && s.HasOtherPeers() {
-		args := []any{"APPEND", key, s2.Bytes(data[0])}
+		args := []any{"APPEND", key, data[0]}
 		for i := 1; i < len(data); i++ {
-			args = append(args, "AND", s2.Bytes(data[i]))
+			args = append(args, "AND", data[i])
 		}
 		args = append(args, "SETID")
 		for _, id := range ids {
-			args = append(args, s2.Bytes(id))
+			args = append(args, id)
 		}
 		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
 			return redis.NewStringSliceCmd(context.TODO(), args...)
@@ -514,42 +479,42 @@ func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, o
 	return w.WriteBulks(hexIds)
 }
 
-func (s *Server) execHSet(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
-	ids, maxID, err := s.implHSet(key, kvs, ids)
-	if err != nil {
-		return w.WriteError(err.Error())
-	}
-	hexIds := hexEncodeBulks(ids)
-	if sync && s.HasOtherPeers() {
-		args := []any{"HSET", key, s2.Bytes(kvs[0]), s2.Bytes(kvs[1])}
-		for i := 2; i < len(kvs); i += 2 {
-			args = append(args, "SET", s2.Bytes(kvs[i]), s2.Bytes(kvs[i+1]))
-		}
-		args = append(args, "SETID")
-		args = append(args, bbany(ids)...)
-		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
-			return redis.NewStringSliceCmd(context.TODO(), args...)
-		}, nil)
-		s.Survey.HSetSyncN.Incr(int64(len(ids)))
-	}
-	if wait {
-		maxID.Wait()
-	}
-	return w.WriteBulks(hexIds)
-
-}
-
-func (s *Server) execHGetAll(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
-	s.syncHashmap(key, false)
-	res, err := s.implHGetAll(key, match, true, !keysOnly, ts)
-	if err != nil {
-		return w.WriteError(err.Error())
-	}
-	if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
-		return w.WriteBulk(s2.CompressBulks(res))
-	}
-	return w.WriteBulks(res)
-}
+// func (s *Server) execHSet(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
+// 	ids, maxID, err := s.implHSet(key, kvs, ids)
+// 	if err != nil {
+// 		return w.WriteError(err.Error())
+// 	}
+// 	hexIds := hexEncodeBulks(ids)
+// 	if sync && s.HasOtherPeers() {
+// 		args := []any{"HSET", key, s2.Bytes(kvs[0]), s2.Bytes(kvs[1])}
+// 		for i := 2; i < len(kvs); i += 2 {
+// 			args = append(args, "SET", s2.Bytes(kvs[i]), s2.Bytes(kvs[i+1]))
+// 		}
+// 		args = append(args, "SETID")
+// 		args = append(args, bbany(ids)...)
+// 		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
+// 			return redis.NewStringSliceCmd(context.TODO(), args...)
+// 		}, nil)
+// 		s.Survey.HSetSyncN.Incr(int64(len(ids)))
+// 	}
+// 	if wait {
+// 		maxID.Wait()
+// 	}
+// 	return w.WriteBulks(hexIds)
+//
+// }
+//
+// func (s *Server) execHGetAll(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
+// 	s.syncHashmap(key, false)
+// 	res, err := s.implHGetAll(key, match, true, !keysOnly, ts)
+// 	if err != nil {
+// 		return w.WriteError(err.Error())
+// 	}
+// 	if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
+// 		return w.WriteBulk(s2.CompressBulks(res))
+// 	}
+// 	return w.WriteBulks(res)
+// }
 
 func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, opts s2.SelectOptions) error {
 	origN := n

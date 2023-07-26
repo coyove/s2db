@@ -48,10 +48,12 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, opts s2.AppendOptions) {
 	opts.NoSync = true
 	for i := 3; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "and") {
-			data = append(data, K.BytesRef(i+1))
+			data = append(data, K.Bytes(i+1))
 			i++
 		} else if K.StrEqFold(i, "setid") {
-			ids = K.Argv[i+1 : i+1+len(data)]
+			for _, id := range K.Argv[i+1 : i+1+len(data)] {
+				ids = append(ids, s2.Bytes(id))
+			}
 			i += len(data)
 		} else if K.StrEqFold(i, "dp") {
 			opts.DPLen = byte(K.Int64(i + 1))
@@ -61,6 +63,7 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, opts s2.AppendOptions) {
 		}
 		opts.Effect = opts.Effect || K.StrEqFold(i, "effect")
 		opts.NoExpire = opts.NoExpire || K.StrEqFold(i, "noexp")
+		opts.Defer = opts.Defer || K.StrEqFold(i, "defer")
 	}
 	return
 }

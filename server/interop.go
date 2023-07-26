@@ -58,32 +58,6 @@ func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int
 	return res, nil
 }
 
-func (i *interop) HSet(wait bool, key string, kvs ...[]byte) ([][]byte, error) {
-	out := &wire.DummySink{}
-	defer i.s().recoverLogger(time.Now(), "HSET", out, nil)
-	i.s().execHSet(out, key, nil, kvs, true, wait)
-
-	if err := out.Err(); err != nil {
-		return nil, err
-	}
-	res := out.Val().([][]byte)
-	for i := range res {
-		res[i] = hexDecode(res[i])
-	}
-	return res, nil
-}
-
-func (i *interop) HGetAll(key string, match string) ([][]byte, error) {
-	out := &wire.DummySink{}
-	defer i.s().recoverLogger(time.Now(), "HGETALL", out, nil)
-
-	i.s().execHGetAll(out, key, true, false, false, []byte(match))
-	if err := out.Err(); err != nil {
-		return nil, err
-	}
-	return out.Val().([][]byte), nil
-}
-
 func (i *interop) Scan(cursor string, count int, local bool) (string, []string) {
 	out := &wire.DummySink{}
 	defer i.s().recoverLogger(time.Now(), "SCAN", out, nil)

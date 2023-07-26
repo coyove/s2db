@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	_ "embed"
 	"encoding/binary"
 	"encoding/json"
@@ -24,7 +23,6 @@ import (
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
-	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -159,15 +157,6 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		data = append(data, fmt.Sprintf("hash:%08x", id[8:12]))
 		data = append(data, fmt.Sprintf("key:%s", key))
 		data = append(data, fmt.Sprintf("data_size:%d", len(v)))
-		data = append(data, "")
-	}
-	if strings.HasPrefix(section, "#") {
-		count, _ := s.implHLen(section[1:])
-		hash, size, _ := s.hChecksum(section[1:])
-		data = append(data, "# hashmap "+section[1:])
-		data = append(data, fmt.Sprintf("size:%d", size))
-		data = append(data, fmt.Sprintf("count:%d", count))
-		data = append(data, fmt.Sprintf("hash:%x", hash))
 		data = append(data, "")
 	}
 	if strings.HasPrefix(section, "=") {
@@ -334,65 +323,65 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-func (s *Server) syncHashmap(key string, sync bool) error {
-	if !s.HasOtherPeers() {
-		return nil
-	}
-
-	work := func() error {
-		defer func(start time.Time) {
-			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
-		}(time.Now())
-
-		checksum, _, err := s.hChecksum(key)
-		if err != nil {
-			return err
-		}
-
-		var pres [][]byte
-		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
-			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
-		}, func(cmd redis.Cmder) bool {
-			p, _ := cmd.(*redis.StringCmd).Bytes()
-			pres = append(pres, p)
-			return true
-		})
-		if sync && success != s.OtherPeersCount() {
-			return fmt.Errorf("sync failed")
-		}
-
-		bkLive := makeHashmapKey(key)
-		tx := s.DB.NewBatch()
-		defer tx.Close()
-		for _, p := range pres {
-			if len(p) == 0 {
-				continue
-			}
-			if err := tx.Merge(bkLive, p, pebble.Sync); err != nil {
-				return err
-			}
-		}
-		if err := tx.Commit(pebble.Sync); err != nil {
-			return err
-		}
-		return nil
-	}
-
-	if sync {
-		return work()
-	}
-	if s.asyncOnce.Lock(key) {
-		s.Survey.AsyncOnce.Incr(s.asyncOnce.Count())
-		go func() {
-			defer s.asyncOnce.Unlock(key)
-			if err := work(); err != nil {
-				logrus.Errorf("hashmap sync error: %v", err)
-			}
-			time.Sleep(time.Duration(s.Config.HashmapSyncWait) * time.Millisecond)
-		}()
-	}
-	return nil
-}
+// func (s *Server) syncHashmap(key string, sync bool) error {
+// 	if !s.HasOtherPeers() {
+// 		return nil
+// 	}
+//
+// 	work := func() error {
+// 		defer func(start time.Time) {
+// 			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
+// 		}(time.Now())
+//
+// 		checksum, _, err := s.hChecksum(key)
+// 		if err != nil {
+// 			return err
+// 		}
+//
+// 		var pres [][]byte
+// 		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
+// 			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
+// 		}, func(cmd redis.Cmder) bool {
+// 			p, _ := cmd.(*redis.StringCmd).Bytes()
+// 			pres = append(pres, p)
+// 			return true
+// 		})
+// 		if sync && success != s.OtherPeersCount() {
+// 			return fmt.Errorf("sync failed")
+// 		}
+//
+// 		bkLive := makeHashmapKey(key)
+// 		tx := s.DB.NewBatch()
+// 		defer tx.Close()
+// 		for _, p := range pres {
+// 			if len(p) == 0 {
+// 				continue
+// 			}
+// 			if err := tx.Merge(bkLive, p, pebble.Sync); err != nil {
+// 				return err
+// 			}
+// 		}
+// 		if err := tx.Commit(pebble.Sync); err != nil {
+// 			return err
+// 		}
+// 		return nil
+// 	}
+//
+// 	if sync {
+// 		return work()
+// 	}
+// 	if s.asyncOnce.Lock(key) {
+// 		s.Survey.AsyncOnce.Incr(s.asyncOnce.Count())
+// 		go func() {
+// 			defer s.asyncOnce.Unlock(key)
+// 			if err := work(); err != nil {
+// 				logrus.Errorf("hashmap sync error: %v", err)
+// 			}
+// 			time.Sleep(time.Duration(s.Config.HashmapSyncWait) * time.Millisecond)
+// 		}()
+// 	}
+// 	return nil
+// }
 
 func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, all bool) (err error) {
 	if len(p) > max {

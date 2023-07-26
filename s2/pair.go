@@ -63,6 +63,13 @@ func (p Pair) DistinctPrefix() []byte {
 	return p.Data[:dpLen]
 }
 
+func (p Pair) DistinctData() []byte {
+	if dpLen := int(p.ID[13]); dpLen > 0 && dpLen <= len(p.Data) && p.Cmd()&PairCmdAppend > 0 {
+		return p.Data[dpLen:]
+	}
+	return p.Data
+}
+
 func (p Pair) UnixNano() int64 {
 	return int64(binary.BigEndian.Uint64(p.ID))
 }
@@ -135,7 +142,7 @@ func PackIDs(p []Pair) (x []byte) {
 
 func UnpackIDs(x []byte) func(id []byte) bool {
 	if len(x) == 0 {
-		return nil
+		return func([]byte) bool { return false }
 	}
 	ids := []uint64{binary.BigEndian.Uint64(x)}
 	x = x[8:]

@@ -18,7 +18,6 @@ import (
 
 const (
 	consolidatedMark = 1
-	eolMark          = 2
 	maxCursor        = "\x7f\xff\xff\xff\xcd\x0d\x28\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 	minCursor        = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 )
@@ -208,7 +207,7 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 		c.SeekGE(append(bkPrefix, start...))
 	}
 
-	cm := map[future.Future]bool{}
+	var cm []future.Future
 
 	ns := future.UnixNano()
 	for c.Valid() {
@@ -224,11 +223,7 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 
 		if v, ok := p.Future().Cookie(); ok {
 			if v == consolidatedMark {
-				cm[p.Future()] = true
-			} else if v == eolMark {
-				if opts.Desc {
-					break
-				}
+				cm = append(cm, p.Future())
 			} else {
 				return nil, fmt.Errorf("invalid mark: %x", v)
 			}
@@ -271,9 +266,25 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 		data = data[:n]
 	}
 
+	if opts.Desc {
+		for i := 0; i < len(cm)/2; i++ {
+			j := len(cm) - i - 1
+			cm[i], cm[j] = cm[j], cm[i]
+		}
+	} // now 'cm' is in asc order
+
+	if testFlag {
+		for i := 0; i < len(cm)-1; i++ {
+			if cm[i] >= cm[i+1] {
+				panic("test: cm failed")
+			}
+		}
+	}
+
 	for i, p := range data {
 		cid := p.Future().ToCookie(consolidatedMark)
-		if cm[cid] {
+		idx := sort.Search(len(cm), func(i int) bool { return cm[i] >= cid })
+		if idx < len(cm) && cm[idx] == cid {
 			data[i].Con = true
 		}
 	}

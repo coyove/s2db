@@ -72,6 +72,9 @@ func (a *Session) Append(ctx context.Context, opts *s2.AppendOptions, key string
 	if opts.NoExpire {
 		args = append(args, "NOEXP")
 	}
+	if opts.Defer {
+		args = append(args, "DEFER")
+	}
 	for i := 1; i < len(data); i++ {
 		args = append(args, "AND", data[i])
 	}

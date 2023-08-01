@@ -11,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/cockroachdb/pebble"
+	"github.com/coyove/s2db/s2"
 	"github.com/sirupsen/logrus"
 )
 
@@ -116,8 +117,8 @@ func (w *Writer) WriteError(s string) error {
 	if !strings.Contains(s, "NOAUTH") &&
 		!strings.Contains(s, "failed on purpose") &&
 		s != pebble.ErrClosed.Error() &&
-		s != ErrUnknownCommand.Error() &&
-		s != ErrServerReadonly.Error() {
+		s != s2.ErrUnknownCommand.Error() &&
+		s != s2.ErrServerReadonly.Error() {
 		logrus.Error("redis wire error: ", s)
 	}
 	s = strings.Replace(s, "\n", " ", -1)

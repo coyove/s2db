@@ -218,6 +218,7 @@ func TestConsolidation(t *testing.T) {
 	}
 
 	data = doRange(rdb2, "a", "0", 4)
+	time.Sleep(time.Second)           // consolidation is async-ed
 	data = doRange(rdb2, "a", "0", 4) // returns [[1]], [[2]], [[3]], 4
 	if !data[0].Con || !data[1].Con || !data[2].Con || data[3].Con {
 		t.Fatal(data)

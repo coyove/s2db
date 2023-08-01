@@ -2,25 +2,19 @@ package wire
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 	"unsafe"
+
+	"github.com/coyove/s2db/s2"
 )
 
 var (
 	ExpectNumber   = &ProtocolError{"Expect Number"}
 	ExpectNewLine  = &ProtocolError{"Expect Newline"}
 	ExpectTypeChar = &ProtocolError{"Expect TypeChar"}
-
-	ErrInvalidNumArg   = errors.New("too many arguments")
-	ErrInvalidBulkSize = errors.New("invalid bulk size")
-	ErrLineTooLong     = errors.New("line too long")
-	ErrUnknownCommand  = errors.New("unknown command")
-	ErrServerReadonly  = errors.New("server is readonly")
-	ErrNoAuth          = errors.New("NOAUTH")
 
 	ReadBufferInitSize = 1 << 16
 	MaxNumArg          = 20000
@@ -225,9 +219,9 @@ func (r *Parser) parseBinary() (*Command, error) {
 	case numArg == -1:
 		return nil, r.discardNewLine() // null array
 	case numArg < -1:
-		return nil, ErrInvalidNumArg
+		return nil, s2.ErrInvalidNumArg
 	case numArg > MaxNumArg:
-		return nil, ErrInvalidNumArg
+		return nil, s2.ErrInvalidNumArg
 	}
 	Argv := make([][]byte, 0, numArg)
 	for i := 0; i < numArg; i++ {
@@ -257,7 +251,7 @@ func (r *Parser) parseBinary() (*Command, error) {
 			Argv = append(Argv, r.buffer[r.parsePosition:(r.parsePosition+plen)])
 			r.parsePosition += plen
 		default:
-			return nil, ErrInvalidBulkSize
+			return nil, s2.ErrInvalidBulkSize
 		}
 		if e = r.discardNewLine(); e != nil {
 			return nil, e
@@ -278,7 +272,7 @@ func (r *Parser) parseTelnet() (*Command, error) {
 			break
 		}
 		if r.writeIndex > MaxTelnetLine {
-			return nil, ErrLineTooLong
+			return nil, s2.ErrLineTooLong
 		}
 	}
 	r.parsePosition = r.writeIndex // we don't support pipeline in telnet mode

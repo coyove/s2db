@@ -318,7 +318,7 @@ func (s *Server) httpServer() {
 
 func (s *Server) checkWritable() error {
 	if s.ReadOnly {
-		return wire.ErrServerReadonly
+		return s2.ErrServerReadonly
 	}
 	return nil
 }

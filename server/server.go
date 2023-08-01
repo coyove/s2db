@@ -249,7 +249,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 					auth = true
 					writer.WriteSimpleString("OK")
 				} else {
-					writer.WriteError(wire.ErrNoAuth.Error())
+					writer.WriteError(s2.ErrNoAuth.Error())
 				}
 				writer.Flush()
 				continue
@@ -412,7 +412,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteSimpleString("OK")
 	}
 
-	return w.WriteError(wire.ErrUnknownCommand.Error())
+	return w.WriteError(s2.ErrUnknownCommand.Error())
 }
 
 func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration)) {

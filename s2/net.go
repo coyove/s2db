@@ -34,6 +34,9 @@ func (s *ErrorThrottler) Throttle(key string, err error) bool {
 	case errors.Is(err, syscall.ECONNRESET):
 	case strings.Contains(msg, "connection refused"):
 	case strings.Contains(msg, "connection reset"):
+	case strings.Contains(msg, "timed out to request all peers"):
+	case strings.Contains(msg, ErrServerReadonly.Error()):
+	case strings.Contains(msg, ErrNoAuth.Error()):
 	default:
 		return false
 	}

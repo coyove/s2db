@@ -1,6 +1,7 @@
 package s2
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -125,3 +126,12 @@ func ParseRetentionTable(in string) (dtl, keep []RetentionConfig, err error) {
 	s(keep)
 	return
 }
+
+var (
+	ErrInvalidNumArg   = errors.New("too many arguments")
+	ErrInvalidBulkSize = errors.New("invalid bulk size")
+	ErrLineTooLong     = errors.New("line too long")
+	ErrUnknownCommand  = errors.New("unknown command")
+	ErrServerReadonly  = errors.New("server is readonly")
+	ErrNoAuth          = errors.New("NOAUTH")
+)

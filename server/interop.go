@@ -40,22 +40,14 @@ func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int
 		opts = &s2.SelectOptions{}
 	}
 
-	i.s().execSelect(out, key, i.s().translateCursor(start, opts.Desc), n, *opts)
-	if err := out.Err(); err != nil {
+	data, err := i.s().execSelect(key, i.s().translateCursor(start, opts.Desc), n, *opts)
+	if err != nil {
 		return nil, err
 	}
-	buf := out.Val().([][]byte)
-	res := make([]s2.Pair, 0, len(buf)/3)
-	for i := 0; i < len(buf); i += 3 {
-		var x s2.Pair
-		x.ID = hexDecode(buf[i])
-		x.Data = buf[i+2]
-		t := s2.ParseUint64(string(buf[i+1])) % 10
-		x.Con = t&1 > 0
-		x.All = t&2 > 0
-		res = append(res, x)
+	if len(data) > n {
+		data = data[:n]
 	}
-	return res, nil
+	return data, nil
 }
 
 func (i *interop) Scan(cursor string, count int, local bool) (string, []string) {

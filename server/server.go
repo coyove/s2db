@@ -378,7 +378,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	case "SELECT": // key start count [ASC|DESC] [ASYNC] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
 		n, flag := parseSELECT(K)
 		start := s.translateCursor(K.BytesRef(2), flag.Desc)
-		return s.execSelect(w, key, start, n, flag)
+		data, err := s.execSelect(key, start, n, flag)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return s.convertPairs(w, data, n)
 	case "PLOOKUP":
 		data, key, err := s.implLookupID(K.BytesRef(1))
 		if err != nil {
@@ -516,8 +520,18 @@ func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, o
 // 	return w.WriteBulks(res)
 // }
 
-func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, opts s2.SelectOptions) error {
-	origN := n
+func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptions) ([]s2.Pair, error) {
+	if len(opts.Unions) > 0 {
+		return s.execSelectUnions(append(opts.Unions, key), start, n, opts)
+	}
+
+	markPairsAll := func(data []s2.Pair) []s2.Pair {
+		for i := range data {
+			data[i].All = true
+		}
+		return data
+	}
+
 	if !testFlag {
 		// Caller wants N Pairs, we actually fetch more than that to extend the range,
 		// and (hopefully) consolidate more Pairs.
@@ -526,18 +540,18 @@ func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, 
 	}
 	data, err := s.implRange(key, start, n, opts)
 	if err != nil {
-		return w.WriteError(err.Error())
+		return nil, err
 	}
 	if !s.HasOtherPeers() || opts.Raw {
-		return s.convertPairs(w, data, origN, true)
+		return markPairsAll(data), nil
 	}
 	if s2.AllPairsConsolidated(data) {
 		s.Survey.AllConsolidated.Incr(1)
-		return s.convertPairs(w, data, origN, true)
+		return markPairsAll(data), nil
 	}
 
 	origData := append([]s2.Pair{}, data...)
-	merge := func(async bool) error {
+	merge := func(async bool) []s2.Pair {
 		var lowest []byte
 		if opts.Desc && len(data) > 0 && len(data) == n {
 			lowest = data[len(data)-1].ID
@@ -559,6 +573,9 @@ func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, 
 		if len(data) > n {
 			data = data[:n]
 		}
+		if async {
+			return data
+		}
 		s.setMissing(key, origData, data,
 			// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
 			success == s.OtherPeersCount(),
@@ -567,10 +584,12 @@ func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, 
 			// If iterating in desc order and not collecting enough Pairs, the rightmost Pair is the start.
 			len(data) < n && opts.Desc,
 		)
-		if async {
-			return nil
+		if success == s.OtherPeersCount() {
+			for i := range data {
+				data[i].All = true
+			}
 		}
-		return s.convertPairs(w, data, origN, success == s.OtherPeersCount())
+		return data
 	}
 
 	if opts.Async {
@@ -581,9 +600,41 @@ func (s *Server) execSelect(w wire.WriterImpl, key string, start []byte, n int, 
 				merge(true)
 			}()
 		}
-		return s.convertPairs(w, origData, origN, true)
+		return origData, nil // s.convertPairs(w, origData, origN, true)
 	}
-	return merge(false)
+	return merge(false), nil
+}
+
+func (s *Server) execSelectUnions(keys []string, start []byte, n int, opts s2.SelectOptions) ([]s2.Pair, error) {
+	opts.Unions = nil
+	out := make([]any, len(keys))
+
+	var wg sync.WaitGroup
+	for i, u := range keys {
+		wg.Add(1)
+		go func(i int, key string) {
+			defer wg.Done()
+			if data, err := s.execSelect(key, start, n, opts); err != nil {
+				out[i] = err
+			} else {
+				out[i] = data
+			}
+		}(i, u)
+	}
+	wg.Wait()
+
+	var data []s2.Pair
+	for _, d := range out {
+		if err, ok := d.(error); ok {
+			return nil, err
+		}
+		data = append(data, d.([]s2.Pair)...)
+	}
+	data = sortPairs(data, !opts.Desc)
+	if len(data) > n {
+		data = data[:n]
+	}
+	return data, nil
 }
 
 func (s *Server) execScan(w wire.WriterImpl, cursor string, count int, local bool) error {

@@ -383,14 +383,13 @@ func (s *Server) checkWritable() error {
 // 	return nil
 // }
 
-func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int, all bool) (err error) {
+func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
 	a := make([][]byte, 0, len(p)*3)
 	var maxFuture future.Future
 	for _, p := range p {
-		p.All = all
 		d := p.Data
 		if v, ok := p.Future().Cookie(); ok {
 			d = append(strconv.AppendInt(append(d, "[[mark="...), int64(v), 10), "]]"...)

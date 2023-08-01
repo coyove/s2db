@@ -237,10 +237,16 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 			if opts.Desc {
 				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
 				if bytes.Compare(k, start) <= 0 {
-					data = append(data, p)
+					if opts.LeftOpen && len(data) == 0 && bytes.Equal(start, p.ID) {
+					} else {
+						data = append(data, p)
+					}
 				}
 			} else {
-				data = append(data, p)
+				if opts.LeftOpen && len(data) == 0 && bytes.Equal(start, p.ID) {
+				} else {
+					data = append(data, p)
+				}
 			}
 		}
 

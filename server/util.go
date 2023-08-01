@@ -75,6 +75,12 @@ func parseSELECT(K *wire.Command) (n int, flag s2.SelectOptions) {
 		flag.Desc = flag.Desc || K.StrEqFold(i, "desc")
 		flag.Raw = flag.Raw || K.StrEqFold(i, "raw")
 		flag.Async = flag.Async || K.StrEqFold(i, "async")
+		flag.LeftOpen = flag.LeftOpen || K.StrEqFold(i, "leftopen")
+
+		if K.StrEqFold(i, "union") {
+			flag.Unions = append(flag.Unions, K.Str(i+1))
+			i++
+		}
 	}
 	return
 }

@@ -98,7 +98,7 @@ func (e *endpoint) work() {
 				break
 			}
 			commands = append(commands, cmd)
-			if len(commands) < e.server.Config.BatchLimit {
+			if len(commands) < e.server.Config.SyncBatchLimit {
 				goto MORE
 			}
 		default:

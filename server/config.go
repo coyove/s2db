@@ -5,16 +5,14 @@ import (
 	"context"
 	"fmt"
 	"reflect"
-	"regexp"
 	"strconv"
 	"strings"
 	"unsafe"
 
-	"github.com/cockroachdb/errors"
-	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/s2/config"
 	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
@@ -35,7 +33,7 @@ type ServerConfig struct {
 	TimeoutPeer            int // ms
 	TimeoutRange           int // ms
 	TimeoutCount           int // ms
-	BatchLimit             int
+	SyncBatchLimit         int
 	PipelineLimit          int
 	L6WorkerMaxTx          string
 	MetricsEndpoint        string
@@ -57,19 +55,7 @@ func init() {
 }
 
 func (s *Server) loadConfig() error {
-	if err := s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		buf, err := s.Get([]byte("config__" + strings.ToLower(f.Name)))
-		if err != nil {
-			return err
-		}
-		switch f.Type.Kind() {
-		case reflect.Int:
-			fv.SetInt(int64(s2.BytesToFloatZero(buf)))
-		case reflect.String:
-			fv.SetString(string(buf))
-		}
-		return nil
-	}); err != nil {
+	if err := config.Load(s.DBPath+".conf", &s.Config); err != nil {
 		return err
 	}
 	return s.saveConfig("load")
@@ -82,7 +68,7 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.TimeoutPeer, 50)
 	ifZero(&s.Config.TimeoutRange, 500)
 	ifZero(&s.Config.TimeoutCount, 1000)
-	ifZero(&s.Config.BatchLimit, 100)
+	ifZero(&s.Config.SyncBatchLimit, 100)
 	ifZero(&s.Config.PipelineLimit, 1000)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
@@ -103,42 +89,12 @@ func (s *Server) saveConfig(source string) error {
 		}
 	}
 
-	return s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		var buf []byte
-		switch f.Type {
-		case reflect.TypeOf(0):
-			buf = s2.FloatToBytes(float64(fv.Int()))
-		case reflect.TypeOf(""):
-			buf = []byte(fv.String())
-		}
-		return s.DB.Set([]byte("config__"+strings.ToLower(f.Name)), buf, pebble.Sync)
-	})
+	return config.Save(s.DBPath+".conf", &s.Config)
 }
 
-func (s *Server) UpdateConfig(key, value string, force bool) (bool, error) {
-	if strings.EqualFold(key, "servername") && !regexp.MustCompile(`[a-zA-Z0-9_]+`).MatchString(value) {
-		return false, fmt.Errorf("invalid char in server name")
-	}
-	found := false
+func (s *Server) UpdateConfig(key, value string) (bool, error) {
 	old := s.Config
-	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
-		if !strings.EqualFold(f.Name, key) {
-			return nil
-		}
-		old := fmt.Sprint(fv.Interface())
-		if old == value {
-			found = true
-			return nil
-		}
-		switch f.Type {
-		case reflect.TypeOf(0):
-			fv.SetInt(int64(s2.ParseInt(value)))
-		case reflect.TypeOf(""):
-			fv.SetString(value)
-		}
-		found = true
-		return nil
-	})
+	_, found := s.Config.UpdateField(key, value)
 	if found {
 		if err := s.saveConfig("update"); err != nil {
 			s.Config = old
@@ -156,7 +112,7 @@ func (s *Server) GetConfig(key string) (v string, ok bool) {
 	if fast.IsValid() {
 		return fmt.Sprint(fast.Interface()), true
 	}
-	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+	s.Config.ForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.EqualFold(f.Name, key) {
 			v, ok = fmt.Sprint(fv.Interface()), true
 		}
@@ -166,7 +122,7 @@ func (s *Server) GetConfig(key string) (v string, ok bool) {
 }
 
 func (s *Server) execListConfig() (list []string) {
-	s.configForEachField(func(f reflect.StructField, fv reflect.Value) error {
+	s.Config.ForEachField(func(f reflect.StructField, fv reflect.Value) error {
 		if strings.HasPrefix(f.Name, "Peer") {
 			if fv.String() != "" {
 				list = append(list, strings.ToLower(f.Name), fv.String())
@@ -179,15 +135,37 @@ func (s *Server) execListConfig() (list []string) {
 	return list
 }
 
-func (s *Server) configForEachField(cb func(reflect.StructField, reflect.Value) error) error {
-	rv := reflect.ValueOf(&s.Config)
-	rt := reflect.TypeOf(s.Config)
+func (s *ServerConfig) ForEachField(cb func(reflect.StructField, reflect.Value) error) error {
+	rv := reflect.ValueOf(s).Elem()
+	rt := reflect.TypeOf(s).Elem()
 	for i := 0; i < rt.NumField(); i++ {
-		if err := cb(rt.Field(i), rv.Elem().Field(i)); err != nil {
+		if err := cb(rt.Field(i), rv.Field(i)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *ServerConfig) UpdateField(key string, value string) (prev any, found bool) {
+	s.ForEachField(func(f reflect.StructField, fv reflect.Value) error {
+		if !strings.EqualFold(f.Name, key) {
+			return nil
+		}
+
+		found, prev = true, fv.Interface()
+		if fmt.Sprint(prev) == value {
+			return nil
+		}
+
+		switch f.Type.Kind() {
+		case reflect.Int:
+			fv.SetInt(int64(s2.ParseInt(value)))
+		case reflect.String:
+			fv.SetString(value)
+		}
+		return nil
+	})
+	return
 }
 
 func (s *Server) getRedis(addr string) (cli *redis.Client) {
@@ -204,38 +182,6 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	cli = cfg.GetClient()
 	s.rdbCache.Add(cfg.URI, cli)
 	return
-}
-
-func (s *Server) CopyConfig(remoteAddr, key string) (finalErr error) {
-	rdb := s.getRedis(remoteAddr)
-
-	s.configForEachField(func(rf reflect.StructField, rv reflect.Value) error {
-		switch rf.Name {
-		case "ServerName":
-			return nil
-		}
-		if key != "" && !strings.EqualFold(rf.Name, key) {
-			return nil
-		}
-		cmd := redis.NewStringSliceCmd(context.TODO(), "CONFIG", "GET", rf.Name)
-		rdb.Process(context.TODO(), cmd)
-		if cmd.Err() != nil {
-			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("get(%q): %v", rf.Name, cmd.Err()))
-			return nil
-		}
-		v := cmd.Val()
-		if len(v) != 2 {
-			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("get(%q): %v", rf.Name, v))
-			return nil
-		}
-		_, err := s.UpdateConfig(rf.Name, v[1], false)
-		if err != nil {
-			finalErr = errors.CombineErrors(finalErr, fmt.Errorf("update(%q): %v", rf.Name, err))
-			return nil
-		}
-		return nil
-	})
-	return finalErr
 }
 
 func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, error) {

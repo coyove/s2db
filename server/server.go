@@ -306,18 +306,13 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 			v, _ := s.GetConfig(K.StrRef(2))
 			return w.WriteBulks([]string{K.StrRef(2), v})
 		case "SET":
-			found, err := s.UpdateConfig(K.Str(2), K.Str(3), false)
+			found, err := s.UpdateConfig(K.Str(2), K.Str(3))
 			if err != nil {
 				return w.WriteError(err.Error())
 			} else if found {
 				return w.WriteSimpleString("OK")
 			}
 			return w.WriteError("field not found")
-		case "COPY":
-			if err := s.CopyConfig(K.Str(2), K.Str(3)); err != nil {
-				return w.WriteError(err.Error())
-			}
-			return w.WriteSimpleString("OK")
 		default:
 			return w.WriteBulks(s.execListConfig())
 		}

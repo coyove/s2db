@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coyove/s2db/s2/config"
 	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/s2db/server"
 	"github.com/coyove/sdss/future"
@@ -77,6 +78,21 @@ func main() {
 
 	server.PrintAllFlags()
 
+	if err := config.Update(*dataDir+".conf", &server.ServerConfig{}, func(a any) {
+		config := a.(*server.ServerConfig)
+		for _, cd := range configSet {
+			if idx := strings.Index(*cd, "="); idx != -1 {
+				key, value := (*cd)[:idx], (*cd)[idx+1:]
+				if prev, found := config.UpdateField(key, value); found {
+					log.Infof("[config] update %s from <%v> to <%v>", key, prev, value)
+				}
+			}
+		}
+	}); err != nil {
+		log.Errorf("update config: %v", err)
+		os.Exit(-1)
+	}
+
 	s, err := server.Open(*dataDir, *channel)
 	if err != nil {
 		log.Errorf("open: %v", err)
@@ -84,18 +100,6 @@ func main() {
 	}
 
 	s.ReadOnly = *readOnly
-
-	for _, cd := range configSet {
-		if idx := strings.Index(*cd, "="); idx != -1 {
-			key, value := (*cd)[:idx], (*cd)[idx+1:]
-			old, _ := s.GetConfig(key)
-			log.Infof("update %s from %q to %q", key, old, value)
-			if _, err := s.UpdateConfig(key, value, false); err != nil {
-				log.Errorf("update config: %v", err)
-				os.Exit(-1)
-			}
-		}
-	}
 
 	log.Error(s.Serve(*listenAddr))
 	time.Sleep(time.Second)

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/coyove/s2db/s2"
-	"github.com/coyove/s2db/wire"
+	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
@@ -20,7 +20,7 @@ type endpoint struct {
 	mu     sync.RWMutex
 	index  int
 	client *redis.Client
-	config wire.RedisConfig
+	config resp.RedisConfig
 	server *Server
 
 	job struct {
@@ -44,7 +44,7 @@ func (e *endpoint) Set(uri string) (changed bool, err error) {
 	defer e.mu.Unlock()
 	if uri != e.config.URI {
 		if uri != "" {
-			cfg, err := wire.ParseConnString(uri)
+			cfg, err := resp.ParseConnString(uri)
 			if err != nil {
 				return false, err
 			}
@@ -65,7 +65,7 @@ func (e *endpoint) Set(uri string) (changed bool, err error) {
 			// e.Close() will only be called when 'e' is not needed anymore (e.g. server close).
 			e.client.Close()
 			e.client = nil
-			e.config = wire.RedisConfig{}
+			e.config = resp.RedisConfig{}
 		}
 		changed = true
 	}
@@ -145,7 +145,7 @@ func (e *endpoint) Redis() *redis.Client {
 	return e.client
 }
 
-func (e *endpoint) Config() wire.RedisConfig {
+func (e *endpoint) Config() resp.RedisConfig {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.config

@@ -23,8 +23,8 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/s2db/s2/top"
-	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
@@ -282,13 +282,8 @@ func (s *Server) httpServer() {
 		}
 		json.NewEncoder(w).Encode(m)
 	})
-	mux.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
-	})
 	mux.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
-		nj.PlaygroundHandler(s.Config.InspectorSource+
-			"\n--BRK"+uuid+". DO NOT EDIT THIS LINE\n\n"+
-			"local ok, err = server.UpdateConfig('InspectorSource', SOURCE_CODE.findsub('\\n--BRK"+uuid+"'), false)\n"+
-			"println(ok, err)", s.getScriptEnviron())(w, r)
+		nj.PlaygroundHandler("print(server.Config.ServerName)", s.getScriptEnviron())(w, r)
 	})
 	http.Serve(s.lnHTTP, mux)
 }
@@ -300,67 +295,7 @@ func (s *Server) checkWritable() error {
 	return nil
 }
 
-// func (s *Server) syncHashmap(key string, sync bool) error {
-// 	if !s.HasOtherPeers() {
-// 		return nil
-// 	}
-//
-// 	work := func() error {
-// 		defer func(start time.Time) {
-// 			s.Survey.HashSyncer.Incr(time.Since(start).Milliseconds())
-// 		}(time.Now())
-//
-// 		checksum, _, err := s.hChecksum(key)
-// 		if err != nil {
-// 			return err
-// 		}
-//
-// 		var pres [][]byte
-// 		_, success := s.ForeachPeerSendCmd(SendCmdOptions{}, func() redis.Cmder {
-// 			return redis.NewStringCmd(context.TODO(), "PHGETALL", key, checksum[:])
-// 		}, func(cmd redis.Cmder) bool {
-// 			p, _ := cmd.(*redis.StringCmd).Bytes()
-// 			pres = append(pres, p)
-// 			return true
-// 		})
-// 		if sync && success != s.OtherPeersCount() {
-// 			return fmt.Errorf("sync failed")
-// 		}
-//
-// 		bkLive := makeHashmapKey(key)
-// 		tx := s.DB.NewBatch()
-// 		defer tx.Close()
-// 		for _, p := range pres {
-// 			if len(p) == 0 {
-// 				continue
-// 			}
-// 			if err := tx.Merge(bkLive, p, pebble.Sync); err != nil {
-// 				return err
-// 			}
-// 		}
-// 		if err := tx.Commit(pebble.Sync); err != nil {
-// 			return err
-// 		}
-// 		return nil
-// 	}
-//
-// 	if sync {
-// 		return work()
-// 	}
-// 	if s.asyncOnce.Lock(key) {
-// 		s.Survey.AsyncOnce.Incr(s.asyncOnce.Count())
-// 		go func() {
-// 			defer s.asyncOnce.Unlock(key)
-// 			if err := work(); err != nil {
-// 				logrus.Errorf("hashmap sync error: %v", err)
-// 			}
-// 			time.Sleep(time.Duration(s.Config.HashmapSyncWait) * time.Millisecond)
-// 		}()
-// 	}
-// 	return nil
-// }
-
-func (s *Server) convertPairs(w wire.WriterImpl, p []s2.Pair, max int) (err error) {
+func (s *Server) convertPairs(w resp.WriterImpl, p []s2.Pair, max int) (err error) {
 	if len(p) > max {
 		p = p[:max]
 	}
@@ -438,7 +373,7 @@ func (s *Server) SetInt64(key []byte, vi int64) error {
 	return s.DB.Set(key, s2.Uint64ToBytes(uint64(vi)), pebble.Sync)
 }
 
-func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration), outErr *error) {
+func (s *Server) recoverLogger(start time.Time, cmd string, w resp.WriterImpl, onSlow func(time.Duration), outErr *error) {
 	if r := recover(); r != nil {
 		if testFlag || os.Getenv("PRINT_STACK") != "" {
 			fmt.Println(r, string(debug.Stack()))

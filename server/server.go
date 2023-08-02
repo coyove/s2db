@@ -21,10 +21,9 @@ import (
 
 	"github.com/cockroachdb/errors"
 	"github.com/cockroachdb/pebble"
-	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/s2/filelock"
-	"github.com/coyove/s2db/wire"
+	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	"github.com/sirupsen/logrus"
@@ -34,17 +33,16 @@ import (
 var Version string
 
 type Server struct {
-	Interop     interop
-	DB          *pebble.DB
-	Peers       [future.Channels]*endpoint
-	DBPath      string
-	DBOptions   *pebble.Options
-	Channel     int64
-	ReadOnly    bool
-	Closed      bool // server close flag
-	SelfManager *bas.Program
-	Config      ServerConfig
-	Survey      ServerSurvey
+	Interop   interop
+	DB        *pebble.DB
+	Peers     [future.Channels]*endpoint
+	DBPath    string
+	DBOptions *pebble.Options
+	Channel   int64
+	ReadOnly  bool
+	Closed    bool // server close flag
+	Config    ServerConfig
+	Survey    ServerSurvey
 
 	lnRESP       net.Listener
 	lnHTTP       net.Listener
@@ -55,6 +53,7 @@ type Server struct {
 	wmCache      *s2.LRUShard[[16]byte]
 	asyncOnce    s2.KeyLock
 	errThrot     s2.ErrorThrottler
+	copying      sync.Map
 	dbFile       *os.File
 	pipeline     chan *dbPayload
 
@@ -224,13 +223,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		conn.Close()
 	}()
 
-	parser := wire.NewParser(conn)
-	writer := wire.NewWriter(conn)
+	parser := resp.NewParser(conn)
+	writer := resp.NewWriter(conn)
 	var ew error
 	for auth := false; ; {
 		command, err := parser.ReadCommand()
 		if err != nil {
-			_, ok := err.(*wire.ProtocolError)
+			_, ok := err.(*resp.ProtocolError)
 			if ok {
 				ew = writer.WriteError(err.Error())
 			} else {
@@ -271,7 +270,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, src net.IP, K *wire.Command) (outErr error) {
+func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, src net.IP, K *resp.Command) (outErr error) {
 	key := K.Str(1)
 
 	if isWriteCommand[cmd] {
@@ -336,11 +335,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
-		return slowLogger.Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
+		return slowLogger.Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
 	case "DB.LOG":
-		return dbLogger.Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
+		return dbLogger.Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
 	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*logf).LogFork(w.(*wire.Writer).Sink.(net.Conn))
+		return log.StandardLogger().Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
 	}
 
 	switch cmd {
@@ -353,6 +352,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		return w.WriteBulks(s2.HexEncodeBulks(ids))
 	case "PSELECT": // key raw_start count flag desc_lowest packed_ids => [ID 0, DATA 0, ...]
 		start, flag, contains := K.BytesRef(2), s2.ParseSelectOptions(K.Int64(4)), s2.UnpackPairIDs(K.BytesRef(6))
+		flag.NoData = false // data must be exchanged among peers to meet consolidation
+
 		largest, ok := s.wmCache.Get16(s2.HashStr128(key))
 		if descLowest := K.BytesRef(5); len(descLowest) == 16 {
 			if ok && bytes.Compare(largest[:], descLowest) <= 0 {

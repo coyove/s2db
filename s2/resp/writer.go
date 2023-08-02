@@ -1,4 +1,4 @@
-package wire
+package resp
 
 import (
 	"bufio"
@@ -118,7 +118,7 @@ func (w *Writer) WriteError(s string) error {
 		s != pebble.ErrClosed.Error() &&
 		s != s2.ErrUnknownCommand.Error() &&
 		s != s2.ErrServerReadonly.Error() {
-		logrus.Error("redis wire error: ", s)
+		logrus.Error("redis error: ", s)
 	}
 	s = strings.Replace(s, "\n", " ", -1)
 	s = strings.Replace(s, "\r", " ", -1)

@@ -15,7 +15,7 @@ import (
 	"github.com/coyove/nj"
 	"github.com/coyove/nj/bas"
 	"github.com/coyove/s2db/s2"
-	"github.com/coyove/s2db/wire"
+	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
 	log "github.com/sirupsen/logrus"
@@ -39,7 +39,6 @@ type ServerConfig struct {
 	PipelineLimit          int
 	L6WorkerMaxTx          string
 	MetricsEndpoint        string
-	InspectorSource        string
 }
 
 func init() {
@@ -94,15 +93,6 @@ func (s *Server) saveConfig(source string) error {
 
 	s.fillCache = s2.NewLRUShardCache[struct{}](s.Config.ListFillCacheSize)
 	s.wmCache = s2.NewLRUShardCache[[16]byte](s.Config.ListWatermarkCacheSize)
-
-	p, err := nj.LoadString(strings.Replace(s.Config.InspectorSource, "\r", "", -1), s.getScriptEnviron())
-	if err != nil {
-		return err
-	} else if out := p.Run(); out.IsError() {
-		return out.Error()
-	} else {
-		s.SelfManager = p
-	}
 
 	for i := range s.Peers {
 		x := reflect.ValueOf(s.Config).FieldByName("Peer" + strconv.Itoa(i)).String()
@@ -207,7 +197,7 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 	if cli, ok := s.rdbCache.Get(addr); ok {
 		return cli
 	}
-	cfg, err := wire.ParseConnString(addr)
+	cfg, err := resp.ParseConnString(addr)
 	if err != nil {
 		panic(err)
 	}

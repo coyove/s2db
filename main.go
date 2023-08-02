@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/s2db/server"
-	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	log "github.com/sirupsen/logrus"
 )
@@ -53,12 +53,12 @@ func main() {
 	server.InitLogger(*logDebug, *logRuntimeConfig, *logSlowConfig, *logDBConfig)
 
 	if *sendRedisCmd != "" {
-		cfg, err := wire.ParseConnString(*listenAddr)
+		cfg, err := resp.ParseConnString(*listenAddr)
 		if err != nil {
 			log.Errorf("-cmd: invalid address: %v", err)
 			os.Exit(-1)
 		}
-		v, err := cfg.GetClient().Do(context.TODO(), wire.SplitCmdLine(*sendRedisCmd)...).Result()
+		v, err := cfg.GetClient().Do(context.TODO(), resp.SplitCmdLine(*sendRedisCmd)...).Result()
 		if err != nil {
 			log.Errorf("-cmd: %v", err)
 			os.Exit(-1)

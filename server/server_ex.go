@@ -12,6 +12,9 @@ import (
 	"net/http/pprof"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -20,9 +23,11 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/coyove/nj"
 	"github.com/coyove/s2db/s2"
+	"github.com/coyove/s2db/s2/top"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -137,7 +142,7 @@ func (s *Server) InfoCommand(section string) (data []string) {
 		data = append(data, "# key "+key)
 		data = append(data, fmt.Sprintf("size:%d", disk))
 		if wm, wmok := s.wmCache.Get16(s2.HashStr128(key)); wmok {
-			data = append(data, fmt.Sprintf("watermark:%s", hexEncode(wm[:])))
+			data = append(data, fmt.Sprintf("watermark:%s", s2.HexEncode(wm[:])))
 		} else {
 			data = append(data, "watermark:miss")
 		}
@@ -205,12 +210,20 @@ func (s *Server) createDBListener() pebble.EventListener {
 }
 
 func (s *Server) httpServer() {
+	rec := func(w http.ResponseWriter, rr *http.Request) {
+		if r := recover(); r != nil {
+			w.WriteHeader(500)
+			w.Write(debug.Stack())
+			logrus.Errorf("fatal HTTP error of %q: %v", rr.RequestURI, r)
+		}
+	}
+
 	uuid := s2.UUID()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		defer s2.HTTPRecover(w, r)
+		defer rec(w, r)
 
 		q := r.URL.Query()
 		start := time.Now()
@@ -221,9 +234,8 @@ func (s *Server) httpServer() {
 			return
 		}
 
-		sp := []string{s.DBPath}
-		// sp = append(sp, filepath.Dir(s.db.
-		cpu, iops, disk := s2.GetOSUsage(sp[:])
+		cpu := top.PrintCPU()
+		diskFree, diskTotal := top.PrintDiskFree(s.DBPath)
 		for ; len(cpu)%5 != 0; cpu = append(cpu, "") {
 		}
 		w.Header().Add("Content-Type", "text/html")
@@ -240,13 +252,18 @@ func (s *Server) httpServer() {
 			"stat":      makeHTMLStat,
 			"timeSince": func(a time.Time) time.Duration { return time.Since(a) },
 		}).Parse(webuiHTML)).Execute(w, map[string]interface{}{
-			"s": s, "start": start,
-			"CPU": cpu, "IOPS": iops, "Disk": disk, "REPLPath": uuid, "MetricsNames": s.ListMetricsNames(),
-			"Sections": []string{"server", "server_misc", "sys_rw_stats", "peers", "command_qps", "command_lat"},
+			"s":            s,
+			"start":        start,
+			"CPU":          cpu,
+			"IOPS":         top.PrintDiskIOPS(),
+			"Disk":         [2]uint64{diskFree / 1024 / 1024, diskTotal / 1024 / 1024},
+			"REPLPath":     uuid,
+			"MetricsNames": s.ListMetricsNames(),
+			"Sections":     []string{"server", "server_misc", "sys_rw_stats", "peers", "command_qps", "command_lat"},
 		})
 	})
 	mux.HandleFunc("/chart/", func(w http.ResponseWriter, r *http.Request) {
-		defer s2.HTTPRecover(w, r)
+		defer rec(w, r)
 		chartSources := strings.Split(r.URL.Path[7:], ",")
 		if len(chartSources) == 0 || chartSources[0] == "" {
 			w.Write([]byte("[]"))
@@ -266,39 +283,6 @@ func (s *Server) httpServer() {
 		json.NewEncoder(w).Encode(m)
 	})
 	mux.HandleFunc("/ssd", func(w http.ResponseWriter, r *http.Request) {
-		defer s2.HTTPRecover(w, r)
-
-		// q := r.URL.Query()
-
-		// if s.Password != "" && s.Password != q.Get("p") {
-		// 	w.WriteHeader(400)
-		// 	w.Write([]byte("s2db: password required"))
-		// 	return
-		// }
-
-		// sk, ek := q.Get("from"), q.Get("to")
-		// if sk == "" {
-		// 	w.WriteHeader(400)
-		// 	w.Write([]byte("s2db: ssd start key required"))
-		// 	return
-		// }
-
-		// if ek == "" {
-		// 	ek = sk
-		// }
-
-		// start, end := math.Inf(-1), math.Inf(1)
-		// if sv := q.Get("start"); sv != "" {
-		// 	start = s2.MustParseFloat(sv)
-		// }
-		// if sv := q.Get("end"); sv != "" {
-		// 	end = s2.MustParseFloat(sv)
-		// }
-
-		// w.Header().Add("Content-Type", "application/octet-stream")
-		// w.Header().Add("Content-Encoding", "gzip")
-		// w.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=\"ssd_%d.csv\"", clock.UnixNano()))
-		// fmt.Println(q.Get("match"))
 	})
 	mux.HandleFunc("/"+uuid, func(w http.ResponseWriter, r *http.Request) {
 		nj.PlaygroundHandler(s.Config.InspectorSource+
@@ -406,7 +390,7 @@ func (s *Server) translateCursor(buf []byte, desc bool) (start []byte) {
 		start = make([]byte, 16)
 	default:
 		if len(x) == 32 || len(x) == 33 {
-			start = hexDecode(buf)
+			start = s2.HexDecode(buf)
 		} else if len(x) == 16 {
 			start = s2.Bytes(buf)
 		} else if desc {
@@ -452,4 +436,51 @@ func (s *Server) GetInt64(key []byte) (int64, error) {
 
 func (s *Server) SetInt64(key []byte, vi int64) error {
 	return s.DB.Set(key, s2.Uint64ToBytes(uint64(vi)), pebble.Sync)
+}
+
+func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration), outErr *error) {
+	if r := recover(); r != nil {
+		if testFlag || os.Getenv("PRINT_STACK") != "" {
+			fmt.Println(r, string(debug.Stack()))
+		}
+		var fn string
+		var ln int
+		for i := 1; ; i++ {
+			if _, fn, ln, _ = runtime.Caller(i); ln == 0 {
+				fn = "<unknown>"
+				break
+			} else if strings.Contains(fn, "s2db") {
+				break
+			}
+		}
+		msg := fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r)
+		if w != nil {
+			w.WriteError(msg)
+		} else {
+			*outErr = fmt.Errorf(msg)
+		}
+		s.Survey.FatalError.Incr(1)
+	} else {
+		diff := time.Since(start)
+		if diff > time.Duration(s.Config.SlowLimit)*time.Millisecond {
+			if onSlow != nil {
+				onSlow(diff)
+			} else {
+				slowLogger.Infof("%s\t% 4.3f\tinterop\t%v", cmd, diff.Seconds(), cmd)
+			}
+			s.Survey.SlowLogs.Incr(diff.Milliseconds())
+		}
+		if isWriteCommand[cmd] {
+			s.Survey.SysWrite.Incr(diff.Milliseconds())
+			s.Survey.SysWriteP99Micro.Incr(diff.Microseconds())
+		}
+		if isReadCommand[cmd] {
+			s.Survey.SysRead.Incr(diff.Milliseconds())
+			s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
+		}
+		if isWriteCommand[cmd] || isReadCommand[cmd] {
+			x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2.Survey))
+			x.(*s2.Survey).Incr(diff.Milliseconds())
+		}
+	}
 }

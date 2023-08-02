@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -346,14 +345,14 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 
 	switch cmd {
 	case "APPEND": // key data_0 [DP dp_len] [SYNC] [NOEXP] [[AND data_1] ...] [SETID ...]
-		data, ids, opts := parseAPPEND(K)
+		data, ids, opts := K.GetAppendOptions()
 		ids, err := s.execAppend(key, ids, data, opts)
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulks(hexEncodeBulks(ids))
+		return w.WriteBulks(s2.HexEncodeBulks(ids))
 	case "PSELECT": // key raw_start count flag desc_lowest packed_ids => [ID 0, DATA 0, ...]
-		start, flag, contains := K.BytesRef(2), s2.ParseSelectOptions(K.Int64(4)), s2.UnpackIDs(K.BytesRef(6))
+		start, flag, contains := K.BytesRef(2), s2.ParseSelectOptions(K.Int64(4)), s2.UnpackPairIDs(K.BytesRef(6))
 		largest, ok := s.wmCache.Get16(s2.HashStr128(key))
 		if descLowest := K.BytesRef(5); len(descLowest) == 16 {
 			if ok && bytes.Compare(largest[:], descLowest) <= 0 {
@@ -380,7 +379,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteBulks(a)
 	case "SELECT": // key start count [ASC|DESC] [ASYNC] [RAW] [UNION key_2 [UNION ...]] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, flag := parseSelect(K)
+		n, flag := K.GetSelectOptions()
 		start := s.translateCursor(K.BytesRef(2), flag.Desc)
 		data, err := s.execSelect(key, start, n, flag)
 		if err != nil {
@@ -411,7 +410,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 		}
 		return w.WriteInt64(int64(count))
 	case "SCAN": // cursor [COUNT count] [INDEX] [LOCAL]
-		index, local, count := parseScan(K)
+		index, local, count := K.GetScanOptions()
 		if index {
 			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
@@ -423,58 +422,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 				x = K.BytesRef(i)
 			}
 		}
-		future.Future(binary.BigEndian.Uint64(hexDecode(x))).Wait()
+		future.Future(binary.BigEndian.Uint64(s2.HexDecode(x))).Wait()
 		return w.WriteSimpleString("OK")
 	}
 
 	return w.WriteError(s2.ErrUnknownCommand.Error())
-}
-
-func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration), outErr *error) {
-	if r := recover(); r != nil {
-		if testFlag || os.Getenv("PRINT_STACK") != "" {
-			fmt.Println(r, string(debug.Stack()))
-		}
-		var fn string
-		var ln int
-		for i := 1; ; i++ {
-			if _, fn, ln, _ = runtime.Caller(i); ln == 0 {
-				fn = "<unknown>"
-				break
-			} else if strings.Contains(fn, "s2db") {
-				break
-			}
-		}
-		msg := fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r)
-		if w != nil {
-			w.WriteError(msg)
-		} else {
-			*outErr = fmt.Errorf(msg)
-		}
-		s.Survey.FatalError.Incr(1)
-	} else {
-		diff := time.Since(start)
-		if diff > time.Duration(s.Config.SlowLimit)*time.Millisecond {
-			if onSlow != nil {
-				onSlow(diff)
-			} else {
-				slowLogger.Infof("%s\t% 4.3f\tinterop\t%v", cmd, diff.Seconds(), cmd)
-			}
-			s.Survey.SlowLogs.Incr(diff.Milliseconds())
-		}
-		if isWriteCommand[cmd] {
-			s.Survey.SysWrite.Incr(diff.Milliseconds())
-			s.Survey.SysWriteP99Micro.Incr(diff.Microseconds())
-		}
-		if isReadCommand[cmd] {
-			s.Survey.SysRead.Incr(diff.Milliseconds())
-			s.Survey.SysReadP99Micro.Incr(diff.Microseconds())
-		}
-		if isWriteCommand[cmd] || isReadCommand[cmd] {
-			x, _ := s.Survey.Command.LoadOrStore(cmd, new(s2.Survey))
-			x.(*s2.Survey).Incr(diff.Milliseconds())
-		}
-	}
 }
 
 func (s *Server) execAppend(key string, ids, data [][]byte, opts s2.AppendOptions) ([][]byte, error) {
@@ -541,7 +493,7 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 		if opts.Desc && len(data) > 0 && len(data) == n {
 			lowest = data[len(data)-1].ID
 		}
-		packedIDs := s2.PackIDs(data)
+		packedIDs := s2.PackPairIDs(data)
 		s.Survey.KeyHashRatio.Incr(int64(len(packedIDs) * 1000 / (len(data)*8 + 1)))
 		_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
 			func() redis.Cmder {
@@ -554,7 +506,7 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 				return true
 			})
 
-		data = sortPairs(data, !opts.Desc)
+		data = s2.SortPairs(data, !opts.Desc)
 		if len(data) > n {
 			data = data[:n]
 		}
@@ -615,7 +567,7 @@ func (s *Server) selectUnions(keys []string, start []byte, n int, opts s2.Select
 		return nil, err
 	}
 
-	out = sortPairs(out, !opts.Desc)
+	out = s2.SortPairs(out, !opts.Desc)
 	if len(out) > n {
 		out = out[:n]
 	}

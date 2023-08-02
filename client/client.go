@@ -6,9 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/rand"
-	"strings"
 	"sync"
-	"unsafe"
 
 	"github.com/coyove/s2db/s2"
 	"github.com/coyove/sdss/future"
@@ -152,12 +150,17 @@ func (a *Session) Lookup(ctx context.Context, id string) (data []byte, err error
 	return
 }
 
-func (a *Session) HSet(ctx context.Context, key string, member, value any, kvs ...any) ([]string, error) {
-	args := []any{"HSET", key, member, value, "SYNC"}
-	for i := 0; i < len(kvs); i += 2 {
-		args = append(args, "SET", kvs[i], kvs[i+1])
+func (a *Session) Count(ctx context.Context, key string, start, end any, max int) (count int64, err error) {
+	cmd := redis.NewIntCmd(ctx, "COUNT", key, start, end, max)
+	for _, db := range a.rdb {
+		db.Process(ctx, cmd)
+		err = cmd.Err()
+		if err != nil {
+			continue
+		}
+		return cmd.Result()
 	}
-	return a.send(ctx, redis.NewStringSliceCmd(ctx, args...))
+	return
 }
 
 func (a *Session) send(ctx context.Context, cmd *redis.StringSliceCmd) ([]string, error) {
@@ -179,52 +182,4 @@ func (a *Session) send(ctx context.Context, cmd *redis.StringSliceCmd) ([]string
 	}
 
 	return nil, err
-}
-
-func (a *Session) HGetAll(ctx context.Context, key string, match []byte) (data map[string]string, err error) {
-	return a.doHGetAll(ctx, key, match, false)
-}
-
-func (a *Session) MustHGetAll(ctx context.Context, key string, match []byte) (data map[string]string, err error) {
-	return a.doHGetAll(ctx, key, match, true)
-}
-
-func (a *Session) doHGetAll(ctx context.Context, key string, match []byte, sync bool) (data map[string]string, err error) {
-	args := []any{"HGETALL", key}
-	if match != nil {
-		args = append(args, "MATCH", match)
-	}
-
-	for _, db := range a.rdb {
-		if sync {
-			if err := db.Do(ctx, "HSYNC", key).Err(); err != nil {
-				continue
-			}
-		}
-		v, err := db.Do(ctx, args...).Result()
-		if err != nil {
-			continue
-		}
-		if bulk, ok := v.(string); ok {
-			bulks, err := s2.DecompressBulks(strings.NewReader(bulk))
-			if err != nil {
-				// Serious error, no fallback.
-				return nil, err
-			}
-			data = make(map[string]string, len(bulks))
-			for i := 0; i < len(bulks); i += 2 {
-				k := *(*string)(unsafe.Pointer(&bulks[i]))
-				v := *(*string)(unsafe.Pointer(&bulks[i+1]))
-				data[k] = v
-			}
-			return data, nil
-		}
-		res := v.([]any)
-		data = make(map[string]string, len(res))
-		for i := 0; i < len(res); i += 2 {
-			data[res[i].(string)] = res[i+1].(string)
-		}
-		return data, nil
-	}
-	return
 }

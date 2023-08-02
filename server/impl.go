@@ -22,6 +22,18 @@ const (
 	minCursor        = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 )
 
+func kkp(key string) (prefix []byte) {
+	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
+	return
+}
+
+func newPrefixIter(db *pebble.DB, key []byte) *pebble.Iterator {
+	return db.NewIter(&pebble.IterOptions{
+		LowerBound: key,
+		UpperBound: s2.IncBytes(key),
+	})
+}
+
 func (s *Server) updateWatermarkCache(ck [16]byte, new []byte) {
 	_ = new[15]
 	// fmt.Println(s.ln.Addr(), new)
@@ -107,7 +119,7 @@ func (s *Server) fillHoles(key string, before, after []s2.Pair,
 		}
 	}
 
-	before = sortPairs(before, true)
+	before = s2.SortPairs(before, true)
 	var missing []s2.Pair
 	for _, a := range after {
 		idx := sort.Search(len(before), func(i int) bool { return !before[i].Less(a) })
@@ -262,7 +274,11 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 			return nil, fmt.Errorf("range timed out")
 		}
 
-		moveIter(c, opts.Desc)
+		if opts.Desc {
+			c.Prev()
+		} else {
+			c.Next()
+		}
 	}
 
 	if len(data) > n {
@@ -292,22 +308,6 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 		}
 	}
 
-	return
-}
-
-func (s *Server) ScanHash(cursor string, count int) (nextCursor string, keys []string) {
-	iter := newPrefixIter(s.DB, []byte("h"))
-	defer iter.Close()
-
-	for iter.SeekGE(makeHashmapKey(cursor)); iter.Valid(); iter.Next() {
-		keys = append(keys, string(iter.Key()[1:]))
-		if len(keys) >= count {
-			if iter.Next() {
-				nextCursor = string(iter.Key()[1:])
-			}
-			break
-		}
-	}
 	return
 }
 

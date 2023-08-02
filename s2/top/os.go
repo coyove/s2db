@@ -1,23 +1,30 @@
 //go:build !windows
 // +build !windows
 
-package s2
+package top
 
 import (
 	"bytes"
 	"io/ioutil"
 	"regexp"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/coyove/s2db/s2"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
 var CPUUsages, DiskUsages sync.Map
 
-func OSWatcher() {
+func init() {
+	go osWatcher()
+}
+
+func osWatcher() {
 	if runtime.GOOS != "linux" {
 		return
 	}
@@ -29,14 +36,14 @@ func OSWatcher() {
 	const interval = 10
 	for range time.Tick(time.Second * interval) {
 		func() {
-			defer Recover(nil)
+			defer rec()
 
 			buf, _ := ioutil.ReadFile("/proc/stat")
 			x = (x + 1) % 2
 			for _, line := range bytes.Split(buf, []byte("\n")) {
 				line := string(line)
 				if strings.HasPrefix(line, "cpu") && !strings.HasPrefix(line, "cpu ") {
-					n := ParseInt(strings.TrimSpace(line[3:5]))
+					n := s2.ParseInt(strings.TrimSpace(line[3:5]))
 					used, total := parseCPU(line)
 					old := cpus[n]
 					old[x] = [2]int64{used, total}
@@ -53,9 +60,9 @@ func OSWatcher() {
 				if totalDiff < 0 {
 					totalDiff = -totalDiff
 				}
-				sx, _ := CPUUsages.LoadOrStore(n, new(Survey))
+				sx, _ := CPUUsages.LoadOrStore(n, new(s2.Survey))
 				if usedDiff > 0 && totalDiff > 0 {
-					sx.(*Survey).Incr(int64(float64(usedDiff) / float64(totalDiff) * 100))
+					sx.(*s2.Survey).Incr(int64(float64(usedDiff) / float64(totalDiff) * 100))
 				}
 			}
 
@@ -79,8 +86,8 @@ func OSWatcher() {
 					wDiff = -wDiff
 				}
 				if stats[0][0] > 0 && stats[1][0] > 0 && stats[0][1] > 0 && stats[1][1] > 0 {
-					sx, _ := DiskUsages.LoadOrStore(n, new([2]Survey))
-					s := sx.(*[2]Survey)
+					sx, _ := DiskUsages.LoadOrStore(n, new([2]s2.Survey))
+					s := sx.(*[2]s2.Survey)
 					(*s)[0].Incr(rDiff / interval)
 					(*s)[1].Incr(wDiff / interval)
 				}
@@ -89,52 +96,57 @@ func OSWatcher() {
 	}
 }
 
+func rec() {
+	if r := recover(); r != nil {
+		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
+	}
+}
+
 func parseCPU(line string) (used, total int64) {
-	defer Recover(nil)
+	defer rec()
 	x := regexp.MustCompile(`[^\w](\d+)`).FindAllStringSubmatch(line, -1)
-	user := MustParseInt64(x[0][1])
-	nice := MustParseInt64(x[1][1])
-	system := MustParseInt64(x[2][1])
-	idle := MustParseInt64(x[3][1])
-	iowait := MustParseInt64(x[4][1])
-	irq := MustParseInt64(x[5][1])
-	softirq := MustParseInt64(x[6][1])
-	steal := MustParseInt64(x[7][1])
+	user := s2.MustParseInt64(x[0][1])
+	nice := s2.MustParseInt64(x[1][1])
+	system := s2.MustParseInt64(x[2][1])
+	idle := s2.MustParseInt64(x[3][1])
+	iowait := s2.MustParseInt64(x[4][1])
+	irq := s2.MustParseInt64(x[5][1])
+	softirq := s2.MustParseInt64(x[6][1])
+	steal := s2.MustParseInt64(x[7][1])
 	idleAll := idle + iowait
 	nonIdleAll := user + nice + system + irq + softirq + steal
 	return nonIdleAll, nonIdleAll + idleAll
 }
 
 func parseDiskIOPS(line string) (read, write int64) {
-	defer Recover(nil)
+	defer rec()
 	x := regexp.MustCompile(`(\d+)`).FindAllStringSubmatch(line, -1)
-	return MustParseInt64(x[0][1]), MustParseInt64(x[4][1])
+	return s2.MustParseInt64(x[0][1]), s2.MustParseInt64(x[4][1])
 }
 
-func GetOSUsage(dbPaths []string) (cpu []string, diskIOPS map[string][2]string, diskFree map[string][2]uint64) {
+func PrintCPU() (cpu []string) {
 	for i := 0; ; i++ {
 		v, ok := CPUUsages.Load(i)
 		if !ok {
 			break
 		}
-		cpu = append(cpu, v.(*Survey).MeanString())
+		cpu = append(cpu, v.(*s2.Survey).MeanString())
 	}
+	return
+}
 
+func PrintDiskIOPS() (diskIOPS map[string][2]string) {
 	diskIOPS = map[string][2]string{}
 	DiskUsages.Range(func(k, v interface{}) bool {
-		x := v.(*[2]Survey)
+		x := v.(*[2]s2.Survey)
 		diskIOPS[k.(string)] = [2]string{(*x)[0].MeanString(), (*x)[1].MeanString()}
 		return true
 	})
-
-	diskFree = make(map[string][2]uint64)
-	for _, dir := range dbPaths {
-		var stat unix.Statfs_t
-		unix.Statfs(dir, &stat)
-		diskFree[dir] = [2]uint64{
-			stat.Bavail * uint64(stat.Bsize) / 1024 / 1024,
-			stat.Blocks * uint64(stat.Bsize) / 1024 / 1024,
-		}
-	}
 	return
+}
+
+func PrintDiskFree(dir string) (free, total uint64) {
+	var stat unix.Statfs_t
+	unix.Statfs(dir, &stat)
+	return stat.Bavail * uint64(stat.Bsize), stat.Blocks * uint64(stat.Bsize)
 }

@@ -313,3 +313,13 @@ func initInfluxDB1Client() {
 	influxdb1Client.Client, influxdb1Client.Database = c, db
 	return
 }
+
+func rvToFloat64(v reflect.Value) float64 {
+	if v.Kind() >= reflect.Int && v.Kind() <= reflect.Int64 {
+		return float64(v.Int())
+	}
+	if v.Kind() >= reflect.Uint && v.Kind() <= reflect.Uint64 {
+		return float64(v.Uint())
+	}
+	return 0
+}

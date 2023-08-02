@@ -27,6 +27,12 @@ func init() {
 	future.StartWatcher(func(error) {})
 }
 
+func panicErr(err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func pairsMap(p []s2pkg.Pair) map[string]s2pkg.Pair {
 	m := map[string]s2pkg.Pair{}
 	for _, p := range p {
@@ -51,7 +57,7 @@ func doRange(r *redis.Client, key string, start string, n int, args ...any) []s2
 
 	a := client.Begin(r)
 	p, err := a.Select(context.TODO(), &flag, key, start, n)
-	s2pkg.PanicErr(err)
+	panicErr(err)
 
 	if all {
 		for _, p := range p {
@@ -79,11 +85,11 @@ func prepareServers() (*redis.Client, *redis.Client, *server.Server, *server.Ser
 	os.RemoveAll("test/7777")
 
 	s1, err := server.Open("test/6666", 1)
-	s2pkg.PanicErr(err)
+	panicErr(err)
 	go s1.Serve(":6666")
 
 	s2, err := server.Open("test/7777", 2)
-	s2pkg.PanicErr(err)
+	panicErr(err)
 	go s2.Serve(":7777")
 
 	time.Sleep(time.Second)
@@ -92,8 +98,8 @@ func prepareServers() (*redis.Client, *redis.Client, *server.Server, *server.Ser
 	rdb2 := redis.NewClient(&redis.Options{Addr: ":7777"})
 
 	ctx := context.TODO()
-	s2pkg.PanicErr(rdb1.ConfigSet(ctx, "Peer2", "127.0.0.1:7777").Err())
-	s2pkg.PanicErr(rdb2.ConfigSet(ctx, "Peer1", "127.0.0.1:6666").Err())
+	panicErr(rdb1.ConfigSet(ctx, "Peer2", "127.0.0.1:7777").Err())
+	panicErr(rdb2.ConfigSet(ctx, "Peer1", "127.0.0.1:6666").Err())
 
 	return rdb1, rdb2, s1, s2
 }
@@ -109,7 +115,7 @@ func TestAppend(t *testing.T) {
 		if rand.Intn(2) == 1 {
 			s2.Interop.Append(&s2pkg.AppendOptions{Effect: true}, "a", fmt.Sprintf("%d", count))
 		} else {
-			s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", count, "EFFECT").Err())
+			panicErr(rdb1.Do(ctx, "APPEND", "a", count, "EFFECT").Err())
 		}
 	}
 
@@ -143,7 +149,7 @@ func TestAppend(t *testing.T) {
 //
 // 	ctx := context.TODO()
 // 	for i := 0; i < 10; i++ {
-// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+// 		panicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
 // 		time.Sleep(time.Millisecond * 200)
 // 	}
 //
@@ -154,7 +160,7 @@ func TestAppend(t *testing.T) {
 // 			break
 // 		}
 // 	}
-// 	// s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
+// 	// panicErr(rdb2.Do(ctx, "APPEND", "a", "", "TTL", 1, "SYNC").Err())
 // 	s2.Interop.Append("Ttl=1Sync", "a", nil)
 //
 // 	data2 := doRange(rdb2, "a", "now", -100)
@@ -169,19 +175,19 @@ func TestConsolidation(t *testing.T) {
 	defer s2.Close()
 
 	ctx := context.TODO()
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 1, "AND", 2).Err())
+	panicErr(rdb1.Do(ctx, "APPEND", "a", 1, "AND", 2).Err())
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 3).Err())
+	panicErr(rdb1.Do(ctx, "APPEND", "a", 3).Err())
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 4).Err())
+	panicErr(rdb1.Do(ctx, "APPEND", "a", 4).Err())
 
 	for i := 10; i <= 15; i += 2 {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
+		panicErr(rdb2.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", 20, "AND", 21, "AND", 22).Err())
+	panicErr(rdb1.Do(ctx, "APPEND", "a", 20, "AND", 21, "AND", 22).Err())
 
 	s2.TestFlags.Fail = true
 
@@ -253,15 +259,15 @@ func TestConsolidation2(t *testing.T) {
 
 	ctx := context.TODO()
 	for i := 0; i < 5; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
+		panicErr(rdb1.Do(ctx, "APPEND", "a", i).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 	for i := 5; i < 10; i++ {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i).Err())
+		panicErr(rdb2.Do(ctx, "APPEND", "a", i).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 	for i := 10; i <= 15; i += 2 {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
+		panicErr(rdb1.Do(ctx, "APPEND", "a", i, "AND", i+1).Err())
 		time.Sleep(200 * time.Millisecond)
 	}
 
@@ -303,12 +309,12 @@ func TestWatermark(t *testing.T) {
 		if i%2 == 1 {
 			r = rdb2
 		}
-		s2pkg.PanicErr(r.Do(ctx, "APPEND", "a", i, "EFFECT").Err())
+		panicErr(r.Do(ctx, "APPEND", "a", i, "EFFECT").Err())
 		time.Sleep(150 * time.Millisecond)
 	}
 
 	for i := 0; i < 5; i++ {
-		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", i, "EFFECT").Err())
+		panicErr(rdb2.Do(ctx, "APPEND", "b", i, "EFFECT").Err())
 	}
 
 	doRange(rdb2, "b", "recent", -4)
@@ -328,7 +334,7 @@ func TestWatermark(t *testing.T) {
 	id1 := rdb2.Do(ctx, "APPEND", "c", 0, "AND", 1, "EFFECT").Val().([]any)[1].(string)
 
 	for i := 2; i <= 5; i++ {
-		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "c", i, "EFFECT").Err())
+		panicErr(rdb1.Do(ctx, "APPEND", "c", i, "EFFECT").Err())
 	}
 	data = doRange(rdb1, "c", id1, 3) // returns 1, 2, 3
 	if len(data) != 3 || string(data[2].Data) != "3" {
@@ -345,8 +351,8 @@ func TestWatermark(t *testing.T) {
 //
 // 	ctx := context.TODO()
 // 	for i := 0; i < 10; i++ {
-// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, "AND", 100).Err())
-// 		s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, "AND", "\x00\x03100abc").Err())
+// 		panicErr(rdb1.Do(ctx, "APPEND", "a", i/2*2, "AND", 100).Err())
+// 		panicErr(rdb2.Do(ctx, "APPEND", "a", i/2*2+1, "AND", "\x00\x03100abc").Err())
 // 		time.Sleep(150 * time.Millisecond)
 // 	}
 //
@@ -370,10 +376,10 @@ func TestWatermark(t *testing.T) {
 // 	s1.TestFlags.Fail = false
 //
 // 	for i := 0; i < 10; i++ {
-// 		s2pkg.PanicErr(rdb1.Do(ctx, "APPEND", "b", i).Err())
+// 		panicErr(rdb1.Do(ctx, "APPEND", "b", i).Err())
 // 		time.Sleep(150 * time.Millisecond)
 // 	}
-// 	s2pkg.PanicErr(rdb2.Do(ctx, "APPEND", "b", 10).Err())
+// 	panicErr(rdb2.Do(ctx, "APPEND", "b", 10).Err())
 // 	data = doRange(rdb2, "b", "+inf", -2)
 // 	if len(data) != 2 {
 // 		t.Fatal(data)

@@ -543,10 +543,10 @@ func TestXor(t *testing.T) {
 		id, _ := hex.DecodeString(id)
 		a = append(a, Pair{ID: id})
 	}
-	x := PackIDs(a)
+	x := PackPairIDs(a)
 	fmt.Println(len(x), len(ids)*8)
 
-	y := UnpackIDs(x)
+	y := UnpackPairIDs(x)
 	for _, p := range a {
 		if !y(p.ID) {
 			t.Fatal(p.ID)

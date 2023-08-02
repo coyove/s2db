@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coyove/s2db/s2"
 	"github.com/coyove/s2db/server"
 	"github.com/coyove/s2db/wire"
 	"github.com/coyove/sdss/future"
@@ -45,7 +44,6 @@ func init() {
 
 func main() {
 	flag.Parse()
-	go s2.OSWatcher()
 
 	if *showVersion {
 		fmt.Println("s2db", server.Version)

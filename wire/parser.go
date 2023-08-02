@@ -101,6 +101,65 @@ func (c *Command) String() string {
 	return string(buf)
 }
 
+func (K *Command) GetAppendOptions() (data, ids [][]byte, opts s2.AppendOptions) {
+	data = [][]byte{K.Bytes(2)}
+	opts.NoSync = true
+	for i := 3; i < K.ArgCount(); i++ {
+		if K.StrEqFold(i, "and") {
+			data = append(data, K.Bytes(i+1))
+			i++
+		} else if K.StrEqFold(i, "setid") {
+			for _, id := range K.Argv[i+1 : i+1+len(data)] {
+				ids = append(ids, s2.Bytes(id))
+			}
+			i += len(data)
+		} else if K.StrEqFold(i, "dp") {
+			opts.DPLen = byte(K.Int64(i + 1))
+			i++
+		} else if K.StrEqFold(i, "sync") {
+			opts.NoSync = false
+		}
+		opts.Effect = opts.Effect || K.StrEqFold(i, "effect")
+		opts.NoExpire = opts.NoExpire || K.StrEqFold(i, "noexp")
+		opts.Defer = opts.Defer || K.StrEqFold(i, "defer")
+	}
+	return
+}
+
+func (K *Command) GetSelectOptions() (n int, flag s2.SelectOptions) {
+	// SELECT key start n [...]
+	n = K.Int(3)
+	for i := 4; i < K.ArgCount(); i++ {
+		flag.Desc = flag.Desc || K.StrEqFold(i, "desc")
+		flag.Raw = flag.Raw || K.StrEqFold(i, "raw")
+		flag.Async = flag.Async || K.StrEqFold(i, "async")
+		flag.LeftOpen = flag.LeftOpen || K.StrEqFold(i, "leftopen")
+		flag.NoData = flag.NoData || K.StrEqFold(i, "nodata")
+
+		if K.StrEqFold(i, "union") {
+			flag.Unions = append(flag.Unions, K.Str(i+1))
+			i++
+		}
+	}
+	return
+}
+
+func (K *Command) GetScanOptions() (index, local bool, count int) {
+	for i := 2; i < K.ArgCount(); i++ {
+		if K.StrEqFold(i, "count") {
+			count = K.Int(i + 1)
+			i++
+		} else {
+			index = index || K.StrEqFold(i, "index")
+			local = local || K.StrEqFold(i, "local")
+		}
+	}
+	if count > 65536 {
+		count = 65536
+	}
+	return
+}
+
 type Parser struct {
 	reader        io.Reader
 	buffer        []byte
@@ -307,16 +366,4 @@ func (r *Parser) ReadCommand() (*Command, error) {
 		r.reset()
 	}
 	return cmd, err
-}
-
-func (r *Parser) Commands() <-chan *Command {
-	cmds := make(chan *Command)
-	go func() {
-		for cmd, err := r.ReadCommand(); err == nil; cmd, err = r.ReadCommand() {
-			cmds <- cmd
-		}
-		close(cmds)
-
-	}()
-	return cmds
 }

@@ -16,7 +16,6 @@ import (
 const (
 	PairCmdAppend         = 1
 	PairCmdAppendNoExpire = 2
-	PairCmdHSet           = 2
 )
 
 type Pair struct {
@@ -126,7 +125,7 @@ func TrimPairsForConsolidation(p []Pair, left, right bool) (t []Pair) {
 	return t
 }
 
-func PackIDs(p []Pair) (x []byte) {
+func PackPairIDs(p []Pair) (x []byte) {
 	if len(p) == 0 {
 		return nil
 	}
@@ -140,7 +139,7 @@ func PackIDs(p []Pair) (x []byte) {
 	return
 }
 
-func UnpackIDs(x []byte) func(id []byte) bool {
+func UnpackPairIDs(x []byte) func(id []byte) bool {
 	if len(x) == 0 {
 		return func([]byte) bool { return false }
 	}
@@ -200,4 +199,18 @@ func CreatePairDeduper() func([]Pair) []Pair {
 		}
 		return
 	}
+}
+
+func SortPairs(p []Pair, asc bool) []Pair {
+	sort.Slice(p, func(i, j int) bool {
+		return p[i].Less(p[j]) == asc
+	})
+
+	for i := len(p) - 1; i > 0; i-- {
+		if p[i].Equal(p[i-1]) {
+			p[i-1].Con = p[i-1].Con || p[i].Con // inherit the consolidation mark if any
+			p = append(p[:i], p[i+1:]...)
+		}
+	}
+	return p
 }

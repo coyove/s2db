@@ -208,7 +208,9 @@ func (s *Server) getRedis(addr string) (cli *redis.Client) {
 		return cli
 	}
 	cfg, err := wire.ParseConnString(addr)
-	s2.PanicErr(err)
+	if err != nil {
+		panic(err)
+	}
 	cli = cfg.GetClient()
 	s.rdbCache.Add(cfg.URI, cli)
 	return
@@ -247,24 +249,24 @@ func (s *Server) CopyConfig(remoteAddr, key string) (finalErr error) {
 }
 
 func (s *Server) runScriptFunc(name string, args ...interface{}) (bas.Value, error) {
-	if s.SelfManager == nil {
-		return bas.Nil, nil
-	}
-	defer s2.Recover(nil)
-	f, _ := s.SelfManager.Get(name)
-	if !f.IsObject() {
-		return f, nil
-	}
-	in := make([]bas.Value, len(args))
-	for i := range in {
-		in[i] = bas.ValueOf(args[i])
-	}
-	res := f.Object().TryCall(nil, in...)
-	if res.IsError() {
-		log.Errorf("runScript(%s): %v", name, res)
-		return bas.Nil, res.Error()
-	}
-	return res, nil
+	// if s.SelfManager == nil {
+	return bas.Nil, nil
+	// }
+	// defer s2.Recover(nil)
+	// f, _ := s.SelfManager.Get(name)
+	// if !f.IsObject() {
+	// 	return f, nil
+	// }
+	// in := make([]bas.Value, len(args))
+	// for i := range in {
+	// 	in[i] = bas.ValueOf(args[i])
+	// }
+	// res := f.Object().TryCall(nil, in...)
+	// if res.IsError() {
+	// 	log.Errorf("runScript(%s): %v", name, res)
+	// 	return bas.Nil, res.Error()
+	// }
+	// return res, nil
 }
 
 func (s *Server) mustRunCode(code string, args ...[]byte) bas.Value {

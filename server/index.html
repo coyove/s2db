@@ -143,11 +143,9 @@
        
         <div class=section id=s_host_disk>
             <div class=s-title>host_disk</div>
-            {{range $k, $v := .Disk}}
             <div class=s-content>
-                <div class=s-key>data_dir_{{$k}}</div><div class=s-value>{{index $v 0}}/{{index $v 1}}</div>
+                <div class=s-key>data_dir</div><div class=s-value>{{index .Disk 0}}/{{index .Disk 1}}</div>
             </div>
-            {{end}}
             {{range $k, $v := .IOPS}}
             <div class=s-content>
                 <div class=s-key>disk_{{$k}}_read_iops</div><div class=s-value>{{stat (index $v 0)}}</div>

@@ -11,26 +11,27 @@ import (
 	"hash/crc32"
 	"io"
 	"math"
-	"net/http"
 	"reflect"
 	"runtime"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"unsafe"
 
 	"github.com/pierrec/lz4/v4"
-	"github.com/sirupsen/logrus"
 )
 
 func MustParseFloat(a string) float64 {
 	if strings.HasPrefix(a, "0x") {
 		v, err := strconv.ParseUint(a[2:], 16, 64)
-		PanicErr(err)
+		if err != nil {
+			panic(err)
+		}
 		return math.Float64frombits(v)
 	}
 	v, err := strconv.ParseFloat(a, 64)
-	PanicErr(err)
+	if err != nil {
+		panic(err)
+	}
 	return v
 }
 
@@ -182,31 +183,6 @@ func HashStr128(s string) (buf [16]byte) {
 	return
 }
 
-func Recover(f func()) {
-	if r := recover(); r != nil {
-		logrus.Error("fatal: ", r, " ", string(debug.Stack()))
-		if f != nil {
-			f()
-		}
-	}
-}
-
-func HTTPRecover(w http.ResponseWriter, rr *http.Request) {
-	defer func() {
-		if r := recover(); r != nil {
-			w.WriteHeader(500)
-			w.Write(debug.Stack())
-			logrus.Errorf("fatal HTTP error of %q: %v", rr.RequestURI, r)
-		}
-	}()
-}
-
-func PanicErr(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
 func Bytes(b []byte) []byte {
 	return append([]byte{}, b...)
 }
@@ -283,10 +259,6 @@ func CopyCrc32(w io.Writer, r io.Reader, f func(int)) (total int, ok bool, err e
 	}
 }
 
-func BitsMask(hi, lo int64) int64 {
-	return int64(1<<hi - 1<<lo + 1<<hi)
-}
-
 func CompressBulks(m [][]byte) []byte {
 	p := &bytes.Buffer{}
 	w := lz4.NewWriter(p)
@@ -332,16 +304,6 @@ func DecompressBulks(r io.Reader) (bulks [][]byte, err error) {
 		bulks = append(bulks, b)
 	}
 	return
-}
-
-func SizeOfBulksExceeds(bulks [][]byte, max int) bool {
-	for _, b := range bulks {
-		max -= len(b)
-		if max < 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func NZEncode(out, in []byte) []byte {
@@ -423,4 +385,39 @@ func ToBytes(v any) []byte {
 	default:
 		return fmt.Append(nil, v)
 	}
+}
+
+func HexEncode(k []byte) []byte {
+	_ = k[15]
+	k0 := make([]byte, 32)
+	hex.Encode(k0, k)
+	return k0
+}
+
+func HexDecode(k []byte) []byte {
+	_ = k[31]
+	k0 := make([]byte, 16)
+	if len(k) == 33 && k[16] == '_' {
+		hex.Decode(k0[:8], k[:16])
+		hex.Decode(k0[8:], k[17:])
+	} else {
+		hex.Decode(k0, k)
+	}
+	return k0
+}
+
+func HexEncodeBulks(ids [][]byte) [][]byte {
+	hexIds := make([][]byte, len(ids))
+	for i := range hexIds {
+		hexIds[i] = HexEncode(ids[i])
+	}
+	return hexIds
+}
+
+func HexDecodeBulks(ids [][]byte) [][]byte {
+	hexIds := make([][]byte, len(ids))
+	for i := range hexIds {
+		hexIds[i] = HexDecode(ids[i])
+	}
+	return hexIds
 }

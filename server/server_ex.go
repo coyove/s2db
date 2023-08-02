@@ -27,22 +27,15 @@ import (
 
 var (
 	isReadCommand = map[string]bool{
-		"PSELECT":  true,
-		"PHGETALL": true,
-		"PLOOKUP":  true,
-		"SELECT":   true,
-		"LOOKUP":   true,
-		"COUNT":    true,
-		"SCAN":     true,
-		"HSYNC":    true,
-		"HLEN":     true,
-		"HGET":     true,
-		"HTIME":    true,
-		"HGETALL":  true,
+		"PSELECT": true,
+		"PLOOKUP": true,
+		"SELECT":  true,
+		"LOOKUP":  true,
+		"COUNT":   true,
+		"SCAN":    true,
 	}
 	isWriteCommand = map[string]bool{
 		"APPEND": true,
-		"HSET":   true,
 	}
 
 	//go:embed index.html

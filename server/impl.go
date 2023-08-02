@@ -87,7 +87,7 @@ func (s *Server) implAppend(key string, ids, data [][]byte, opts s2.AppendOption
 	return kk, id, nil
 }
 
-func (s *Server) setMissing(key string, before, after []s2.Pair,
+func (s *Server) fillHoles(key string, before, after []s2.Pair,
 	consolidate, consolidateLeft, consolidateRight bool) error {
 	bkPrefix := kkp(key)
 
@@ -212,10 +212,13 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 	ns := future.UnixNano()
 	for c.Valid() {
 		k := bytes.TrimPrefix(c.Key(), bkPrefix)
-		p := s2.Pair{
-			ID:   s2.Bytes(k),
-			Data: s2.Bytes(c.Value()),
+
+		p := s2.Pair{}
+		p.ID = s2.Bytes(k)
+		if !opts.NoData {
+			p.Data = s2.Bytes(c.Value())
 		}
+
 		if opts.Raw {
 			data = append(data, p)
 			goto NEXT

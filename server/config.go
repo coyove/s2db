@@ -34,10 +34,9 @@ type ServerConfig struct {
 	SlowLimit              int // ms
 	TimeoutPeer            int // ms
 	TimeoutRange           int // ms
+	TimeoutCount           int // ms
 	BatchLimit             int
 	PipelineLimit          int
-	CompressLimit          int
-	HashmapSyncWait        int // ms
 	L6WorkerMaxTx          string
 	MetricsEndpoint        string
 	InspectorSource        string
@@ -83,10 +82,9 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.SlowLimit, 500)
 	ifZero(&s.Config.TimeoutPeer, 50)
 	ifZero(&s.Config.TimeoutRange, 500)
+	ifZero(&s.Config.TimeoutCount, 1000)
 	ifZero(&s.Config.BatchLimit, 100)
 	ifZero(&s.Config.PipelineLimit, 1000)
-	ifZero(&s.Config.CompressLimit, 10*1024)
-	ifZero(&s.Config.HashmapSyncWait, 50)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
 	}

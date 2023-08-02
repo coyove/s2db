@@ -68,7 +68,7 @@ func parseAPPEND(K *wire.Command) (data, ids [][]byte, opts s2.AppendOptions) {
 	return
 }
 
-func parseSELECT(K *wire.Command) (n int, flag s2.SelectOptions) {
+func parseSelect(K *wire.Command) (n int, flag s2.SelectOptions) {
 	// SELECT key start n [...]
 	n = K.Int(3)
 	for i := 4; i < K.ArgCount(); i++ {
@@ -76,6 +76,7 @@ func parseSELECT(K *wire.Command) (n int, flag s2.SelectOptions) {
 		flag.Raw = flag.Raw || K.StrEqFold(i, "raw")
 		flag.Async = flag.Async || K.StrEqFold(i, "async")
 		flag.LeftOpen = flag.LeftOpen || K.StrEqFold(i, "leftopen")
+		flag.NoData = flag.NoData || K.StrEqFold(i, "nodata")
 
 		if K.StrEqFold(i, "union") {
 			flag.Unions = append(flag.Unions, K.Str(i+1))
@@ -85,37 +86,7 @@ func parseSELECT(K *wire.Command) (n int, flag s2.SelectOptions) {
 	return
 }
 
-func parseHSET(K *wire.Command) (kvs, ids [][]byte, sync, wait bool) {
-	kvs = [][]byte{K.BytesRef(2), K.BytesRef(3)}
-	for i := 2; i < K.ArgCount(); i++ {
-		if K.StrEqFold(i, "set") {
-			kvs = append(kvs, K.BytesRef(i+1), K.BytesRef(i+2))
-			i += 2
-		} else if K.StrEqFold(i, "setid") {
-			ids = K.Argv[i+1:]
-			break
-		} else {
-			wait = wait || K.StrEqFold(i, "wait")
-			sync = sync || K.StrEqFold(i, "sync")
-		}
-	}
-	return
-}
-
-func parseHGETALL(K *wire.Command) (noCompress, ts, keysOnly bool, match []byte) {
-	for i := 2; i < K.ArgCount(); i++ {
-		noCompress = noCompress || K.StrEqFold(i, "nocompress")
-		ts = ts || K.StrEqFold(i, "timestamp")
-		keysOnly = keysOnly || K.StrEqFold(i, "keysonly")
-		if K.StrEqFold(i, "match") {
-			match = K.BytesRef(i + 1)
-			i++
-		}
-	}
-	return
-}
-
-func parseSCAN(K *wire.Command) (index, local bool, count int) {
+func parseScan(K *wire.Command) (index, local bool, count int) {
 	for i := 2; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "count") {
 			count = K.Int(i + 1)

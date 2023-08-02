@@ -3,7 +3,6 @@ package wire
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"io"
 	"runtime"
 	"strconv"
@@ -167,26 +166,4 @@ func (w *Writer) WriteBulks(value any) error {
 	}
 	runtime.KeepAlive(value)
 	return nil
-}
-
-type DummySink struct {
-	val any
-}
-
-func (w *DummySink) WriteSimpleString(s string) error  { w.val = s; return nil }
-func (w *DummySink) WriteError(s string) error         { w.val = errors.New(s); return nil }
-func (w *DummySink) WriteInt64(val int64) error        { w.val = val; return nil }
-func (w *DummySink) WriteBulk(val any) error           { w.val = val; return nil }
-func (w *DummySink) WriteBulks(val any) error          { w.val = val; return nil }
-func (w *DummySink) WriteBulkBulks(a any, b any) error { w.val = []any{a, b}; return nil }
-
-func (w *DummySink) Err() error {
-	if err, ok := w.val.(error); ok {
-		return err
-	}
-	return nil
-}
-
-func (w *DummySink) Val() any {
-	return w.val
 }

@@ -286,7 +286,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 
 	defer s.recoverLogger(startTime, cmd, w, func(diff time.Duration) {
 		slowLogger.Infof("%s\t% 4.3f\t%s\t%v", key, diff.Seconds(), src, K)
-	})
+	}, nil)
 
 	// General commands
 	switch cmd {
@@ -347,7 +347,11 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	switch cmd {
 	case "APPEND": // key data_0 [DP dp_len] [SYNC] [NOEXP] [[AND data_1] ...] [SETID ...]
 		data, ids, opts := parseAPPEND(K)
-		return s.execAppend(w, key, ids, data, opts)
+		ids, err := s.execAppend(key, ids, data, opts)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulks(hexEncodeBulks(ids))
 	case "PSELECT": // key raw_start count flag desc_lowest packed_ids => [ID 0, DATA 0, ...]
 		start, flag, contains := K.BytesRef(2), s2.ParseSelectOptions(K.Int64(4)), s2.UnpackIDs(K.BytesRef(6))
 		largest, ok := s.wmCache.Get16(s2.HashStr128(key))
@@ -375,8 +379,8 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			}
 		}
 		return w.WriteBulks(a)
-	case "SELECT": // key start count [ASC|DESC] [ASYNC] [RAW] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
-		n, flag := parseSELECT(K)
+	case "SELECT": // key start count [ASC|DESC] [ASYNC] [RAW] [UNION key_2 [UNION ...]] => [ID 0, TIME 0, DATA 0, ID 1, TIME 1, DATA 1 ... ]
+		n, flag := parseSelect(K)
 		start := s.translateCursor(K.BytesRef(2), flag.Desc)
 		data, err := s.execSelect(key, start, n, flag)
 		if err != nil {
@@ -395,12 +399,23 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 			return w.WriteError(err.Error())
 		}
 		return w.WriteBulk(data)
+	case "COUNT": // key start end [max]
+		start, end := s.translateCursor(K.BytesRef(2), false), s.translateCursor(K.BytesRef(3), false)
+		max := 0
+		if K.ArgCount() >= 5 {
+			max = K.Int(4)
+		}
+		count, err := s.execCount(key, start, end, max)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteInt64(int64(count))
 	case "SCAN": // cursor [COUNT count] [INDEX] [LOCAL]
-		index, local, count := parseSCAN(K)
+		index, local, count := parseScan(K)
 		if index {
 			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
-		return s.execScan(w, K.StrRef(1), count, local)
+		return w.WriteBulkBulks(s.execScan(K.StrRef(1), count, local))
 	case "WAITEFFECT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -415,7 +430,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w wire.WriterImpl, 
 	return w.WriteError(s2.ErrUnknownCommand.Error())
 }
 
-func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration)) {
+func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, onSlow func(time.Duration), outErr *error) {
 	if r := recover(); r != nil {
 		if testFlag || os.Getenv("PRINT_STACK") != "" {
 			fmt.Println(r, string(debug.Stack()))
@@ -430,7 +445,12 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 				break
 			}
 		}
-		w.WriteError(fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r))
+		msg := fmt.Sprintf("[%s] fatal error (%s:%d): %v", cmd, filepath.Base(fn), ln, r)
+		if w != nil {
+			w.WriteError(msg)
+		} else {
+			*outErr = fmt.Errorf(msg)
+		}
 		s.Survey.FatalError.Incr(1)
 	} else {
 		diff := time.Since(start)
@@ -457,14 +477,16 @@ func (s *Server) recoverLogger(start time.Time, cmd string, w wire.WriterImpl, o
 	}
 }
 
-func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, opts s2.AppendOptions) error {
+func (s *Server) execAppend(key string, ids, data [][]byte, opts s2.AppendOptions) ([][]byte, error) {
 	ids, maxID, err := s.implAppend(key, ids, data, opts)
 	if err != nil {
-		return w.WriteError(err.Error())
+		return nil, err
 	}
-	hexIds := hexEncodeBulks(ids)
 	if !opts.NoSync && s.HasOtherPeers() {
 		args := []any{"APPEND", key, data[0]}
+		if opts.Defer {
+			args = append(args, "DEFER")
+		}
 		for i := 1; i < len(data); i++ {
 			args = append(args, "AND", data[i])
 		}
@@ -480,49 +502,12 @@ func (s *Server) execAppend(w wire.WriterImpl, key string, ids, data [][]byte, o
 	if opts.Effect {
 		maxID.Wait()
 	}
-	return w.WriteBulks(hexIds)
+	return ids, nil
 }
-
-// func (s *Server) execHSet(w wire.WriterImpl, key string, ids, kvs [][]byte, sync, wait bool) error {
-// 	ids, maxID, err := s.implHSet(key, kvs, ids)
-// 	if err != nil {
-// 		return w.WriteError(err.Error())
-// 	}
-// 	hexIds := hexEncodeBulks(ids)
-// 	if sync && s.HasOtherPeers() {
-// 		args := []any{"HSET", key, s2.Bytes(kvs[0]), s2.Bytes(kvs[1])}
-// 		for i := 2; i < len(kvs); i += 2 {
-// 			args = append(args, "SET", s2.Bytes(kvs[i]), s2.Bytes(kvs[i+1]))
-// 		}
-// 		args = append(args, "SETID")
-// 		args = append(args, bbany(ids)...)
-// 		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
-// 			return redis.NewStringSliceCmd(context.TODO(), args...)
-// 		}, nil)
-// 		s.Survey.HSetSyncN.Incr(int64(len(ids)))
-// 	}
-// 	if wait {
-// 		maxID.Wait()
-// 	}
-// 	return w.WriteBulks(hexIds)
-//
-// }
-//
-// func (s *Server) execHGetAll(w wire.WriterImpl, key string, noCompress, ts, keysOnly bool, match []byte) error {
-// 	s.syncHashmap(key, false)
-// 	res, err := s.implHGetAll(key, match, true, !keysOnly, ts)
-// 	if err != nil {
-// 		return w.WriteError(err.Error())
-// 	}
-// 	if !noCompress && s2.SizeOfBulksExceeds(res, s.Config.CompressLimit) {
-// 		return w.WriteBulk(s2.CompressBulks(res))
-// 	}
-// 	return w.WriteBulks(res)
-// }
 
 func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptions) ([]s2.Pair, error) {
 	if len(opts.Unions) > 0 {
-		return s.execSelectUnions(append(opts.Unions, key), start, n, opts)
+		return s.selectUnions(append(opts.Unions, key), start, n, opts)
 	}
 
 	markPairsAll := func(data []s2.Pair) []s2.Pair {
@@ -574,9 +559,9 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 			data = data[:n]
 		}
 		if async {
-			return data
+			return nil
 		}
-		s.setMissing(key, origData, data,
+		s.fillHoles(key, origData, data,
 			// Only if we received acknowledgements from all other peers, we can consolidate Pairs.
 			success == s.OtherPeersCount(),
 			// If iterating in asc order from the beginning, the leftmost Pair is the trusted start of the list.
@@ -585,9 +570,7 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 			len(data) < n && opts.Desc,
 		)
 		if success == s.OtherPeersCount() {
-			for i := range data {
-				data[i].All = true
-			}
+			data = markPairsAll(data)
 		}
 		return data
 	}
@@ -605,39 +588,41 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 	return merge(false), nil
 }
 
-func (s *Server) execSelectUnions(keys []string, start []byte, n int, opts s2.SelectOptions) ([]s2.Pair, error) {
+func (s *Server) selectUnions(keys []string, start []byte, n int, opts s2.SelectOptions) ([]s2.Pair, error) {
 	opts.Unions = nil
-	out := make([]any, len(keys))
-
-	var wg sync.WaitGroup
+	var (
+		mu     sync.Mutex
+		out    []s2.Pair
+		outErr atomic.Value
+		wg     sync.WaitGroup
+	)
 	for i, u := range keys {
 		wg.Add(1)
 		go func(i int, key string) {
 			defer wg.Done()
 			if data, err := s.execSelect(key, start, n, opts); err != nil {
-				out[i] = err
+				outErr.Store(err)
 			} else {
-				out[i] = data
+				mu.Lock()
+				out = append(out, data...)
+				mu.Unlock()
 			}
 		}(i, u)
 	}
 	wg.Wait()
 
-	var data []s2.Pair
-	for _, d := range out {
-		if err, ok := d.(error); ok {
-			return nil, err
-		}
-		data = append(data, d.([]s2.Pair)...)
+	if err, ok := outErr.Load().(error); ok {
+		return nil, err
 	}
-	data = sortPairs(data, !opts.Desc)
-	if len(data) > n {
-		data = data[:n]
+
+	out = sortPairs(out, !opts.Desc)
+	if len(out) > n {
+		out = out[:n]
 	}
-	return data, nil
+	return out, nil
 }
 
-func (s *Server) execScan(w wire.WriterImpl, cursor string, count int, local bool) error {
+func (s *Server) execScan(cursor string, count int, local bool) (string, []string) {
 	next, res := s.Scan(cursor, count)
 	if !local && s.HasOtherPeers() {
 		s.ForeachPeerSendCmd(SendCmdOptions{},
@@ -663,7 +648,7 @@ func (s *Server) execScan(w wire.WriterImpl, cursor string, count int, local boo
 			res = res[:count]
 		}
 	}
-	return w.WriteBulkBulks(next, res)
+	return next, res
 }
 
 func (s *Server) execLookup(id []byte) (data []byte, err error) {
@@ -688,4 +673,58 @@ func (s *Server) execLookup(id []byte) (data []byte, err error) {
 		return false
 	})
 	return
+}
+
+func (s *Server) execCount(key string, start, end []byte, max int) (int, error) {
+	if bytes.Compare(start, end) > 0 {
+		start, end = end, start
+	}
+
+	origStart := start
+
+	N := 1000
+	if max > 0 && max < N {
+		N = max
+	}
+
+	so := s2.SelectOptions{NoData: true}
+	var count int
+
+	ddl := future.UnixNano() + int64(s.Config.TimeoutCount)*1e6
+	for future.UnixNano() < ddl {
+		data, err := s.execSelect(key, start, N, so)
+		if err != nil {
+			return 0, err
+		}
+		for _, p := range data {
+			if bytes.Compare(p.ID, end) > 0 {
+				return count, nil
+			}
+			count++
+			start = p.ID
+		}
+		if max > 0 && count >= max {
+			return count, nil
+		}
+		if len(data) < N {
+			return count, nil
+		}
+		so.LeftOpen = true
+	}
+
+	// Since count timed out, let's estimate.
+
+	known, err := s.DB.EstimateDiskUsage(append(kkp(key), origStart...), append(kkp(key), start...))
+	if err != nil {
+		return 0, err
+	}
+
+	full, err := s.DB.EstimateDiskUsage(append(kkp(key), origStart...), append(kkp(key), end...))
+	if err != nil {
+		return 0, err
+	}
+
+	count = int(float64(count) / float64(known+1) * float64(full+1))
+	count = (count/N + 1) * N
+	return count, nil
 }

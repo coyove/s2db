@@ -5,16 +5,14 @@ import (
 	"unsafe"
 
 	"github.com/coyove/s2db/s2"
-	"github.com/coyove/s2db/wire"
 )
 
 type interop struct{}
 
 func (i *interop) s() *Server { return (*Server)(unsafe.Pointer(i)) }
 
-func (i *interop) Append(opts *s2.AppendOptions, key string, data ...any) ([][]byte, error) {
-	out := &wire.DummySink{}
-	defer i.s().recoverLogger(time.Now(), "APPEND", out, nil)
+func (i *interop) Append(opts *s2.AppendOptions, key string, data ...any) (_out [][]byte, _err error) {
+	defer i.s().recoverLogger(time.Now(), "APPEND", nil, nil, &_err)
 
 	if opts == nil {
 		opts = &s2.AppendOptions{}
@@ -24,17 +22,15 @@ func (i *interop) Append(opts *s2.AppendOptions, key string, data ...any) ([][]b
 	for i := range data {
 		v[i] = s2.ToBytes(data[i])
 	}
-	i.s().execAppend(out, key, nil, v, *opts)
-
-	if err := out.Err(); err != nil {
+	res, err := i.s().execAppend(key, nil, v, *opts)
+	if err != nil {
 		return nil, err
 	}
-	return hexDecodeBulks(out.Val().([][]byte)), nil
+	return res, nil
 }
 
-func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int) ([]s2.Pair, error) {
-	out := &wire.DummySink{}
-	defer i.s().recoverLogger(time.Now(), "SELECT", out, nil)
+func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int) (_out []s2.Pair, _err error) {
+	defer i.s().recoverLogger(time.Now(), "SELECT", nil, nil, &_err)
 
 	if opts == nil {
 		opts = &s2.SelectOptions{}
@@ -50,11 +46,21 @@ func (i *interop) Select(opts *s2.SelectOptions, key string, start []byte, n int
 	return data, nil
 }
 
-func (i *interop) Scan(cursor string, count int, local bool) (string, []string) {
-	out := &wire.DummySink{}
-	defer i.s().recoverLogger(time.Now(), "SCAN", out, nil)
+func (i *interop) Count(key string, start, end []byte, max int) (_out int, _err error) {
+	defer i.s().recoverLogger(time.Now(), "COUNT", nil, nil, &_err)
 
-	i.s().execScan(out, cursor, count, local)
-	res := out.Val().([]any)
-	return res[0].(string), res[1].([]string)
+	return i.s().execCount(key, i.s().translateCursor(start, false), i.s().translateCursor(end, false), max)
+}
+
+func (i *interop) Lookup(id []byte) (_data []byte, _err error) {
+	defer i.s().recoverLogger(time.Now(), "LOOKUP", nil, nil, &_err)
+
+	return i.s().execLookup(id)
+}
+
+func (i *interop) Scan(cursor string, count int, local bool) (_next string, _keys []string, _err error) {
+	defer i.s().recoverLogger(time.Now(), "SCAN", nil, nil, &_err)
+
+	_next, _keys = i.s().execScan(cursor, count, local)
+	return
 }

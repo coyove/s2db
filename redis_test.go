@@ -543,21 +543,27 @@ func TestSelectUnions(t *testing.T) {
 	}
 	opts.Unions = opts.Unions[1:]
 
-	m := map[int]bool{}
 	var start []byte
-MORE:
-	p, _ := s1.Interop.Select(opts, "a0", start, 20)
-	for _, p := range p {
-		v, _ := strconv.Atoi(string(p.Data))
-		m[v] = true
-	}
-	if len(p) > 0 {
-		start = p[len(p)-1].ID
-		opts.LeftOpen = true
-		goto MORE
-	}
+	for i := 0; i < 2; i++ {
+		m := map[int]bool{}
+	MORE:
+		p, _ := s1.Interop.Select(opts, "a0", start, 20)
+		for _, p := range p {
+			v, _ := strconv.Atoi(string(p.Data))
+			m[v] = true
+		}
+		if len(p) > 0 {
+			start = p[len(p)-1].ID
+			opts.LeftOpen = true
+			goto MORE
+		}
 
-	if len(m) != N {
-		t.Fatal(len(m))
+		if len(m) != N {
+			t.Fatal(len(m))
+		}
+
+		// Next round: iter from end
+		opts.Desc = true
+		start = []byte("now")
 	}
 }

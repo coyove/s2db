@@ -36,8 +36,13 @@ type SelectOptions struct {
 	// Select local data only, including special DB markers.
 	Raw bool
 
+	// Selected range will be left-opened.
 	LeftOpen bool
 
+	// Omit data upon returning the result.
+	NoData bool
+
+	// Union keys.
 	Unions []string
 }
 
@@ -54,6 +59,9 @@ func (o SelectOptions) ToInt() (v int64) {
 	if o.LeftOpen {
 		v |= 8
 	}
+	if o.NoData {
+		v |= 16
+	}
 	return
 }
 
@@ -62,6 +70,7 @@ func ParseSelectOptions(v int64) (o SelectOptions) {
 	o.Async = v&2 > 0
 	o.Raw = v&4 > 0
 	o.LeftOpen = v&8 > 0
+	o.NoData = v&16 > 0
 	return o
 }
 

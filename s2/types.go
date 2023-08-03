@@ -79,4 +79,5 @@ var (
 	ErrUnknownCommand  = errors.New("unknown command")
 	ErrServerReadonly  = errors.New("server is readonly")
 	ErrNoAuth          = errors.New("NOAUTH")
+	ErrPeerTimeout     = errors.New("peer timed out")
 )

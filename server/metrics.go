@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/url"
@@ -19,11 +20,6 @@ import (
 	client "github.com/influxdata/influxdb1-client"
 	log "github.com/sirupsen/logrus"
 )
-
-var influxdb1Client struct {
-	*client.Client
-	Database string
-}
 
 type ServerSurvey struct {
 	StartAt          time.Time
@@ -158,7 +154,7 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 				return err
 			}
 		case "influxdb1":
-			if influxdb1Client.Client == nil {
+			if s.influxdb1.Client == nil {
 				continue
 			}
 			pairs = append(pairs, metricsPair{Member: "Heartbeat", Score: 1})
@@ -173,9 +169,9 @@ func (s *Server) appendMetricsPairs(ttl time.Duration) error {
 					Precision:   "s",
 				})
 			}
-			resp, err := influxdb1Client.Write(client.BatchPoints{
+			resp, err := s.influxdb1.Client.Write(client.BatchPoints{
 				Points:    points,
-				Database:  influxdb1Client.Database,
+				Database:  s.influxdb1.Database,
 				Precision: "s",
 			})
 			if err != nil {
@@ -268,16 +264,13 @@ func (s *Server) getMetricsCommand(key string) interface{} {
 	return sv
 }
 
-func initInfluxDB1Client() {
-	endpoint := *influxdb1MetricsEndpoint
-	if endpoint == "" {
-		return
+func (s *Server) initInfluxDB1Client(endpoint string) error {
+	if endpoint == s.influxdb1.URI {
+		return nil
 	}
-
 	end, err := url.Parse(endpoint)
 	if err != nil {
-		log.Errorf("invalid influxdb endpoint %q: %v", endpoint, err)
-		return
+		return fmt.Errorf("invalid influxdb endpoint %q: %v", endpoint, err)
 	}
 
 	var db string = "s2db"
@@ -306,12 +299,12 @@ func initInfluxDB1Client() {
 		Timeout:  timeout,
 	})
 	if _, _, err := c.Ping(); err != nil {
-		log.Errorf("failed to ping influxdb: %v", err)
-		return
+		return fmt.Errorf("failed to ping influxdb: %v", err)
 	}
 
-	influxdb1Client.Client, influxdb1Client.Database = c, db
-	return
+	s.influxdb1.URI = endpoint
+	s.influxdb1.Client, s.influxdb1.Database = c, db
+	return nil
 }
 
 func rvToFloat64(v reflect.Value) float64 {

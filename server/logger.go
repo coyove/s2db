@@ -34,8 +34,6 @@ func InitLogger(debug bool, runtime, slow, db string) {
 	dbLogger = log.New()
 	setLogger(dbLogger, db, true)
 
-	initInfluxDB1Client()
-
 	go future.StartWatcher(func(err error) {
 		log.Errorf("future NTP watcher: %v", err)
 	})

@@ -8,10 +8,8 @@ import (
 	"os"
 	"runtime"
 	"strconv"
-	"strings"
 	"time"
 
-	"github.com/coyove/s2db/s2/config"
 	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/s2db/server"
 	"github.com/coyove/sdss/future"
@@ -19,18 +17,13 @@ import (
 )
 
 var (
-	listenAddr   = flag.String("l", ":6379", "listen address")
-	dataDir      = flag.String("d", "test", "data directory")
-	readOnly     = flag.Bool("ro", false, "start server as readonly")
-	channel      = flag.Int64("ch", -1, "channel 0-"+strconv.Itoa(int(future.Channels)-1))
-	showVersion  = flag.Bool("v", false, "print s2db version then exit")
-	sendRedisCmd = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
-	configSet    = func() (f [6]*string) {
-		for i := range f {
-			f[i] = flag.String("C"+strconv.Itoa(i), "", "update config before serving, form: key=value")
-		}
-		return f
-	}()
+	listenAddr       = flag.String("l", ":6379", "listen address")
+	dataDir          = flag.String("d", "test", "data directory")
+	writeConfig      = flag.Bool("C", false, "init config then exit")
+	readOnly         = flag.Bool("ro", false, "start server as readonly")
+	channel          = flag.Int64("ch", -1, "channel 0-"+strconv.Itoa(int(future.Channels)-1))
+	showVersion      = flag.Bool("v", false, "print s2db version then exit")
+	sendRedisCmd     = flag.String("cmd", "", "send redis command to the address specified by '-l' then exit")
 	dumpReceiverDir  = flag.String("dump", "", "dump database")
 	logRuntimeConfig = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig    = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
@@ -78,25 +71,15 @@ func main() {
 
 	server.PrintAllFlags()
 
-	if err := config.Update(*dataDir+".conf", &server.ServerConfig{}, func(a any) {
-		config := a.(*server.ServerConfig)
-		for _, cd := range configSet {
-			if idx := strings.Index(*cd, "="); idx != -1 {
-				key, value := (*cd)[:idx], (*cd)[idx+1:]
-				if prev, found := config.UpdateField(key, value); found {
-					log.Infof("[config] update %s from <%v> to <%v>", key, prev, value)
-				}
-			}
-		}
-	}); err != nil {
-		log.Errorf("update config: %v", err)
-		os.Exit(-1)
-	}
-
 	s, err := server.Open(*dataDir, *channel)
 	if err != nil {
 		log.Errorf("open: %v", err)
 		os.Exit(-1)
+	}
+
+	if *writeConfig {
+		log.Infof("finished config init")
+		return
 	}
 
 	s.ReadOnly = *readOnly

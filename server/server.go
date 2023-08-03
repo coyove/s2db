@@ -26,6 +26,7 @@ import (
 	"github.com/coyove/s2db/s2/resp"
 	"github.com/coyove/sdss/future"
 	"github.com/go-redis/redis/v8"
+	client "github.com/influxdata/influxdb1-client"
 	"github.com/sirupsen/logrus"
 	log "github.com/sirupsen/logrus"
 )
@@ -56,6 +57,11 @@ type Server struct {
 	copying      sync.Map
 	dbFile       *os.File
 	pipeline     chan *dbPayload
+	influxdb1    struct {
+		*client.Client
+		URI      string
+		Database string
+	}
 
 	TestFlags struct {
 		Fail         bool

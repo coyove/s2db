@@ -175,10 +175,11 @@ func (s *Server) walkL6Tables() {
 	}()
 
 	level := tables[6]
-	for i := 5; len(level) < 100 && i >= 0; i-- {
+	for i := 5; len(level) < 100 && i > 1; i-- {
 		level = append(level, tables[i]...)
 		logrus.Infof("walkL6: add more sst from level %d: %d", i, len(tables[i]))
 	}
+	level = append(level, tables[1]...)
 	logrus.Infof("walkL6: start walking %d sst", len(level))
 
 	for ii, i = range rand.Perm(len(level)) {

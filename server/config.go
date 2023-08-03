@@ -37,6 +37,7 @@ type ServerConfig struct {
 	PipelineLimit          int
 	L6WorkerMaxTx          string
 	MetricsEndpoint        string
+	InfluxDB1Config        string
 }
 
 func init() {
@@ -86,6 +87,12 @@ func (s *Server) saveConfig(source string) error {
 			return err
 		} else if changed {
 			log.Infof("[%s] peer #%d created/removed with %q", source, i, x)
+		}
+	}
+
+	if s.Config.InfluxDB1Config != "" {
+		if err := s.initInfluxDB1Client(s.Config.InfluxDB1Config); err != nil {
+			return err
 		}
 	}
 

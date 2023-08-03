@@ -71,6 +71,17 @@ func Load(path string, data any) error {
 		}
 		return err
 	}
+
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 {
+		return fmt.Errorf("buffer corrupted: empty")
+	}
+
+	if b[len(b)-1] == '}' {
+		// Ignoring checksum
+		return json.Unmarshal(b, data)
+	}
+
 	if len(b) < 64 {
 		return fmt.Errorf("buffer corrupted: length")
 	}

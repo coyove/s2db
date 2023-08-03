@@ -7,6 +7,7 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/coyove/sdss/future"
 )
 
@@ -29,20 +30,24 @@ func (s *ErrorThrottler) Throttle(key string, err error) bool {
 		return false
 	}
 	if err == ErrPeerTimeout {
-		return true
+		goto THROT
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		goto THROT
 	}
 
 	switch msg := strings.ToLower(err.Error()); {
-	case errors.Is(err, syscall.ECONNREFUSED):
-	case errors.Is(err, syscall.ECONNRESET):
 	case strings.Contains(msg, "connection refused"):
 	case strings.Contains(msg, "connection reset"):
 	case strings.Contains(msg, ErrServerReadonly.Error()):
-	case strings.Contains(msg, ErrNoAuth.Error()):
-	default:
-		return false
+	case strings.Contains(msg, "noauth"):
+	case strings.Contains(msg, pebble.ErrClosed.Error()):
+		goto THROT
 	}
 
+	return false
+
+THROT:
 	now := future.UnixNano()
 	last, loaded := s.m.LoadOrStore(key, now)
 	if !loaded {

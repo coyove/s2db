@@ -147,12 +147,7 @@ func (s *Server) walkL6Tables() {
 
 	defer func(start time.Time) {
 		finished = true
-		// if ttl <= 0 {
-		// 	time.AfterFunc(time.Minute, func() { s.walkL6Tables() })
-		// 	return
-		// }
-
-		w := time.Hour
+		w := time.Duration(s.Config.L6WorkerSleepSecs) * time.Second
 		logrus.Infof("finish L6 walking in %v, next scheduled at %v",
 			time.Since(start), time.Now().UTC().Add(w).Format(time.Stamp))
 		time.AfterFunc(w, func() { s.walkL6Tables() })
@@ -160,31 +155,34 @@ func (s *Server) walkL6Tables() {
 
 	tables, err := s.DB.SSTables()
 	if err != nil {
-		logrus.Errorf("walkL6: list sstables: %v", err)
+		logrus.Errorf("list sstables: %v", err)
 		return
 	}
 
-	var ii, i int
+	var i int
+	var level []pebble.SSTableInfo
+	var levelNum []int
+	for i := 1; i < len(tables); i++ {
+		level = append(level, tables[i]...)
+		levelNum = append(levelNum, len(tables[i]))
+	}
+	logrus.Infof("start walking %d sst %v, L0=%d", len(level), levelNum, len(tables[0]))
+
+	tmp := level[len(tables[1])+len(tables[2])+len(tables[3]):] // keep L1-L3 tables first, then shuffle the rest
+	rand.Shuffle(len(tmp), func(i, j int) { tmp[i], tmp[j] = tmp[j], tmp[i] })
+
 	go func() {
 		for range time.Tick(time.Second) {
 			if finished {
 				return
 			}
-			s.Survey.L6WorkerProgress.Incr(int64(ii + 1))
+			s.Survey.L6WorkerProgress.Incr(int64(i + 1))
 		}
 	}()
 
-	level := tables[6]
-	for i := 5; len(level) < 100 && i > 1; i-- {
-		level = append(level, tables[i]...)
-		logrus.Infof("walkL6: add more sst from level %d: %d", i, len(tables[i]))
-	}
-	level = append(level, tables[1]...)
-	logrus.Infof("walkL6: start walking %d sst", len(level))
-
-	for ii, i = range rand.Perm(len(level)) {
+	for i = range level {
 		t := level[i]
-		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", ii, len(level)))
+		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", i, len(level)))
 
 		if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
 			continue

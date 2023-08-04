@@ -22,35 +22,36 @@ import (
 )
 
 type ServerSurvey struct {
-	StartAt          time.Time
-	Connections      int64
-	FatalError       s2.Survey `metrics:"qps"`
-	SysRead          s2.Survey
-	SysReadP99Micro  s2.P99SurveyMinute
-	SysWrite         s2.Survey
-	SysWriteP99Micro s2.P99SurveyMinute
-	SlowLogs         s2.Survey
-	Pipeline         s2.Survey
-	PipelineLat      s2.Survey `metrics:"mean"`
-	AppendSyncN      s2.Survey `metrics:"mean"`
-	HSetSyncN        s2.Survey `metrics:"mean"`
-	PeerOnMissing    s2.Survey `metrics:"qps"`
-	PeerOnOK         s2.Survey `metrics:"qps"`
-	AllConsolidated  s2.Survey `metrics:"qps"`
-	SelectCacheHits  s2.Survey `metrics:"qps"`
-	PeerBatchSize    s2.Survey
-	PeerTimeout      s2.Survey `metrics:"qps"`
-	HashMerger       s2.Survey
-	HashSyncer       s2.Survey
-	AsyncOnce        s2.Survey `metrics:"mean"`
-	KeyHashRatio     s2.Survey `metrics:"mean"`
-	L6TTLDeletes     s2.Survey
-	L6DedupDeletes   s2.Survey `metrics:"mean"`
-	L6DedupCMDeletes s2.Survey `metrics:"mean"`
-	L6DedupBefore    s2.Survey `metrics:"mean"`
-	L6WorkerProgress s2.Survey `metrics:"mean"`
-	PeerLatency      sync.Map
-	Command          sync.Map
+	StartAt           time.Time
+	Connections       int64
+	FatalError        s2.Survey `metrics:"qps"`
+	SysRead           s2.Survey
+	SysReadP99Micro   s2.P99SurveyMinute
+	SysWrite          s2.Survey
+	SysWriteP99Micro  s2.P99SurveyMinute
+	SlowLogs          s2.Survey
+	Pipeline          s2.Survey
+	PipelineLat       s2.Survey `metrics:"mean"`
+	AppendSyncN       s2.Survey `metrics:"mean"`
+	HSetSyncN         s2.Survey `metrics:"mean"`
+	PeerOnMissing     s2.Survey `metrics:"qps"`
+	PeerOnOK          s2.Survey `metrics:"qps"`
+	AllConsolidated   s2.Survey `metrics:"qps"`
+	SelectCacheHits   s2.Survey `metrics:"qps"`
+	PeerBatchSize     s2.Survey
+	PeerTimeout       s2.Survey `metrics:"qps"`
+	HashMerger        s2.Survey
+	HashSyncer        s2.Survey
+	AsyncOnce         s2.Survey `metrics:"mean"`
+	KeyHashRatio      s2.Survey `metrics:"mean"`
+	L6TTLDeletes      s2.Survey
+	L6DedupDeletes    s2.Survey `metrics:"mean"`
+	L6DedupCMDeletes  s2.Survey `metrics:"mean"`
+	L6DedupBefore     s2.Survey `metrics:"mean"`
+	L6DeduperProgress s2.Survey `metrics:"mean"`
+	L6PurgerProgress  s2.Survey `metrics:"mean"`
+	PeerLatency       sync.Map
+	Command           sync.Map
 }
 
 type metricsPair struct {

@@ -78,6 +78,6 @@ var (
 	ErrLineTooLong     = errors.New("line too long")
 	ErrUnknownCommand  = errors.New("unknown command")
 	ErrServerReadonly  = errors.New("server is readonly")
-	ErrNoAuth          = errors.New("NOAUTH")
+	ErrNoAuth          = errors.New("authentication required")
 	ErrPeerTimeout     = errors.New("peer timed out")
 )

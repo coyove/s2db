@@ -40,7 +40,7 @@ func (s *ErrorThrottler) Throttle(key string, err error) bool {
 	case strings.Contains(msg, "connection refused"):
 	case strings.Contains(msg, "connection reset"):
 	case strings.Contains(msg, ErrServerReadonly.Error()):
-	case strings.Contains(msg, "noauth"):
+	case strings.Contains(msg, ErrNoAuth.Error()):
 	case strings.Contains(msg, pebble.ErrClosed.Error()):
 		goto THROT
 	}

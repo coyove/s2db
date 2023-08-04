@@ -138,7 +138,7 @@ func (s *Server) createMerger() *pebble.Merger {
 	}
 }
 
-func (s *Server) walkL6Tables() {
+func (s *Server) l6Purger() {
 	if testFlag {
 		return
 	}
@@ -147,49 +147,32 @@ func (s *Server) walkL6Tables() {
 
 	defer func(start time.Time) {
 		finished = true
-		w := time.Duration(s.Config.L6WorkerSleepSecs) * time.Second
-		logrus.Infof("finish L6 walking in %v, next scheduled at %v",
+		w := time.Duration(s.Config.L6PurgerSleepSecs) * time.Second
+		logrus.Infof("finish L6 purger in %v, next scheduled at %v",
 			time.Since(start), time.Now().UTC().Add(w).Format(time.Stamp))
-		time.AfterFunc(w, func() { s.walkL6Tables() })
+		time.AfterFunc(w, func() { s.l6Purger() })
 	}(time.Now())
 
-	tables, err := s.DB.SSTables()
+	var i int
+	level, err := s.collectSST("l6purger")
 	if err != nil {
 		logrus.Errorf("list sstables: %v", err)
 		return
 	}
-
-	var i int
-	var level []pebble.SSTableInfo
-	var levelNum []int
-	for i := 1; i < len(tables); i++ {
-		level = append(level, tables[i]...)
-		levelNum = append(levelNum, len(tables[i]))
-	}
-	logrus.Infof("start walking %d sst %v, L0=%d", len(level), levelNum, len(tables[0]))
-
-	tmp := level[len(tables[1])+len(tables[2])+len(tables[3]):] // keep L1-L3 tables first, then shuffle the rest
-	rand.Shuffle(len(tmp), func(i, j int) { tmp[i], tmp[j] = tmp[j], tmp[i] })
+	rand.Shuffle(len(level), func(i, j int) { level[i], level[j] = level[j], level[i] })
 
 	go func() {
 		for range time.Tick(time.Second) {
 			if finished {
 				return
 			}
-			s.Survey.L6WorkerProgress.Incr(int64(i + 1))
+			s.Survey.L6PurgerProgress.Incr(int64(i + 1))
 		}
 	}()
 
+	log := logrus.WithField("shard", "L6PG")
 	for i = range level {
 		t := level[i]
-		log := logrus.WithField("shard", fmt.Sprintf("L6[%d/%d]", i, len(level)))
-
-		if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
-			continue
-		}
-		if bytes.Compare(t.Smallest.UserKey, []byte("m")) >= 0 {
-			continue
-		}
 
 		for {
 			c := s.DB.Metrics().Compact
@@ -200,27 +183,59 @@ func (s *Server) walkL6Tables() {
 			time.Sleep(time.Second * 10)
 		}
 
-		buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%06d.sst", s.DBPath, t.FileNum))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			log.Errorf("open sst %d: %v", t.FileNum, err)
-			continue
-		}
-
-		if err := s.dedupSSTable(log, buf, t); err != nil {
-			log.Errorf("[%d] failed to dedup sst: %v", t.FileNum, err)
-			return
-		}
-
-		if err := s.purgeSSTable(log, buf, t); err != nil {
+		if err := s.purgeSSTable(log, t); err != nil {
 			log.Errorf("[%d] failed to ttl purge: %v", t.FileNum, err)
 		}
 	}
 }
 
-func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {
+func (s *Server) l6Deduper() {
+	if testFlag {
+		return
+	}
+
+	var finished bool
+	var i int
+	var marked int
+
+	defer func(start time.Time) {
+		finished = true
+		w := time.Duration(s.Config.L6DeduperSleepSecs) * time.Second
+		logrus.Infof("finish L6 deduper in %v, processed %d sst, next round scheduled at %v",
+			time.Since(start), marked, time.Now().UTC().Add(w).Format(time.Stamp))
+		time.AfterFunc(w, func() { s.l6Deduper() })
+	}(time.Now())
+
+	level, err := s.collectSST("l6deduper")
+	if err != nil {
+		logrus.Errorf("list sstables: %v", err)
+		return
+	}
+
+	go func() {
+		for range time.Tick(time.Second) {
+			if finished {
+				return
+			}
+			s.Survey.L6DeduperProgress.Incr(int64(i + 1))
+		}
+	}()
+
+	log := logrus.WithField("shard", "L6DD")
+	for i = range level {
+		t := level[i]
+		mark, err := s.dedupSSTable(log, t)
+		if err != nil {
+			log.Errorf("[%d] failed to dedup sst: %v", t.FileNum, err)
+			return
+		}
+		if mark {
+			marked++
+		}
+	}
+}
+
+func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 	ttl := int64(s.Config.ListRetentionDays) * 86400 * 1e9
 	if ttl <= 0 {
 		time.Sleep(time.Millisecond * 100)
@@ -244,9 +259,12 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 	var tmp []byte
 	ddl := future.UnixNano() - ttl
 
-	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	rd, err := s.readSST(uint64(t.FileNum))
 	if err != nil {
 		return fmt.Errorf("read sst: %v", err)
+	}
+	if rd == nil {
+		return nil
 	}
 	defer rd.Close()
 
@@ -327,25 +345,37 @@ func (s *Server) purgeSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 	return tx.Commit(pebble.NoSync)
 }
 
-func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInfo) error {
+func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, error) {
 	dedupMarkKey := strconv.AppendUint([]byte("td"), uint64(t.FileNum), 10)
 	mark, err := s.GetInt64(dedupMarkKey)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if mark != 0 {
-		return nil
+		return false, nil
 	}
 
 	var wait, maxTx int
 	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
 	if wait == 0 || maxTx == 0 {
-		return fmt.Errorf("invalid config")
+		return false, fmt.Errorf("invalid config")
 	}
 
-	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	for {
+		c := s.DB.Metrics().Compact
+		if c.NumInProgress == 0 {
+			break
+		}
+		log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
+		time.Sleep(time.Second * 10)
+	}
+
+	rd, err := s.readSST(uint64(t.FileNum))
 	if err != nil {
-		return fmt.Errorf("read sst: %v", err)
+		return false, err
+	}
+	if rd == nil {
+		return false, nil
 	}
 	defer rd.Close()
 
@@ -356,7 +386,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 
 	iter, err := rd.NewIter(nil, nil)
 	if err != nil {
-		return fmt.Errorf("sst new iter: %v", err)
+		return false, fmt.Errorf("sst new iter: %v", err)
 	}
 	defer iter.Close()
 
@@ -427,7 +457,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		tx.Delete(k, pebble.NoSync)
 		if tx.Count() >= uint32(maxTx) {
 			if err := tx.Commit(pebble.NoSync); err != nil {
-				return err
+				return false, err
 			}
 			tx.Close()
 			time.Sleep(time.Duration(wait) * time.Millisecond)
@@ -443,5 +473,45 @@ func (s *Server) dedupSSTable(log *logrus.Entry, buf []byte, t pebble.SSTableInf
 		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
 		s.Survey.L6DedupCMDeletes.Incr(int64(globalCMDeletes))
 	}
-	return tx.Commit(pebble.NoSync)
+	return true, tx.Commit(pebble.NoSync)
+}
+
+func (s *Server) collectSST(source string) ([]pebble.SSTableInfo, error) {
+	tables, err := s.DB.SSTables()
+	if err != nil {
+		return nil, err
+	}
+
+	var level []pebble.SSTableInfo
+	var levelNum []int
+	for i := 1; i < len(tables); i++ {
+		levelNum = append(levelNum, 0)
+		for _, t := range tables[i] {
+			if bytes.Compare(t.Largest.UserKey, []byte("l")) < 0 {
+				continue
+			}
+			if bytes.Compare(t.Smallest.UserKey, []byte("m")) >= 0 {
+				continue
+			}
+			level = append(level, t)
+			levelNum[len(levelNum)-1]++
+		}
+	}
+	logrus.Infof("[%s] collected %d sst %v, L0=%d", source, len(level), levelNum, len(tables[0]))
+	return level, nil
+}
+
+func (s *Server) readSST(idx uint64) (*sstable.Reader, error) {
+	buf, err := ioutil.ReadFile(fmt.Sprintf("%s/%06d.sst", s.DBPath, idx))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read sst %d: %v", idx, err)
+	}
+	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("parse sst %d: %v", idx, err)
+	}
+	return rd, nil
 }

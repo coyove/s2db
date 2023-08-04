@@ -36,7 +36,8 @@ type ServerConfig struct {
 	SyncBatchLimit         int
 	PipelineLimit          int
 	L6WorkerMaxTx          string
-	L6WorkerSleepSecs      int
+	L6PurgerSleepSecs      int
+	L6DeduperSleepSecs     int
 	MetricsEndpoint        string
 	InfluxDB1Config        string
 }
@@ -72,7 +73,8 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.TimeoutCount, 1000)
 	ifZero(&s.Config.SyncBatchLimit, 100)
 	ifZero(&s.Config.PipelineLimit, 1000)
-	ifZero(&s.Config.L6WorkerSleepSecs, 3600)
+	ifZero(&s.Config.L6PurgerSleepSecs, 3600)
+	ifZero(&s.Config.L6DeduperSleepSecs, 75)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
 	}

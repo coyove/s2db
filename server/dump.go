@@ -43,7 +43,8 @@ func (s *Server) startCronjobs() {
 	run(time.Second*30, 0)
 	run(time.Second*60, 0)
 	run(time.Second*60, 1)
-	s.walkL6Tables()
+	s.l6Deduper()
+	s.l6Purger()
 }
 
 func (s *Server) DumpWire(dest string) {

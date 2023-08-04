@@ -318,7 +318,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 			}
 
 			tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
-			ik, _ = iter.SeekGE(append(tmp, 1), true)
+			ik, _ = iter.SeekGE(append(tmp, 1), 0)
 		}
 	}
 
@@ -400,6 +400,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 	var curCMKey []byte
 	for ik, iv := iter.Last(); ik != nil; ik, iv = iter.Prev() {
 		k := ik.UserKey
+		v, _, _ := iv.Value(nil)
 		if k[0] < 'l' {
 			break
 		}
@@ -422,11 +423,11 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 			globalCounter++
 			continue
 		}
-		if len(iv) == 0 || len(k) == 0 {
+		if len(v) == 0 || len(k) == 0 {
 			continue
 		}
 
-		dp := s2.Pair{ID: id, Data: iv}.DistinctPrefix()
+		dp := s2.Pair{ID: id, Data: v}.DistinctPrefix()
 		if dp == nil {
 			continue
 		}

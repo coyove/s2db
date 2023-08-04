@@ -185,9 +185,9 @@ func makeHTMLStat(s string) template.HTML {
 		s2.FormatFloatShort(a), s2.FormatFloatShort(b), s2.FormatFloatShort(c)))
 }
 
-func (s *Server) createDBListener() pebble.EventListener {
+func (s *Server) createDBListener() *pebble.EventListener {
 	L, R := dbLogger.Info, s.runScriptFunc
-	return pebble.EventListener{
+	return &pebble.EventListener{
 		BackgroundError:  func(a error) { dbLogger.Error(a); R("DBBackgroundError", a) },
 		CompactionBegin:  func(a pebble.CompactionInfo) { L("[CompactionBegin] ", a); R("DBCompactionBegin", a) },
 		CompactionEnd:    func(a pebble.CompactionInfo) { L("[CompactionEnd] ", a); R("DBCompactionEnd", a) },

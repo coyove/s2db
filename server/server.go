@@ -9,10 +9,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,10 +104,7 @@ func Open(dbPath string, channel int64) (s *Server, err error) {
 		dbFile:   dbFile,
 		pipeline: make(chan *dbPayload, 1e5),
 	}
-	s.DBOptions.FS = &VFS{
-		FS:       s.DBOptions.FS,
-		DumpVDir: filepath.Join(os.TempDir(), strconv.FormatInt(future.UnixNano(), 16)),
-	}
+	// s.DBOptions.FS = &VFS{}
 	s.DBOptions.Merger = s.createMerger()
 	if !testFlag {
 		s.DBOptions.EventListener = s.createDBListener()
@@ -331,9 +326,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 			err := s.DB.Checkpoint(key, pebble.WithFlushedWAL())
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
 		}(startTime)
-		return w.WriteSimpleString("STARTED")
-	case "DUMPWIRE":
-		go s.DumpWire(key)
 		return w.WriteSimpleString("STARTED")
 	case "SLOW.LOG":
 		return slowLogger.Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))

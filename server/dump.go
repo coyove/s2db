@@ -48,81 +48,81 @@ func (s *Server) startCronjobs() {
 }
 
 func (s *Server) DumpWire(dest string) {
-	if !strings.HasPrefix(dest, "http") {
-		dest = "http://" + dest
-	}
+	// if !strings.HasPrefix(dest, "http") {
+	// 	dest = "http://" + dest
+	// }
 
-	start := time.Now()
-	log := log.WithField("shard", "dw")
+	// start := time.Now()
+	// log := log.WithField("shard", "dw")
 
-	if !s.dumpWireLock.TryLock() {
-		log.Info("wire dumping already started")
-		return
-	}
-	defer s.dumpWireLock.Unlock()
+	// if !s.dumpWireLock.TryLock() {
+	// 	log.Info("wire dumping already started")
+	// 	return
+	// }
+	// defer s.dumpWireLock.Unlock()
 
-	dbDir, err := os.Open(s.DBPath)
-	if err != nil {
-		log.Errorf("failed to read data dir: %v", err)
-		return
-	}
-	defer dbDir.Close()
-	dataFiles, err := dbDir.Readdirnames(-1)
-	if err != nil {
-		log.Errorf("failed to read data dir: %v", err)
-		return
-	}
+	// dbDir, err := os.Open(s.DBPath)
+	// if err != nil {
+	// 	log.Errorf("failed to read data dir: %v", err)
+	// 	return
+	// }
+	// defer dbDir.Close()
+	// dataFiles, err := dbDir.Readdirnames(-1)
+	// if err != nil {
+	// 	log.Errorf("failed to read data dir: %v", err)
+	// 	return
+	// }
 
-	vfs := s.DBOptions.FS.(*VFS)
-	log.Infof("DUMPWIRE started, clear virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
+	// vfs := s.DBOptions.FS.(*VFS)
+	// log.Infof("DUMPWIRE started, clear virtual dump dir %q: %v", vfs.DumpVDir, os.RemoveAll(vfs.DumpVDir))
 
-	vfs.DumpTx.HTTPEndpoint = dest
-	vfs.DumpTx.Counter = 0
-	vfs.DumpTx.TotalFiles = len(dataFiles)
-	vfs.DumpTx.Logger = log
-	defer func() { vfs.DumpTx.HTTPEndpoint = "" }()
+	// vfs.DumpTx.HTTPEndpoint = dest
+	// vfs.DumpTx.Counter = 0
+	// vfs.DumpTx.TotalFiles = len(dataFiles)
+	// vfs.DumpTx.Logger = log
+	// defer func() { vfs.DumpTx.HTTPEndpoint = "" }()
 
-	if err := s.DB.Checkpoint(vfs.DumpVDir, pebble.WithFlushedWAL()); err != nil {
-		log.Errorf("failed to dump (checkpoint): %v", err)
-		return
-	}
+	// if err := s.DB.Checkpoint(vfs.DumpVDir, pebble.WithFlushedWAL()); err != nil {
+	// 	log.Errorf("failed to dump (checkpoint): %v", err)
+	// 	return
+	// }
 
-	files, err := ioutil.ReadDir(vfs.DumpVDir)
-	if err != nil {
-		log.Errorf("failed to dump (readdir): %v", err)
-		return
-	}
+	// files, err := ioutil.ReadDir(vfs.DumpVDir)
+	// if err != nil {
+	// 	log.Errorf("failed to dump (readdir): %v", err)
+	// 	return
+	// }
 
-	for _, f := range files {
-		if err := func() error {
-			src, err := os.Open(filepath.Join(vfs.DumpVDir, f.Name()))
-			if err != nil {
-				return err
-			}
-			defer src.Close()
-			vf, err := NewVFSVirtualDumpFile(f.Name(), dest, vfs)
-			if err != nil {
-				return err
-			}
-			defer vf.Close()
-			if _, err = io.Copy(vf, src); err != nil {
-				return err
-			}
-			return vf.Sync()
-		}(); err != nil {
-			log.Errorf("failed to write metadata %q, %v", f.Name(), err)
-			return
-		}
-	}
+	// for _, f := range files {
+	// 	if err := func() error {
+	// 		src, err := os.Open(filepath.Join(vfs.DumpVDir, f.Name()))
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		defer src.Close()
+	// 		vf, err := NewVFSVirtualDumpFile(f.Name(), dest, vfs)
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		defer vf.Close()
+	// 		if _, err = io.Copy(vf, src); err != nil {
+	// 			return err
+	// 		}
+	// 		return vf.Sync()
+	// 	}(); err != nil {
+	// 		log.Errorf("failed to write metadata %q, %v", f.Name(), err)
+	// 		return
+	// 	}
+	// }
 
-	vf, err := NewVFSVirtualDumpFile("EOT", dest, vfs)
-	if err != nil {
-		log.Errorf("failed to create end marker file: %v", err)
-		return
-	}
-	vf.Close()
+	// vf, err := NewVFSVirtualDumpFile("EOT", dest, vfs)
+	// if err != nil {
+	// 	log.Errorf("failed to create end marker file: %v", err)
+	// 	return
+	// }
+	// vf.Close()
 
-	log.Infof("DUMPWIRE all cleared in %v", time.Since(start))
+	// log.Infof("DUMPWIRE all cleared in %v", time.Since(start))
 }
 
 func StartDumpReceiver(listen, dest string) error {
@@ -234,12 +234,12 @@ func (vf vfsFile) Close() error {
 }
 
 func (fs *VFS) Create(name string) (vfs.File, error) {
-	if strings.HasPrefix(name, fs.DumpVDir) && strings.HasSuffix(name, ".sst") {
-		if fs.DumpTx.HTTPEndpoint == "" {
-			return nil, fmt.Errorf("vdf HTTP endpoint not found")
-		}
-		return NewVFSVirtualDumpFile(filepath.Base(name), fs.DumpTx.HTTPEndpoint, fs)
-	}
+	// if strings.HasPrefix(name, fs.DumpVDir) && strings.HasSuffix(name, ".sst") {
+	// 	if fs.DumpTx.HTTPEndpoint == "" {
+	// 		return nil, fmt.Errorf("vdf HTTP endpoint not found")
+	// 	}
+	// 	return NewVFSVirtualDumpFile(filepath.Base(name), fs.DumpTx.HTTPEndpoint, fs)
+	// }
 	return fs.FS.Create(name)
 }
 

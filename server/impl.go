@@ -575,3 +575,37 @@ func (s *Server) pipelineWorker() {
 		tx.Close()
 	}
 }
+
+type memsst struct{ bytes.Buffer }
+
+func (ms *memsst) Write(p []byte) error { ms.Buffer.Write(p); return nil }
+
+func (ms *memsst) Abort() {}
+
+func (ms *memsst) Finish() error { return nil }
+
+type tmpsst struct {
+	m   map[string]struct{}
+	kvs [][2][]byte
+}
+
+func (ts *tmpsst) Set(k, v []byte) {
+	k = s2.Bytes(k)
+	v = s2.Bytes(v)
+	ks := *(*string)(unsafe.Pointer(&k))
+	if _, ok := ts.m[ks]; ok {
+		return
+	}
+	if ts.m == nil {
+		ts.m = map[string]struct{}{}
+	}
+	ts.m[ks] = struct{}{}
+	ts.kvs = append(ts.kvs, [2][]byte{k, v})
+}
+
+func (ts *tmpsst) Sort() [][2][]byte {
+	sort.Slice(ts.kvs, func(i, j int) bool {
+		return bytes.Compare(ts.kvs[i][0], ts.kvs[j][0]) < 0
+	})
+	return ts.kvs
+}

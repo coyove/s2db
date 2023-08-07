@@ -44,7 +44,7 @@ type ServerSurvey struct {
 	HashSyncer        s2.Survey
 	AsyncOnce         s2.Survey `metrics:"mean"`
 	KeyHashRatio      s2.Survey `metrics:"mean"`
-	L6TTLDeletes      s2.Survey
+	L6PurgerDeletes   s2.Survey
 	L6DedupDeletes    s2.Survey `metrics:"mean"`
 	L6DedupCMDeletes  s2.Survey `metrics:"mean"`
 	L6DedupBefore     s2.Survey `metrics:"mean"`

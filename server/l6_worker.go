@@ -179,8 +179,8 @@ func (s *Server) l6Purger() {
 			if c.NumInProgress == 0 {
 				break
 			}
-			log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
-			time.Sleep(time.Second * 10)
+			// log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
+			time.Sleep(time.Second * 5)
 		}
 
 		if err := s.purgeSSTable(log, t); err != nil {
@@ -340,7 +340,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 	}
 
 	log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
-	s.Survey.L6TTLDeletes.Incr(int64(deletes))
+	s.Survey.L6PurgerDeletes.Incr(int64(deletes))
 
 	return tx.Commit(pebble.NoSync)
 }
@@ -366,8 +366,8 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		if c.NumInProgress == 0 {
 			break
 		}
-		log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
-		time.Sleep(time.Second * 10)
+		// log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
+		time.Sleep(time.Second * 5)
 	}
 
 	rd, err := s.readSST(uint64(t.FileNum))

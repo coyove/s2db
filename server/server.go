@@ -337,7 +337,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 
 	switch cmd {
 	case "APPEND": // key data_0 [DP dp_len] [SYNC] [NOEXP] [[AND data_1] ...] [SETID ...]
-		data, ids, opts := K.GetAppendOptions()
+		data, ids, opts := K.GetAppendOptions(3)
 		ids, err := s.execAppend(key, ids, data, opts)
 		if err != nil {
 			return w.WriteError(err.Error())
@@ -409,6 +409,46 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 			return w.WriteBulkBulks(s.ScanLookupIndex(K.StrRef(1), count))
 		}
 		return w.WriteBulkBulks(s.execScan(K.StrRef(1), count, local))
+	case "APPEND2": // key1 key2 value [SYNC] [NOEXP]
+		skey, svalue := K.Bytes(2), K.BytesRef(3)
+		if bytes.ContainsAny(skey, "\x00") || len(skey) > 255 {
+			return w.WriteError("invalid key2")
+		}
+		_, _, opts := K.GetAppendOptions(4)
+		ids, err := s.execAppend(key, nil, [][]byte{append(skey, svalue...)}, s2.AppendOptions{
+			NoExpire: opts.NoExpire,
+			NoSync:   opts.NoSync,
+			DPLen:    byte(len(skey)),
+		})
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+
+		id := s2.IncBytes(ids[0]) // id[15] becomes 1
+		_, err = s.execAppend(key+string(skey), [][]byte{id}, [][]byte{{0}}, s2.AppendOptions{
+			NoSync: opts.NoSync,
+			DPLen:  1,
+		})
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+
+		return w.WriteBulk(s2.HexEncode(ids[0]))
+	case "SELECT2": // key1 key2
+		data, err := s.execSelect(key+K.StrRef(2), []byte(maxCursor), 1, s2.SelectOptions{Desc: true})
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		if len(data) != 1 {
+			return w.WriteBulk("")
+		}
+		id := data[0].ID
+		id[15] = 0
+		res, err := s.execLookup(id)
+		if err != nil {
+			return w.WriteError(err.Error())
+		}
+		return w.WriteBulk(res)
 	case "WAITEFFECT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {

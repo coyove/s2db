@@ -101,10 +101,10 @@ func (c *Command) String() string {
 	return string(buf)
 }
 
-func (K *Command) GetAppendOptions() (data, ids [][]byte, opts s2.AppendOptions) {
+func (K *Command) GetAppendOptions(start int) (data, ids [][]byte, opts s2.AppendOptions) {
 	data = [][]byte{K.Bytes(2)}
 	opts.NoSync = true
-	for i := 3; i < K.ArgCount(); i++ {
+	for i := start; i < K.ArgCount(); i++ {
 		if K.StrEqFold(i, "and") {
 			data = append(data, K.Bytes(i+1))
 			i++

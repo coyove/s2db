@@ -35,12 +35,14 @@ var (
 		"PSELECT": true,
 		"PLOOKUP": true,
 		"SELECT":  true,
+		"SELECT2": true,
 		"LOOKUP":  true,
 		"COUNT":   true,
 		"SCAN":    true,
 	}
 	isWriteCommand = map[string]bool{
-		"APPEND": true,
+		"APPEND":  true,
+		"APPEND2": true,
 	}
 
 	//go:embed index.html

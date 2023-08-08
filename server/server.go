@@ -272,6 +272,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, src net.IP, K *resp.Command) (outErr error) {
+	cmd = strings.TrimPrefix(cmd, "S2DB.")
 	key := K.Str(1)
 
 	if isWriteCommand[cmd] {
@@ -410,29 +411,31 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 		}
 		return w.WriteBulkBulks(s.execScan(K.StrRef(1), count, local))
 	case "APPEND2": // key1 key2 value [SYNC] [NOEXP]
-		skey, svalue := K.Bytes(2), K.BytesRef(3)
-		if bytes.ContainsAny(skey, "\x00") || len(skey) > 255 {
+		key2, value := K.Bytes(2), K.BytesRef(3)
+		if bytes.ContainsAny(key2, "\x00") || len(key2) == 0 || len(key2) > 255 {
 			return w.WriteError("invalid key2")
 		}
+		if len(value) == 0 {
+			return w.WriteError("invalid value")
+		}
 		_, _, opts := K.GetAppendOptions(4)
-		ids, err := s.execAppend(key, nil, [][]byte{append(skey, svalue...)}, s2.AppendOptions{
+		ids, err := s.execAppend(key, nil, [][]byte{append(key2, value...)}, s2.AppendOptions{
 			NoExpire: opts.NoExpire,
 			NoSync:   opts.NoSync,
-			DPLen:    byte(len(skey)),
+			DPLen:    byte(len(key2)),
 		})
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
 
 		id := s2.IncBytes(ids[0]) // id[15] becomes 1
-		_, err = s.execAppend(key+string(skey), [][]byte{id}, [][]byte{{0}}, s2.AppendOptions{
+		_, err = s.execAppend(key+string(key2), [][]byte{id}, [][]byte{{0}}, s2.AppendOptions{
 			NoSync: opts.NoSync,
 			DPLen:  1,
 		})
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-
 		return w.WriteBulk(s2.HexEncode(ids[0]))
 	case "SELECT2": // key1 key2
 		data, err := s.execSelect(key+K.StrRef(2), []byte(maxCursor), 1, s2.SelectOptions{Desc: true})
@@ -448,7 +451,7 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 		if err != nil {
 			return w.WriteError(err.Error())
 		}
-		return w.WriteBulk(res)
+		return w.WriteBulk(s2.Pair{ID: id, Data: res}.DistinctData())
 	case "WAITEFFECT":
 		x := K.BytesRef(1)
 		for i := 2; i < K.ArgCount(); i++ {
@@ -480,7 +483,7 @@ func (s *Server) execAppend(key string, ids, data [][]byte, opts s2.AppendOption
 		for _, id := range ids {
 			args = append(args, id)
 		}
-		s.ForeachPeerSendCmd(SendCmdOptions{Async: true}, func() redis.Cmder {
+		s.ForeachPeerExec(SendCmdOptions{Async: true}, func() redis.Cmder {
 			return redis.NewStringSliceCmd(context.TODO(), args...)
 		}, nil)
 		s.Survey.AppendSyncN.Incr(int64(len(ids)))
@@ -529,7 +532,7 @@ func (s *Server) execSelect(key string, start []byte, n int, opts s2.SelectOptio
 		}
 		packedIDs := s2.PackPairIDs(data)
 		s.Survey.KeyHashRatio.Incr(int64(len(packedIDs) * 1000 / (len(data)*8 + 1)))
-		_, success := s.ForeachPeerSendCmd(SendCmdOptions{},
+		success := s.ForeachPeerExec(SendCmdOptions{Retry: s.Config.ReadTimeoutRetry},
 			func() redis.Cmder {
 				return redis.NewStringSliceCmd(context.TODO(), "PSELECT", key, start, n, opts.ToInt(), lowest, packedIDs)
 			}, func(cmd redis.Cmder) bool {
@@ -611,7 +614,7 @@ func (s *Server) selectUnions(keys []string, start []byte, n int, opts s2.Select
 func (s *Server) execScan(cursor string, count int, local bool) (string, []string) {
 	next, res := s.Scan(cursor, count)
 	if !local && s.HasOtherPeers() {
-		s.ForeachPeerSendCmd(SendCmdOptions{},
+		s.ForeachPeerExec(SendCmdOptions{},
 			func() redis.Cmder {
 				return redis.NewCmd(context.TODO(), "SCAN", cursor, "COUNT", count, "LOCAL")
 			}, func(cmd redis.Cmder) bool {
@@ -645,7 +648,7 @@ func (s *Server) execLookup(id []byte) (data []byte, err error) {
 	if len(data) > 0 || !s.HasOtherPeers() {
 		return data, nil
 	}
-	s.ForeachPeerSendCmd(SendCmdOptions{Oneshot: true}, func() redis.Cmder {
+	s.ForeachPeerExec(SendCmdOptions{Oneshot: true}, func() redis.Cmder {
 		return redis.NewStringSliceCmd(context.TODO(), "PLOOKUP", id)
 	}, func(cmd redis.Cmder) bool {
 		m0 := cmd.(*redis.StringSliceCmd).Val()

@@ -88,9 +88,7 @@ func (s *hashmapMerger) MergeOlder(value []byte) error {
 }
 
 func (s *hashmapMerger) Finish(includesBase bool) ([]byte, io.Closer, error) {
-	start := future.UnixNano()
 	x := hashmapMergerBytes(s.m)
-	s.s.Survey.HashMerger.Incr((future.UnixNano() - start) / 1e6)
 	return x, nil, nil
 }
 

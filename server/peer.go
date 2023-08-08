@@ -192,23 +192,27 @@ func (s *Server) ForeachPeer(f func(i int, p *endpoint, c *redis.Client)) {
 }
 
 type SendCmdOptions struct {
+	Retry   int
 	Oneshot bool // exit when first resp() == true
 	Async   bool
+
+	useMask bool
+	mask    [future.Channels]bool // true: send, false: omit
 }
 
-func (s *Server) ForeachPeerSendCmd(
-	opts SendCmdOptions,
-	req func() redis.Cmder,
-	resp func(redis.Cmder) bool,
-) (sent, success int) {
+func (s *Server) ForeachPeerExec(opts SendCmdOptions, req func() redis.Cmder, resp func(redis.Cmder) bool) (success int) {
 	pstart := future.UnixNano()
 	pcmd := req()
 
 	out := make(chan *endpointCmd, future.Channels)
 	total := 0
+	sent := 0
 	for i := 0; i < len(s.Peers); i++ {
 		p := s.Peers[i]
 		if cli := p.Redis(); cli != nil && s.Channel != int64(i) {
+			if opts.useMask && !opts.mask[i] {
+				continue
+			}
 			select {
 			case p.job.q <- &endpointCmd{
 				ep:    p,
@@ -262,13 +266,24 @@ MORE:
 	case <-time.After(w):
 		_, fn, ln, _ := runtime.Caller(1)
 		var remains []string
+		var mask [future.Channels]bool
 		s.ForeachPeer(func(i int, ep *endpoint, cli *redis.Client) {
 			if !ackList[i] {
 				remains = append(remains, ep.config.Addr)
+				mask[i] = true
 			}
 		})
-		logrus.Errorf("[%s] %s:%d timed out to request all peers (%d/%d), remains: %v",
-			strings.ToUpper(pcmd.Name()), filepath.Base(fn), ln, recv, sent, remains)
+		logrus.Errorf("[%s] %s:%d timed out to request all peers (%d/%d), remains: %v, retry: %d",
+			strings.ToUpper(pcmd.Name()), filepath.Base(fn), ln, recv, sent, remains, opts.Retry)
+		if opts.Retry > 0 {
+			s.Survey.PeerTimeoutRetry.Incr(1)
+			return success + s.ForeachPeerExec(SendCmdOptions{
+				Retry:   opts.Retry - 1,
+				Oneshot: opts.Oneshot,
+				useMask: true,
+				mask:    mask,
+			}, req, resp)
+		}
 		s.Survey.PeerTimeout.Incr(1)
 	}
 	return

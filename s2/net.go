@@ -32,6 +32,9 @@ func (s *ErrorThrottler) Throttle(key string, err error) bool {
 	if err == ErrPeerTimeout {
 		goto THROT
 	}
+	if errors.Is(err, net.ErrClosed) {
+		goto THROT
+	}
 	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
 		goto THROT
 	}

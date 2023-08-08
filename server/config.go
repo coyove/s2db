@@ -33,6 +33,7 @@ type ServerConfig struct {
 	TimeoutPeer            int // ms
 	TimeoutRange           int // ms
 	TimeoutCount           int // ms
+	ReadTimeoutRetry       int
 	SyncBatchLimit         int
 	PipelineLimit          int
 	L6WorkerMaxTx          string

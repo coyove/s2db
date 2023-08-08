@@ -33,15 +33,13 @@ type ServerSurvey struct {
 	Pipeline          s2.Survey
 	PipelineLat       s2.Survey `metrics:"mean"`
 	AppendSyncN       s2.Survey `metrics:"mean"`
-	HSetSyncN         s2.Survey `metrics:"mean"`
 	PeerOnMissing     s2.Survey `metrics:"qps"`
 	PeerOnOK          s2.Survey `metrics:"qps"`
 	AllConsolidated   s2.Survey `metrics:"qps"`
 	SelectCacheHits   s2.Survey `metrics:"qps"`
 	PeerBatchSize     s2.Survey
 	PeerTimeout       s2.Survey `metrics:"qps"`
-	HashMerger        s2.Survey
-	HashSyncer        s2.Survey
+	PeerTimeoutRetry  s2.Survey `metrics:"qps"`
 	AsyncOnce         s2.Survey `metrics:"mean"`
 	KeyHashRatio      s2.Survey `metrics:"mean"`
 	L6PurgerDeletes   s2.Survey

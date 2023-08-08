@@ -43,7 +43,7 @@ func (s *Server) startCronjobs() {
 	run(time.Second*30, 0)
 	run(time.Second*60, 0)
 	run(time.Second*60, 1)
-	s.l6Deduper()
+	go s.l6Deduper()
 	s.l6Purger()
 }
 

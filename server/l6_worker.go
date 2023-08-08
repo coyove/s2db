@@ -145,10 +145,8 @@ func (s *Server) l6Purger() {
 
 	defer func(start time.Time) {
 		finished = true
-		w := time.Duration(s.Config.L6PurgerSleepSecs) * time.Second
-		logrus.Infof("finish L6 purger in %v, next scheduled at %v",
-			time.Since(start), time.Now().UTC().Add(w).Format(time.Stamp))
-		time.AfterFunc(w, func() { s.l6Purger() })
+		logrus.Infof("finish L6 purger in %v", time.Since(start))
+		time.AfterFunc(time.Second, func() { s.l6Purger() })
 	}(time.Now())
 
 	var i int
@@ -168,9 +166,16 @@ func (s *Server) l6Purger() {
 		}
 	}()
 
+	window := int64(time.Hour*12) / int64(len(level))
+	start := future.UnixNano()
 	log := logrus.WithField("shard", "L6PG")
 	for i = range level {
 		t := level[i]
+
+		if s.Config.ListRetentionDays <= 0 {
+			time.Sleep(time.Millisecond * 100)
+			continue
+		}
 
 		for {
 			c := s.DB.Metrics().Compact
@@ -178,12 +183,15 @@ func (s *Server) l6Purger() {
 				break
 			}
 			// log.Infof("waiting for in-progress compactions %d/%d", c.NumInProgress, c.InProgressBytes)
-			time.Sleep(time.Second * 5)
+			time.Sleep(time.Second)
 		}
 
 		if err := s.purgeSSTable(log, t); err != nil {
 			log.Errorf("[%d] failed to ttl purge: %v", t.FileNum, err)
 		}
+
+		e := start + int64(i+1)*window - future.UnixNano()
+		time.Sleep(time.Duration(e))
 	}
 }
 

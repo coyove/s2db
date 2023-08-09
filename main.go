@@ -28,7 +28,7 @@ var (
 	logRuntimeConfig = flag.String("log.runtime", "100,8,28,log/runtime.log", "[log] runtime log config")
 	logSlowConfig    = flag.String("log.slow", "100,8,7,log/slow.log", "[log] slow commands log config")
 	logDBConfig      = flag.String("log.db", "100,16,28,log/db.log", "[log] pebble log config")
-	logDebug         = flag.Bool("log.debug", false, "[log] debug level output")
+	logWorkerConfig  = flag.String("log.worker", "100,8,28,log/worker.log", "[log] worker log config")
 )
 
 func init() {
@@ -44,7 +44,7 @@ func main() {
 		return
 	}
 
-	server.InitLogger(*logDebug, *logRuntimeConfig, *logSlowConfig, *logDBConfig)
+	server.InitLogger(*logRuntimeConfig, *logSlowConfig, *logDBConfig, *logWorkerConfig)
 
 	if *sendRedisCmd != "" {
 		cfg, err := resp.ParseConnString(*listenAddr)

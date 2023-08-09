@@ -23,6 +23,9 @@ const (
 )
 
 func kkp(key string) (prefix []byte) {
+	if key == "" {
+		panic("shouldn't happen")
+	}
 	prefix = append(append(append(make([]byte, 64)[:0], 'l'), key...), 0)
 	return
 }
@@ -228,39 +231,39 @@ func (s *Server) implRange(key string, start []byte, n int, opts s2.SelectOption
 		p := s2.Pair{}
 		p.ID = s2.Bytes(k)
 		if !opts.NoData {
-			p.Data = s2.Bytes(c.Value())
+			v, err := c.ValueAndErr()
+			if err != nil {
+				return nil, fmt.Errorf("failed to get value: %v", err)
+			}
+			p.Data = s2.Bytes(v)
 		}
 
 		if opts.Raw {
 			data = append(data, p)
-			goto NEXT
+			goto CHECK_BREAK
 		}
 
 		if v, ok := p.Future().Cookie(); ok {
 			if v == consolidatedMark {
+				// Record the consolidation mark.
 				cm = append(cm, p.Future())
 			} else {
 				return nil, fmt.Errorf("invalid mark: %x", v)
 			}
 		} else {
+			if opts.Desc && bytes.Compare(k, start) > 0 {
+				// Descend ranging may start beyond 'start' cursor.
+				goto CHECK_BREAK
+			}
 
-			if opts.Desc {
-				// Desc-ranging may start beyond 'start' cursor, shown by the graph above.
-				if bytes.Compare(k, start) <= 0 {
-					if opts.LeftOpen && len(data) == 0 && bytes.Equal(start, p.ID) {
-					} else {
-						data = append(data, p)
-					}
-				}
+			if opts.LeftOpen && len(data) == 0 && bytes.Equal(start, p.ID) {
+				// Left-opened range excludes the 'start'.
 			} else {
-				if opts.LeftOpen && len(data) == 0 && bytes.Equal(start, p.ID) {
-				} else {
-					data = append(data, p)
-				}
+				data = append(data, p)
 			}
 		}
 
-	NEXT:
+	CHECK_BREAK:
 		if len(data) >= n+2 {
 			// If we have collected enough Pairs where last two Pairs belong to different blocks,
 			// we can safely exit the loop.
@@ -334,6 +337,10 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 	iter := newPrefixIter(s.DB, []byte("l"))
 	defer iter.Close()
 
+	if cursor == "" {
+		cursor = "\x00" // kkp will panic
+	}
+
 	var tmp []byte
 	for iter.SeekGE(kkp(cursor)); iter.Valid(); {
 		k := iter.Key()
@@ -352,145 +359,6 @@ func (s *Server) Scan(cursor string, count int) (nextCursor string, keys []strin
 
 	return
 }
-
-// func (s *Server) implHSet(key string, kvs, ids [][]byte) ([][]byte, future.Future, error) {
-// 	if key == "" {
-// 		return nil, 0, fmt.Errorf("empty key")
-// 	}
-// 	if len(kvs) == 0 {
-// 		return nil, 0, nil
-// 	}
-//
-// 	kh := sha1.Sum([]byte(key))
-//
-// 	var maxID future.Future
-// 	var kk [][]byte
-// 	m := map[string]hashmapData{}
-// 	for i := 0; i < len(kvs); i += 2 {
-// 		k := *(*string)(unsafe.Pointer(&kvs[i]))
-// 		v := kvs[i+1]
-// 		if len(k) == 0 || len(v) == 0 {
-// 			return nil, 0, fmt.Errorf("hashmap: member and value can't be empty")
-// 		}
-// 		if len(ids) > 0 {
-// 			id := ids[i/2]
-// 			maxID = s2.Convert16BToFuture(id)
-// 			kk = append(kk, id)
-// 		} else {
-// 			maxID = future.Get(s.Channel)
-// 			idx := s2.ConvertFutureTo16B(maxID)
-// 			copy(idx[8:12], kh[:])
-// 			rand.Read(idx[12:13])
-// 			idx[13] = 0 // reserved
-// 			idx[14] = byte(s.Channel)<<4 | s2.PairCmdHSet
-// 			idx[15] = 0 // extra
-// 			kk = append(kk, idx[:])
-// 		}
-// 		m[k] = hashmapData{ts: int64(maxID), key: kvs[i], data: v}
-// 	}
-//
-// 	if err := s.DB.Merge(makeHashmapKey(key), hashmapMergerBytes(m), pebble.Sync); err != nil {
-// 		return nil, 0, err
-// 	}
-// 	return kk, maxID, nil
-// }
-//
-// func (s *Server) implHGet(key string, member []byte, tsOnly bool) (res []byte, ts int64, err error) {
-// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-// 	if err != nil {
-// 		if err == pebble.ErrNotFound {
-// 			return nil, 0, nil
-// 		}
-// 		return nil, 0, err
-// 	}
-// 	defer rd.Close()
-//
-// 	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
-// 		if bytes.Equal(d.key, member) {
-// 			future.Future(d.ts).Wait()
-// 			if !tsOnly {
-// 				res = d.clone().data
-// 			}
-// 			ts = d.ts
-// 			return false
-// 		}
-// 		return true
-// 	}); err != nil {
-// 		return nil, 0, err
-// 	}
-// 	return
-// }
-//
-// func (s *Server) implHGetAll(key string, matchValue []byte, inclKey, inclValue, inclTime bool) (res [][]byte, err error) {
-// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-// 	if err != nil {
-// 		if err == pebble.ErrNotFound {
-// 			return nil, nil
-// 		}
-// 		return nil, err
-// 	}
-// 	defer rd.Close()
-//
-// 	var max int64
-// 	var mErr error
-// 	if err := hashmapIterBytes(buf, func(d hashmapData) bool {
-// 		if matched := false; matchValue != nil {
-// 			matched, mErr = s2.GlobBytes(matchValue, d.data)
-// 			if err != nil {
-// 				return true
-// 			}
-// 			if !matched {
-// 				return true
-// 			}
-// 		}
-// 		if d.ts > max {
-// 			max = d.ts
-// 		}
-// 		if inclKey {
-// 			res = append(res, s2.Bytes(d.key))
-// 		}
-// 		if inclTime {
-// 			res = append(res, strconv.AppendInt(nil, d.ts/1e6, 10))
-// 		}
-// 		if inclValue {
-// 			res = append(res, s2.Bytes(d.data))
-// 		}
-// 		return true
-// 	}); err != nil {
-// 		return nil, err
-// 	}
-// 	if mErr != nil {
-// 		return nil, mErr
-// 	}
-//
-// 	future.Future(max).Wait()
-// 	return
-// }
-//
-// func (s *Server) implHLen(key string) (count int, err error) {
-// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-// 	if err != nil {
-// 		if err == pebble.ErrNotFound {
-// 			return 0, nil
-// 		}
-// 		return 0, err
-// 	}
-// 	defer rd.Close()
-// 	count = int(binary.BigEndian.Uint32(buf[1:]))
-// 	return
-// }
-//
-// func (s *Server) hChecksum(key string) (v [20]byte, size int, err error) {
-// 	buf, rd, err := s.DB.Get(makeHashmapKey(key))
-// 	if err == pebble.ErrNotFound {
-// 		// Pass, calc sha1 empty buffer
-// 	} else if err != nil {
-// 		return v, 0, err
-// 	} else {
-// 		defer rd.Close()
-// 	}
-// 	return sha1.Sum(buf), len(buf), nil
-// }
 
 type dbPayload struct {
 	key  string

@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/coyove/sdss/future"
 	"github.com/sirupsen/logrus"
@@ -19,14 +18,11 @@ import (
 
 var slowLogger *log.Logger
 var dbLogger *log.Logger
+var workerLogger *log.Logger
 
-func InitLogger(debug bool, runtime, slow, db string) {
+func InitLogger(runtime, slow, db, worker string) {
 	log.SetReportCaller(true)
 	setLogger(log.StandardLogger(), runtime, false)
-
-	if debug {
-		log.SetLevel(log.DebugLevel)
-	}
 
 	slowLogger = log.New()
 	setLogger(slowLogger, slow, true)
@@ -34,40 +30,23 @@ func InitLogger(debug bool, runtime, slow, db string) {
 	dbLogger = log.New()
 	setLogger(dbLogger, db, true)
 
+	workerLogger = log.New()
+	workerLogger.SetReportCaller(true)
+	setLogger(workerLogger, worker, false)
+
 	go future.StartWatcher(func(err error) {
 		log.Errorf("future NTP watcher: %v", err)
 	})
 }
 
 type logf struct {
-	simple   bool
-	listener struct {
-		sync.RWMutex
-		idx int
-		m   map[int]chan []byte
-	}
-	in chan []byte
+	simple bool
 }
 
 func setLogger(log *logrus.Logger, output string, simple bool) {
 	lf := &logf{
 		simple: simple,
-		in:     make(chan []byte, 16),
 	}
-	lf.listener.m = map[int]chan []byte{}
-	go func() {
-		for data := range lf.in {
-			lf.listener.RLock()
-			for _, c := range lf.listener.m {
-				select {
-				case c <- data:
-				default:
-				}
-			}
-			lf.listener.RUnlock()
-		}
-	}()
-
 	log.SetFormatter(lf)
 
 	rd := strings.NewReader(output)
@@ -89,29 +68,6 @@ func setLogger(log *logrus.Logger, output string, simple bool) {
 		log.SetOutput(os.Stdout)
 	}
 	fmt.Printf("logger created: %q, max size: %d, max backups: %d, max age: %d\n", string(fn), maxSize, maxBackups, maxAge)
-}
-
-func (f *logf) LogFork(w io.WriteCloser) (err error) {
-	c := make(chan []byte)
-	f.listener.Lock()
-	f.listener.idx++
-	idx := f.listener.idx
-	f.listener.m[idx] = c
-	sz := len(f.listener.m)
-	f.listener.Unlock()
-
-	w.Write([]byte(fmt.Sprintf("log listener #%d of %d\n", idx, sz)))
-	for data := range c {
-		if _, err = w.Write(data); err != nil {
-			break
-		}
-	}
-
-	f.listener.Lock()
-	delete(f.listener.m, idx)
-	f.listener.Unlock()
-	w.Close()
-	return
 }
 
 func (f *logf) Format(entry *logrus.Entry) ([]byte, error) {
@@ -146,9 +102,5 @@ func (f *logf) Format(entry *logrus.Entry) ([]byte, error) {
 	buf.WriteString("\t")
 	buf.WriteString(entry.Message)
 	buf.WriteByte('\n')
-	select {
-	case f.in <- buf.Bytes():
-	default:
-	}
 	return buf.Bytes(), nil
 }

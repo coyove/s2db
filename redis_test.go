@@ -21,7 +21,7 @@ import (
 )
 
 func init() {
-	server.InitLogger(false, "0,0,0,", "0,0,0,", "0,0,0,")
+	server.InitLogger("0,0,0,", "0,0,0,", "0,0,0,", "0,0,0,")
 	server.EnableTest()
 	rand.Seed(future.UnixNano())
 	future.StartWatcher(func(error) {})

@@ -37,8 +37,8 @@ type ServerConfig struct {
 	SyncBatchLimit         int
 	PipelineLimit          int
 	L6WorkerMaxTx          string
-	L6PurgerSleepSecs      int
-	L6DeduperSleepSecs     int
+	L6PurgerSchedCostHours int
+	L6DeduperIntervalSecs  int
 	MetricsEndpoint        string
 	InfluxDB1Config        string
 }
@@ -74,8 +74,8 @@ func (s *Server) saveConfig(source string) error {
 	ifZero(&s.Config.TimeoutCount, 1000)
 	ifZero(&s.Config.SyncBatchLimit, 100)
 	ifZero(&s.Config.PipelineLimit, 1000)
-	ifZero(&s.Config.L6PurgerSleepSecs, 3600)
-	ifZero(&s.Config.L6DeduperSleepSecs, 75)
+	ifZero(&s.Config.L6PurgerSchedCostHours, 8)
+	ifZero(&s.Config.L6DeduperIntervalSecs, 75)
 	if s.Config.L6WorkerMaxTx == "" {
 		s.Config.L6WorkerMaxTx = "5000,1000"
 	}
@@ -260,13 +260,6 @@ func ifZero(v *int, v2 int) {
 	if *v <= 0 {
 		*v = v2
 	}
-}
-
-func ifInt(v bool, a, b int64) int64 {
-	if v {
-		return a
-	}
-	return b
 }
 
 func toReadonlyBytes(v bas.Value) []byte {

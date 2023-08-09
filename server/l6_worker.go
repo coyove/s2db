@@ -142,17 +142,18 @@ func (s *Server) l6Purger() {
 	}
 
 	finished := false
+	log := workerLogger.WithField("shard", "purger")
 
 	defer func(start time.Time) {
 		finished = true
-		logrus.Infof("finish L6 purger in %v", time.Since(start))
+		log.Infof("finish L6 purger in %v", time.Since(start))
 		time.AfterFunc(time.Second, func() { s.l6Purger() })
 	}(time.Now())
 
 	var i int
-	level, err := s.collectSST("l6purger")
+	level, err := s.collectSST(log, "l6purger")
 	if err != nil {
-		logrus.Errorf("list sstables: %v", err)
+		log.Errorf("list sstables: %v", err)
 		return
 	}
 	rand.Shuffle(len(level), func(i, j int) { level[i], level[j] = level[j], level[i] })
@@ -166,9 +167,7 @@ func (s *Server) l6Purger() {
 		}
 	}()
 
-	window := int64(time.Hour*12) / int64(len(level))
 	start := future.UnixNano()
-	log := logrus.WithField("shard", "L6PG")
 	for i = range level {
 		t := level[i]
 
@@ -190,6 +189,7 @@ func (s *Server) l6Purger() {
 			log.Errorf("[%d] failed to ttl purge: %v", t.FileNum, err)
 		}
 
+		window := int64(time.Hour*time.Duration(s.Config.L6PurgerSchedCostHours)) / int64(len(level))
 		e := start + int64(i+1)*window - future.UnixNano()
 		time.Sleep(time.Duration(e))
 	}
@@ -203,18 +203,19 @@ func (s *Server) l6Deduper() {
 	var finished bool
 	var i int
 	var marked int
+	log := workerLogger.WithField("shard", "deduper")
 
 	defer func(start time.Time) {
 		finished = true
-		w := time.Duration(s.Config.L6DeduperSleepSecs) * time.Second
-		logrus.Infof("finish L6 deduper in %v, processed %d sst, next round scheduled at %v",
+		w := time.Duration(s.Config.L6DeduperIntervalSecs) * time.Second
+		log.Infof("finish L6 deduper in %v, processed %d sst, next round scheduled at %v",
 			time.Since(start), marked, time.Now().UTC().Add(w).Format(time.Stamp))
 		time.AfterFunc(w, func() { s.l6Deduper() })
 	}(time.Now())
 
-	level, err := s.collectSST("l6deduper")
+	level, err := s.collectSST(log, "l6deduper")
 	if err != nil {
-		logrus.Errorf("list sstables: %v", err)
+		log.Errorf("list sstables: %v", err)
 		return
 	}
 
@@ -227,7 +228,6 @@ func (s *Server) l6Deduper() {
 		}
 	}()
 
-	log := logrus.WithField("shard", "L6DD")
 	for i = range level {
 		t := level[i]
 		mark, err := s.dedupSSTable(log, t)
@@ -254,10 +254,9 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 		return fmt.Errorf("failed to get stored timestamp: %v", err)
 	}
 
-	var wait, maxTx int
-	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
-	if wait == 0 || maxTx == 0 {
-		return fmt.Errorf("invalid config")
+	wait, maxTx, err := s.parseTxLimit()
+	if err != nil {
+		return err
 	}
 
 	var minTimestamp int64 = math.MaxInt64
@@ -298,7 +297,11 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 		id := k[bytes.IndexByte(k, 0)+1:]
 		ts := int64(s2.Convert16BToFuture(id))
 		if ts <= startTimestamp {
-			ik, _ = iter.Next()
+			tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
+			tmp = append(tmp, 0)
+			tmp = binary.BigEndian.AppendUint64(tmp, uint64(startTimestamp+1))
+			ik, _ = iter.SeekGE(tmp, 0)
+			// ik, _ = iter.Next()
 			continue
 		}
 
@@ -330,22 +333,18 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 
 	tx.Set(tsKey, s2.Uint64ToBytes(uint64(minTimestamp)), pebble.NoSync)
 
+	fmtt := func(nano int64) string {
+		return time.Unix(0, nano).Format(time.Stamp) + " (" + strconv.FormatInt(nano, 10) + ")"
+	}
 	if startTimestamp == 0 {
-		log.Infof("[%d] new sst: %v", t.FileNum, time.Unix(0, minTimestamp))
+		log.Infof("[%d] new sst: %v", t.FileNum, fmtt(minTimestamp))
 	} else if minTimestamp == math.MaxInt64 {
 		log.Infof("[%d] sst all purged", t.FileNum)
 	} else {
-		log.Debugf("[%d] timestamp: %v -> %v", t.FileNum, time.Unix(0, startTimestamp), time.Unix(0, minTimestamp))
+		log.Infof("[%d] timestamp updated: %v -> %v", t.FileNum, fmtt(startTimestamp), fmtt(minTimestamp))
 	}
 
-	kkpRev := func(prefix []byte) (key []byte) {
-		if bytes.HasPrefix(prefix, []byte("l")) {
-			return prefix[1:bytes.IndexByte(prefix, 0)]
-		}
-		return prefix
-	}
-
-	log.Debugf("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, kkpRev(t.Smallest.UserKey), kkpRev(t.Largest.UserKey))
+	log.Infof("[%d] deletes %d within [%q, %q]", t.FileNum, deletes, t.Smallest.UserKey, t.Largest.UserKey)
 	s.Survey.L6PurgerDeletes.Incr(int64(deletes))
 
 	return tx.Commit(pebble.NoSync)
@@ -361,10 +360,9 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		return false, nil
 	}
 
-	var wait, maxTx int
-	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
-	if wait == 0 || maxTx == 0 {
-		return false, fmt.Errorf("invalid config")
+	wait, maxTx, err := s.parseTxLimit()
+	if err != nil {
+		return false, err
 	}
 
 	for {
@@ -404,6 +402,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 
 	dedup := map[[sha1.Size]byte]struct{}{}
 	var curCMKey []byte
+	var curCM future.Future
 	for ik, iv := iter.Last(); ik != nil; ik, iv = iter.Prev() {
 		k := ik.UserKey
 		v, _, _ := iv.Value(nil)
@@ -426,6 +425,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 				globalCMDeletes++
 			}
 			curCMKey = append(curCMKey[:0], k...)
+			curCM = s2.Convert16BToFuture(id)
 			globalCounter++
 			continue
 		}
@@ -441,12 +441,23 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 
 		key := k[1:bytes.IndexByte(k, 0)]
 		if *(*string)(unsafe.Pointer(&key)) != lastKey {
-			log.Debugf("purge %q, remains %d keys, before %d", key, len(dedup), lastCounter)
+			if rand.Intn(10000) == 0 {
+				log.Infof("sampling: purge %q, remains %d keys, before %d", key, len(dedup), lastCounter)
+			}
 			for k := range dedup {
 				delete(dedup, k)
 			}
 			lastCounter = 0
 			lastKey = string(key)
+		}
+
+		// Current key doesn't belong to 'curCM' block,
+		if s2.Convert16BToFuture(id).ToCookie(consolidatedMark) != curCM {
+			// Refer to the comment above, which explains why we delete 'curCMKey' here.
+			tx.Delete(curCMKey, pebble.NoSync)
+			curCMKey = curCMKey[:0]
+			curCM = 0
+			globalCMDeletes++
 		}
 
 		lastCounter++
@@ -458,6 +469,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 			// We are inside 'curCMKey' block and met a key that is not duplicated, which means this block
 			// will not be empty after dedup, thus clear 'curCMKey' to avoid deleting this block.
 			curCMKey = curCMKey[:0]
+			curCM = 0
 			continue
 		}
 
@@ -475,7 +487,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 	tx.Set(dedupMarkKey, s2.Uint64ToBytes(1), pebble.NoSync)
 
 	if globalCounter > 0 {
-		log.Debugf("dedup sst %d, purged %d + %d out of %d", t.FileNum, globalDeletes, globalCMDeletes, globalCounter)
+		log.Infof("dedup sst %d, purged %d + %d out of %d", t.FileNum, globalDeletes, globalCMDeletes, globalCounter)
 		s.Survey.L6DedupBefore.Incr(int64(globalCounter))
 		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
 		s.Survey.L6DedupCMDeletes.Incr(int64(globalCMDeletes))
@@ -483,7 +495,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 	return true, tx.Commit(pebble.NoSync)
 }
 
-func (s *Server) collectSST(source string) ([]pebble.SSTableInfo, error) {
+func (s *Server) collectSST(log *logrus.Entry, source string) ([]pebble.SSTableInfo, error) {
 	tables, err := s.DB.SSTables()
 	if err != nil {
 		return nil, err
@@ -504,8 +516,23 @@ func (s *Server) collectSST(source string) ([]pebble.SSTableInfo, error) {
 			levelNum[len(levelNum)-1]++
 		}
 	}
-	logrus.Infof("[%s] collected %d sst %v, L0=%d", source, len(level), levelNum, len(tables[0]))
+	log.Infof("[%s] collected %d sst %v, L0=%d", source, len(level), levelNum, len(tables[0]))
 	return level, nil
+}
+
+func (s *Server) readSSTPath(path string) (*sstable.Reader, error) {
+	buf, err := ioutil.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	rd, err := sstable.NewMemReader(buf, sstable.ReaderOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return rd, nil
 }
 
 func (s *Server) readSST(idx uint64) (*sstable.Reader, error) {
@@ -521,4 +548,12 @@ func (s *Server) readSST(idx uint64) (*sstable.Reader, error) {
 		return nil, fmt.Errorf("parse sst %d: %v", idx, err)
 	}
 	return rd, nil
+}
+
+func (s *Server) parseTxLimit() (wait, maxTx int, err error) {
+	fmt.Sscanf(s.Config.L6WorkerMaxTx, "%d,%d", &maxTx, &wait)
+	if wait == 0 || maxTx == 0 {
+		err = fmt.Errorf("invalid config")
+	}
+	return
 }

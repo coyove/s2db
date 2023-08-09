@@ -127,6 +127,14 @@ func Open(dbPath string, channel int64) (s *Server, err error) {
 	s.rdbCache = s2.NewLRUCache(8, func(k string, v *redis.Client) {
 		log.Infof("redis client cache evicted: %s, close=%v", k, v.Close())
 	})
+
+	// rd, _ := s.readSSTPath("zzz.sst")
+	// iter, _ := rd.NewIter(nil, nil)
+	// for k, _ := iter.First(); k != nil; k, _ = iter.Next() {
+	// 	k := k.UserKey
+	// 	idx := bytes.IndexByte(k, 0)
+	// 	fmt.Println(string(k[:idx-1]), hex.EncodeToString(k[idx+1:idx+1+16]))
+	// }
 	return s, nil
 }
 
@@ -328,12 +336,6 @@ func (s *Server) runCommand(startTime time.Time, cmd string, w resp.WriterImpl, 
 			log.Infof("dumped to %s in %v: %v", key, time.Since(start), err)
 		}(startTime)
 		return w.WriteSimpleString("STARTED")
-	case "SLOW.LOG":
-		return slowLogger.Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
-	case "DB.LOG":
-		return dbLogger.Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
-	case "RUNTIME.LOG":
-		return log.StandardLogger().Formatter.(*logf).LogFork(w.(*resp.Writer).Sink.(net.Conn))
 	}
 
 	switch cmd {

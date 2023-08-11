@@ -193,6 +193,8 @@ func (s *Server) l6Purger() {
 		e := start + int64(i+1)*window - future.UnixNano()
 		time.Sleep(time.Duration(e))
 	}
+
+	s.Survey.L6PurgerProgress.Incr(int64(len(level)))
 }
 
 func (s *Server) l6Deduper() {
@@ -239,6 +241,7 @@ func (s *Server) l6Deduper() {
 			marked++
 		}
 	}
+	s.Survey.L6DeduperProgress.Incr(int64(len(level)))
 }
 
 func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
@@ -491,6 +494,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		s.Survey.L6DedupBefore.Incr(int64(globalCounter))
 		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
 		s.Survey.L6DedupCMDeletes.Incr(int64(globalCMDeletes))
+		s.Survey.ZDebug1.Incr(int64(globalCMDeletes * 100 / (globalDeletes + 1)))
 	}
 	return true, tx.Commit(pebble.NoSync)
 }

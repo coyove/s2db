@@ -49,6 +49,7 @@ type ServerSurvey struct {
 	L6DeduperProgress s2.Survey `metrics:"mean"`
 	L6PurgerProgress  s2.Survey `metrics:"mean"`
 	ZDebug1           s2.Survey
+	ZDebug2           s2.Survey
 	PeerLatency       sync.Map
 	Command           sync.Map
 }

@@ -190,8 +190,11 @@ func (s *Server) l6Purger() {
 		}
 
 		window := int64(time.Hour*time.Duration(s.Config.L6PurgerSchedCostHours)) / int64(len(level))
-		e := start + int64(i+1)*window - future.UnixNano()
-		time.Sleep(time.Duration(e))
+		e := time.Duration(start + int64(i+1)*window - future.UnixNano())
+		if e > time.Minute {
+			e = time.Minute
+		}
+		time.Sleep(e)
 	}
 
 	s.Survey.L6PurgerProgress.Incr(int64(len(level)))
@@ -290,6 +293,10 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 	for ik, _ := iter.First(); ik != nil; {
 		k := ik.UserKey
 		if k[0] < 'l' {
+			ik, _ = iter.Next()
+			continue
+		}
+		if int(ik.Kind()) == 0 {
 			ik, _ = iter.Next()
 			continue
 		}
@@ -402,6 +409,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 	var globalCounter int
 	var globalDeletes int
 	var globalCMDeletes int
+	var globalInternalDeletes int
 
 	dedup := map[[sha1.Size]byte]struct{}{}
 	var curCMKey []byte
@@ -413,6 +421,10 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 			break
 		}
 		if k[0] >= 'm' {
+			continue
+		}
+		if int(ik.Kind()) == 0 {
+			globalInternalDeletes++
 			continue
 		}
 
@@ -445,7 +457,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		key := k[1:bytes.IndexByte(k, 0)]
 		if *(*string)(unsafe.Pointer(&key)) != lastKey {
 			if rand.Intn(10000) == 0 {
-				log.Infof("sampling: purge %q, remains %d keys, before %d", key, len(dedup), lastCounter)
+				log.Infof("sampling: dedup %q, remains %d keys, before %d", key, len(dedup), lastCounter)
 			}
 			for k := range dedup {
 				delete(dedup, k)
@@ -455,7 +467,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		}
 
 		// Current key doesn't belong to 'curCM' block,
-		if s2.Convert16BToFuture(id).ToCookie(consolidatedMark) != curCM {
+		if curCM > 0 && s2.Convert16BToFuture(id).ToCookie(consolidatedMark) != curCM {
 			// Refer to the comment above, which explains why we delete 'curCMKey' here.
 			tx.Delete(curCMKey, pebble.NoSync)
 			curCMKey = curCMKey[:0]
@@ -495,6 +507,7 @@ func (s *Server) dedupSSTable(log *logrus.Entry, t pebble.SSTableInfo) (bool, er
 		s.Survey.L6DedupDeletes.Incr(int64(globalDeletes))
 		s.Survey.L6DedupCMDeletes.Incr(int64(globalCMDeletes))
 		s.Survey.ZDebug1.Incr(int64(globalCMDeletes * 100 / (globalDeletes + 1)))
+		s.Survey.ZDebug2.Incr(int64(globalInternalDeletes))
 	}
 	return true, tx.Commit(pebble.NoSync)
 }

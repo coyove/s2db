@@ -213,6 +213,9 @@ func (s *Server) l6Deduper() {
 	defer func(start time.Time) {
 		finished = true
 		w := time.Duration(s.Config.L6DeduperIntervalSecs) * time.Second
+		if marked == 0 {
+			w = w * 2
+		}
 		log.Infof("finish L6 deduper in %v, processed %d sst, next round scheduled at %v",
 			time.Since(start), marked, time.Now().UTC().Add(w).Format(time.Stamp))
 		time.AfterFunc(w, func() { s.l6Deduper() })
@@ -306,7 +309,7 @@ func (s *Server) purgeSSTable(log *logrus.Entry, t pebble.SSTableInfo) error {
 
 		id := k[bytes.IndexByte(k, 0)+1:]
 		ts := int64(s2.Convert16BToFuture(id))
-		if ts <= startTimestamp {
+		if ts < startTimestamp {
 			tmp = append(tmp[:0], k[:bytes.IndexByte(k, 0)]...)
 			tmp = append(tmp, 0)
 			tmp = binary.BigEndian.AppendUint64(tmp, uint64(startTimestamp+1))

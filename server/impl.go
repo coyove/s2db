@@ -63,7 +63,7 @@ func (s *Server) implAppend(key string, ids, data [][]byte, opts s2.AppendOption
 			return nil, 0, fmt.Errorf("can't append empty data")
 		}
 		if int(opts.DPLen) > len(data[i]) {
-			return nil, 0, fmt.Errorf("dpLen exceeds data length")
+			return nil, 0, fmt.Errorf("AppendOptions.DPLen exceeds data length")
 		}
 
 		if len(ids) == len(data) {
